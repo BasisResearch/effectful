@@ -168,17 +168,27 @@ class ReduceArrayGather(ObjectInterpretation):
 
         body_fvs = fvsof(body)
         stream_keys = set(streams)
+
+        body_subst = {}
+        streams_subst = {}
+        range_streams = {}
+        progress = False
         for k, v in streams.items():
             if is_eager_array(v) and k in body_fvs and not (fvsof(v) & stream_keys):
                 kk = Operation.define(k)
-                subst_body = handler({k: deffn(unbind_dims(v, kk))})(evaluate)(body)
-                subst_streams = handler({k: kk})(evaluate)(
-                    {sk: sv for (sk, sv) in streams.items() if sk != k}
-                    | {kk: range(v.shape[0])}
-                )
-                return monoid.reduce(subst_body, subst_streams)
+                body_subst[k] = deffn(unbind_dims(v, kk))
+                streams_subst[k] = kk
+                range_streams[kk] = range(v.shape[0])
+                progress = True
+            else:
+                range_streams[k] = v
 
-        return fwd()
+        if not progress:
+            return fwd()
+
+        subst_body = handler(body_subst)(evaluate)(body)
+        subst_streams = handler(streams_subst)(evaluate)(range_streams)
+        return monoid.reduce(subst_body, subst_streams)
 
 
 class Reductor(Protocol):

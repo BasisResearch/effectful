@@ -353,6 +353,9 @@ class PlusDups(ObjectInterpretation):
 class ReducePartial(ObjectInterpretation):
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams):
+        if not streams:
+            return monoid.identity
+
         for stream_key, stream_body, streams_tail in outer_stream(streams):
             if isinstance(stream_body, Term):
                 continue
@@ -371,7 +374,7 @@ class ReducePartial(ObjectInterpretation):
                         monoid.reduce(*eval_args) if streams_tail else eval_args[0]
                     )
             return monoid.plus(*new_reduces)
-        return monoid.identity
+        return fwd()
 
 
 class ReduceFusion(ObjectInterpretation):
@@ -847,19 +850,25 @@ class MonoidOverSequence(ObjectInterpretation):
         return result
 
 
-class PlusInf(ObjectInterpretation):
-    """Workaround for the inability to give Monoid.plus(x, inf) a type."""
+@Operation.define
+def as_float(x: int) -> float:
+    if isinstance(x, Term):
+        raise NotHandled
+    return float(x)
 
+
+class PlusCastFloat(ObjectInterpretation):
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
-        if monoid in (Sum, Max) and any(
-            not isinstance(x, Term) and x == float("inf") for x in args
+        typs = [typeof(a) for a in args]
+        if any(issubclass(t, float) for t in typs) and any(
+            issubclass(t, int) for t in typs
         ):
-            return float("inf")
-        if monoid in (Sum, Min) and any(
-            not isinstance(x, Term) and x == -float("inf") for x in args
-        ):
-            return -float("inf")
+            args = [
+                as_float(a) if issubclass(t, int) else a
+                for (a, t) in zip(args, typs, strict=True)
+            ]
+            return monoid.plus(*args)
         return fwd()
 
 
@@ -871,10 +880,10 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
+    ReducePartial(),
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
-    ReducePartial(),
     ReduceFusion(),
     ReduceSplit(),
     ReduceFactorization(),
@@ -894,7 +903,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
-    PlusInf(),
+    PlusCastFloat(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).
