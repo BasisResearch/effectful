@@ -169,11 +169,7 @@ class ReduceArrayGather(ObjectInterpretation):
         body_fvs = fvsof(body)
         stream_keys = set(streams)
         for k, v in streams.items():
-            if (
-                isinstance(v, jax.Array)
-                and k in body_fvs
-                and not (fvsof(v) & stream_keys)
-            ):
+            if is_eager_array(v) and k in body_fvs and not (fvsof(v) & stream_keys):
                 kk = Operation.define(k)
                 subst_body = handler({k: deffn(unbind_dims(v, kk))})(evaluate)(body)
                 subst_streams = handler({k: kk})(evaluate)(
@@ -217,12 +213,19 @@ class ReduceArray(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        if isinstance(body, Term) and body.op == delta:
-            pos_dims = {
-                d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams
-            }
-        else:
-            pos_dims = {}
+        pos_dims = {}
+        if isinstance(body, Term):
+            if body.op == delta:
+                pos_dims = {
+                    d.op
+                    for d in body.args[0]
+                    if isinstance(d, Term) and d.op in streams
+                }
+            elif _is_monoid_plus(body.op) and distributes_over(
+                body.op.__self__, monoid
+            ):
+                # delegate to factorization
+                return fwd()
 
         body_fvs = fvsof(body)
         used = {
@@ -306,6 +309,8 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
         ):
             return fwd()
 
+        tail_streams = {k: v for (k, v) in streams.items() if k != head_op}
+
         # peel the head index: substitute it into the weight (slicing direct
         # uses, materializing the rest) along a fresh named dim, but bind that
         # dim only *after* the surrounding reduce -- see the class docstring.
@@ -331,6 +336,7 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 
         slice_subst = typing.cast(Interpretation, {jax_getitem: _jax_getitem})
         sliced_weight = handler(slice_subst)(evaluate)(weight)
+        sliced_streams = handler(slice_subst)(evaluate)(tail_streams)
 
         gather_subst = typing.cast(
             Interpretation,
@@ -346,12 +352,13 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
             },
         )
         gathered_weight = handler(gather_subst)(evaluate)(sliced_weight)
+        gathered_streams = handler(gather_subst)(evaluate)(sliced_streams)
 
-        fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
-        if fresh_streams:
-            inner = monoid.reduce(delta(tail_index, gathered_weight), fresh_streams)
-        else:
-            inner = gathered_weight
+        inner = (
+            monoid.reduce(delta(tail_index, gathered_weight), gathered_streams)
+            if gathered_streams
+            else gathered_weight
+        )
         return bind_dims(inner, fresh_op)
 
 
@@ -453,12 +460,6 @@ class ReduceDependentRangeMask(ObjectInterpretation):
 #   a subsequence of ``idx_b`` (or vice versa). Refuse to fire when neither
 #   is a subsequence of the other, since that would silently insert an
 #   outer-product broadcast.
-#
-# - **Empty-domain detection at the term level**: currently size-0 named
-#   dims must be resolved by leaf consumers (``bind_dims``, reductors with
-#   ``initial=monoid.identity``). The empty-domain check is intentionally
-#   NOT a rule on its own — rewrites stay size-polymorphic and leaf ops
-#   carry the burden. See the conversation in monoid.py's history for why.
 
 
 class ContractLongestArrayStream(ObjectInterpretation):

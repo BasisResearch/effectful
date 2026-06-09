@@ -60,8 +60,12 @@ def test_reduce_array_gather_dep(monoid, reductor, backend: JaxBackend):
     X = jnp.arange(3)
 
     lhs = monoid.reduce(g(x(), y()), {y: f(x()), x: X})
-    rhs = monoid.reduce(g(unbind_dims(X, x), y()), {y: f(x()), x: range(X.shape[0])})
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceArrayGather())
+    rhs = monoid.reduce(
+        g(unbind_dims(X[:3], x), y()), {y: f(x()), x: range(X.shape[0])}
+    )
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceArrayGather(), ReduceDeltaSimpleRange())
+    )
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
@@ -281,6 +285,29 @@ def test_reduce_delta_independent_preserves_others(
     lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: range(2), y: range(3)})
     rhs = bind_dims(
         bind_dims(f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k), x
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_reduce_delta_simple_dep(monoid, reductor, backend: JaxBackend):
+    (x, y) = backend.define_vars("x", "y", ret="scalar")
+    X = jnp.arange(3)
+
+    lhs = monoid.reduce(
+        delta((x(),), unbind_dims(X, x) + y()),
+        {x: range(3), y: jnp.stack([x(), x() + 1])},
+    )
+    rhs = bind_dims(
+        monoid.reduce(
+            delta((), unbind_dims(X, x) + y()),
+            {
+                y: jnp.stack(
+                    [unbind_dims(jnp.arange(3), x), unbind_dims(jnp.arange(3), x) + 1]
+                )
+            },
+        ),
+        x,
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
 
