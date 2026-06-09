@@ -6,6 +6,7 @@ import typing
 from typing import Literal
 
 import pytest
+import typing_extensions
 
 from effectful.internals.unification import (
     Box,
@@ -15,6 +16,7 @@ from effectful.internals.unification import (
     TypeVariable,
     canonicalize,
     freetypevars,
+    infer_return_type,
     nested_type,
     substitute,
     unify,
@@ -197,9 +199,9 @@ def test_canonicalize_typeddict_class():
 
     # Fields are already canonical types
     result = canonicalize(MyTD)
-    assert typing.is_typeddict(result)
+    assert typing_extensions.is_typeddict(result)
 
-    hints = typing.get_type_hints(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints["name"] is str
     assert hints["age"] is int
 
@@ -209,8 +211,8 @@ def test_canonicalize_typeddict_class():
 
     # list[int] -> MutableSequence[int], so a new TypedDict is created
     result = canonicalize(MyTD2)
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints["name"] is str
     assert hints["items"] == collections.abc.MutableSequence[int]
 
@@ -232,6 +234,8 @@ def test_canonicalize_typeddict_class():
         (int, {T: str}, int),
         (str, {}, str),
         (list[int], {T: str}, list[int]),
+        # typing.Self with no binding passes through unchanged
+        (typing.Self, {}, typing.Self),
         # Single TypeVar in generic
         (list[T], {T: int}, list[int]),
         (set[T], {T: str}, set[str]),
@@ -589,6 +593,66 @@ def variadic_kwargs_func[T](**kwargs: T) -> T:  # Variadic kwargs not supported
     return next(iter(kwargs.values()))
 
 
+def variadic_args_const_return(*args: object) -> int:
+    return len(args)
+
+
+def default_param_func[T](x: T, y: str = "ok") -> T:
+    return x
+
+
+def returns_none(x: int) -> None:
+    return None
+
+
+def returns_annotated[T](x: T) -> typing.Annotated[T, "meta"]:
+    return x
+
+
+def no_return_annotation_func(x: int):
+    return x
+
+
+class _Foo:
+    def return_self(self: typing.Self) -> typing.Self:
+        return self
+
+    def return_list_self(self: typing.Self) -> list[typing.Self]:
+        return [self]
+
+    def return_self_or_none(self: typing.Self) -> typing.Self | None:
+        return self
+
+    def annotated_self(self: typing.Self) -> typing.Self:
+        return self
+
+    def takes_other(self: typing.Self, other: typing.Self) -> typing.Self:
+        return self
+
+    def mixed_with_typevar[T](self: typing.Self, x: T) -> tuple[typing.Self, T]:
+        return (self, x)
+
+    def return_dict_self(self: typing.Self) -> dict[str, typing.Self]:
+        return {"me": self}
+
+    def return_callable_self(
+        self: typing.Self,
+    ) -> collections.abc.Callable[[typing.Self], int]:
+        return id
+
+    def return_type_self(self: typing.Self) -> type[typing.Self]:
+        return type(self)
+
+    @classmethod
+    def from_config(cls, config: int) -> typing.Self:
+        return cls()
+
+
+class _Bar:
+    def return_self(self: typing.Self) -> typing.Self:
+        return self
+
+
 @pytest.mark.parametrize(
     "func,args,kwargs,expected_return_type",
     [
@@ -666,6 +730,15 @@ def variadic_kwargs_func[T](**kwargs: T) -> T:  # Variadic kwargs not supported
         (variadic_args_func, (int, int), {}, int),
         (variadic_kwargs_func, (), {"x": int}, int),
         (variadic_kwargs_func, (), {"x": int, "y": int}, int),
+        # zero-arg variadic positional/keyword (return type doesn't depend on T)
+        (variadic_args_const_return, (), {}, int),
+        # default-valued param: omitted vs provided
+        (default_param_func, (int,), {}, int),
+        (default_param_func, (str,), {"y": str}, str),
+        # special return-annotation forms
+        (returns_none, (int,), {}, type(None)),
+        (returns_annotated, (int,), {}, int),
+        (no_return_annotation_func, (int,), {}, object),
     ],
 )
 def test_infer_return_type_success(
@@ -674,9 +747,76 @@ def test_infer_return_type_success(
     kwargs: dict,
     expected_return_type: type,
 ):
+    # Args here are type expressions, not values; box them so nested_type
+    # treats them as already-typed (per Box's intended purpose).
+    sig = inspect.signature(func)
+    bound = sig.bind(
+        *[Box(a) for a in args],
+        **{k: Box(v) for k, v in kwargs.items()},
+    )
+    result = infer_return_type(bound)
+    assert canonicalize(result) == canonicalize(expected_return_type)
+
+
+@pytest.mark.parametrize(
+    "func,args,kwargs,expected_return_type",
+    [
+        # typing.Self return types (methods).  Args are wrapped in Box so
+        # nested_type treats them as already-typed values.
+        (_Foo.return_self, (Box(int),), {}, int),
+        (_Foo.return_self, (Box(str),), {}, str),
+        (_Foo.return_self, (Box(_Foo),), {}, _Foo),
+        (_Foo.return_self, (Box(_Bar),), {}, _Bar),
+        (_Bar.return_self, (Box(_Bar),), {}, _Bar),
+        (_Foo.annotated_self, (Box(_Foo),), {}, _Foo),
+        (_Foo.return_list_self, (Box(int),), {}, list[int]),
+        (_Foo.return_list_self, (Box(_Foo),), {}, list[_Foo]),
+        (_Foo.return_self_or_none, (Box(int),), {}, int | None),
+        (_Foo.return_self_or_none, (Box(_Foo),), {}, _Foo | None),
+        # Self as a non-self parameter
+        (_Foo.takes_other, (Box(int), Box(int)), {}, int),
+        (_Foo.takes_other, (Box(_Foo), Box(_Foo)), {}, _Foo),
+        # Self mixed with other TypeVars
+        (_Foo.mixed_with_typevar, (Box(int), Box(str)), {}, tuple[int, str]),
+        (
+            _Foo.mixed_with_typevar,
+            (Box(_Foo), Box(list[int])),
+            {},
+            tuple[_Foo, list[int]],
+        ),
+        # Self in dict[str, Self]
+        (_Foo.return_dict_self, (Box(int),), {}, dict[str, int]),
+        (_Foo.return_dict_self, (Box(_Foo),), {}, dict[str, _Foo]),
+        # Self inside Callable[[Self], int]
+        (
+            _Foo.return_callable_self,
+            (Box(int),),
+            {},
+            collections.abc.Callable[[int], int],
+        ),
+        (
+            _Foo.return_callable_self,
+            (Box(_Foo),),
+            {},
+            collections.abc.Callable[[_Foo], int],
+        ),
+        # type[Self]
+        (_Foo.return_type_self, (Box(int),), {}, type[int]),
+        (_Foo.return_type_self, (Box(_Foo),), {}, type[_Foo]),
+    ],
+)
+def test_infer_return_type_self_success(
+    func: collections.abc.Callable,
+    args: tuple,
+    kwargs: dict,
+    expected_return_type: type,
+):
+    """Self resolution goes through infer_return_type (the Self TypeVar is
+    internal to the conversion in _sig_to_type and never appears in the result
+    subs that the user could pass to substitute)."""
     sig = inspect.signature(func)
     bound = sig.bind(*args, **kwargs)
-    result = substitute(sig.return_annotation, unify(sig, bound))
+    result = infer_return_type(bound)
     assert canonicalize(result) == canonicalize(expected_return_type)
 
 
@@ -706,9 +846,12 @@ def test_infer_return_type_failure(
     kwargs: dict,
 ):
     sig = inspect.signature(func)
-    bound = sig.bind(*args, **kwargs)
+    bound = sig.bind(
+        *[Box(a) for a in args],
+        **{k: Box(v) for k, v in kwargs.items()},
+    )
     with pytest.raises(TypeError):
-        unify(sig, bound)
+        infer_return_type(bound)
 
 
 @pytest.mark.parametrize(
@@ -793,8 +936,8 @@ def test_nested_type_typeddict_str_keys_mixed_values():
     value = {"name": "Alice", "age": 30}
     result = nested_type(value).value
     # Should be a TypedDict, not dict
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"name": str, "age": int}
 
 
@@ -802,8 +945,8 @@ def test_nested_type_typeddict_multiple_value_types():
     """TypedDict with more than two distinct value types."""
     value = {"label": "x", "count": 5, "flag": True}
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"label": str, "count": int, "flag": bool}
 
 
@@ -811,8 +954,8 @@ def test_nested_type_typeddict_nested_values():
     """TypedDict with nested collection values."""
     value = {"items": [1, 2, 3], "name": "test"}
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert canonicalize(hints["items"]) == canonicalize(list[int])
     assert hints["name"] is str
 
@@ -826,21 +969,21 @@ def test_nested_type_typeddict_instance_roundtrip():
 
     value = UserTD(name="a", age=1)
     result = nested_type(value).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"name": str, "age": int}
 
 
 def test_nested_type_typeddict_homogeneous_str_keys():
     """Multi-key str dicts produce TypedDict even with homogeneous value types."""
     result = nested_type({"a": 1, "b": 2}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert hints == {"a": int, "b": int}
 
     result = nested_type({"a": {1, 2}, "b": {3, 4}}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
+    assert typing_extensions.is_typeddict(result)
+    hints = typing_extensions.get_type_hints(result)
     assert canonicalize(hints["a"]) == canonicalize(set[int])
     assert canonicalize(hints["b"]) == canonicalize(set[int])
 
@@ -850,7 +993,7 @@ def test_nested_type_non_str_keys_mixed_values_stays_dict():
     value = {1: "one", 2: True}
     result = nested_type(value).value
     # Should remain a plain dict type, not a TypedDict
-    assert not typing.is_typeddict(result)
+    assert not typing_extensions.is_typeddict(result)
     assert result is dict
 
 
@@ -1256,28 +1399,11 @@ def test_infer_composition_1(seq, index, key):
 
     sig12 = inspect.signature(sequence_mapping_getitem)
 
-    inferred_type1 = substitute(
-        sig1.return_annotation,
-        unify(sig1, sig1.bind(nested_type(seq).value, nested_type(index).value)),
-    )
+    inferred_type1 = infer_return_type(sig1.bind(seq, index))
 
-    inferred_type2 = substitute(
-        sig2.return_annotation,
-        unify(
-            sig2,
-            sig2.bind(nested_type(Box(inferred_type1)).value, nested_type(key).value),
-        ),
-    )
+    inferred_type2 = infer_return_type(sig2.bind(Box(inferred_type1), key))
 
-    inferred_type12 = substitute(
-        sig12.return_annotation,
-        unify(
-            sig12,
-            sig12.bind(
-                nested_type(seq).value, nested_type(index).value, nested_type(key).value
-            ),
-        ),
-    )
+    inferred_type12 = infer_return_type(sig12.bind(seq, index, key))
 
     # check that the composed inference matches the direct inference
     assert isinstance(unify(inferred_type2, inferred_type12), collections.abc.Mapping)
@@ -1388,32 +1514,13 @@ def test_infer_composition_2(mapping, key, index):
     sig12 = inspect.signature(mapping_sequence_getitem)
 
     # First infer type of mapping_getitem(mapping, key) -> should be a sequence
-    inferred_type1 = substitute(
-        sig1.return_annotation,
-        unify(sig1, sig1.bind(nested_type(mapping).value, nested_type(key).value)),
-    )
+    inferred_type1 = infer_return_type(sig1.bind(mapping, key))
 
     # Then infer type of sequence_getitem(result_from_step1, index) -> should be element type
-    inferred_type2 = substitute(
-        sig2.return_annotation,
-        unify(
-            sig2,
-            sig2.bind(nested_type(Box(inferred_type1)).value, nested_type(index).value),
-        ),
-    )
+    inferred_type2 = infer_return_type(sig2.bind(Box(inferred_type1), index))
 
     # Directly infer type of mapping_sequence_getitem(mapping, key, index)
-    inferred_type12 = substitute(
-        sig12.return_annotation,
-        unify(
-            sig12,
-            sig12.bind(
-                nested_type(mapping).value,
-                nested_type(key).value,
-                nested_type(index).value,
-            ),
-        ),
-    )
+    inferred_type12 = infer_return_type(sig12.bind(mapping, key, index))
 
     # The composed inference should match the direct inference
     assert isinstance(unify(inferred_type2, inferred_type12), collections.abc.Mapping)
@@ -1453,25 +1560,15 @@ def test_get_from_constructed_sequence(a, b, index):
     sig_composed = inspect.signature(get_from_constructed_sequence)
 
     # Infer type of sequence_from_pair(a, b) -> Sequence[T]
-    construct_subs = unify(
-        sig_construct, sig_construct.bind(nested_type(a).value, nested_type(b).value)
-    )
-    inferred_sequence_type = substitute(sig_construct.return_annotation, construct_subs)
+    inferred_sequence_type = infer_return_type(sig_construct.bind(a, b))
 
     # Infer type of sequence_getitem(sequence, index) -> T
-    getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(inferred_sequence_type, nested_type(index).value)
+    inferred_element_type = infer_return_type(
+        sig_getitem.bind(Box(inferred_sequence_type), index)
     )
-    inferred_element_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
     # Directly infer type of get_from_constructed_sequence(a, b, index)
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(a).value, nested_type(b).value, nested_type(index).value
-        ),
-    )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+    direct_type = infer_return_type(sig_composed.bind(a, b, index))
 
     # The composed inference should match the direct inference
     assert isinstance(
@@ -1511,29 +1608,15 @@ def test_get_from_constructed_mapping(key, value, lookup_key):
     sig_composed = inspect.signature(get_from_constructed_mapping)
 
     # Infer type of mapping_from_pair(key, value) -> Mapping[K, V]
-    construct_subs = unify(
-        sig_construct,
-        sig_construct.bind(nested_type(key).value, nested_type(value).value),
-    )
-    inferred_mapping_type = substitute(sig_construct.return_annotation, construct_subs)
+    inferred_mapping_type = infer_return_type(sig_construct.bind(key, value))
 
     # Infer type of mapping_getitem(mapping, lookup_key) -> V
-    getitem_subs = unify(
-        sig_getitem,
-        sig_getitem.bind(inferred_mapping_type, nested_type(lookup_key).value),
+    inferred_value_type = infer_return_type(
+        sig_getitem.bind(Box(inferred_mapping_type), lookup_key)
     )
-    inferred_value_type = substitute(sig_getitem.return_annotation, getitem_subs)
 
     # Directly infer type of get_from_constructed_mapping(key, value, lookup_key)
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(key).value,
-            nested_type(value).value,
-            nested_type(lookup_key).value,
-        ),
-    )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+    direct_type = infer_return_type(sig_composed.bind(key, value, lookup_key))
 
     # The composed inference should match the direct inference
     assert isinstance(unify(inferred_value_type, direct_type), collections.abc.Mapping)
@@ -1569,29 +1652,25 @@ def test_sequence_of_mappings(key1, val1, key2, val2, index):
     sig_composed = inspect.signature(sequence_of_mappings)
 
     # Step 1: Infer types of the two mappings
-    map1_subs = unify(
-        sig_map, sig_map.bind(nested_type(key1).value, nested_type(val1).value)
-    )
-    map1_type = substitute(sig_map.return_annotation, map1_subs)
+    map1_type = infer_return_type(sig_map.bind(key1, val1))
 
     # Step 2: Infer type of sequence containing these mappings
     # We need to unify the two mapping types first
     unified_map_type = map1_type  # Assuming they're compatible
 
-    seq_subs = unify(sig_seq, sig_seq.bind(unified_map_type, unified_map_type))
-    seq_type = substitute(sig_seq.return_annotation, seq_subs)
+    seq_type = infer_return_type(
+        sig_seq.bind(Box(unified_map_type), Box(unified_map_type))
+    )
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
+    direct_type = infer_return_type(
         sig_composed.bind(
-            nested_type(key1).value,
-            nested_type(val1).value,
-            nested_type(key2).value,
-            nested_type(val2).value,
-        ),
+            key1,
+            val1,
+            key2,
+            val2,
+        )
     )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
     # The types should match
     assert isinstance(unify(seq_type, direct_type), collections.abc.Mapping)
@@ -1621,57 +1700,25 @@ def test_double_nested_get(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_i
     sig_composed = inspect.signature(double_nested_get)
 
     # Step 1: Infer type of nested_sequence_mapping construction
-    nested_subs = unify(
-        sig_nested,
-        sig_nested.bind(
-            nested_type(k1).value,
-            nested_type(v1).value,
-            nested_type(v2).value,
-            nested_type(k2).value,
-            nested_type(v3).value,
-            nested_type(v4).value,
-        ),
-    )
-    nested_seq_type = substitute(sig_nested.return_annotation, nested_subs)
+    nested_seq_type = infer_return_type(sig_nested.bind(k1, v1, v2, k2, v3, v4))
     # This should be Sequence[Mapping[K, Sequence[T]]]
 
     # Step 2: Get element from outer sequence
-    outer_get_subs = unify(
-        sig_seq_get, sig_seq_get.bind(nested_seq_type, nested_type(outer_idx).value)
-    )
-    mapping_type = substitute(sig_seq_get.return_annotation, outer_get_subs)
+    mapping_type = infer_return_type(sig_seq_get.bind(Box(nested_seq_type), outer_idx))
     # This should be Mapping[K, Sequence[T]]
 
     # Step 3: Get sequence from mapping
-    inner_map_subs = unify(
-        sig_map_get, sig_map_get.bind(mapping_type, nested_type(inner_key).value)
-    )
-    sequence_type = substitute(sig_map_get.return_annotation, inner_map_subs)
+    sequence_type = infer_return_type(sig_map_get.bind(Box(mapping_type), inner_key))
     # This should be Sequence[T]
 
     # Step 4: Get element from inner sequence
-    final_get_subs = unify(
-        sig_seq_get, sig_seq_get.bind(sequence_type, nested_type(inner_idx).value)
-    )
-    composed_type = substitute(sig_seq_get.return_annotation, final_get_subs)
+    composed_type = infer_return_type(sig_seq_get.bind(Box(sequence_type), inner_idx))
     # This should be T
 
     # Direct inference on the composed function
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(k1).value,
-            nested_type(v1).value,
-            nested_type(v2).value,
-            nested_type(k2).value,
-            nested_type(v3).value,
-            nested_type(v4).value,
-            nested_type(outer_idx).value,
-            nested_type(inner_key).value,
-            nested_type(inner_idx).value,
-        ),
+    direct_type = infer_return_type(
+        sig_composed.bind(k1, v1, v2, k2, v3, v4, outer_idx, inner_key, inner_idx)
     )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
     # The composed inference should match the direct inference
     assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
@@ -1708,23 +1755,13 @@ def test_apply_to_sequence_element(f, seq, index):
     sig_composed = inspect.signature(apply_to_sequence_element)
 
     # Step 1: Infer type of sequence_getitem(seq, index) -> T
-    getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index).value)
-    )
-    element_type = substitute(sig_getitem.return_annotation, getitem_subs)
+    element_type = infer_return_type(sig_getitem.bind(seq, index))
 
     # Step 2: Infer type of call_func(f, element) -> U
-    call_subs = unify(sig_call, sig_call.bind(nested_type(f).value, element_type))
-    composed_type = substitute(sig_call.return_annotation, call_subs)
+    composed_type = infer_return_type(sig_call.bind(f, Box(element_type)))
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(f).value, nested_type(seq).value, nested_type(index).value
-        ),
-    )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+    direct_type = infer_return_type(sig_composed.bind(f, seq, index))
 
     # The composed inference should match the direct inference
     assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
@@ -1753,25 +1790,13 @@ def test_map_and_get(f, seq, index):
     sig_composed = inspect.signature(map_and_get)
 
     # Step 1: Infer type of map_sequence(f, seq) -> Sequence[U]
-    map_subs = unify(
-        sig_map, sig_map.bind(nested_type(f).value, nested_type(seq).value)
-    )
-    mapped_type = substitute(sig_map.return_annotation, map_subs)
+    mapped_type = infer_return_type(sig_map.bind(f, seq))
 
     # Step 2: Infer type of sequence_getitem(mapped_seq, index) -> U
-    getitem_subs = unify(
-        sig_getitem, sig_getitem.bind(mapped_type, nested_type(index).value)
-    )
-    composed_type = substitute(sig_getitem.return_annotation, getitem_subs)
+    composed_type = infer_return_type(sig_getitem.bind(Box(mapped_type), index))
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(f).value, nested_type(seq).value, nested_type(index).value
-        ),
-    )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+    direct_type = infer_return_type(sig_composed.bind(f, seq, index))
 
     # The composed inference should match the direct inference
     assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
@@ -1800,25 +1825,13 @@ def test_compose_and_apply(f, g, value):
     sig_composed = inspect.signature(compose_and_apply)
 
     # Step 1: Infer type of compose_mappings(f, g) -> Callable[[T], V]
-    compose_subs = unify(
-        sig_compose, sig_compose.bind(nested_type(f).value, nested_type(g).value)
-    )
-    composed_func_type = substitute(sig_compose.return_annotation, compose_subs)
+    composed_func_type = infer_return_type(sig_compose.bind(f, g))
 
     # Step 2: Infer type of call_func(composed, value) -> V
-    call_subs = unify(
-        sig_call, sig_call.bind(composed_func_type, nested_type(value).value)
-    )
-    result_type = substitute(sig_call.return_annotation, call_subs)
+    result_type = infer_return_type(sig_call.bind(Box(composed_func_type), value))
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
-        sig_composed.bind(
-            nested_type(f).value, nested_type(g).value, nested_type(value).value
-        ),
-    )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
+    direct_type = infer_return_type(sig_composed.bind(f, g, value))
 
     # The composed inference should match the direct inference
     assert isinstance(unify(result_type, direct_type), collections.abc.Mapping)
@@ -1847,29 +1860,22 @@ def test_construct_apply_and_get(f, a, b, index):
     sig_composed = inspect.signature(construct_apply_and_get)
 
     # Step 1: Infer type of sequence_from_pair(a, b) -> Sequence[T]
-    construct_subs = unify(
-        sig_construct, sig_construct.bind(nested_type(a).value, nested_type(b).value)
-    )
-    seq_type = substitute(sig_construct.return_annotation, construct_subs)
+    seq_type = infer_return_type(sig_construct.bind(a, b))
 
     # Step 2: Infer type of apply_to_sequence_element(f, seq, index) -> U
-    apply_subs = unify(
-        sig_apply,
-        sig_apply.bind(nested_type(f).value, seq_type, nested_type(index).value),
+    composed_type = infer_return_type(
+        sig_apply.bind(f, Box(seq_type), index),
     )
-    composed_type = substitute(sig_apply.return_annotation, apply_subs)
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
+    direct_type = infer_return_type(
         sig_composed.bind(
-            nested_type(f).value,
-            nested_type(a).value,
-            nested_type(b).value,
-            nested_type(index).value,
+            f,
+            a,
+            b,
+            index,
         ),
     )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
     # The composed inference should match the direct inference
     assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
@@ -1898,34 +1904,24 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
     sig_composed = inspect.signature(binary_on_sequence_elements)
 
     # Step 1: Infer types of sequence_getitem calls
-    getitem1_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index1).value)
-    )
-    elem1_type = substitute(sig_getitem.return_annotation, getitem1_subs)
+    elem1_type = infer_return_type(sig_getitem.bind(seq, index1))
 
-    getitem2_subs = unify(
-        sig_getitem, sig_getitem.bind(nested_type(seq).value, nested_type(index2).value)
-    )
-    elem2_type = substitute(sig_getitem.return_annotation, getitem2_subs)
+    elem2_type = infer_return_type(sig_getitem.bind(seq, index2))
 
     # Step 2: Infer type of call_binary_func(f, elem1, elem2) -> V
-    call_subs = unify(
-        sig_call_binary,
-        sig_call_binary.bind(nested_type(f).value, elem1_type, elem2_type),
+    composed_type = infer_return_type(
+        sig_call_binary.bind(f, Box(elem1_type), Box(elem2_type)),
     )
-    composed_type = substitute(sig_call_binary.return_annotation, call_subs)
 
     # Direct inference
-    direct_subs = unify(
-        sig_composed,
+    direct_type = infer_return_type(
         sig_composed.bind(
-            nested_type(f).value,
-            nested_type(seq).value,
-            nested_type(index1).value,
-            nested_type(index2).value,
+            f,
+            seq,
+            index1,
+            index2,
         ),
     )
-    direct_type = substitute(sig_composed.return_annotation, direct_subs)
 
     # The composed inference should match the direct inference
     assert isinstance(unify(composed_type, direct_type), collections.abc.Mapping)
@@ -1967,3 +1963,253 @@ def test_unify_mapping_typeddict_subclass():
 
     subs = unify(collections.abc.Mapping, Info)
     assert subs == {}
+
+
+# ============================================================
+# typing.Self resolution tests
+# ============================================================
+
+
+# --- SelfTypeReplacer ---
+
+
+@pytest.mark.parametrize("tv_name", ["Self", "X"])
+@pytest.mark.parametrize(
+    "typ,expected_factory",
+    [
+        # bare Self → tv
+        (typing.Self, lambda tv: tv),
+        # Self nested in generics → tv nested in same generics
+        (list[typing.Self], lambda tv: list[tv]),  # type: ignore[misc,valid-type]
+        (dict[str, typing.Self], lambda tv: dict[str, tv]),  # type: ignore[misc,valid-type]
+        (
+            collections.abc.Callable[[typing.Self], int],
+            lambda tv: collections.abc.Callable[[tv], int],
+        ),
+        (type[typing.Self], lambda tv: type[tv]),
+        # Union containing Self
+        (typing.Self | None, lambda tv: tv | None),
+        # Types without Self pass through unchanged
+        (int, lambda _tv: int),
+        (list[int], lambda _tv: list[int]),
+        (T, lambda _tv: T),
+        (list[T], lambda _tv: list[T]),
+    ],
+)
+def test_self_type_replacer(typ, expected_factory, tv_name):
+    """SelfTypeReplacer rewrites every typing.Self occurrence to the given TypeVar."""
+    from effectful.internals.unification import SelfTypeReplacer
+
+    tv = typing.TypeVar(tv_name)
+    replacer = SelfTypeReplacer(tv)
+    assert replacer.evaluate(typ) == expected_factory(tv)
+
+
+# --- chaining two signatures with Self from different "classes" ---
+
+
+def test_chained_self_signatures():
+    """Two infer_return_type calls don't conflate Self across classes."""
+    sig_a = inspect.signature(_Foo.return_self)
+    sig_b = inspect.signature(_Bar.return_self)
+
+    assert canonicalize(infer_return_type(sig_a.bind(Box(_Foo)))) == _Foo
+    assert canonicalize(infer_return_type(sig_b.bind(Box(_Bar)))) == _Bar
+
+
+# --- classmethod with Self: cls is stripped, Self stays unresolved ---
+
+
+def test_classmethod_self_not_resolved():
+    """Classmethod Self stays unresolved when cls is stripped.
+
+    ``inspect.signature`` strips ``cls``, so ``from_config(config: int) -> Self``
+    has no parameter that binds Self. SelfTypeReplacer produces a fresh
+    TypeVar; nothing in unify binds it; the TypeVar leaks through the result.
+    """
+    sig = inspect.signature(_Foo.from_config)
+    result = infer_return_type(sig.bind(Box(int)))
+    assert isinstance(result, typing.TypeVar)
+    assert result.__name__ == "Self"
+
+
+# --- composition tests with Self ---
+
+
+@pytest.mark.parametrize("obj_type", [_Foo, _Bar, int, str])
+def test_infer_self_composition_1(obj_type):
+    """Compose return_list_self -> get_first, verify matches return_self.
+
+    Step 1: return_list_self(obj) -> list[Self]  (Self method)
+    Step 2: get_first(list[T]) -> T              (generic function)
+    Direct: return_self(obj) -> Self
+    """
+    sig1 = inspect.signature(_Foo.return_list_self)
+    sig2 = inspect.signature(get_first)
+    sig_direct = inspect.signature(_Foo.return_self)
+
+    # Step 1: infer list[Self] with Self bound to obj_type
+    inferred_type1 = infer_return_type(sig1.bind(Box(obj_type)))
+
+    # Step 2: get_first(list[obj_type]) -> obj_type
+    inferred_type2 = infer_return_type(sig2.bind(Box(inferred_type1)))
+
+    # Direct: return_self(obj_type) -> obj_type
+    inferred_direct = infer_return_type(sig_direct.bind(Box(obj_type)))
+
+    # The composed inference should match the direct inference
+    assert isinstance(unify(inferred_type2, inferred_direct), collections.abc.Mapping)
+
+
+@pytest.mark.parametrize("obj_type", [_Foo, _Bar, int, str])
+def test_infer_self_composition_2(obj_type):
+    """Compose identity -> return_list_self, verify matches wrap_in_list.
+
+    Step 1: identity(x: T) -> T                  (generic function)
+    Step 2: return_list_self(self) -> list[Self]  (Self method)
+    Direct: wrap_in_list(x: T) -> list[T]
+    """
+    sig1 = inspect.signature(identity)
+    sig2 = inspect.signature(_Foo.return_list_self)
+    sig_direct = inspect.signature(wrap_in_list)
+
+    inferred_type1 = infer_return_type(sig1.bind(Box(obj_type)))
+    inferred_type2 = infer_return_type(sig2.bind(Box(inferred_type1)))
+    inferred_direct = infer_return_type(sig_direct.bind(Box(obj_type)))
+
+    assert isinstance(unify(inferred_type2, inferred_direct), collections.abc.Mapping)
+
+
+def test_infer_return_type_direct_simple():
+    """infer_return_type produces the substituted return type.
+
+    Inputs are Boxed types per the convention used by ``__type_rule__``.
+    """
+
+    def f(x: T) -> list[T]: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(f)
+    result = infer_return_type(sig.bind(Box(int)))
+    assert canonicalize(result) == canonicalize(list[int])
+
+
+def test_infer_return_type_direct_self():
+    """infer_return_type resolves typing.Self via the new TypedDict path.
+
+    typing.Self only resolves when ``self`` is annotated explicitly: there is
+    no implicit self-injection (it would be unsafe for class/static/free
+    functions where the first positional is not the receiver).
+    """
+
+    class C:
+        def m(self: typing.Self) -> typing.Self: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(C.m)
+    result = infer_return_type(sig.bind(C()))
+    assert canonicalize(result) == C
+
+
+def test_infer_return_type_bare_self_unresolved():
+    """A method with bare ``self`` does not bind Self — it stays a free TypeVar."""
+
+    class C:
+        def m(self) -> typing.Self: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(C.m)
+    result = infer_return_type(sig.bind(C()))
+    assert isinstance(result, typing.TypeVar)
+    assert result.__name__ == "Self"
+
+
+def test_infer_return_type_direct_default_omitted():
+    """infer_return_type with a default-valued param omitted still returns correctly."""
+
+    def f(x: T, y: str = "ok") -> T: ...
+
+    sig = inspect.signature(f)
+    result = infer_return_type(sig.bind(Box(int)))
+    assert canonicalize(result) == int
+
+
+# --- TypedDict-valued parameters in signatures ---
+
+
+def test_infer_return_type_typeddict_param():
+    """A function parameter typed as a TypedDict unifies with a runtime
+    str-keyed dict whose nested_type is a structurally-compatible TypedDict.
+
+    Composes the sig→TypedDict conversion with the TypedDict-vs-TypedDict
+    unification path added in PR 651.
+    """
+
+    class User(typing.TypedDict):
+        name: str
+        age: int
+
+    def greet(u: User) -> str: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(greet)
+    # nested_type({"name": "a", "age": 1}) returns a TypedDict, which is
+    # structurally compatible with User → unification should succeed.
+    result = infer_return_type(sig.bind({"name": "a", "age": 1}))
+    assert canonicalize(result) is str
+
+
+def test_infer_return_type_generic_typeddict_param():
+    """A parameterized TypedDict in a function parameter binds the TypeVar
+    from the runtime dict's value types."""
+
+    class Datum[T](typing.TypedDict):
+        name: str
+        value: T
+
+    def extract[T](d: Datum[T]) -> T: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(extract)
+    result = infer_return_type(sig.bind({"name": "a", "value": 42}))
+    assert canonicalize(result) is int
+
+
+# --- Failure cases ---
+
+
+def test_infer_return_type_conflicting_self_bindings():
+    """A method with two parameters both annotated typing.Self must reject
+    callers that pass differently-typed receivers for those slots.
+
+    Without explicit Self binding, this would silently widen Self to a common
+    supertype; with the SelfTypeReplacer pattern, both Self occurrences alias
+    the same fresh TypeVar, so conflicting concrete types must raise.
+    """
+
+    class C:
+        def f(self: typing.Self, other: typing.Self) -> typing.Self: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(C.f)
+    # Same type for both: succeeds.
+    assert canonicalize(infer_return_type(sig.bind(Box(_Foo), Box(_Foo)))) == _Foo
+    # Mismatched concrete types: must raise.
+    with pytest.raises(TypeError):
+        infer_return_type(sig.bind(Box(_Foo), Box(_Bar)))
+
+
+def test_infer_return_type_wrong_arg_type():
+    """Passing an arg whose type is incompatible with the parameter
+    annotation must raise."""
+
+    def f(x: int) -> int: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(f)
+    with pytest.raises(TypeError):
+        infer_return_type(sig.bind(Box(str)))
+
+
+def test_infer_return_type_missing_required_arg():
+    """Omitting a required positional arg surfaces as a Signature.bind error
+    before we reach infer_return_type — document that contract here."""
+
+    def f(x: int, y: int) -> int: ...  # type: ignore[empty-body]
+
+    sig = inspect.signature(f)
+    with pytest.raises(TypeError):
+        sig.bind(Box(int))  # missing `y`

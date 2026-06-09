@@ -379,29 +379,10 @@ class Operation[**Q, V]:
            allows for terms that compute on type-valued arguments.
 
         """
-        from effectful.internals.unification import (
-            freetypevars,
-            nested_type,
-            substitute,
-            unify,
-        )
+        from effectful.internals.unification import infer_return_type
 
-        return_anno = self.__signature__.return_annotation
-        if typing.get_origin(return_anno) is typing.Annotated:
-            return_anno = typing.get_args(return_anno)[0]
-
-        if return_anno is inspect.Parameter.empty:
-            return typing.cast(type[V], object)
-        elif return_anno is None:
-            return type(None)  # type: ignore
-        elif not freetypevars(return_anno):
-            return return_anno
-
-        type_args = tuple(nested_type(a).value for a in args)
-        type_kwargs = {k: nested_type(v).value for k, v in kwargs.items()}
-        bound_sig = self.__signature__.bind(*type_args, **type_kwargs)
-        subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
-        return typing.cast(type[V], subst_type)
+        bound_sig = self.__signature__.bind(*args, **kwargs)
+        return typing.cast(type[V], infer_return_type(bound_sig, always_check=False))
 
     @typing.final
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
