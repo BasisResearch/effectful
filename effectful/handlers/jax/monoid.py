@@ -155,7 +155,9 @@ class CartesianProductPlusJax(ObjectInterpretation):
         return result
 
 
-class ArrayReduce(ObjectInterpretation):
+class ReduceArrayGather(ObjectInterpretation):
+    """M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body[k := a[k']], {k': range(a.shape[0])} ∪ S)"""
+
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         if typeof(body) is not jax.Array:
@@ -203,18 +205,8 @@ for monoid, func in [
 ARRAY_REDUCTORS[LogSumExp] = logsumexp
 
 
-class ArrayReduce(ObjectInterpretation):
-    """Reduce an array body over its array/``arange`` streams.
-
-    Substitutes every used stream into the body via :func:`_substitute_streams`
-    (``arange`` streams slice their direct-index uses ``arr[v()]`` rather than
-    materializing and gathering; everything else gathers), binds the resulting
-    named dims positionally, and sums them out with the monoid's reductor.
-
-    ``delta`` bodies are left to :class:`ReduceDeltaIndependent`; ``monoid.plus``
-    bodies are claimed first by the higher-precedence contraction rules, with
-    this rule as the dense-broadcast fallback for the ones they decline.
-    """
+class ReduceArray(ObjectInterpretation):
+    """Reduce an array body over its array/``arange`` streams."""
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
@@ -224,17 +216,6 @@ class ArrayReduce(ObjectInterpretation):
 
         if typeof(body) is not jax.Array:
             return fwd()
-
-        if isinstance(body, Term):
-            # delta bodies belong to ReduceDeltaIndependent
-            if body.op is delta:
-                return fwd()
-            if _is_monoid_plus(body.op):
-                # factorizable bodies get factored
-                factors = body.args
-                factor_fvs = [fvsof(f) for f in factors]
-                if not all(k in fvs for fvs in factor_fvs for k in streams):
-                    return fwd()
 
         body_fvs = fvsof(body)
         used = [
@@ -249,19 +230,9 @@ class ArrayReduce(ObjectInterpretation):
         if not used:
             return fwd()
 
-        # an empty reduction axis collapses the whole reduce to the identity
-        if any(not isinstance(streams[k], Term) and len(streams[k]) == 0 for k in used):
-            return monoid.identity
-
-        tail_streams = {k: v for (k, v) in streams.items() if k not in used}
-
-        (subst_body, subst_tail), fresh = _substitute_streams(
-            (body, tail_streams), streams, used
-        )
-        pos_body = bind_dims(subst_body, *fresh.values())
-        reduced_body = reductor(pos_body, axis=tuple(range(len(fresh))))
-        if subst_tail:
-            return monoid.reduce(reduced_body, subst_tail)
+        delta_key = tuple(k() for k in used)
+        arr = monoid.reduce(delta(delta_key, body), streams)
+        reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
 
 
@@ -279,109 +250,23 @@ def _range_stop(term: Term):
     return term.args[1]
 
 
-def _substitute_streams(expr, streams, vars):
-    """Substitute each op in ``vars`` into its uses within ``expr``, replacing it
-    with a fresh named dimension.
+class DeltaEmpty(ObjectInterpretation):
+    """delta((), weight) ≡ weight"""
 
-    Returns ``(expr2, fresh)`` where ``fresh`` maps each var op to its fresh
-    named-dim op (iteration order matches ``vars``). The fresh dims are left
-    *named* -- callers decide when and how to bind them positionally.
-
-    Substitution is context-dependent on the stream value ``streams[k]``:
-
-    - A concrete-bounded ``arange(a, b, s)``: a bare ``v()`` used as a direct
-      array index ``arr[..., v(), ...]`` is split into an inner slice
-      ``arr[..., a:b:s, ...]`` plus an outer index that swaps ``v()`` for
-      ``fresh_v()`` -- so the range never materializes into a gather. Any
-      *remaining* ``v()`` is materialized as ``unbind_dims(jnp.arange(a, b, s),
-      fresh_v)``.
-    - Anything else (a concrete array, a symbolic stream term, or an ``arange``
-      with non-concrete bounds): every ``v()`` becomes
-      ``unbind_dims(streams[k], fresh_v)`` -- a gather.
-
-    The two passes cannot be fused: the direct-index pass must see a bare
-    ``v()`` before the materializing pass rewrites it.
-    """
-    vars = list(vars)
-    fresh = {k: Operation.define(k) for k in vars}
-
-    # concrete-bounded arange streams slice their direct-index uses; the rest
-    # gather.
-    range_streams: dict[Operation, range] = {
-        k: streams[k] for k in vars if isinstance(streams[k], range)
-    }
-
-    # PHASE 1 (direct): slice a bare range var used as an array index.
-    if range_streams:
-
-        def _jax_getitem(arr, index):
-            inner_index, outer_index = [], []
-            progress = False
-            for i in index:
-                if isinstance(i, Term) and i.op in range_streams:
-                    r = range_streams[i.op]
-                    inner_index.append(slice(r.start, r.stop, r.step))
-                    outer_index.append(fresh[i.op]())
-                    progress = True
-                else:
-                    inner_index.append(slice(None))
-                    outer_index.append(i)
-            if progress:
-                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
-            return fwd(arr, index)
-
-        expr = handler(typing.cast(Interpretation, {jax_getitem: _jax_getitem}))(
-            evaluate
-        )(expr)
-
-    # PHASE 2 (indirect): substitute any remaining uses of each var.
-    subst: dict = {}
-    for k in vars:
-        if k in range_streams:
-            r = range_streams[k]
-            subst[k] = deffn(unbind_dims(jnp.arange(r.start, r.stop, r.step), fresh[k]))
-        else:
-            subst[k] = deffn(unbind_dims(streams[k], fresh[k]))
-
-    expr = handler(typing.cast(Interpretation, subst))(evaluate)(expr)
-    return expr, fresh
+    @implements(delta)
+    def _(self, index, weight):
+        if not index:
+            return weight
+        return fwd()
 
 
-class ReduceDeltaIndependent(ObjectInterpretation):
+class ReduceDeltaSimpleRange(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
-
-    ══════════════════════════════════════════════════════════════
-    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
-
-
-    reduce(M, {v: range(N)}, delta((v(),) ++ idx', body))
-    ═══════════════════════════════════════════════════════
-    bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)
 
 
     reduce(M, streams ∪ {v: range(N)}, delta((v(),) ++ idx', body))
     ═══════════════════════════════════════════════════════════════════════════
     bind_dims(reduce(M, streams, delta(idx', body[v() := unbind_dims(streams[v], fv)])), fv)
-
-    Not yet supported:
-
-    - **Strided index streams** (``range(0, N, k)`` for ``k != 1``): the
-      premise ``_is_simple_range`` requires ``start == 0`` and ``step == 1``.
-      A strided extension would substitute ``v() := unbind_dims(jnp.arange(
-      start, stop, step), fv)`` and otherwise follow the same shape — the
-      change is purely in the recognised range form, the bind/unbind cycle
-      below is unchanged.
-    - **Non-zero start** (``range(a, b, 1)`` with ``a != 0``): same template
-      as the strided case; only the recognised range form changes.
-    - **Non-bare index expressions** (``delta((2*v(),), w)``,
-      ``delta((f(v()),), w)``, etc.): currently requires the final index
-      entry to be a bare call ``v()`` of a stream var op. Generalizing to
-      arbitrary index expressions is a scatter, not a bind: materialize the
-      index expression and the weight separately over ``v``, then
-      ``jnp.zeros(N).at[indices].set(values)`` (for Sum; analogous for
-      other monoids using ``.add``/``.min``/``.max``/...). This is a
-      different leaf operation from ``bind_dims`` and warrants a sibling
-      rule rather than an extension of this one.
     """
 
     @implements(Monoid.reduce)
@@ -389,13 +274,13 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not (isinstance(body, Term) and body.op == delta):
             return fwd()
 
-        indices, weight = body.args
-        assert isinstance(indices, tuple)
+        index, weight = body.args
+        assert isinstance(index, tuple)
 
-        if not indices:
-            return monoid.reduce(weight, streams)
+        if not index:
+            return fwd()
 
-        head_index, tail_indices = indices[0], indices[1:]
+        head_index, tail_index = index[0], index[1:]
         if not (isinstance(head_index, Term) and head_index.op in streams):
             return fwd()
 
@@ -411,15 +296,49 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         # peel the head index: substitute it into the weight (slicing direct
         # uses, materializing the rest) along a fresh named dim, but bind that
         # dim only *after* the surrounding reduce -- see the class docstring.
-        weight2, fresh = _substitute_streams(weight, streams, [head_op])
-        fresh_op = fresh[head_op]
+
+        fresh_op = Operation.define(head_op)
+
+        def _jax_getitem(arr, index):
+            inner_index, outer_index = [], []
+            progress = False
+            for i in index:
+                if isinstance(i, Term) and i.op == head_op:
+                    inner_index.append(
+                        slice(head_stream.start, head_stream.stop, head_stream.step)
+                    )
+                    outer_index.append(fresh_op())
+                    progress = True
+                else:
+                    inner_index.append(slice(None))
+                    outer_index.append(i)
+            if progress:
+                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
+            return fwd(arr, index)
+
+        slice_subst = typing.cast(Interpretation, {jax_getitem: _jax_getitem})
+        sliced_weight = handler(slice_subst)(evaluate)(weight)
+
+        gather_subst = typing.cast(
+            Interpretation,
+            {
+                head_op: deffn(
+                    unbind_dims(
+                        jnp.arange(
+                            head_stream.start, head_stream.stop, head_stream.step
+                        ),
+                        fresh_op,
+                    )
+                )
+            },
+        )
+        gathered_weight = handler(gather_subst)(evaluate)(sliced_weight)
 
         fresh_streams = {k: v for (k, v) in streams.items() if k != head_op}
-        if tail_indices or fresh_streams:
-            inner = monoid.reduce(delta(tail_indices, weight2), fresh_streams)
+        if fresh_streams:
+            inner = monoid.reduce(delta(tail_index, gathered_weight), fresh_streams)
         else:
-            inner = weight2
-
+            inner = gathered_weight
         return bind_dims(inner, fresh_op)
 
 
@@ -568,16 +487,13 @@ class ReduceSumProductContraction(ObjectInterpretation):
         if shared != stream_vars:
             return fwd()
 
-        (lhs_subst, rhs_subst), fresh = _substitute_streams(
-            (lhs, rhs), streams, streams
-        )
-        indexes = [fresh[k] for k in streams]
+        # create leading reduction dimensions
+        delta_key = tuple(k() for k in streams)
+        pos_lhs = Sum.reduce(delta(delta_key, lhs), streams)
+        pos_rhs = Sum.reduce(delta(delta_key, rhs), streams)
 
-        lhs_bound = bind_dims(lhs_subst, *indexes)
-        rhs_bound = bind_dims(rhs_subst, *indexes)
-
-        dims = "".join(get_symbol(i) for i in range(len(indexes)))
-        contraction = jnp.einsum(f"{dims}...,{dims}...->...", lhs_bound, rhs_bound)
+        dims = "".join(get_symbol(i) for i in range(len(streams)))
+        contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)
         return contraction
 
 
@@ -623,10 +539,12 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
 
 
 NormalizeIntp.extend(
-    ArrayReduce(),
+    ReduceArray(),
     ReduceSumProductContraction(),
-    ReduceDeltaIndependent(),
+    ReduceArrayGather(),
+    ReduceDeltaSimpleRange(),
     ReduceDependentRangeMask(),
+    DeltaEmpty(),
     SumPlusJax(),
     ProductPlusJax(),
     MinPlusJax(),
