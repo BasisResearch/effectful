@@ -220,39 +220,20 @@ class _LexicalVariableTool[T](Tool[[], T]):
 
 
 @Operation.define
-def expose_lexical_readers() -> bool:
-    """Effect controlling whether `_collect_tools` builds synthetic
-    read-only Tools for non-Tool/Template values in a Template's
-    lexical scope.
-
-    Default behaviour is *off*: only real Tools/Templates/Agents reach
-    the LLM, and the lexical context is invisible.  Install
-    `LexicalReaders` to flip it on for the call-site where the LLM
-    should be able to inspect closure state.
-    """
-    return False
-
-
-class LexicalReaders(ObjectInterpretation):
-    """Handler that enables synthetic lexical-reader generation in
-    `_collect_tools`.  Each plain value in a Template's lexical context
-    becomes a zero-argument Tool that returns the captured value.
-    """
-
-    @implements(expose_lexical_readers)
-    def _enabled(self) -> bool:
-        return True
-
-
-def _collect_tools(
+def collect_tools(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> collections.abc.Mapping[str, Tool]:
-    """Operations and Templates available as tools.  When
-    `expose_lexical_readers` is on (see :class:`LexicalReaders`),
-    plain values in the lexical context are also wrapped as synthetic
-    read-only tools."""
+    """Return the tools available to a Template given its lexical context.
+
+    Default rule: real `Tool` and `Template` values bound directly in
+    `env`, plus `Tool` methods discovered through the MRO of any
+    `Agent` instance in `env`.  Same-Tool-under-different-names is
+    deduped so each Tool appears exactly once.
+
+    Handlers (see :class:`LexicalReaders`) may override this to add
+    synthetic readers, hide tools, etc.
+    """
     result: dict[str, Tool] = {}
-    readers_on = expose_lexical_readers()
 
     for name, obj in env.items():
         if isinstance(obj, Tool | Template):
@@ -262,7 +243,36 @@ def _collect_tools(
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-        elif readers_on and name.isidentifier():
+
+    # Same Tool can appear under multiple names when visible both in the
+    # enclosing scope and via an Agent instance's MRO.  Keep only the
+    # last name for each unique tool object.
+    tool2name = {tool: name for name, tool in sorted(result.items())}
+    for name, tool in tuple(result.items()):
+        if tool2name[tool] != name:
+            del result[name]
+
+    return result
+
+
+class LexicalReaders(ObjectInterpretation):
+    """Override `collect_tools` to also expose plain values from the
+    lexical context as zero-argument read-only Tools.  Each non-Tool,
+    non-Template, non-Agent value bound to a valid identifier is
+    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
+    schema-generation failures cause the symbol to be skipped.
+    """
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        result = dict(fwd())
+        for name, obj in env.items():
+            if name in result or isinstance(obj, Tool | Template | Agent):
+                continue
+            if not name.isidentifier():
+                continue
             try:
                 result[name] = _LexicalVariableTool.define(obj, name=name)
             # `TypeError` joins the three Pydantic errors because the
@@ -278,16 +288,7 @@ def _collect_tools(
                 TypeError,
             ):
                 continue
-
-    # Same Tool can appear under multiple names when visible both in the
-    # enclosing scope and via an Agent instance's MRO.  Keep only the
-    # last name for each unique tool object.
-    tool2name = {tool: name for name, tool in sorted(result.items())}
-    for name, tool in tuple(result.items()):
-        if tool2name[tool] != name:
-            del result[name]
-
-    return result
+        return result
 
 
 @Operation.define
@@ -324,7 +325,7 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = dict(_collect_tools(env))
+    tools = dict(collect_tools(env))
     tool_specs = {
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],

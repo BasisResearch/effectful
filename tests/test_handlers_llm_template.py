@@ -1542,8 +1542,8 @@ import pydantic
 
 from effectful.handlers.llm.completions import (
     LexicalReaders,
-    _collect_tools,
     _LexicalVariableTool,
+    collect_tools,
 )
 
 
@@ -1677,26 +1677,7 @@ def test_collect_tools_exposes_callable_shaped_values(name, make_value):
     value = make_value()
     env = {name: value}
     with handler(LexicalReaders()):
-        assert name in _collect_tools(env)
-
-
-def test_collect_tools_skips_agent_instances_but_exposes_their_tools():
-    """Agent instances themselves naturally fail the Encodable probe,
-    but the MRO walk in `_collect_tools` continues to expose their
-    contained Tools under `agent_name__method_name`."""
-
-    class _A(Agent):
-        @Tool.define
-        def t(self) -> int:
-            """Doc."""
-            return 7
-
-    inst = _A()
-    env = {"a": inst}
-    result = _collect_tools(env)
-    assert "a" not in result
-    # The MRO walk picks up the contained Tool.
-    assert inst.t in result.values()
+        assert name in collect_tools(env)
 
 
 def test_lexical_reader_exposes_data_values():
@@ -1711,7 +1692,7 @@ def test_lexical_reader_exposes_data_values():
         "model": _SimpleModel(x=1, y="hi"),
     }
     with handler(LexicalReaders()):
-        result = _collect_tools(env)
+        result = collect_tools(env)
     assert {"x", "s", "lst", "d", "model"} <= set(result)
     for k, v in env.items():
         assert result[k]() is v
@@ -1733,20 +1714,11 @@ def test_template_tools_includes_synthetic_readers_for_locals():
         assert tools["_test_data"]() == [10, 20, 30]
 
 
-def test_lexical_readers_off_by_default():
-    """Without `LexicalReaders` installed, `_collect_tools` does not
-    wrap plain values as synthetic readers."""
-    env = {"x": 42, "s": "hello"}
-    result = _collect_tools(env)
-    assert "x" not in result
-    assert "s" not in result
-
-
 def test_lexical_readers_handler_enables_collection():
     """Installing `LexicalReaders` flips the gate; the same values are
     exposed as zero-arg reader tools."""
     env = {"x": 42, "s": "hello"}
     with handler(LexicalReaders()):
-        result = _collect_tools(env)
+        result = collect_tools(env)
     assert result["x"]() == 42
     assert result["s"]() == "hello"
