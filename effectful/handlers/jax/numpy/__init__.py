@@ -1,3 +1,5 @@
+import inspect
+from types import NoneType
 from typing import TYPE_CHECKING
 
 import jax.numpy
@@ -16,12 +18,14 @@ _REDUCTION = ["sum", "prod", "min", "max", "any", "all", "mean", "argmax"]
 
 for name, op in jax.numpy.__dict__.items():
     wrapped_value = None
-    if not callable(op):
+    if type(op) in (float, NoneType):
         wrapped_value = op
     elif name in _NO_OVERLOAD:
         wrapped_value = _register_jax_op_no_partial_eval(op)
-    else:
+    elif callable(op):
         wrapped_value = _register_jax_op(op)
+    else:
+        continue
 
     globals()[name] = wrapped_value
 
