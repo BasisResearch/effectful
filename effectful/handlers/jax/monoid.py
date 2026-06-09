@@ -155,6 +155,34 @@ class CartesianProductPlusJax(ObjectInterpretation):
         return result
 
 
+class ArrayReduce(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if typeof(body) is not jax.Array:
+            return fwd()
+
+        if isinstance(body, Term) and body.op is delta:
+            return fwd()
+
+        body_fvs = fvsof(body)
+        stream_keys = set(streams)
+        for k, v in streams.items():
+            if (
+                isinstance(v, jax.Array)
+                and k in body_fvs
+                and not (fvsof(v) & stream_keys)
+            ):
+                kk = Operation.define(k)
+                subst_body = handler({k: deffn(unbind_dims(v, kk))})(evaluate)(body)
+                subst_streams = {
+                    sk: sv if sk != k else range(v.shape[0])
+                    for (sk, sv) in streams.items()
+                }
+                return monoid.reduce(subst_body, subst_streams)
+
+        return fwd()
+
+
 class Reductor(Protocol):
     def __call__(
         self, arr: jax.Array, axis: int | tuple[int, ...] | None = None
@@ -537,7 +565,7 @@ class ReduceSumProductContraction(ObjectInterpretation):
 
         # a fully factored reduce only has streams that are used by all factors
         shared = fvsof(lhs) & fvsof(rhs) & stream_vars
-        if not all(k in shared for k in streams):
+        if shared != stream_vars:
             return fwd()
 
         (lhs_subst, rhs_subst), fresh = _substitute_streams(

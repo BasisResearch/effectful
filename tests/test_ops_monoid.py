@@ -27,7 +27,7 @@ from effectful.ops.monoid import (
     ReduceDistributeCartesianProduct,
     ReduceFactorization,
     ReduceFusion,
-    ReduceNoStreams,
+    ReducePartial,
     ReduceSplit,
     ReduceWeightedStream,
     Sum,
@@ -321,7 +321,7 @@ def test_partial_1(monoid, backend: Backend):
     x = backend.define_vars("x", ret="scalar")
     lhs = monoid.reduce(x(), {x: []})
     rhs = monoid.plus()
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -331,7 +331,7 @@ def test_partial_2(monoid, backend: Backend):
 
     lhs = monoid.reduce(x(), {y: Y(), x: []})
     rhs = monoid.plus()
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -341,7 +341,7 @@ def test_partial_3(monoid, backend: Backend):
 
     lhs = monoid.reduce(x(), {y: Y(), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: Y()}), monoid.reduce(b(), {y: Y()}))
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -351,7 +351,7 @@ def test_partial_4(monoid, backend: Backend):
 
     lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -399,7 +399,7 @@ def test_reduce_no_streams(monoid, backend: Backend):
 
     lhs = monoid.reduce(a(), {})
     rhs = monoid.identity
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceNoStreams())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
