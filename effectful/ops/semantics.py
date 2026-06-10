@@ -301,10 +301,23 @@ def _evaluate_iterator(expr, **kwargs):
         ctor, args, *state = expr.__reduce__()
     except (TypeError, AttributeError):
         return expr  # un-reducible iterators are opaque, like any object we can't recurse into
-    result = ctor(*evaluate(args))
+
+    if ctor is iter:
+        result = ctor(*evaluate(args))
+    else:
+        from effectful.internals.unification import nested_type
+
+        ExprType = nested_type(expr).value
+
+        @Operation.define
+        def ctor_op(*args) -> ExprType:
+            return ctor(*args)
+
+        result = ctor_op(*evaluate(args))
+
     if state and state[0] is not None and hasattr(result, "__setstate__"):
         result.__setstate__(
-            state[0]
+            evaluate(state[0])
         )  # preserve position so advanced iterators don't reset
     return result
 
