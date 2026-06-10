@@ -1967,3 +1967,69 @@ def test_unify_mapping_typeddict_subclass():
 
     subs = unify(collections.abc.Mapping, Info)
     assert subs == {}
+
+
+def test_unify_jax_array_iterable():
+    import jax
+
+    subs = unify(collections.abc.Iterable[T], jax.Array)
+    assert subs == {T: jax.Array}
+
+
+def test_unify_operation_callable():
+    """An ``Operation[P, R]`` unifies as a ``Callable[P, R]`` (gh #669)."""
+    from effectful.ops.types import Operation
+
+    # TypeVar params bind to the operation's parameter/return types
+    assert unify(collections.abc.Callable[[T], V], Operation[[int], int]) == {
+        T: int,
+        V: int,
+    }
+    # a repeated TypeVar binds consistently
+    assert unify(collections.abc.Callable[[T], T], Operation[[int], int]) == {T: int}
+    # multiple parameters
+    assert unify(collections.abc.Callable[[T, U], V], Operation[[int, str], bool]) == {
+        T: int,
+        U: str,
+        V: bool,
+    }
+    # ``...`` parameters in the pattern ignore the operation's parameter types
+    assert unify(collections.abc.Callable[..., V], Operation[[int], int]) == {V: int}
+    # fully concrete: nothing to bind
+    assert unify(collections.abc.Callable[[int], int], Operation[[int], int]) == {}
+    # nested: an operation-valued argument
+    assert unify(
+        collections.abc.Callable[[T], list[V]], Operation[[int], list[str]]
+    ) == {T: int, V: str}
+
+
+def test_unify_operation_callable_failure():
+    """An arity mismatch between the Callable pattern and the Operation fails."""
+    from effectful.ops.types import Operation
+
+    with pytest.raises(TypeError):
+        unify(collections.abc.Callable[[T, U], V], Operation[[int], int])
+    with pytest.raises(TypeError):
+        unify(collections.abc.Callable[[T], V], Operation[[int, str], bool])
+
+
+def test_operation_unifies_with_callable_param_gh669():
+    """An Operation passed where a ``Callable`` is expected infers correctly.
+
+    Regression test for gh #669: calling an operation whose parameter is typed
+    ``Callable[[S], T]`` with another operation should unify and infer the return
+    type, rather than raising ``Cannot unify generic type ...``.
+    """
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Operation
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    @Operation.define
+    def g[S, R](x: collections.abc.Callable[[S], R]) -> R:
+        raise NotHandled
+
+    term = g(f)
+    assert typeof(term) is int

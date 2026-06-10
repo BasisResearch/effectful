@@ -539,6 +539,17 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
             typing.get_origin(typ), collections.abc.Generator
         ):
             return unify(typing.get_args(typ)[0], typing.get_args(subtyp)[0], subs)
+        elif typing.get_origin(subtyp) is effectful.ops.types.Operation and not (
+            isinstance(typing.get_origin(typ), type)
+            and issubclass(typing.get_origin(typ), effectful.ops.types.Operation)
+        ):
+            # An Operation[P, R] is a Callable[P, R] (gh #669): unify the pattern
+            # against the operation's parameter/return signature. ``Operation``'s
+            # args are (params, return) just like ``Callable``'s, except params is
+            # a tuple (or ``...``) rather than a list.
+            op_params, op_ret = typing.get_args(subtyp)
+            callable_params = op_params if op_params is ... else list(op_params)
+            return unify(typ, collections.abc.Callable[callable_params, op_ret], subs)  # type: ignore
         elif typing.get_origin(typ) == typing.get_origin(subtyp):
             return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
         elif types.get_original_bases(typing.get_origin(subtyp)):
