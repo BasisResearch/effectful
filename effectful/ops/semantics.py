@@ -302,20 +302,28 @@ def _evaluate_iterator(expr, **kwargs):
     except (TypeError, AttributeError):
         return expr  # un-reducible iterators are opaque, like any object we can't recurse into
 
-    if ctor is iter:
-        result = ctor(*evaluate(args))
-    else:
-        from effectful.internals.unification import nested_type
+    from effectful.internals.unification import nested_type
 
-        ExprType = nested_type(expr).value
+    ExprType = nested_type(expr).value
 
-        @Operation.define
-        def ctor_op(*args) -> ExprType:
-            return ctor(*args)
+    @Operation.define
+    def ctor_op(*args) -> ExprType:
+        return ctor(*args)
 
-        result = ctor_op(*evaluate(args))
+    # Reify through ``ctor_op`` rather than calling the live constructor: when
+    # the evaluated args contain a ``Term`` the result is a structural ``Term``
+    # node whose source iterables stay traversable (so ``fvsof`` finds their
+    # free variables and term-reconstruction interpretations can rewrite them).
+    # For fully concrete args ``ctor_op``'s default rule rebuilds the live
+    # iterator, preserving laziness.
+    result = ctor_op(*evaluate(args))
 
-    if state and state[0] is not None and hasattr(result, "__setstate__"):
+    if (
+        not isinstance(result, Term)
+        and state
+        and state[0] is not None
+        and hasattr(result, "__setstate__")
+    ):
         result.__setstate__(
             evaluate(state[0])
         )  # preserve position so advanced iterators don't reset
