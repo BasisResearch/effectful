@@ -788,6 +788,69 @@ def test_nested_type(value, expected):
     assert canonicalize(result) == canonicalize(expected)
 
 
+def _annotated_to_str(x: int) -> str:
+    return str(x)
+
+
+def _annotated_add(a: int, b: int) -> float:
+    return float(a + b)
+
+
+@pytest.mark.parametrize(
+    "make,expected",
+    [
+        # iter() infers the element type from the underlying iterable.
+        (lambda: iter([1, 2, 3]), collections.abc.Iterator[int]),
+        (lambda: iter((1, 2)), collections.abc.Iterator[int]),
+        # str/bytes are atomic: their elements share their own type.
+        (lambda: iter("ab"), collections.abc.Iterator[str]),
+        # Empty/bare iterables can't infer an element type -> bare iterator type.
+        (lambda: iter([]), type(iter([]))),
+        # map() element type is the *return* type of the mapped function.
+        (lambda: map(_annotated_to_str, [1, 2]), collections.abc.Iterator[str]),
+        (
+            lambda: map(_annotated_add, [1], [2]),
+            collections.abc.Iterator[float],
+        ),
+        # An un-annotated function gives no return type -> bare iterator type.
+        (lambda: map(lambda v: v, [1, 2]), map),
+        # filter() preserves the source element type.
+        (lambda: filter(None, [1, 2, 3]), collections.abc.Iterator[int]),
+        (lambda: filter(lambda v: True, ["a", "b"]), collections.abc.Iterator[str]),
+        # zip() pairs the element types of each source.
+        (lambda: zip([1], ["a"]), collections.abc.Iterator[tuple[int, str]]),
+        (
+            lambda: zip([1], [2], strict=True),
+            collections.abc.Iterator[tuple[int, int]],
+        ),
+        (lambda: zip(), collections.abc.Iterator[tuple]),
+        # enumerate() yields (int, element) pairs.
+        (lambda: enumerate([1, 2]), collections.abc.Iterator[tuple[int, int]]),
+        (
+            lambda: enumerate(["a"], start=5),
+            collections.abc.Iterator[tuple[int, str]],
+        ),
+        # reversed([...]) is a list_reverseiterator (not a `reversed` instance),
+        # so it is recognized by its __reduce__ ctor; reversed(range(...))
+        # reduces with ctor `iter`.
+        (lambda: reversed([1, 2]), collections.abc.Iterator[int]),
+        (lambda: reversed(range(3)), collections.abc.Iterator[int]),
+    ],
+)
+def test_nested_type_iterator(make, expected):
+    """nested_type infers element types for builtin iterator wrappers."""
+    assert canonicalize(nested_type(make()).value) == canonicalize(expected)
+
+
+def test_nested_type_iterator_advanced_preserves_element_type():
+    """Advancing an iterator does not change its inferred element type."""
+    it = map(_annotated_to_str, [1, 2, 3])
+    next(it)
+    assert canonicalize(nested_type(it).value) == canonicalize(
+        collections.abc.Iterator[str]
+    )
+
+
 def test_nested_type_typeddict_str_keys_mixed_values():
     """Dicts with str keys and heterogeneous value types produce a TypedDict."""
     value = {"name": "Alice", "age": 30}

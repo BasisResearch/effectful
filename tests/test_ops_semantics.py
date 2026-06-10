@@ -3,7 +3,7 @@ import dataclasses
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Annotated, Any, Literal, Union
 
 import pytest
@@ -1057,13 +1057,18 @@ def test_fvsof_iterator(make):
     assert fvsof(make()) >= {_itx, _ity}
 
 
+# These iterators wrap Term elements, whose element type cannot be inferred.
+# For most builtins ``nested_type`` falls back to the bare iterator type, so
+# typeof reports the exact reconstructed iterator class. ``zip``/``enumerate``
+# instead keep their structurally-known shape (tuple arity / the int index), so
+# ``nested_type`` yields ``Iterator[tuple[...]]`` and typeof reports ``Iterator``.
 TYPEOF_CASES = [
     pytest.param(lambda: iter([_itx()]), type(iter([])), id="list"),
     pytest.param(lambda: iter((_itx(),)), type(iter(())), id="tuple"),
     pytest.param(lambda: map(lambda v: v, [_itx()]), map, id="map"),
     pytest.param(lambda: filter(lambda v: True, [_itx()]), filter, id="filter"),
-    pytest.param(lambda: zip([_itx()], [_itx()]), zip, id="zip"),
-    pytest.param(lambda: enumerate([_itx()]), enumerate, id="enumerate"),
+    pytest.param(lambda: zip([_itx()], [_itx()]), Iterator, id="zip"),
+    pytest.param(lambda: enumerate([_itx()]), Iterator, id="enumerate"),
     pytest.param(lambda: reversed([_itx()]), type(reversed([])), id="reversed"),
 ]
 

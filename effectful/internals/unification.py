@@ -1099,6 +1099,108 @@ def _(value: str | bytes | range | None):
     return Box(type(value))
 
 
+def _iterable_element_type(value: collections.abc.Iterable) -> TypeExpression:
+    """Element type of an iterable *value*.
+
+    Infers the value's type with :func:`nested_type` and unifies it against
+    ``Iterable[E]`` to recover the element type ``E``. Raises ``TypeError`` (the
+    element is itself a :class:`~effectful.ops.types.Term`) or ``KeyError`` (the
+    iterable is empty/bare so ``E`` is unbound) when the element type cannot be
+    determined; callers fall back to the bare iterator type in that case.
+    """
+    if isinstance(value, str | bytes):
+        # str/bytes are atomic to nested_type; their elements share their type.
+        return type(value)
+    E = typing.TypeVar("E")
+    try:
+        return unify(collections.abc.Iterable[E], nested_type(value).value)[E]  # type: ignore[return-value, valid-type]
+    except KeyError:
+        raise TypeError("Could not resolve concrete element type")
+
+
+@nested_type.register
+def _(value: collections.abc.Iterator):
+    try:
+        ctor, args, *state = value.__reduce__()  # type: ignore[misc]
+        _ = [nested_type(arg).value for arg in args]
+    except (TypeError, AttributeError):
+        return Box(type(value))  # un-reducible iterators are opaque
+
+    if ctor is iter or ctor is reversed:
+        # ``args[0]`` is the underlying iterable. ``reversed([...])`` is a
+        # ``list_reverseiterator`` -- not a ``reversed`` instance -- so it is
+        # dispatched here by ctor rather than by a type-keyed registration.
+        try:
+            return Box(collections.abc.Iterator[_iterable_element_type(args[0])])  # type: ignore[misc]
+        except TypeError:
+            return Box(type(value))
+    else:
+        return Box(type(value))
+
+
+@nested_type.register(map)
+def _(value):
+    # ``map(f, *iterables)`` yields ``f(*items)``, so the element type is the
+    # return type of ``f`` rather than the source element types.
+    _ctor, (func, *sources), *_state = value.__reduce__()
+    try:
+        if typing.get_args(nested_type(func).value) and sources:
+            Xs = [typing.TypeVar(f"X{i}") for i in range(len(sources))]
+            Y = typing.TypeVar("Y")
+            typ = (
+                collections.abc.Callable[Xs, Y],
+                *[collections.abc.Iterable[Xi] for Xi in Xs],
+            )
+            subtyp = (
+                nested_type(func).value,
+                *[nested_type(source).value for source in sources],
+            )
+            subs = unify(typ, subtyp)
+            if Y not in subs:
+                raise TypeError("Could not resolve concrete return type")
+            return Box(collections.abc.Iterator[subs[Y]])
+        else:  # un-annotated function: fall back to the bare iterator type
+            return nested_type.dispatch(collections.abc.Iterator)(value)
+    except TypeError:
+        return nested_type.dispatch(collections.abc.Iterator)(value)
+
+
+@nested_type.register(filter)
+def _(value):
+    # ``filter`` preserves the elements of its source iterable.
+    _ctor, (_func, source), *_state = value.__reduce__()
+    try:
+        return Box(collections.abc.Iterator[_iterable_element_type(source)])
+    except TypeError:
+        return Box(type(value))
+
+
+@nested_type.register(zip)
+def _(value):
+    # __reduce__() is (sources,) or (sources, strict); () if empty
+    _ctor, *rest = value.__reduce__()
+    sources = rest[0] if rest else ()
+    if not sources:
+        return Box(collections.abc.Iterator[tuple])
+
+    try:
+        elt_type = tuple[tuple(_iterable_element_type(s) for s in sources)]
+    except TypeError:
+        elt_type = tuple[tuple(typing.Any for _ in sources)]
+    return Box(collections.abc.Iterator[elt_type])
+
+
+@nested_type.register(enumerate)
+def _(value):
+    # ``enumerate`` yields ``(index, element)`` pairs.
+    _ctor, (source, _start), *_state = value.__reduce__()
+    try:
+        elt_type = tuple[int, _iterable_element_type(source)]
+    except TypeError:
+        elt_type = tuple[int, typing.Any]
+    return Box(collections.abc.Iterator[elt_type])
+
+
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
