@@ -567,6 +567,17 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
         and issubclass(subtyp, typing.get_origin(typ))
     ):
         return subs  # implicit expansion to subtyp[Any]
+    elif isinstance(typ, GenericAlias):
+        # Special case for treating arrays as iterables of arrays
+        try:
+            import jax
+
+            if typing.get_origin(typ) is collections.abc.Iterable and issubclass(
+                subtyp, jax.Array
+            ):
+                return unify(typing.get_args(typ)[0], jax.Array, subs)
+        except ImportError:
+            pass
     raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
 
 
