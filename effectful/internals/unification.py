@@ -1121,7 +1121,10 @@ def _iterable_element_type(value: collections.abc.Iterable) -> TypeExpression:
 @nested_type.register
 def _(value: collections.abc.Iterator):
     try:
-        ctor, args, *state = value.__reduce__()  # type: ignore[misc]
+        reduced = value.__reduce__()
+        if isinstance(reduced, str):
+            return Box(type(value))  # reduced to a global name; opaque
+        ctor, args, *state = reduced
         _ = [nested_type(arg).value for arg in args]
     except (TypeError, AttributeError):
         return Box(type(value))  # un-reducible iterators are opaque
