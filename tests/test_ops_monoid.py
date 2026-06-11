@@ -10,6 +10,7 @@ import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
     CartesianProduct,
+    EliminateSingletonStreams,
     Max,
     Min,
     Monoid,
@@ -352,6 +353,33 @@ def test_partial_4(monoid, backend: Backend):
     lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_eliminate_singleton_into_sibling(monoid, backend: Backend):
+    """A length-1 stream substitutes its element into the body *and* into a
+    sibling stream's definition, then drops out of the nest."""
+    x, y, a = backend.define_vars("x", "y", "a", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="stream")
+    g = backend.define_vars(
+        "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = monoid.reduce(g(x(), y()), {x: (a(),), y: f(x())})
+    rhs = monoid.reduce(g(a(), y()), {y: f(a())})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=EliminateSingletonStreams())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_eliminate_singleton_only_stream(monoid, backend: Backend):
+    """When the length-1 stream is the only stream, reducing over the now-empty
+    nest yields the substituted body itself (not the monoid identity)."""
+    x, a = backend.define_vars("x", "a", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = monoid.reduce(f(x()), {x: (a(),)})
+    rhs = f(a())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=EliminateSingletonStreams())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
