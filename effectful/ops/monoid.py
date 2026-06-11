@@ -872,6 +872,57 @@ class PlusCastFloat(ObjectInterpretation):
         return fwd()
 
 
+class EliminateSingletonStreams(ObjectInterpretation):
+    """Eliminate a length-1 stream by substituting its sole element.
+
+    reduce(M, body, {k: (v,)} ∪ S) = reduce(M, body[k := v], S[k := v])
+
+    Fires only when the sole element ``v`` is a :class:`Term`, i.e. a *symbolic*
+    singleton. This is exactly the form ``ReduceArrayGather`` produces (a gather
+    ``(a[i()],)``) and, more generally, every dependent singleton that
+    :class:`ReducePartial` cannot peel -- a non-outermost stream whose element
+    references another stream var. Concrete enumerated streams (``[0]``,
+    ``range(1)``) and monoid sentinels (``CartesianProduct.identity == [()]``)
+    have non-``Term`` elements and are left to ``ReducePartial`` / the
+    per-monoid rules.
+
+    Unlike ``ReducePartial``, this peels the stream wherever it sits in the loop
+    nest and substitutes symbolically rather than unrolling, leaving a
+    vectorized index range (e.g. the gather's range) intact instead of
+    materializing it.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        # Eliminate *all* symbolic length-1 streams in one pass via a
+        # simultaneous substitution. Doing them together (rather than one per
+        # invocation) keeps an interleaving reduction rule -- e.g.
+        # ``ReduceArray`` consuming a now-live index range -- from firing
+        # between eliminations, so sibling index ranges stay together and fuse
+        # into a single reduction.
+        singletons = {
+            k: vs[0]
+            for k, vs in streams.items()
+            if not isinstance(vs, Term)
+            and isinstance(vs, collections.abc.Sequence)
+            and len(vs) == 1
+            and isinstance(vs[0], Term)
+        }
+        if not singletons:
+            return fwd()
+
+        subs = {k: deffn(v) for k, v in singletons.items()}
+        new_body = handler(subs)(evaluate)(body)
+        new_streams = {
+            kk: handler(subs)(evaluate)(vv)
+            for kk, vv in streams.items()
+            if kk not in singletons
+        }
+        # reduce over no streams is a single (empty) assignment, i.e. the body
+        # itself -- not the monoid identity.
+        return monoid.reduce(new_body, new_streams) if new_streams else new_body
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -881,6 +932,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
+    EliminateSingletonStreams(),
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),

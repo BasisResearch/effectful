@@ -17,7 +17,12 @@ from effectful.handlers.jax.monoid import (
     delta,
     einsum,
 )
-from effectful.ops.monoid import NormalizeIntp, Product, Sum
+from effectful.ops.monoid import (
+    EliminateSingletonStreams,
+    NormalizeIntp,
+    Product,
+    Sum,
+)
 from effectful.ops.semantics import coproduct, handler
 from tests._monoid_helpers import JaxBackend
 
@@ -44,6 +49,23 @@ def test_reduce_array_gather(monoid, reductor, backend: JaxBackend):
 
     lhs = monoid.reduce(x(), {x: X})
     rhs = monoid.reduce(unbind_dims(X, k), {k: range(X.shape[0])})
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(ReduceArrayGather(), EliminateSingletonStreams()),
+    )
+
+
+@pytest.mark.parametrize("monoid,reductor", MONOIDS)
+def test_reduce_array_gather_step1(monoid, reductor, backend: JaxBackend):
+    """Step 1 alone: an array stream becomes an index range plus a length-1
+    stream holding the gathered element. ``ReduceArrayGather`` does not perform
+    the gather substitution itself -- that is ``EliminateSingletonStreams``."""
+    (x, k) = backend.define_vars("x", "k", ret="scalar")
+    X = jnp.arange(3)
+
+    lhs = monoid.reduce(x(), {x: X})
+    rhs = monoid.reduce(x(), {k: range(X.shape[0]), x: (unbind_dims(X, k),)})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceArrayGather())
 
 
@@ -56,12 +78,17 @@ def test_reduce_array_gather_dep(monoid, reductor, backend: JaxBackend):
     )
     X = jnp.arange(3)
 
+    # The dependent stream ``y: f(x())`` gets the *gathered element* X[x]
+    # substituted for x -- i.e. ``f(X[x])`` -- not the bare index.
     lhs = monoid.reduce(g(x(), y()), {y: f(x()), x: X})
     rhs = monoid.reduce(
-        g(unbind_dims(X[:3], x), y()), {y: f(x()), x: range(X.shape[0])}
+        g(unbind_dims(X, x), y()),
+        {y: f(unbind_dims(X, x)), x: range(X.shape[0])},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceArrayGather(), ReduceDeltaSimpleRange())
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(ReduceArrayGather(), EliminateSingletonStreams()),
     )
 
 
@@ -77,7 +104,12 @@ def test_reduce_array_1(monoid, reductor, backend: JaxBackend):
         rhs=rhs,
         rule=functools.reduce(
             coproduct,  # type: ignore[arg-type]
-            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
+            [
+                ReduceArrayGather(),
+                EliminateSingletonStreams(),
+                ReduceArray(),
+                ReduceDeltaSimpleRange(),
+            ],
         ),
     )
 
@@ -100,7 +132,12 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
         rhs=rhs,
         rule=functools.reduce(
             coproduct,  # type: ignore[arg-type]
-            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
+            [
+                ReduceArrayGather(),
+                EliminateSingletonStreams(),
+                ReduceArray(),
+                ReduceDeltaSimpleRange(),
+            ],
         ),
     )
 
@@ -131,6 +168,7 @@ def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
             coproduct,  # type: ignore[arg-type]
             [
                 ReduceArrayGather(),
+                EliminateSingletonStreams(),
                 ReduceArray(),
                 ReduceDeltaSimpleRange(),
                 DeltaEmpty(),
