@@ -30,6 +30,7 @@ from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LexicalReaders,
     LiteLLMProvider,
+    PythonRepl,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -2257,3 +2258,38 @@ class TestSyntheticReaderIntegration:
             tools = describe_hand_action.tools
             assert "Finger" in tools
             assert "Hand" in tools
+
+
+class TestPythonReplIntegration:
+    """The LLM can run code in a persistent session through `exec_code`."""
+
+    @requires_llm
+    def test_llm_computes_via_exec_code(self, request):
+        """A Template seeds a list in lexical scope and asks the LLM to
+        compute a derived statistic by running code.  The LLM uses the
+        `exec_code` tool (possibly across several rounds, with state
+        persisting) and returns the typed result."""
+        readings = [12, 19, 23, 31, 8, 27]
+
+        @Template.define
+        def outlier_count() -> int:
+            """Use the `exec_code` tool to compute how many values in the
+            `readings` list lie strictly more than one population standard
+            deviation from the mean.  `readings` is available in scope.
+            Return that count as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LexicalReaders()),
+            handler(PythonRepl()),
+        ):
+            result = outlier_count()
+
+        import statistics
+
+        m = statistics.mean(readings)
+        s = statistics.pstdev(readings)
+        expected = sum(1 for r in readings if abs(r - m) > s)
+        assert result == expected

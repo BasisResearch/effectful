@@ -18,16 +18,19 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
+    ReplSession,
     RestrictedEvalProvider,
+    UnsafeEvalProvider,
     collect_imports,
     collect_runtime_type_stubs,
     collect_variable_declarations,
     mypy_type_check,
     type_to_ast,
 )
+from effectful.handlers.llm.evaluation import exec as exec_op
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import NotHandled
 
 
@@ -1537,3 +1540,151 @@ def test_builtins_in_env_does_not_bypass_security():
                 source_private, context=dangerous_ctx
             )
             fn("test")
+
+
+# ============================================================================
+# ReplSession (#678)
+# ============================================================================
+
+
+def test_repl_seeds_from_lexical_context():
+    """Names in the seed context are usable in executed code."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [10, 20, 30]})
+        assert session.run("print(sum(readings))") == "60\n"
+
+
+def test_repl_persists_bindings_across_calls():
+    """A binding created in one call is visible in the next."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.run("total = 41")
+        assert session.run("print(total)") == "41\n"
+
+
+def test_repl_rebinds_across_calls():
+    """A seeded/prior name can be rebound using its prior value."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.run("x = x + 1")
+        assert session.run("print(x)") == "11\n"
+
+
+def test_repl_runs_complete_multistatement_block():
+    """A complete `def` + call in one snippet runs in one shot (the case
+    `single`-mode compilation would reject)."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.run("def double(n):\n    return n * 2\nprint(double(21))")
+        assert out == "42\n"
+
+
+def test_repl_captures_print():
+    with handler(UnsafeEvalProvider()):
+        assert ReplSession({}).run("print('hi')") == "hi\n"
+
+
+def test_repl_syntax_error_is_a_transcript_not_a_raise():
+    """An incomplete snippet returns a transcript and leaves the session
+    usable."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.run("def f(:")
+        assert "SyntaxError" in out
+        assert session.run("print('ok')") == "ok\n"
+
+
+def test_repl_exception_is_isolated():
+    """A runtime exception returns a transcript; the session survives and
+    retains prior state."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.run("kept = 7")
+        out = session.run("print(1 / 0)")
+        assert "ZeroDivisionError" in out
+        assert session.run("print(kept)") == "7\n"
+
+
+def test_repl_keyboard_interrupt_propagates():
+    """`KeyboardInterrupt` is not swallowed into a transcript."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        with pytest.raises(KeyboardInterrupt):
+            session.run("raise KeyboardInterrupt")
+
+
+def test_repl_traceback_trims_effect_machinery_frames():
+    """The transcript for an uncaught exception shows only the user's snippet
+    frames, not effectful's internal frames."""
+    with handler(UnsafeEvalProvider()):
+        out = ReplSession({}).run("1 / 0")
+        assert "ZeroDivisionError" in out
+        assert "runtime.py" not in out
+        assert "ops/types.py" not in out
+        assert "exec_code-" in out  # the user frame's per-snippet filename
+
+
+def test_repl_cross_snippet_traceback_shows_correct_source():
+    """A function defined in an earlier call that raises in a later call
+    formats with its *own* source line, not the later call's source — the
+    per-snippet filename keeps each cell's source in linecache."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.run("def boom():\n    return 1 / 0")
+        out = session.run("boom()")
+        assert "return 1 / 0" in out  # boom's real source, not "boom()"
+
+
+def test_repl_reentrant_run_keeps_outer_transcript():
+    """A `run` whose code re-enters `run` on the same session still returns
+    the outer call's own output (per-call buffer, not a shared one)."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"session": None})
+        session.locals["session"] = session  # let exec'd code call back in
+        out = session.run(
+            "print('outer-before')\nsession.run(\"print('inner')\")\nprint('outer-after')"
+        )
+        assert "outer-before" in out
+        assert "outer-after" in out
+        assert "inner" not in out  # inner output went to the inner call's buffer
+
+
+def test_repl_execution_routes_through_exec_op():
+    """With `exec` overridden to a no-op, nothing runs — proving execution
+    goes through the op, asserted via the observable (the binding is absent)."""
+
+    class _NoExec(ObjectInterpretation):
+        @implements(exec_op)
+        def _(self, bytecode, env) -> None:
+            pass
+
+    with handler(UnsafeEvalProvider()), handler(_NoExec()):
+        session = ReplSession({})
+        session.run("x = 1")
+    with handler(UnsafeEvalProvider()):
+        assert session.run("print('x' in dir())") == "False\n"
+
+
+# ----------------------------------------------------------------------------
+# ReplSession under RestrictedEvalProvider — blocked on #685 (rebind + print)
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    reason="#685: RestrictedEvalProvider.exec drops rebindings of seeded names",
+    strict=True,
+)
+def test_repl_rebinds_across_calls_restricted():
+    with handler(RestrictedEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.run("x = x + 1")
+        assert session.run("print(x)") == "11\n"
+
+
+@pytest.mark.xfail(
+    reason="#685: RestrictedEvalProvider does not wire RestrictedPython's _print_",
+    strict=True,
+)
+def test_repl_captures_print_restricted():
+    with handler(RestrictedEvalProvider()):
+        assert ReplSession({}).run("print('hi')") == "hi\n"

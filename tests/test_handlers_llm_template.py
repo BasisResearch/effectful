@@ -1542,9 +1542,11 @@ import pydantic
 
 from effectful.handlers.llm.completions import (
     LexicalReaders,
+    PythonRepl,
     _LexicalVariableTool,
     collect_tools,
 )
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 
 # Helpers for the test matrix
@@ -1722,3 +1724,73 @@ def test_lexical_readers_handler_enables_collection():
         result = collect_tools(env)
     assert result["x"]() == 42
     assert result["s"]() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# PythonRepl handler (#678)
+# ---------------------------------------------------------------------------
+
+
+def test_python_repl_off_by_default():
+    """Without `PythonRepl`, `exec_code` is not collected."""
+    assert "exec_code" not in collect_tools({"x": 1})
+
+
+def test_python_repl_exposes_exec_code():
+    """With `PythonRepl` installed, `exec_code` is collected alongside the
+    base tools."""
+    with handler(PythonRepl()):
+        assert "exec_code" in collect_tools({"x": 1})
+
+
+def test_python_repl_real_tool_of_same_name_wins():
+    """A user `Tool` named `exec_code` in scope takes precedence over the
+    REPL tool (the `setdefault`)."""
+
+    @Tool.define
+    def exec_code() -> int:
+        """Doc."""
+        return 7
+
+    with handler(PythonRepl()):
+        result = collect_tools({"exec_code": exec_code})
+    assert result["exec_code"] is exec_code
+
+
+def test_python_repl_composes_with_lexical_readers():
+    """Readers and the REPL tool coexist when both handlers are installed."""
+    with handler(LexicalReaders()), handler(PythonRepl()):
+        result = collect_tools({"data": [1, 2, 3]})
+    assert "exec_code" in result
+    assert "data" in result
+
+
+def test_python_repl_session_created_lazily():
+    """Introspecting tools allocates no session; the first `exec_code` call
+    does.  Asserted behaviorally: a name bound into `env` *after* tool
+    collection but before the first call is still visible in the session
+    (the seed snapshot happens at first use, not at collect time)."""
+    env = collections.ChainMap({})  # the driver always passes a ChainMap
+    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        tools = collect_tools(env)
+        env["late"] = 99  # bound after collection, before first exec_code
+        assert tools["exec_code"]("print(late)") == "99\n"
+
+
+def test_python_repl_same_session_across_collect_calls():
+    """Two `collect_tools` calls with the same `env` back `exec_code` with the
+    same session — state from the first call is visible in the second."""
+    env = collections.ChainMap({})
+    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        collect_tools(env)["exec_code"]("kept = 5")
+        assert collect_tools(env)["exec_code"]("print(kept)") == "5\n"
+
+
+def test_python_repl_distinct_env_distinct_session():
+    """Different `env` objects get isolated sessions."""
+    env_a = collections.ChainMap({})
+    env_b = collections.ChainMap({})
+    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        collect_tools(env_a)["exec_code"]("only_in_a = 1")
+        out = collect_tools(env_b)["exec_code"]("print('only_in_a' in dir())")
+    assert out == "False\n"

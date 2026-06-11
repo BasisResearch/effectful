@@ -10,6 +10,7 @@ import textwrap
 import traceback
 import typing
 import uuid
+import weakref
 
 import litellm
 import pydantic
@@ -30,6 +31,7 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
+from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -287,6 +289,65 @@ class LexicalReaders(ObjectInterpretation):
             ):
                 continue
         return result
+
+
+class PythonRepl(ObjectInterpretation):
+    """Override `collect_tools` to expose a persistent Python session as an
+    `exec_code` Tool.
+
+    Off by default; install it where the LLM should be able to run code whose
+    state (variables, imports, definitions) survives across tool calls within
+    one Template invocation.  The session is keyed by the Template's lexical
+    context, seeded from it, and routes execution through the
+    `parse`/`compile`/`exec` effect operations.
+
+    v1 requires `UnsafeEvalProvider`: `RestrictedEvalProvider`'s exec drops
+    rebindings of seeded names and does not wire RestrictedPython's print
+    collector (tracked in #685), both of which break the REPL contract.
+    """
+
+    def __init__(self):
+        self._sessions: dict[int, ReplSession] = {}
+
+    def _session_for(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> ReplSession:
+        key = id(env)
+        session = self._sessions.get(key)
+        if session is None:
+            # Prune the entry the instant `env` is collected: no leak, and the
+            # stale id can never alias a later object.  `pop` is bound to the
+            # dict (not `env`), so the finalizer does not keep `env` alive.
+            # `env` must be weak-referenceable -- the driver always passes a
+            # ChainMap (which is); guard the misuse path (e.g. a plain dict)
+            # with a clear message rather than skipping the finalizer, which
+            # would reintroduce the id-reuse hazard.
+            if not hasattr(env, "__weakref__"):
+                raise TypeError(
+                    f"PythonRepl needs a weak-referenceable lexical context to key "
+                    f"its session; got {type(env).__name__}, which is not. "
+                    f"Templates pass a ChainMap; only direct misuse hits this."
+                )
+            session = ReplSession(env)
+            self._sessions[key] = session
+            weakref.finalize(env, self._sessions.pop, key, None)
+        return session
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        tools = dict(fwd())
+
+        @Tool.define
+        def exec_code(source: str) -> str:
+            """Execute Python in a persistent session.  Variables, imports and
+            definitions carry across calls.  Returns the captured stdout and
+            stderr (use print() to inspect values)."""
+            return self._session_for(env).run(source)
+
+        tools.setdefault("exec_code", exec_code)  # a real user tool of same name wins
+        return tools
 
 
 @Operation.define

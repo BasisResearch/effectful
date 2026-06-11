@@ -1,13 +1,17 @@
 import ast
 import builtins
 import collections.abc
+import contextlib
 import copy
 import inspect
+import io
+import itertools
 import keyword
 import linecache
 import random
 import string
 import sys
+import traceback
 import types
 import typing
 from collections.abc import Mapping
@@ -90,6 +94,9 @@ def exec(
 
     bytecode: A code object to execute (typically produced by compile()).
     env: The namespace mapping used during execution.
+
+    After ``exec(bytecode, env)`` returns, ``env`` reflects all top-level
+    binding effects of the executed code (new names and rebindings alike).
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to execute code."
@@ -809,3 +816,64 @@ class RestrictedEvalProvider(ObjectInterpretation):
         for key in rglobals:
             if key not in keys_before:
                 env[key] = rglobals[key]
+
+
+_REPL_FILENAME_PREFIX = "<exec_code-"
+
+
+def _format_user_traceback() -> str:
+    """Format the in-flight exception, trimming the effect-machinery frames
+    between the call site and the user's snippet.
+
+    Because execution routes through the `exec` operation, the raw traceback
+    includes effectful's internal frames (ops, runtime, this module).  We walk
+    to the first frame whose code lives in a snippet (`co_filename` starts with
+    `_REPL_FILENAME_PREFIX`) and format from there, so the LLM sees only its
+    own frames -- the same idea as `code.InteractiveInterpreter.showtraceback`
+    dropping its own frame, generalized.
+    """
+    exc_type, exc, tb = sys.exc_info()
+    user_tb = tb
+    while user_tb is not None and not user_tb.tb_frame.f_code.co_filename.startswith(
+        _REPL_FILENAME_PREFIX
+    ):
+        user_tb = user_tb.tb_next
+    return "".join(traceback.format_exception(exc_type, exc, user_tb or tb))
+
+
+class ReplSession:
+    """A persistent, output-capturing Python session seeded from a lexical
+    context.
+
+    Execution routes through the `parse`/`compile`/`exec` effect operations,
+    so the installed eval-provider owns sandboxing.  State persists in
+    `self.locals` across `run` calls: variables, imports and definitions
+    accumulate, exactly like a REPL.  Each call runs one complete snippet in
+    `exec` mode and returns its captured stdout/stderr (use `print()` to
+    surface values -- there is no bare-expression auto-echo).
+    """
+
+    def __init__(self, env: Mapping[str, Any]):
+        self.locals: dict[str, Any] = dict(env)
+        self._counter = itertools.count()
+
+    def run(self, source: str) -> str:
+        # Per-snippet filename so each cell's source is retained in
+        # `linecache` independently -- a single shared name would overwrite
+        # earlier cells and make tracebacks for earlier-defined functions
+        # format against the wrong source.
+        filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
+        buf = io.StringIO()  # per-call local: re-entrant runs keep their own
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            try:
+                code_obj = compile(parse(source, filename), filename)
+            except SyntaxError:
+                # No stack for a syntax error (same posture as
+                # InteractiveInterpreter.showsyntaxerror).
+                buf.write("".join(traceback.format_exception_only(*sys.exc_info()[:2])))
+                return buf.getvalue()
+            try:
+                exec(code_obj, self.locals)
+            except Exception:
+                buf.write(_format_user_traceback())
+        return buf.getvalue()
