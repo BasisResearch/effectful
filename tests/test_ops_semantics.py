@@ -3,7 +3,7 @@ import dataclasses
 import functools
 import itertools
 import logging
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from typing import Annotated, Any, Literal, Union
 
 import pytest
@@ -908,3 +908,172 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+# --- evaluate over built-in iterators ---------------------------------------
+
+# Free variables shared by the parametrized iterator tests. Iterators are built
+# *outside* a handler (via the lambdas below) so their elements are Terms, then
+# substituted under ``_IT_INTP`` during ``evaluate``.
+_itx = defop(int, name="itx")
+_ity = defop(int, name="ity")
+_itz = defop(int, name="itz")
+_IT_INTP = {_itx: lambda: 10, _ity: lambda: 20, _itz: lambda: 30}
+
+
+class _CustomSeq:
+    def __len__(self):
+        return 3
+
+    def __getitem__(self, i):
+        return [1, 2, 3][i]
+
+
+# (make_iterator, expected_items, expected_type) — iterator type is preserved.
+ITERATOR_CASES = [
+    pytest.param(lambda: iter([_itx(), _ity()]), [10, 20], type(iter([])), id="list"),
+    pytest.param(lambda: iter((_itx(), _ity())), [10, 20], type(iter(())), id="tuple"),
+    pytest.param(lambda: iter("ab"), ["a", "b"], type(iter("")), id="str"),
+    pytest.param(lambda: iter(b"ab"), [97, 98], type(iter(b"")), id="bytes"),
+    pytest.param(lambda: iter(range(3)), [0, 1, 2], type(iter(range(0))), id="range"),
+    pytest.param(
+        lambda: reversed([_itx(), _ity()]),
+        [20, 10],
+        type(reversed([])),
+        id="reversed-list",
+    ),
+    pytest.param(
+        lambda: reversed(range(3)),
+        [2, 1, 0],
+        type(reversed(range(0))),
+        id="reversed-range",
+    ),
+    pytest.param(
+        lambda: reversed(_CustomSeq()), [3, 2, 1], reversed, id="reversed-seq"
+    ),
+    pytest.param(lambda: map(lambda v: v, [_itx(), _ity()]), [10, 20], map, id="map"),
+    pytest.param(
+        lambda: map(lambda a, b: a + b, [_itx()], [_ity()]), [30], map, id="map-multi"
+    ),
+    pytest.param(
+        lambda: filter(lambda v: True, [_itx(), _ity()]), [10, 20], filter, id="filter"
+    ),
+    pytest.param(lambda: zip([_itx()], [_ity()]), [(10, 20)], zip, id="zip"),
+    pytest.param(
+        lambda: zip([_itx()], [_ity()], strict=True), [(10, 20)], zip, id="zip-strict"
+    ),
+    pytest.param(lambda: zip(), [], zip, id="zip-empty"),
+    pytest.param(
+        lambda: enumerate([_itx(), _ity()]),
+        [(0, 10), (1, 20)],
+        enumerate,
+        id="enumerate",
+    ),
+    pytest.param(
+        lambda: enumerate([_itx()], start=5), [(5, 10)], enumerate, id="enumerate-start"
+    ),
+]
+
+
+@pytest.mark.parametrize("make,expected,expected_type", ITERATOR_CASES)
+def test_evaluate_iterator(make, expected, expected_type):
+    """evaluate substitutes free vars inside a fresh built-in iterator and
+    preserves the iterator type (laziness)."""
+    it = make()
+    with handler(_IT_INTP):
+        result = evaluate(it)
+        assert type(result) is expected_type
+        assert list(result) == expected
+
+
+# set/dict iterators substitute their elements but do not preserve the exact
+# iterator type (they reduce to a list iterator), and set order is arbitrary.
+SET_DICT_CASES = [
+    pytest.param(lambda: iter({_itx(), _ity()}), [10, 20], id="set"),
+    pytest.param(lambda: iter({_itx(): 1, _ity(): 2}.keys()), [10, 20], id="dict-keys"),
+    pytest.param(
+        lambda: iter({1: _itx(), 2: _ity()}.values()), [10, 20], id="dict-values"
+    ),
+    pytest.param(lambda: iter({_itx(): _ity()}.items()), [(10, 20)], id="dict-items"),
+]
+
+
+@pytest.mark.parametrize("make,expected", SET_DICT_CASES)
+def test_evaluate_set_dict_iterator(make, expected):
+    """evaluate substitutes the elements of set/dict iterators."""
+    it = make()
+    with handler(_IT_INTP):
+        assert sorted(evaluate(it)) == expected
+
+
+# (make_iterator, expected_remaining) after advancing the iterator by one.
+ADVANCED_CASES = [
+    pytest.param(lambda: iter([_itx(), _ity(), _itz()]), [20, 30], id="list"),
+    pytest.param(
+        lambda: map(lambda v: v, [_itx(), _ity(), _itz()]), [20, 30], id="map"
+    ),
+    pytest.param(
+        lambda: filter(lambda v: True, [_itx(), _ity(), _itz()]), [20, 30], id="filter"
+    ),
+    pytest.param(
+        lambda: enumerate([_itx(), _ity(), _itz()]), [(1, 20), (2, 30)], id="enumerate"
+    ),
+    pytest.param(lambda: reversed([_itz(), _ity(), _itx()]), [20, 30], id="reversed"),
+    pytest.param(
+        lambda: zip([_itx(), _ity(), _itz()], [_itz(), _ity(), _itx()]),
+        [(20, 20), (30, 10)],
+        id="zip",
+    ),
+]
+
+
+@pytest.mark.parametrize("make,expected", ADVANCED_CASES)
+def test_evaluate_advanced_iterator(make, expected):
+    """Advanced iterators preserve their position: evaluate yields the
+    substituted remaining items, it does not reset to the start."""
+    it = make()
+    next(it)  # advance past the first element
+    with handler(_IT_INTP):
+        assert list(evaluate(it)) == expected
+
+
+FVSOF_CASES = [
+    pytest.param(lambda: iter([_itx(), _ity()]), id="list"),
+    pytest.param(lambda: iter((_itx(), _ity())), id="tuple"),
+    pytest.param(lambda: iter({_itx(), _ity()}), id="set"),
+    pytest.param(lambda: iter({_itx(): 1, _ity(): 2}.keys()), id="dict-keys"),
+    pytest.param(lambda: reversed([_itx(), _ity()]), id="reversed"),
+    pytest.param(lambda: map(lambda v: v, [_itx(), _ity()]), id="map"),
+    pytest.param(lambda: map(lambda a, b: (a, b), [_itx()], [_ity()]), id="map-multi"),
+    pytest.param(lambda: filter(lambda v: True, [_itx(), _ity()]), id="filter"),
+    pytest.param(lambda: zip([_itx()], [_ity()]), id="zip"),
+    pytest.param(lambda: enumerate([_itx(), _ity()]), id="enumerate"),
+]
+
+
+@pytest.mark.parametrize("make", FVSOF_CASES)
+def test_fvsof_iterator(make):
+    """fvsof finds the free variables inside a fresh built-in iterator."""
+    assert fvsof(make()) >= {_itx, _ity}
+
+
+# These iterators wrap Term elements, whose element type cannot be inferred.
+# For most builtins ``nested_type`` falls back to the bare iterator type, so
+# typeof reports the exact reconstructed iterator class. ``zip``/``enumerate``
+# instead keep their structurally-known shape (tuple arity / the int index), so
+# ``nested_type`` yields ``Iterator[tuple[...]]`` and typeof reports ``Iterator``.
+TYPEOF_CASES = [
+    pytest.param(lambda: iter([_itx()]), type(iter([])), id="list"),
+    pytest.param(lambda: iter((_itx(),)), type(iter(())), id="tuple"),
+    pytest.param(lambda: map(lambda v: v, [_itx()]), map, id="map"),
+    pytest.param(lambda: filter(lambda v: True, [_itx()]), filter, id="filter"),
+    pytest.param(lambda: zip([_itx()], [_itx()]), Iterator, id="zip"),
+    pytest.param(lambda: enumerate([_itx()]), Iterator, id="enumerate"),
+    pytest.param(lambda: reversed([_itx()]), type(reversed([])), id="reversed"),
+]
+
+
+@pytest.mark.parametrize("make,expected_type", TYPEOF_CASES)
+def test_typeof_iterator(make, expected_type):
+    """typeof of a built-in iterator is its (reconstructed) iterator type."""
+    assert typeof(make()) is expected_type

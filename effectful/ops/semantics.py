@@ -1,3 +1,4 @@
+import builtins
 import collections.abc
 import contextlib
 import dataclasses
@@ -207,8 +208,6 @@ def evaluate[T](
 
 
 @evaluate.register(object)
-@evaluate.register(str)
-@evaluate.register(bytes)
 def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return typing.cast(
@@ -221,6 +220,13 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
                 },
             ),
         )
+    return expr
+
+
+@evaluate.register(builtins.range)
+@evaluate.register(str | bytes | bytearray)
+@evaluate.register(int | float | complex | bool | type(None))
+def _evaluate_atomic(expr: Any, **kwargs):
     return expr
 
 
@@ -282,6 +288,51 @@ def _evaluate_set_view(expr, **kwargs):
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
     return [evaluate(item) for item in expr]
+
+
+@evaluate.register(collections.abc.Set)
+def _evaluate_set(expr, **kwargs):
+    return type(expr)(evaluate(item) for item in expr)
+
+
+@evaluate.register(collections.abc.Iterator)
+def _evaluate_iterator(expr, **kwargs):
+    try:
+        ctor, args, *state = expr.__reduce__()
+    except (TypeError, AttributeError):
+        return expr  # un-reducible iterators are opaque, like any object we can't recurse into
+
+    from effectful.internals.unification import nested_type
+
+    ExprType = nested_type(expr).value
+
+    @Operation.define
+    def ctor_op(*args) -> ExprType:
+        return ctor(*args)
+
+    # Reify through ``ctor_op`` rather than calling the live constructor: when
+    # the evaluated args contain a ``Term`` the result is a structural ``Term``
+    # node whose source iterables stay traversable (so ``fvsof`` finds their
+    # free variables and term-reconstruction interpretations can rewrite them).
+    # For fully concrete args ``ctor_op``'s default rule rebuilds the live
+    # iterator, preserving laziness.
+    result = ctor_op(*evaluate(args))
+
+    if (
+        not isinstance(result, Term)
+        and state
+        and state[0] is not None
+        and hasattr(result, "__setstate__")
+    ):
+        result.__setstate__(
+            evaluate(state[0])
+        )  # preserve position so advanced iterators don't reset
+    return result
+
+
+@evaluate.register(builtins.slice)
+def _evaluate_slice(expr, **kwargs):
+    return builtins.slice(*evaluate((expr.start, expr.stop, expr.step)))
 
 
 def _simple_type(tp: type) -> type:

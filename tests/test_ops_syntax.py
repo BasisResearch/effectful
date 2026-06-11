@@ -525,6 +525,36 @@ def test_defdata_iterable():
     assert list(tm.args) == [1, 2, 3]
 
 
+def test_defdata_preserves_free_vars_in_iterator_arg():
+    """Free variables inside a builtin iterator argument must survive term
+    construction.
+
+    A ``map`` object is a lazy iterator that can close over free variables --
+    here ``x`` via the element ``x()``. When such an iterator is passed as an
+    argument to an operation, ``defdata`` reconstructs the term and should
+    preserve those free variables. Currently the iterator is reconstructed as an
+    opaque iterator that no longer references ``x``, so ``x`` is silently dropped
+    from the constructed term's free variables (and can no longer be
+    substituted).
+    """
+
+    @defop
+    def g(xs: Iterable[int]) -> int:
+        raise NotHandled
+
+    x = defop(int, name="x")
+
+    def keep(v: int) -> int:
+        return v
+
+    # Sanity: the raw map closes over ``x``.
+    assert x in fvsof(map(keep, [x()]))
+
+    # Passing it to ``g`` must not drop ``x`` from the term's free variables.
+    term = g(map(keep, [x()]))
+    assert x in fvsof(term)
+
+
 def test_defstream_1():
     x = defop(int, name="x")
     y = defop(int, name="y")

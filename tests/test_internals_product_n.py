@@ -1,4 +1,6 @@
-from effectful.internals.product_n import argsof, productN
+from collections.abc import Iterable
+
+from effectful.internals.product_n import Product, argsof, productN
 from effectful.internals.unification import Box
 from effectful.ops.semantics import apply, coproduct, evaluate, handler
 from effectful.ops.syntax import defop
@@ -158,3 +160,42 @@ def test_productN_distributive():
 
     assert result1.values(i) == result2.values(i) == 2
     assert result1.values(s) == result2.values(s) == "aa"
+
+
+def test_evaluate_iterator_under_product():
+    """Evaluating a builtin iterator under a ``productN`` analysis must not crash.
+
+    ``productN`` that binds the universal ``apply`` operation (as the type/cast
+    analysis in ``defdata`` does) intercepts *every* operation application and
+    returns its result wrapped in a :class:`Product`. So under such an
+    interpretation any sub-term evaluates to a ``Product``.
+
+    ``evaluate`` reconstructs a builtin iterator by calling its constructor on
+    its evaluated source iterables (``ctor(*evaluate(args))`` in
+    ``_evaluate_iterator``). A ``map`` eagerly stores ``iter(s())`` -- an
+    iterator *term* -- as its source. Reconstruction therefore evaluates that
+    inner term to a ``Product`` and calls ``map(f, Product)``; since ``Product``
+    is not iterable, this raises ``TypeError: 'Product' object is not iterable``.
+
+    This reproduces the bug in isolation: a builtin iterator wrapping a term,
+    evaluated under a product interpretation, should evaluate successfully
+    rather than crashing in iterator reconstruction.
+    """
+
+    @defop
+    def s() -> Iterable[int]:
+        raise NotHandled
+
+    def apply_type(op, *args, **kwargs):
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    typ = defop(object, name="typ")
+    cast = defop(object, name="cast")
+    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_type}})
+
+    # ``map`` eagerly calls ``iter(s())``, storing an iterator term as its source.
+    m = map(lambda v: v, s())
+
+    # Currently raises ``TypeError: 'Product' object is not iterable``.
+    result = evaluate(m, intp=analysis)
+    assert isinstance(result, Product)
