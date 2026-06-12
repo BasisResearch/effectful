@@ -1058,14 +1058,20 @@ def _(value: collections.abc.Mapping):
         ktyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.keys()]
         )
-        if ktyp is str:
-            # str-keyed multi-entry dicts → always TypedDict
-            fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
-        if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
+        if type(value) is dict and ktyp is str and isinstance(vtyp, UnionType):
+            # str-keyed dicts with *heterogeneous* values → TypedDict, which
+            # captures the per-field value types that a single ``V`` cannot.
+            # Homogeneous str-keyed dicts fall through to ``Mapping[str, V]``
+            # below: a closed required-key TypedDict is unsound for a runtime
+            # value (it is really an inhabitant of ``dict[str, V]``), and two
+            # sibling dicts with different keys would otherwise fail to unify
+            # against a shared TypeVar (gh #662).
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+        elif isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
             return Box(type(value))
         else:
             return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore

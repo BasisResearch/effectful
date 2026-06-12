@@ -831,18 +831,21 @@ def test_nested_type_typeddict_instance_roundtrip():
     assert hints == {"name": str, "age": int}
 
 
-def test_nested_type_typeddict_homogeneous_str_keys():
-    """Multi-key str dicts produce TypedDict even with homogeneous value types."""
+def test_nested_type_homogeneous_str_keys_stays_mapping():
+    """Multi-key str dicts with homogeneous values stay Mapping[str, V], not TypedDict.
+
+    A closed required-key TypedDict is unsound for a runtime dict (it is really
+    an inhabitant of ``dict[str, V]``); inferring one breaks unification of two
+    sibling dicts against a shared TypeVar (gh #662). TypedDict is reserved for
+    heterogeneous-valued str dicts, where per-field types carry real information.
+    """
     result = nested_type({"a": 1, "b": 2}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
-    assert hints == {"a": int, "b": int}
+    assert not typing.is_typeddict(result)
+    assert canonicalize(result) == canonicalize(dict[str, int])
 
     result = nested_type({"a": {1, 2}, "b": {3, 4}}).value
-    assert typing.is_typeddict(result)
-    hints = typing.get_type_hints(result)
-    assert canonicalize(hints["a"]) == canonicalize(set[int])
-    assert canonicalize(hints["b"]) == canonicalize(set[int])
+    assert not typing.is_typeddict(result)
+    assert canonicalize(result) == canonicalize(dict[str, set[int]])
 
 
 def test_nested_type_non_str_keys_mixed_values_stays_dict():
@@ -2033,3 +2036,24 @@ def test_operation_unifies_with_callable_param_gh669():
 
     term = g(f)
     assert typeof(term) is int
+
+
+def test_operation_varargs_homogeneous_dicts_gh662():
+    """An op taking ``*args: T`` accepts several homogeneous str-keyed dicts.
+
+    Regression test for gh #662: each dict is inferred as ``Mapping[str, int]``
+    rather than a closed required-key TypedDict, so binding the shared ``T``
+    against dicts with *different* key sets unifies instead of raising.
+    """
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Operation
+
+    @Operation.define
+    def f[T](*args: T) -> T:
+        raise NotHandled
+
+    # Previously raised "Cannot unify TypedDict ...: required field 'z' ...".
+    term = f({"x": 0, "z": 3}, {"y": 1, "x": 2})
+    typ = typeof(term)
+    assert issubclass(typ, collections.abc.MutableMapping)
+    assert not typing.is_typeddict(typ)
