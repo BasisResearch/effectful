@@ -315,21 +315,13 @@ class PythonRepl(ObjectInterpretation):
         key = id(env)
         session = self._sessions.get(key)
         if session is None:
+            session = ReplSession(env)
+            self._sessions[key] = session
             # Prune the entry the instant `env` is collected: no leak, and the
             # stale id can never alias a later object.  `pop` is bound to the
             # dict (not `env`), so the finalizer does not keep `env` alive.
-            # `env` must be weak-referenceable -- the driver always passes a
-            # ChainMap (which is); guard the misuse path (e.g. a plain dict)
-            # with a clear message rather than skipping the finalizer, which
-            # would reintroduce the id-reuse hazard.
-            if not hasattr(env, "__weakref__"):
-                raise TypeError(
-                    f"PythonRepl needs a weak-referenceable lexical context to key "
-                    f"its session; got {type(env).__name__}, which is not. "
-                    f"Templates pass a ChainMap; only direct misuse hits this."
-                )
-            session = ReplSession(env)
-            self._sessions[key] = session
+            # `env` is the Template's lexical context (a ChainMap); a non
+            # weak-referenceable env (e.g. a bare dict) raises here, loudly.
             weakref.finalize(env, self._sessions.pop, key, None)
         return session
 

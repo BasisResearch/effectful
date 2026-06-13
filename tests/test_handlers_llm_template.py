@@ -1794,3 +1794,52 @@ def test_python_repl_distinct_env_distinct_session():
         collect_tools(env_a)["exec_code"]("only_in_a = 1")
         out = collect_tools(env_b)["exec_code"]("print('only_in_a' in dir())")
     assert out == "False\n"
+
+
+def test_python_repl_new_binding_is_local_to_the_body():
+    """`foo`/`bar` lexical scoping: code reads the shared lexical context (and
+    the Template's args), but a new binding it creates is local to the body --
+    invisible to the shared scope and to a sibling `foo`."""
+    shared = {"foo_value": 10}  # a name in the scope shared by foo and bar
+    env_bar = collections.ChainMap({"bar_arg": 5}, shared)  # bar: args over shared
+    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        # reads the shared context and bar's argument:
+        assert (
+            collect_tools(env_bar)["exec_code"](
+                "local = foo_value + bar_arg; print(local)"
+            )
+            == "15\n"
+        )
+        # the new binding did not leak into the shared scope or bar's env...
+        assert "local" not in shared
+        assert "local" not in env_bar
+        # ...and a sibling `foo` over the same shared scope cannot see it:
+        env_foo = collections.ChainMap({}, shared)
+        assert (
+            collect_tools(env_foo)["exec_code"]("print('local' in dir())") == "False\n"
+        )
+
+
+def test_python_repl_nested_envs_isolate_and_outer_state_persists():
+    """A nested Template call gets a distinct `env`, hence an isolated session:
+    the inner body cannot see the outer's bindings, and the outer session keeps
+    its state across the nested call."""
+    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        env_outer = collections.ChainMap({})
+        env_inner = collections.ChainMap({})  # the nested call's fresh env
+
+        collect_tools(env_outer)["exec_code"]("outer_var = 1")
+        # the inner (distinct env) is isolated -- cannot see the outer binding:
+        assert (
+            collect_tools(env_inner)["exec_code"](
+                "inner_var = 2; print('outer_var' in dir())"
+            )
+            == "False\n"
+        )
+        # back in the outer: its state survived and it never saw the inner's:
+        assert (
+            collect_tools(env_outer)["exec_code"](
+                "print(outer_var, 'inner_var' in dir())"
+            )
+            == "1 False\n"
+        )

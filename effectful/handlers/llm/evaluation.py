@@ -1,5 +1,6 @@
 import ast
 import builtins
+import code
 import collections.abc
 import contextlib
 import copy
@@ -841,39 +842,73 @@ def _format_user_traceback() -> str:
     return "".join(traceback.format_exception(exc_type, exc, user_tb or tb))
 
 
-class ReplSession:
+class ReplSession(code.InteractiveInterpreter):
     """A persistent, output-capturing Python session seeded from a lexical
-    context.
+    context, built on the stdlib `code.InteractiveInterpreter` substrate.
 
-    Execution routes through the `parse`/`compile`/`exec` effect operations,
-    so the installed eval-provider owns sandboxing.  State persists in
-    `self.locals` across `run` calls: variables, imports and definitions
-    accumulate, exactly like a REPL.  Each call runs one complete snippet in
-    `exec` mode and returns its captured stdout/stderr (use `print()` to
-    surface values -- there is no bare-expression auto-echo).
+    `run(source)` drives `InteractiveInterpreter.runsource` (its compile ->
+    run -> error-print control flow), with three overrides for our needs:
+
+    - compilation routes through the `parse`/`compile` effect operations
+      (replacing the native `CommandCompiler`), so the installed eval-provider
+      owns it and `parse` populates `linecache` -- tracebacks and
+      `inspect.getsource` then see each snippet's source;
+    - `runcode` routes execution through the `exec` effect operation;
+    - `showtraceback` trims the effect-machinery frames so the LLM sees only
+      its own snippet's frames.
+
+    State persists in `self.locals` across `run` calls (variables, imports and
+    definitions accumulate, exactly like a REPL).  Each call runs one complete
+    snippet in `exec` mode and returns its captured stdout/stderr; there is no
+    bare-expression auto-echo, so use `print()` to surface values.
     """
 
     def __init__(self, env: Mapping[str, Any]):
-        self.locals: dict[str, Any] = dict(env)
+        super().__init__(dict(env))
         self._counter = itertools.count()
+        # Stack of capture buffers so re-entrant `run` calls (exec'd code that
+        # calls back into the same session) each keep their own transcript.
+        self._buffers: list[io.StringIO] = []
+        # Replace the native single-mode CommandCompiler with our op-routed,
+        # linecache-populating compiler.
+        self.compile = self._compile_through_ops  # type: ignore[assignment]
+
+    def _compile_through_ops(self, source: str, filename: str, symbol: str) -> CodeType:
+        # `runsource` passes symbol="single"; we ignore it and compile in the
+        # exec mode the ops produce, so a complete multi-statement block runs
+        # in one shot.  Incomplete/invalid input raises SyntaxError, which
+        # `runsource` routes to `showsyntaxerror` (we do not buffer partial
+        # input -- there is no line-at-a-time protocol).
+        return compile(parse(source, filename), filename)
+
+    def runcode(self, code_obj: CodeType) -> None:
+        try:
+            exec(code_obj, self.locals)
+        except Exception:
+            # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
+            self.showtraceback()
+
+    def showtraceback(self) -> None:
+        # InteractiveInterpreter.showtraceback drops only its own frame; the
+        # effect routing inserts several, so trim to the user's snippet frame.
+        self.write(_format_user_traceback())
+
+    def write(self, data: str) -> None:
+        # Error output from show{traceback,syntaxerror} lands here; route it to
+        # the current call's buffer (top of stack) for re-entrancy safety.
+        self._buffers[-1].write(data)
 
     def run(self, source: str) -> str:
-        # Per-snippet filename so each cell's source is retained in
-        # `linecache` independently -- a single shared name would overwrite
-        # earlier cells and make tracebacks for earlier-defined functions
-        # format against the wrong source.
+        # Per-snippet filename so each cell's source is retained in `linecache`
+        # independently -- a single shared name would overwrite earlier cells
+        # and format earlier-defined functions' tracebacks against the wrong
+        # source.
         filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
-        buf = io.StringIO()  # per-call local: re-entrant runs keep their own
-        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-            try:
-                code_obj = compile(parse(source, filename), filename)
-            except SyntaxError:
-                # No stack for a syntax error (same posture as
-                # InteractiveInterpreter.showsyntaxerror).
-                buf.write("".join(traceback.format_exception_only(*sys.exc_info()[:2])))
-                return buf.getvalue()
-            try:
-                exec(code_obj, self.locals)
-            except Exception:
-                buf.write(_format_user_traceback())
+        buf = io.StringIO()
+        self._buffers.append(buf)
+        try:
+            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                self.runsource(source, filename)
+        finally:
+            self._buffers.pop()
         return buf.getvalue()
