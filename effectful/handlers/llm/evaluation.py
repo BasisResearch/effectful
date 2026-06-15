@@ -863,11 +863,11 @@ class ReplSession(code.InteractiveInterpreter):
     def __init__(self, env: Mapping[str, Any]):
         super().__init__(dict(env))
         self._counter = itertools.count()
-        # Parallel stacks so re-entrant `run` calls (exec'd code that calls back
-        # into the same session) each keep their own transcript and the
-        # exception (if any) the run raised.
-        self._buffers: list[io.StringIO] = []
-        self._error: list[Exception | None] = []
+        # One session per instance, so a single in-flight `run` owns these: the
+        # buffer captures that run's stdout/stderr, and `_error` holds the
+        # exception it raised, if any.
+        self._buffer = io.StringIO()
+        self._error: Exception | None = None
         # Replace the native single-mode CommandCompiler with our op-routed,
         # linecache-populating compiler.
         self.compile = self._compile_through_ops  # type: ignore[assignment]
@@ -886,7 +886,7 @@ class ReplSession(code.InteractiveInterpreter):
         except Exception as exc:
             # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
             self.showtraceback()
-            self._error[-1] = exc
+            self._error = exc
 
     def showsyntaxerror(self, *args: Any, **kwargs: Any) -> None:
         # A syntax/compile error is a failed run too; capture it the way
@@ -894,7 +894,7 @@ class ReplSession(code.InteractiveInterpreter):
         # SyntaxError is the in-flight exception during `runsource`'s except.
         exc = sys.exc_info()[1]
         assert isinstance(exc, Exception)
-        self._error[-1] = exc
+        self._error = exc
         super().showsyntaxerror(*args, **kwargs)
 
     def showtraceback(self) -> None:
@@ -912,8 +912,8 @@ class ReplSession(code.InteractiveInterpreter):
 
     def write(self, data: str) -> None:
         # Error output from show{traceback,syntaxerror} lands here; route it to
-        # the current call's buffer (top of stack) for re-entrancy safety.
-        self._buffers[-1].write(data)
+        # the current run's buffer.
+        self._buffer.write(data)
 
     def run(self, source: str) -> str:
         # Per-snippet filename so each cell's source is retained in `linecache`
@@ -921,16 +921,16 @@ class ReplSession(code.InteractiveInterpreter):
         # and format earlier-defined functions' tracebacks against the wrong
         # source.
         filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
-        buf = io.StringIO()
-        self._buffers.append(buf)
-        self._error.append(None)
+        self._buffer = io.StringIO()
+        self._error = None
         try:
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+            with contextlib.redirect_stdout(self._buffer), contextlib.redirect_stderr(
+                self._buffer
+            ):
                 self.runsource(source, filename)
         finally:
-            self._buffers.pop()
-            error = self._error.pop()
-        transcript = buf.getvalue()
+            transcript = self._buffer.getvalue()
+            error = self._error
         if error is not None:
             # Like a normal Python call, a failed snippet raises rather than
             # returning; `call_tool` catches it and feeds the transcript back.

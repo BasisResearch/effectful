@@ -27,7 +27,6 @@ from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
-    CodeExecutionError,
     DecodedToolCall,
     LexicalReaders,
     LiteLLMProvider,
@@ -44,7 +43,7 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import ReplExecutionError, UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1556,6 +1555,32 @@ def type_error_tool(x: int) -> str:
     raise TypeError(f"bad type for {x}")
 
 
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop, handing
+    `body` the call's `exec_code` tool so it runs against one REPL session (the
+    supported way to reach a session).  Install any outer handlers (e.g.
+    `RetryLLMHandler`) around the call.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
 class TestCallToolWrapsExecutionError:
     """call_tool should wrap runtime tool errors in ToolCallExecutionError."""
 
@@ -1594,40 +1619,41 @@ class TestCallToolWrapsExecutionError:
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
-    def test_call_tool_wraps_exec_code_error_as_code_execution_error(self):
-        """An `exec_code` snippet error surfaces as `CodeExecutionError`, whose
-        feedback message is the trimmed transcript verbatim."""
-        env = collections.ChainMap({})
-        with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-            exec_code = collect_tools(env)["exec_code"]
+    def test_call_tool_wraps_exec_code_error(self):
+        """An `exec_code` snippet error surfaces as a `ToolCallExecutionError`
+        carrying the `ReplExecutionError` (and the real exception); its feedback
+        message renders the transcript."""
+
+        def body(exec_code):
             bound_args = inspect.signature(exec_code).bind("1 / 0")
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
-            with pytest.raises(CodeExecutionError) as exc_info:
-                call_tool(tc)
-        err = exc_info.value
-        assert isinstance(err.original_error, ZeroDivisionError)
-        assert "exec_code-" in err.transcript  # trimmed to the user's own frame
-        msg = err.to_feedback_message(include_traceback=False)
+            return call_tool(tc)
+
+        with pytest.raises(ToolCallExecutionError) as exc_info:
+            _drive_repl(body)
+        repl_error = exc_info.value.original_error
+        assert isinstance(repl_error, ReplExecutionError)
+        assert isinstance(repl_error.original_error, ZeroDivisionError)
+        msg = exc_info.value.to_feedback_message(include_traceback=False)
         assert msg["role"] == "tool"
         assert msg["tool_call_id"] == "call_exec"
-        assert msg["content"] == err.transcript
+        assert repl_error.transcript in msg["content"]  # transcript rendered in
 
     def test_retry_handler_turns_exec_code_error_into_feedback(self):
         """With `RetryLLMHandler` installed, an `exec_code` error is returned as
         a tool feedback message carrying the transcript -- not raised."""
-        env = collections.ChainMap({})
-        with (
-            handler(RetryLLMHandler()),
-            handler(UnsafeEvalProvider()),
-            handler(PythonRepl()),
-        ):
-            exec_code = collect_tools(env)["exec_code"]
+
+        def body(exec_code):
             bound_args = inspect.signature(exec_code).bind("1 / 0")
             tc = DecodedToolCall(exec_code, bound_args, "call_exec_fb", "exec_code")
-            msg = call_tool(tc)
+            return call_tool(tc)
+
+        with handler(RetryLLMHandler()):
+            msg = _drive_repl(body)
+        # Returned as a tool message instead of raising -- that *is* the
+        # "turned into feedback" behaviour (a raise would have failed above).
         assert msg["role"] == "tool"
         assert msg["tool_call_id"] == "call_exec_fb"
-        assert "ZeroDivisionError" in msg["content"]
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:

@@ -1765,81 +1765,67 @@ def test_python_repl_composes_with_lexical_readers():
     assert "data" in result
 
 
-def test_python_repl_session_created_lazily():
-    """Introspecting tools allocates no session; the first `exec_code` call
-    does.  Asserted behaviorally: a name bound into `env` *after* tool
-    collection but before the first call is still visible in the session
-    (the seed snapshot happens at first use, not at collect time)."""
-    env = collections.ChainMap({})  # the driver always passes a ChainMap
-    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-        tools = collect_tools(env)
-        env["late"] = 99  # bound after collection, before first exec_code
-        assert tools["exec_code"]("print(late)") == "99\n"
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop: it collects
+    the tools for a single call and hands `body` that call's `exec_code` tool, so
+    `body` sees exactly one REPL session for its duration.  This is the supported
+    way to reach a session -- `PythonRepl` introduces it per call, mirroring
+    `__history__`.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
 
 
-def test_python_repl_same_session_across_collect_calls():
-    """Two `collect_tools` calls with the same `env` back `exec_code` with the
-    same session — state from the first call is visible in the second."""
-    env = collections.ChainMap({})
-    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-        collect_tools(env)["exec_code"]("kept = 5")
-        assert collect_tools(env)["exec_code"]("print(kept)") == "5\n"
+def test_python_repl_state_persists_within_one_call():
+    """Within one Template call, `exec_code` state carries across calls: a
+    binding made in one snippet is visible in the next."""
+
+    def body(exec_code):
+        exec_code("kept = 5")
+        return exec_code("print(kept)")
+
+    assert _drive_repl(body) == "5\n"
 
 
-def test_python_repl_distinct_env_distinct_session():
-    """Different `env` objects get isolated sessions."""
-    env_a = collections.ChainMap({})
-    env_b = collections.ChainMap({})
-    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-        collect_tools(env_a)["exec_code"]("only_in_a = 1")
-        out = collect_tools(env_b)["exec_code"]("print('only_in_a' in dir())")
-    assert out == "False\n"
+def test_python_repl_distinct_calls_get_isolated_sessions():
+    """Each Template call gets its own session: a binding made in one call is
+    not visible in a separate call."""
+    _drive_repl(lambda exec_code: exec_code("leaked = 1"))
+    assert (
+        _drive_repl(lambda exec_code: exec_code("print('leaked' in dir())"))
+        == "False\n"
+    )
 
 
-def test_python_repl_new_binding_is_local_to_the_body():
-    """`foo`/`bar` lexical scoping: code reads the shared lexical context (and
-    the Template's args), but a new binding it creates is local to the body --
-    invisible to the shared scope and to a sibling `foo`."""
-    shared = {"foo_value": 10}  # a name in the scope shared by foo and bar
-    env_bar = collections.ChainMap({"bar_arg": 5}, shared)  # bar: args over shared
-    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-        # reads the shared context and bar's argument:
-        assert (
-            collect_tools(env_bar)["exec_code"](
-                "local = foo_value + bar_arg; print(local)"
-            )
-            == "15\n"
+def test_python_repl_nested_call_is_isolated_and_outer_survives():
+    """A nested Template call introduces its own session by construction: the
+    inner body cannot see the outer's bindings, and the outer session keeps its
+    state across the nested call."""
+
+    def outer(exec_code):
+        exec_code("outer_var = 1")
+        inner_sees_outer = _drive_repl(  # a fully nested Template call
+            lambda inner: inner("print('outer_var' in dir())")
         )
-        # the new binding did not leak into the shared scope or bar's env...
-        assert "local" not in shared
-        assert "local" not in env_bar
-        # ...and a sibling `foo` over the same shared scope cannot see it:
-        env_foo = collections.ChainMap({}, shared)
-        assert (
-            collect_tools(env_foo)["exec_code"]("print('local' in dir())") == "False\n"
-        )
+        outer_after = exec_code("print(outer_var, 'outer_var' in dir())")
+        return inner_sees_outer, outer_after
 
-
-def test_python_repl_nested_envs_isolate_and_outer_state_persists():
-    """A nested Template call gets a distinct `env`, hence an isolated session:
-    the inner body cannot see the outer's bindings, and the outer session keeps
-    its state across the nested call."""
-    with handler(UnsafeEvalProvider()), handler(PythonRepl()):
-        env_outer = collections.ChainMap({})
-        env_inner = collections.ChainMap({})  # the nested call's fresh env
-
-        collect_tools(env_outer)["exec_code"]("outer_var = 1")
-        # the inner (distinct env) is isolated -- cannot see the outer binding:
-        assert (
-            collect_tools(env_inner)["exec_code"](
-                "inner_var = 2; print('outer_var' in dir())"
-            )
-            == "False\n"
-        )
-        # back in the outer: its state survived and it never saw the inner's:
-        assert (
-            collect_tools(env_outer)["exec_code"](
-                "print(outer_var, 'inner_var' in dir())"
-            )
-            == "1 False\n"
-        )
+    inner_sees_outer, outer_after = _drive_repl(outer)
+    assert inner_sees_outer == "False\n"  # the nested session is isolated
+    assert outer_after == "1 True\n"  # the outer session survived the nested call

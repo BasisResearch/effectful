@@ -3,6 +3,7 @@
 import ast
 import builtins
 import inspect
+import re
 import sys
 import textwrap
 import types
@@ -1616,16 +1617,15 @@ def test_repl_keyboard_interrupt_propagates():
 
 
 def test_repl_traceback_trims_effect_machinery_frames():
-    """The transcript for an uncaught exception shows only the user's snippet
-    frames, not effectful's internal frames."""
+    """The trimmed traceback shows only the user's snippet frames; the effectful
+    `.py` frames between the call site and the snippet are dropped."""
     with handler(UnsafeEvalProvider()):
         with pytest.raises(ReplExecutionError) as exc_info:
             ReplSession({}).run("1 / 0")
-        out = exc_info.value.transcript
-        assert "ZeroDivisionError" in out
-        assert "runtime.py" not in out
-        assert "ops/types.py" not in out
-        assert "exec_code-" in out  # the user frame's per-snippet filename
+        transcript = exc_info.value.transcript
+    frame_files = re.findall(r'File "([^"]+)"', transcript)
+    assert frame_files  # the traceback shows at least one frame
+    assert all(not f.endswith(".py") for f in frame_files)  # no machinery frame
 
 
 def test_repl_cross_snippet_traceback_shows_correct_source():
@@ -1640,18 +1640,15 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
         assert "return 1 / 0" in exc_info.value.transcript  # boom's real source
 
 
-def test_repl_reentrant_run_keeps_outer_transcript():
-    """A `run` whose code re-enters `run` on the same session still returns
-    the outer call's own output (per-call buffer, not a shared one)."""
+def test_repl_new_binding_does_not_leak_into_seed_context():
+    """A binding created in executed code stays in the session; the seed mapping
+    the session was created from is not mutated."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({"session": None})
-        session.locals["session"] = session  # let exec'd code call back in
-        out = session.run(
-            "print('outer-before')\nsession.run(\"print('inner')\")\nprint('outer-after')"
-        )
-        assert "outer-before" in out
-        assert "outer-after" in out
-        assert "inner" not in out  # inner output went to the inner call's buffer
+        seed = {"base": 10}
+        session = ReplSession(seed)
+        session.run("derived = base + 5")
+        assert session.run("print(derived)") == "15\n"
+        assert "derived" not in seed  # the lexical seed is untouched
 
 
 # ----------------------------------------------------------------------------

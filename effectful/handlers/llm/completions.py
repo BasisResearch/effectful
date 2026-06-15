@@ -10,7 +10,6 @@ import textwrap
 import traceback
 import typing
 import uuid
-import weakref
 
 import litellm
 import pydantic
@@ -31,7 +30,7 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplExecutionError, ReplSession
+from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -177,27 +176,6 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
         )
 
 
-@dataclasses.dataclass
-class CodeExecutionError(ToolCallExecutionError):
-    """An `exec_code` snippet raised at runtime.
-
-    `ReplSession` already builds a self-contained, frame-trimmed transcript, so
-    the feedback is that ``transcript`` (captured stdout/stderr plus the user's
-    own traceback) verbatim rather than a generic stack trace.
-    """
-
-    transcript: str = ""
-
-    def to_feedback_message(self, include_traceback: bool) -> Message:
-        return _make_message(
-            {
-                "role": "tool",
-                "tool_call_id": self.raw_tool_call.id,
-                "content": self.transcript,
-            },
-        )
-
-
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
@@ -312,39 +290,67 @@ class LexicalReaders(ObjectInterpretation):
         return result
 
 
+class _NoActiveReplSessionException(Exception):
+    """Raised when there is no active REPL session to run code in."""
+
+
+@Operation.define
+def _repl_session(env: collections.abc.Mapping[str, typing.Any]) -> ReplSession:
+    """Return the REPL session for the current Template call, seeded from `env`.
+
+    Like `_get_history`, this has no meaning on its own: `PythonRepl` installs a
+    fresh handler for it inside each `Template.__apply__`, which is what gives the
+    session a lifetime of exactly one Template call.
+    """
+    raise _NoActiveReplSessionException(
+        "No active REPL session. `exec_code` is only available inside a Template "
+        "call handled by `PythonRepl`."
+    )
+
+
 class PythonRepl(ObjectInterpretation):
-    """Override `collect_tools` to expose a persistent Python session as an
-    `exec_code` Tool.
+    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
 
     Off by default; install it where the LLM should be able to run code whose
-    state (variables, imports, definitions) survives across tool calls within
-    one Template invocation.  The session is keyed by the Template's lexical
-    context, seeded from it, and routes execution through the
-    `parse`/`compile`/`exec` effect operations.
+    state (variables, imports, definitions) survives across tool calls within a
+    single Template invocation.
+
+    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
+    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
+    the duration of the call, and handles `collect_tools` to inject an `exec_code`
+    Tool routed to that session.  The session is therefore introduced and
+    eliminated by its own handler, bounded to the Template call by construction --
+    there is no global registry of sessions and no weakref bookkeeping, and nested
+    Template calls get their own isolated sessions.
+
+    The session is seeded from the Template's lexical context and routes execution
+    through the `parse`/`compile`/`exec` effect operations.
 
     v1 requires `UnsafeEvalProvider`: `RestrictedEvalProvider`'s exec drops
     rebindings of seeded names and does not wire RestrictedPython's print
     collector (tracked in #685), both of which break the REPL contract.
     """
 
-    def __init__(self):
-        self._sessions: dict[int, ReplSession] = {}
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        # One session per Template call, created lazily on first use (the call's
+        # `env`, supplied by `collect_tools`/`exec_code`, seeds it).  The
+        # enclosing `handler(...)` bounds the session's lifetime to this call, so
+        # nested Template calls introduce their own fresh session.
+        session: ReplSession | None = None
 
-    def _session_for(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> ReplSession:
-        key = id(env)
-        session = self._sessions.get(key)
-        if session is None:
-            session = ReplSession(env)
-            self._sessions[key] = session
-            # Prune the entry the instant `env` is collected: no leak, and the
-            # stale id can never alias a later object.  `pop` is bound to the
-            # dict (not `env`), so the finalizer does not keep `env` alive.
-            # `env` is the Template's lexical context (a ChainMap); a non
-            # weak-referenceable env (e.g. a bare dict) raises here, loudly.
-            weakref.finalize(env, self._sessions.pop, key, None)
-        return session
+        def session_for(
+            env: collections.abc.Mapping[str, typing.Any],
+        ) -> ReplSession:
+            nonlocal session
+            if session is None:
+                session = ReplSession(env)
+            return session
+
+        with handler({_repl_session: session_for}):
+            return fwd()
 
     @implements(collect_tools)
     def _collect(
@@ -357,7 +363,7 @@ class PythonRepl(ObjectInterpretation):
             """Execute Python in a persistent session.  Variables, imports and
             definitions carry across calls.  Returns the captured stdout and
             stderr (use print() to inspect values)."""
-            return self._session_for(env).run(source)
+            return _repl_session(env).run(source)
 
         tools.setdefault("exec_code", exec_code)  # a real user tool of same name wins
         return tools
@@ -477,15 +483,10 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
-    except ReplExecutionError as e:
-        # `exec_code`'s snippet raised: surface its trimmed transcript verbatim,
-        # and expose the *real* exception so `catch_tool_errors` can match on it.
-        raise CodeExecutionError(
-            raw_tool_call=tool_call,
-            original_error=e.original_error,
-            transcript=e.transcript,
-        ) from e
     except Exception as e:
+        # An `exec_code` snippet error arrives here as a `ReplExecutionError`
+        # whose ``str`` is the trimmed transcript, so the generic feedback path
+        # surfaces it -- no bespoke exception type needed.
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
