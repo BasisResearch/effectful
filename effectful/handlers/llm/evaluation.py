@@ -822,24 +822,18 @@ class RestrictedEvalProvider(ObjectInterpretation):
 _REPL_FILENAME_PREFIX = "<exec_code-"
 
 
-def _format_user_traceback() -> str:
-    """Format the in-flight exception, trimming the effect-machinery frames
-    between the call site and the user's snippet.
+class ReplExecutionError(Exception):
+    """Raised by `ReplSession.run` when an executed snippet errors.
 
-    Because execution routes through the `exec` operation, the raw traceback
-    includes effectful's internal frames (ops, runtime, this module).  We walk
-    to the first frame whose code lives in a snippet (`co_filename` starts with
-    `_REPL_FILENAME_PREFIX`) and format from there, so the LLM sees only its
-    own frames -- the same idea as `code.InteractiveInterpreter.showtraceback`
-    dropping its own frame, generalized.
+    Carries the captured ``transcript`` (stdout/stderr plus the trimmed user
+    traceback).  Propagating it -- rather than swallowing it into the return
+    value -- lets the `exec_code` tool behave like a normal Python call, so the
+    call site (`call_tool`) catches it and surfaces the transcript to the model.
     """
-    exc_type, exc, tb = sys.exc_info()
-    user_tb = tb
-    while user_tb is not None and not user_tb.tb_frame.f_code.co_filename.startswith(
-        _REPL_FILENAME_PREFIX
-    ):
-        user_tb = user_tb.tb_next
-    return "".join(traceback.format_exception(exc_type, exc, user_tb or tb))
+
+    def __init__(self, transcript: str):
+        super().__init__(transcript)
+        self.transcript = transcript
 
 
 class ReplSession(code.InteractiveInterpreter):
@@ -847,7 +841,7 @@ class ReplSession(code.InteractiveInterpreter):
     context, built on the stdlib `code.InteractiveInterpreter` substrate.
 
     `run(source)` drives `InteractiveInterpreter.runsource` (its compile ->
-    run -> error-print control flow), with three overrides for our needs:
+    run -> error-print control flow), with a few overrides for our needs:
 
     - compilation routes through the `parse`/`compile` effect operations
       (replacing the native `CommandCompiler`), so the installed eval-provider
@@ -859,16 +853,18 @@ class ReplSession(code.InteractiveInterpreter):
 
     State persists in `self.locals` across `run` calls (variables, imports and
     definitions accumulate, exactly like a REPL).  Each call runs one complete
-    snippet in `exec` mode and returns its captured stdout/stderr; there is no
-    bare-expression auto-echo, so use `print()` to surface values.
+    snippet in `exec` mode; on success it returns the captured stdout/stderr,
+    and on error it raises `ReplExecutionError` carrying that transcript.  There
+    is no bare-expression auto-echo, so use `print()` to surface values.
     """
 
     def __init__(self, env: Mapping[str, Any]):
         super().__init__(dict(env))
         self._counter = itertools.count()
-        # Stack of capture buffers so re-entrant `run` calls (exec'd code that
-        # calls back into the same session) each keep their own transcript.
+        # Parallel stacks so re-entrant `run` calls (exec'd code that calls back
+        # into the same session) each keep their own transcript and error state.
         self._buffers: list[io.StringIO] = []
+        self._errored: list[bool] = []
         # Replace the native single-mode CommandCompiler with our op-routed,
         # linecache-populating compiler.
         self.compile = self._compile_through_ops  # type: ignore[assignment]
@@ -887,11 +883,28 @@ class ReplSession(code.InteractiveInterpreter):
         except Exception:
             # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
             self.showtraceback()
+            self._errored[-1] = True
+
+    def showsyntaxerror(self, *args: Any, **kwargs: Any) -> None:
+        # A syntax/compile error is a failed run too; flag it the same way
+        # `runcode` flags a runtime error, so `run` raises for both.
+        super().showsyntaxerror(*args, **kwargs)
+        self._errored[-1] = True
 
     def showtraceback(self) -> None:
-        # InteractiveInterpreter.showtraceback drops only its own frame; the
-        # effect routing inserts several, so trim to the user's snippet frame.
-        self.write(_format_user_traceback())
+        # InteractiveInterpreter.showtraceback drops only its own frame; routing
+        # through the `exec` op inserts several, so walk to the first snippet
+        # frame and format from there -- the LLM sees only its own frames.
+        exc_type, exc, tb = sys.exc_info()
+        user_tb = tb
+        while (
+            user_tb is not None
+            and not user_tb.tb_frame.f_code.co_filename.startswith(
+                _REPL_FILENAME_PREFIX
+            )
+        ):
+            user_tb = user_tb.tb_next
+        self.write("".join(traceback.format_exception(exc_type, exc, user_tb or tb)))
 
     def write(self, data: str) -> None:
         # Error output from show{traceback,syntaxerror} lands here; route it to
@@ -906,9 +919,16 @@ class ReplSession(code.InteractiveInterpreter):
         filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
         buf = io.StringIO()
         self._buffers.append(buf)
+        self._errored.append(False)
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 self.runsource(source, filename)
         finally:
             self._buffers.pop()
-        return buf.getvalue()
+            errored = self._errored.pop()
+        transcript = buf.getvalue()
+        if errored:
+            # Like a normal Python call, a failed snippet raises rather than
+            # returning; `call_tool` catches it and feeds the transcript back.
+            raise ReplExecutionError(transcript)
+        return transcript

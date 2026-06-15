@@ -31,7 +31,7 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
+from effectful.handlers.llm.evaluation import ReplExecutionError, ReplSession
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -173,6 +173,27 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
                 "role": "tool",
                 "tool_call_id": self.raw_tool_call.id,
                 "content": error_message,
+            },
+        )
+
+
+@dataclasses.dataclass
+class CodeExecutionError(ToolCallExecutionError):
+    """An `exec_code` snippet raised at runtime.
+
+    `ReplSession` already builds a self-contained, frame-trimmed transcript, so
+    the feedback is that ``transcript`` (captured stdout/stderr plus the user's
+    own traceback) verbatim rather than a generic stack trace.
+    """
+
+    transcript: str = ""
+
+    def to_feedback_message(self, include_traceback: bool) -> Message:
+        return _make_message(
+            {
+                "role": "tool",
+                "tool_call_id": self.raw_tool_call.id,
+                "content": self.transcript,
             },
         )
 
@@ -456,6 +477,11 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         result = tool_call.tool(
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
+    except ReplExecutionError as e:
+        # `exec_code`'s snippet raised: surface its trimmed transcript verbatim.
+        raise CodeExecutionError(
+            raw_tool_call=tool_call, original_error=e, transcript=e.transcript
+        ) from e
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 

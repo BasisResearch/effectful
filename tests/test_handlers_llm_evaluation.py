@@ -18,6 +18,7 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
+    ReplExecutionError,
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
@@ -1584,13 +1585,14 @@ def test_repl_captures_print():
         assert ReplSession({}).run("print('hi')") == "hi\n"
 
 
-def test_repl_syntax_error_is_a_transcript_not_a_raise():
-    """An incomplete snippet returns a transcript and leaves the session
-    usable."""
+def test_repl_syntax_error_raises_with_transcript():
+    """An invalid snippet raises `ReplExecutionError` carrying the transcript,
+    and leaves the session usable."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        out = session.run("def f(:")
-        assert "SyntaxError" in out
+        with pytest.raises(ReplExecutionError) as exc_info:
+            session.run("def f(:")
+        assert "SyntaxError" in exc_info.value.transcript
         assert session.run("print('ok')") == "ok\n"
 
 
@@ -1600,8 +1602,9 @@ def test_repl_exception_is_isolated():
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
         session.run("kept = 7")
-        out = session.run("print(1 / 0)")
-        assert "ZeroDivisionError" in out
+        with pytest.raises(ReplExecutionError) as exc_info:
+            session.run("print(1 / 0)")
+        assert "ZeroDivisionError" in exc_info.value.transcript
         assert session.run("print(kept)") == "7\n"
 
 
@@ -1617,7 +1620,9 @@ def test_repl_traceback_trims_effect_machinery_frames():
     """The transcript for an uncaught exception shows only the user's snippet
     frames, not effectful's internal frames."""
     with handler(UnsafeEvalProvider()):
-        out = ReplSession({}).run("1 / 0")
+        with pytest.raises(ReplExecutionError) as exc_info:
+            ReplSession({}).run("1 / 0")
+        out = exc_info.value.transcript
         assert "ZeroDivisionError" in out
         assert "runtime.py" not in out
         assert "ops/types.py" not in out
@@ -1631,8 +1636,9 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
         session.run("def boom():\n    return 1 / 0")
-        out = session.run("boom()")
-        assert "return 1 / 0" in out  # boom's real source, not "boom()"
+        with pytest.raises(ReplExecutionError) as exc_info:
+            session.run("boom()")
+        assert "return 1 / 0" in exc_info.value.transcript  # boom's real source
 
 
 def test_repl_reentrant_run_keeps_outer_transcript():

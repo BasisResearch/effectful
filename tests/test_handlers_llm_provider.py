@@ -27,6 +27,7 @@ from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
+    CodeExecutionError,
     DecodedToolCall,
     LexicalReaders,
     LiteLLMProvider,
@@ -39,6 +40,7 @@ from effectful.handlers.llm.completions import (
     _get_history,
     call_assistant,
     call_tool,
+    collect_tools,
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
@@ -1591,6 +1593,41 @@ class TestCallToolWrapsExecutionError:
         result = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
+
+    def test_call_tool_wraps_exec_code_error_as_code_execution_error(self):
+        """An `exec_code` snippet error surfaces as `CodeExecutionError`, whose
+        feedback message is the trimmed transcript verbatim."""
+        env = collections.ChainMap({})
+        with handler(UnsafeEvalProvider()), handler(PythonRepl()):
+            exec_code = collect_tools(env)["exec_code"]
+            bound_args = inspect.signature(exec_code).bind("1 / 0")
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            with pytest.raises(CodeExecutionError) as exc_info:
+                call_tool(tc)
+        err = exc_info.value
+        assert "ZeroDivisionError" in err.transcript
+        assert "exec_code-" in err.transcript  # trimmed to the user's own frame
+        msg = err.to_feedback_message(include_traceback=False)
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_exec"
+        assert msg["content"] == err.transcript
+
+    def test_retry_handler_turns_exec_code_error_into_feedback(self):
+        """With `RetryLLMHandler` installed, an `exec_code` error is returned as
+        a tool feedback message carrying the transcript -- not raised."""
+        env = collections.ChainMap({})
+        with (
+            handler(RetryLLMHandler()),
+            handler(UnsafeEvalProvider()),
+            handler(PythonRepl()),
+        ):
+            exec_code = collect_tools(env)["exec_code"]
+            bound_args = inspect.signature(exec_code).bind("1 / 0")
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec_fb", "exec_code")
+            msg = call_tool(tc)
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_exec_fb"
+        assert "ZeroDivisionError" in msg["content"]
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
