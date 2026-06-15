@@ -1743,20 +1743,6 @@ def test_python_repl_exposes_exec_code():
         assert "exec_code" in collect_tools({"x": 1})
 
 
-def test_python_repl_real_tool_of_same_name_wins():
-    """A user `Tool` named `exec_code` in scope takes precedence over the
-    REPL tool (the `setdefault`)."""
-
-    @Tool.define
-    def exec_code() -> int:
-        """Doc."""
-        return 7
-
-    with handler(PythonRepl()):
-        result = collect_tools({"exec_code": exec_code})
-    assert result["exec_code"] is exec_code
-
-
 def test_python_repl_composes_with_lexical_readers():
     """Readers and the REPL tool coexist when both handlers are installed."""
     with handler(LexicalReaders()), handler(PythonRepl()):

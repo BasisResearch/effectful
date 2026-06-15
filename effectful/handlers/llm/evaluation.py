@@ -1,6 +1,7 @@
 import ast
 import builtins
 import code
+import codeop
 import collections.abc
 import contextlib
 import copy
@@ -819,11 +820,8 @@ class RestrictedEvalProvider(ObjectInterpretation):
                 env[key] = rglobals[key]
 
 
-_REPL_FILENAME_PREFIX = "<exec_code-"
-
-
 class ReplExecutionError(Exception):
-    """Raised by `ReplSession.run` when an executed snippet errors.
+    """Raised by `ReplSession.exec_code` when an executed snippet errors.
 
     Carries both the captured ``transcript`` (stdout/stderr plus the trimmed
     user traceback) and the ``original_error`` object, so the call site
@@ -838,11 +836,29 @@ class ReplExecutionError(Exception):
         self.original_error = original_error
 
 
+class _OpCommandCompiler(codeop.CommandCompiler):
+    """A `codeop.CommandCompiler` that routes compilation through the
+    `parse`/`compile` effect operations (so the installed eval-provider owns it
+    and `parse` populates `linecache`), replacing the native single-mode
+    compiler that `code.InteractiveInterpreter` installs.
+    """
+
+    def __call__(
+        self, source: str, filename: str = "<input>", symbol: str = "single"
+    ) -> CodeType:
+        # `runsource` passes symbol="single"; we ignore it and compile in the
+        # exec mode the ops produce, so a complete multi-statement block runs in
+        # one shot.  Incomplete/invalid input raises SyntaxError, which
+        # `runsource` routes to `showsyntaxerror` (we do not buffer partial input
+        # -- there is no line-at-a-time protocol).
+        return compile(parse(source, filename), filename)
+
+
 class ReplSession(code.InteractiveInterpreter):
     """A persistent, output-capturing Python session seeded from a lexical
     context, built on the stdlib `code.InteractiveInterpreter` substrate.
 
-    `run(source)` drives `InteractiveInterpreter.runsource` (its compile ->
+    `exec_code(source)` drives `InteractiveInterpreter.runsource` (its compile ->
     run -> error-print control flow), with a few overrides for our needs:
 
     - compilation routes through the `parse`/`compile` effect operations
@@ -853,32 +869,26 @@ class ReplSession(code.InteractiveInterpreter):
     - `showtraceback` trims the effect-machinery frames so the LLM sees only
       its own snippet's frames.
 
-    State persists in `self.locals` across `run` calls (variables, imports and
+    State persists in `self.locals` across `exec_code` calls (variables, imports and
     definitions accumulate, exactly like a REPL).  Each call runs one complete
     snippet in `exec` mode; on success it returns the captured stdout/stderr,
     and on error it raises `ReplExecutionError` carrying that transcript.  There
     is no bare-expression auto-echo, so use `print()` to surface values.
     """
 
+    _FILENAME_PREFIX: typing.ClassVar[str] = "<exec_code-"
+
     def __init__(self, env: Mapping[str, Any]):
         super().__init__(dict(env))
         self._counter = itertools.count()
-        # One session per instance, so a single in-flight `run` owns these: the
+        # One session per instance, so a single in-flight `exec_code` owns these: the
         # buffer captures that run's stdout/stderr, and `_error` holds the
         # exception it raised, if any.
         self._buffer = io.StringIO()
         self._error: Exception | None = None
         # Replace the native single-mode CommandCompiler with our op-routed,
         # linecache-populating compiler.
-        self.compile = self._compile_through_ops  # type: ignore[assignment]
-
-    def _compile_through_ops(self, source: str, filename: str, symbol: str) -> CodeType:
-        # `runsource` passes symbol="single"; we ignore it and compile in the
-        # exec mode the ops produce, so a complete multi-statement block runs
-        # in one shot.  Incomplete/invalid input raises SyntaxError, which
-        # `runsource` routes to `showsyntaxerror` (we do not buffer partial
-        # input -- there is no line-at-a-time protocol).
-        return compile(parse(source, filename), filename)
+        self.compile = _OpCommandCompiler()
 
     def runcode(self, code_obj: CodeType) -> None:
         try:
@@ -890,7 +900,7 @@ class ReplSession(code.InteractiveInterpreter):
 
     def showsyntaxerror(self, *args: Any, **kwargs: Any) -> None:
         # A syntax/compile error is a failed run too; capture it the way
-        # `runcode` captures a runtime error, so `run` raises for both.  The
+        # `runcode` captures a runtime error, so `exec_code` raises for both.  The
         # SyntaxError is the in-flight exception during `runsource`'s except.
         exc = sys.exc_info()[1]
         assert isinstance(exc, Exception)
@@ -915,12 +925,21 @@ class ReplSession(code.InteractiveInterpreter):
         # the current run's buffer.
         self._buffer.write(data)
 
-    def run(self, source: str) -> str:
+    def exec_code(self, source: str) -> str:
+        """Execute Python in this persistent session and return its captured
+        stdout/stderr.
+
+        Variables, imports and definitions persist across calls, exactly like a
+        REPL.  There is no bare-expression auto-echo, so use print() to surface
+        values.  A snippet that raises propagates the error (carrying its
+        transcript) rather than returning, so it behaves like a normal Python
+        call.
+        """
         # Per-snippet filename so each cell's source is retained in `linecache`
         # independently -- a single shared name would overwrite earlier cells
         # and format earlier-defined functions' tracebacks against the wrong
         # source.
-        filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
+        filename = f"{self._FILENAME_PREFIX}{next(self._counter)}>"
         self._buffer = io.StringIO()
         self._error = None
         try:

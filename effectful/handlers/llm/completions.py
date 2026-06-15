@@ -290,22 +290,17 @@ class LexicalReaders(ObjectInterpretation):
         return result
 
 
-class _NoActiveReplSessionException(Exception):
-    """Raised when there is no active REPL session to run code in."""
-
-
 @Operation.define
 def _repl_session(env: collections.abc.Mapping[str, typing.Any]) -> ReplSession:
     """Return the REPL session for the current Template call, seeded from `env`.
 
-    Like `_get_history`, this has no meaning on its own: `PythonRepl` installs a
-    fresh handler for it inside each `Template.__apply__`, which is what gives the
-    session a lifetime of exactly one Template call.
+    `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
+    (mirroring how `__history__` is managed), giving the session a lifetime of
+    exactly one Template call.  Outside such a scope there is no managed session,
+    so this falls back to a fresh one -- e.g. when tools are listed outside a
+    Template call.
     """
-    raise _NoActiveReplSessionException(
-        "No active REPL session. `exec_code` is only available inside a Template "
-        "call handled by `PythonRepl`."
-    )
+    return ReplSession(env)
 
 
 class PythonRepl(ObjectInterpretation):
@@ -320,8 +315,8 @@ class PythonRepl(ObjectInterpretation):
     the duration of the call, and handles `collect_tools` to inject an `exec_code`
     Tool routed to that session.  The session is therefore introduced and
     eliminated by its own handler, bounded to the Template call by construction --
-    there is no global registry of sessions and no weakref bookkeeping, and nested
-    Template calls get their own isolated sessions.
+    there is no global registry of sessions, and nested Template calls get their
+    own isolated sessions.
 
     The session is seeded from the Template's lexical context and routes execution
     through the `parse`/`compile`/`exec` effect operations.
@@ -357,15 +352,11 @@ class PythonRepl(ObjectInterpretation):
         self, env: collections.abc.Mapping[str, typing.Any]
     ) -> collections.abc.Mapping[str, Tool]:
         tools = dict(fwd())
-
-        @Tool.define
-        def exec_code(source: str) -> str:
-            """Execute Python in a persistent session.  Variables, imports and
-            definitions carry across calls.  Returns the captured stdout and
-            stderr (use print() to inspect values)."""
-            return _repl_session(env).run(source)
-
-        tools.setdefault("exec_code", exec_code)  # a real user tool of same name wins
+        # Reuse the session the enclosing `Template.__apply__` already installed
+        # for this call (see `_repl_session`) and expose its `exec_code` method
+        # directly -- the tool's behaviour, docstring and name all come from
+        # `ReplSession.exec_code`, nothing is hidden in this handler.
+        tools["exec_code"] = Tool.define(_repl_session(env).exec_code)
         return tools
 
 
