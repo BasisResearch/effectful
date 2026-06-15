@@ -943,8 +943,9 @@ class ReplSession(code.InteractiveInterpreter):
         self._buffer = io.StringIO()
         self._error = None
         try:
-            with contextlib.redirect_stdout(self._buffer), contextlib.redirect_stderr(
-                self._buffer
+            with (
+                contextlib.redirect_stdout(self._buffer),
+                contextlib.redirect_stderr(self._buffer),
             ):
                 self.runsource(source, filename)
         finally:
