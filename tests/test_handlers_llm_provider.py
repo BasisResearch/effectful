@@ -1605,7 +1605,7 @@ class TestCallToolWrapsExecutionError:
             with pytest.raises(CodeExecutionError) as exc_info:
                 call_tool(tc)
         err = exc_info.value
-        assert "ZeroDivisionError" in err.transcript
+        assert isinstance(err.original_error, ZeroDivisionError)
         assert "exec_code-" in err.transcript  # trimmed to the user's own frame
         msg = err.to_feedback_message(include_traceback=False)
         assert msg["role"] == "tool"

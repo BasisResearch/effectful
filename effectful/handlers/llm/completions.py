@@ -478,9 +478,12 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except ReplExecutionError as e:
-        # `exec_code`'s snippet raised: surface its trimmed transcript verbatim.
+        # `exec_code`'s snippet raised: surface its trimmed transcript verbatim,
+        # and expose the *real* exception so `catch_tool_errors` can match on it.
         raise CodeExecutionError(
-            raw_tool_call=tool_call, original_error=e, transcript=e.transcript
+            raw_tool_call=tool_call,
+            original_error=e.original_error,
+            transcript=e.transcript,
         ) from e
     except Exception as e:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e

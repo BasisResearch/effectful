@@ -825,15 +825,17 @@ _REPL_FILENAME_PREFIX = "<exec_code-"
 class ReplExecutionError(Exception):
     """Raised by `ReplSession.run` when an executed snippet errors.
 
-    Carries the captured ``transcript`` (stdout/stderr plus the trimmed user
-    traceback).  Propagating it -- rather than swallowing it into the return
-    value -- lets the `exec_code` tool behave like a normal Python call, so the
-    call site (`call_tool`) catches it and surfaces the transcript to the model.
+    Carries both the captured ``transcript`` (stdout/stderr plus the trimmed
+    user traceback) and the ``original_error`` object, so the call site
+    (`call_tool`) can surface the transcript *and* let downstream handlers match
+    on the real exception type.  Propagating it -- rather than swallowing it into
+    the return value -- lets `exec_code` behave like a normal Python call.
     """
 
-    def __init__(self, transcript: str):
+    def __init__(self, transcript: str, original_error: Exception):
         super().__init__(transcript)
         self.transcript = transcript
+        self.original_error = original_error
 
 
 class ReplSession(code.InteractiveInterpreter):
@@ -862,9 +864,10 @@ class ReplSession(code.InteractiveInterpreter):
         super().__init__(dict(env))
         self._counter = itertools.count()
         # Parallel stacks so re-entrant `run` calls (exec'd code that calls back
-        # into the same session) each keep their own transcript and error state.
+        # into the same session) each keep their own transcript and the
+        # exception (if any) the run raised.
         self._buffers: list[io.StringIO] = []
-        self._errored: list[bool] = []
+        self._error: list[Exception | None] = []
         # Replace the native single-mode CommandCompiler with our op-routed,
         # linecache-populating compiler.
         self.compile = self._compile_through_ops  # type: ignore[assignment]
@@ -880,29 +883,30 @@ class ReplSession(code.InteractiveInterpreter):
     def runcode(self, code_obj: CodeType) -> None:
         try:
             exec(code_obj, self.locals)
-        except Exception:
+        except Exception as exc:
             # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
             self.showtraceback()
-            self._errored[-1] = True
+            self._error[-1] = exc
 
     def showsyntaxerror(self, *args: Any, **kwargs: Any) -> None:
-        # A syntax/compile error is a failed run too; flag it the same way
-        # `runcode` flags a runtime error, so `run` raises for both.
+        # A syntax/compile error is a failed run too; capture it the way
+        # `runcode` captures a runtime error, so `run` raises for both.  The
+        # SyntaxError is the in-flight exception during `runsource`'s except.
+        exc = sys.exc_info()[1]
+        assert isinstance(exc, Exception)
+        self._error[-1] = exc
         super().showsyntaxerror(*args, **kwargs)
-        self._errored[-1] = True
 
     def showtraceback(self) -> None:
         # InteractiveInterpreter.showtraceback drops only its own frame; routing
-        # through the `exec` op inserts several, so walk to the first snippet
-        # frame and format from there -- the LLM sees only its own frames.
+        # through the `exec` op inserts several.  A snippet frame is one running
+        # in our namespace -- its globals *are* `self.locals` (true for the
+        # module-level exec and for any function defined in a snippet, whose
+        # __globals__ is `self.locals`) -- so identify it by identity, not by
+        # matching the `<exec_code-` filename string.
         exc_type, exc, tb = sys.exc_info()
         user_tb = tb
-        while (
-            user_tb is not None
-            and not user_tb.tb_frame.f_code.co_filename.startswith(
-                _REPL_FILENAME_PREFIX
-            )
-        ):
+        while user_tb is not None and user_tb.tb_frame.f_globals is not self.locals:
             user_tb = user_tb.tb_next
         self.write("".join(traceback.format_exception(exc_type, exc, user_tb or tb)))
 
@@ -919,16 +923,16 @@ class ReplSession(code.InteractiveInterpreter):
         filename = f"{_REPL_FILENAME_PREFIX}{next(self._counter)}>"
         buf = io.StringIO()
         self._buffers.append(buf)
-        self._errored.append(False)
+        self._error.append(None)
         try:
             with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
                 self.runsource(source, filename)
         finally:
             self._buffers.pop()
-            errored = self._errored.pop()
+            error = self._error.pop()
         transcript = buf.getvalue()
-        if errored:
+        if error is not None:
             # Like a normal Python call, a failed snippet raises rather than
             # returning; `call_tool` catches it and feeds the transcript back.
-            raise ReplExecutionError(transcript)
+            raise ReplExecutionError(transcript, error)
         return transcript

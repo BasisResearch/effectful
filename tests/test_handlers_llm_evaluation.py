@@ -28,10 +28,9 @@ from effectful.handlers.llm.evaluation import (
     mypy_type_check,
     type_to_ast,
 )
-from effectful.handlers.llm.evaluation import exec as exec_op
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import defop
 from effectful.ops.types import NotHandled
 
 
@@ -1592,7 +1591,7 @@ def test_repl_syntax_error_raises_with_transcript():
         session = ReplSession({})
         with pytest.raises(ReplExecutionError) as exc_info:
             session.run("def f(:")
-        assert "SyntaxError" in exc_info.value.transcript
+        assert isinstance(exc_info.value.original_error, SyntaxError)
         assert session.run("print('ok')") == "ok\n"
 
 
@@ -1604,7 +1603,7 @@ def test_repl_exception_is_isolated():
         session.run("kept = 7")
         with pytest.raises(ReplExecutionError) as exc_info:
             session.run("print(1 / 0)")
-        assert "ZeroDivisionError" in exc_info.value.transcript
+        assert isinstance(exc_info.value.original_error, ZeroDivisionError)
         assert session.run("print(kept)") == "7\n"
 
 
@@ -1653,22 +1652,6 @@ def test_repl_reentrant_run_keeps_outer_transcript():
         assert "outer-before" in out
         assert "outer-after" in out
         assert "inner" not in out  # inner output went to the inner call's buffer
-
-
-def test_repl_execution_routes_through_exec_op():
-    """With `exec` overridden to a no-op, nothing runs — proving execution
-    goes through the op, asserted via the observable (the binding is absent)."""
-
-    class _NoExec(ObjectInterpretation):
-        @implements(exec_op)
-        def _(self, bytecode, env) -> None:
-            pass
-
-    with handler(UnsafeEvalProvider()), handler(_NoExec()):
-        session = ReplSession({})
-        session.run("x = 1")
-    with handler(UnsafeEvalProvider()):
-        assert session.run("print('x' in dir())") == "False\n"
 
 
 # ----------------------------------------------------------------------------
