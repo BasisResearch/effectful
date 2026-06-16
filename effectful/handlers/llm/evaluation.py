@@ -137,7 +137,7 @@ class EncodableCode(pydantic.BaseModel):
             raise ValueError(
                 f"expected source string or code object, got {type(value).__name__}"
             )
-        filename = f"{_CODE_FILENAME_PREFIX}{next(uuid.uuid4())}>"
+        filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
         try:
             return compile(parse(value, filename), filename)
         except (SyntaxError, ValueError) as exc:
@@ -864,32 +864,17 @@ class RestrictedEvalProvider(ObjectInterpretation):
                 env[key] = rglobals[key]
 
 
-class ReplExecutionError(Exception):
-    """Raised by `ReplSession.exec_code` when an executed snippet errors.
-
-    Carries both the captured ``transcript`` (stdout/stderr plus the trimmed
-    user traceback) and the ``original_error`` object, so the call site
-    (`call_tool`) can surface the transcript *and* let downstream handlers match
-    on the real exception type.  Propagating it -- rather than swallowing it into
-    the return value -- lets `exec_code` behave like a normal Python call.
-    """
-
-    def __init__(self, transcript: str, original_error: Exception):
-        super().__init__(transcript)
-        self.transcript = transcript
-        self.original_error = original_error
-
-
 class ReplSession:
     """A persistent, output-capturing Python session seeded from a lexical
     context.
 
     `exec_code(source)` runs a pre-compiled `EncodableCode` in `self.locals`
-    through the `exec` effect operation, capturing stdout and stderr.  State
-    persists in `self.locals` across calls (variables, imports and definitions
-    accumulate, exactly like a REPL).  On success it returns the captured
-    output; on error it raises `ReplExecutionError` carrying that transcript
-    (the output plus a traceback trimmed to the snippet's own frames).  There is
+    through the `exec` effect operation.  Both bindings and captured
+    stdout/stderr persist across calls -- variables, imports and definitions
+    accumulate exactly like a REPL -- and the session (with its buffer) is
+    discarded as a whole when it goes out of scope.  Each call returns only the
+    output it produced; a snippet that raises has its traceback appended to that
+    output rather than propagating, so failures are surfaced as text.  There is
     no bare-expression auto-echo, so use `print()` to surface values.
 
     Compilation -- and therefore syntax checking -- happens earlier, when the
@@ -898,50 +883,25 @@ class ReplSession:
 
     def __init__(self, env: Mapping[str, Any]):
         self.locals: dict[str, Any] = dict(env)
-        # One in-flight `exec_code` owns these: the buffer captures its
-        # stdout/stderr, and `_error` holds the exception it raised, if any.
+        # The session's accumulated stdout/stderr, persisting for its lifetime.
         self._buffer = io.StringIO()
-        self._error: Exception | None = None
 
     def exec_code(self, source: EncodableCode) -> str:
-        """Execute an `EncodableCode` in this persistent session and return its
-        captured stdout/stderr.
+        """Execute an `EncodableCode` and return the output it produced.
 
-        Variables, imports and definitions persist across calls, exactly like a
-        REPL.  There is no bare-expression auto-echo, so use print() to surface
-        values.  A snippet that raises propagates the error (carrying its
-        transcript) rather than returning, so it behaves like a normal Python
-        call.
+        Output accumulates in the session buffer across calls; this returns only
+        the slice from this call (including the traceback if the snippet raised).
+        Use print() to surface values.
         """
-        self._buffer = io.StringIO()
-        self._error = None
+        start = self._buffer.tell()
         try:
             with (
                 contextlib.redirect_stdout(self._buffer),
                 contextlib.redirect_stderr(self._buffer),
             ):
                 exec(source.code, self.locals)
-        except Exception as exc:
-            # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
-            self._show_traceback()
-            self._error = exc
-        transcript = self._buffer.getvalue()
-        if self._error is not None:
-            # Like a normal Python call, a failed snippet raises rather than
-            # returning; `call_tool` catches it and feeds the transcript back.
-            raise ReplExecutionError(transcript, self._error)
-        return transcript
-
-    def _show_traceback(self) -> None:
-        # The `exec` op inserts effect-machinery frames between the call site and
-        # the snippet.  A snippet frame is one running in our namespace -- its
-        # globals *are* `self.locals` (true for the module-level exec and for any
-        # function defined in a snippet, whose __globals__ is `self.locals`) -- so
-        # identify it by identity and drop the machinery frames above it.
-        exc_type, exc, tb = sys.exc_info()
-        user_tb = tb
-        while user_tb is not None and user_tb.tb_frame.f_globals is not self.locals:
-            user_tb = user_tb.tb_next
-        self._buffer.write(
-            "".join(traceback.format_exception(exc_type, exc, user_tb or tb))
-        )
+        except Exception:
+            # `except Exception` lets SystemExit/KeyboardInterrupt propagate; any
+            # other error is reported as part of this call's output.
+            self._buffer.write(traceback.format_exc())
+        return self._buffer.getvalue()[start:]

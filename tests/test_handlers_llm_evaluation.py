@@ -3,7 +3,6 @@
 import ast
 import builtins
 import inspect
-import re
 import sys
 import textwrap
 import types
@@ -20,7 +19,6 @@ from RestrictedPython import RestrictingNodeTransformer
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
     EncodableCode,
-    ReplExecutionError,
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
@@ -1604,14 +1602,13 @@ def test_repl_rejects_invalid_source_at_construction():
 
 
 def test_repl_exception_is_isolated():
-    """A runtime exception returns a transcript; the session survives and
-    retains prior state."""
+    """A runtime exception is reported in the call's output; the session survives
+    and retains prior state."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
         session.exec_code(_code("kept = 7"))
-        with pytest.raises(ReplExecutionError) as exc_info:
-            session.exec_code(_code("print(1 / 0)"))
-        assert isinstance(exc_info.value.original_error, ZeroDivisionError)
+        out = session.exec_code(_code("print(1 / 0)"))
+        assert "ZeroDivisionError" in out
         assert session.exec_code(_code("print(kept)")) == "7\n"
 
 
@@ -1623,28 +1620,15 @@ def test_repl_keyboard_interrupt_propagates():
             session.exec_code(_code("raise KeyboardInterrupt"))
 
 
-def test_repl_traceback_trims_effect_machinery_frames():
-    """The trimmed traceback shows only the user's snippet frames; the effectful
-    `.py` frames between the call site and the snippet are dropped."""
-    with handler(UnsafeEvalProvider()):
-        with pytest.raises(ReplExecutionError) as exc_info:
-            ReplSession({}).exec_code(_code("1 / 0"))
-        transcript = exc_info.value.transcript
-    frame_files = re.findall(r'File "([^"]+)"', transcript)
-    assert frame_files  # the traceback shows at least one frame
-    assert all(not f.endswith(".py") for f in frame_files)  # no machinery frame
-
-
 def test_repl_cross_snippet_traceback_shows_correct_source():
-    """A function defined in an earlier call that raises in a later call
-    formats with its *own* source line, not the later call's source — the
-    per-snippet filename keeps each cell's source in linecache."""
+    """A function defined in an earlier call that raises in a later call formats
+    with its *own* source line, not the later call's source -- the per-snippet
+    filename keeps each cell's source in linecache."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
         session.exec_code(_code("def boom():\n    return 1 / 0"))
-        with pytest.raises(ReplExecutionError) as exc_info:
-            session.exec_code(_code("boom()"))
-        assert "return 1 / 0" in exc_info.value.transcript  # boom's real source
+        out = session.exec_code(_code("boom()"))
+        assert "return 1 / 0" in out  # boom's real source
 
 
 def test_repl_new_binding_does_not_leak_into_seed_context():

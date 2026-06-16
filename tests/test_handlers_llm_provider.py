@@ -43,11 +43,7 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.evaluation import (
-    EncodableCode,
-    ReplExecutionError,
-    UnsafeEvalProvider,
-)
+from effectful.handlers.llm.evaluation import EncodableCode, UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1623,10 +1619,10 @@ class TestCallToolWrapsExecutionError:
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
-    def test_call_tool_wraps_exec_code_error(self):
-        """An `exec_code` snippet error surfaces as a `ToolCallExecutionError`
-        carrying the `ReplExecutionError` (and the real exception); its feedback
-        message renders the transcript."""
+    def test_call_tool_returns_exec_code_error_in_output(self):
+        """An `exec_code` runtime error is reported in the returned tool message's
+        content (the traceback), not raised as a `ToolCallExecutionError`, so the
+        assistant loop continues with it as feedback."""
 
         def body(exec_code):
             bound_args = inspect.signature(exec_code).bind(
@@ -1635,33 +1631,10 @@ class TestCallToolWrapsExecutionError:
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
             return call_tool(tc)
 
-        with pytest.raises(ToolCallExecutionError) as exc_info:
-            _drive_repl(body)
-        repl_error = exc_info.value.original_error
-        assert isinstance(repl_error, ReplExecutionError)
-        assert isinstance(repl_error.original_error, ZeroDivisionError)
-        msg = exc_info.value.to_feedback_message(include_traceback=False)
+        msg = _drive_repl(body)
         assert msg["role"] == "tool"
         assert msg["tool_call_id"] == "call_exec"
-        assert repl_error.transcript in msg["content"]  # transcript rendered in
-
-    def test_retry_handler_turns_exec_code_error_into_feedback(self):
-        """With `RetryLLMHandler` installed, an `exec_code` error is returned as
-        a tool feedback message carrying the transcript -- not raised."""
-
-        def body(exec_code):
-            bound_args = inspect.signature(exec_code).bind(
-                EncodableCode.from_source("1 / 0")
-            )
-            tc = DecodedToolCall(exec_code, bound_args, "call_exec_fb", "exec_code")
-            return call_tool(tc)
-
-        with handler(RetryLLMHandler()):
-            msg = _drive_repl(body)
-        # Returned as a tool message instead of raising -- that *is* the
-        # "turned into feedback" behaviour (a raise would have failed above).
-        assert msg["role"] == "tool"
-        assert msg["tool_call_id"] == "call_exec_fb"
+        assert "ZeroDivisionError" in str(msg["content"])
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
