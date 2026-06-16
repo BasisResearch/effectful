@@ -1,5 +1,6 @@
 import ast
 import builtins
+import code
 import collections.abc
 import contextlib
 import copy
@@ -10,7 +11,6 @@ import linecache
 import random
 import string
 import sys
-import traceback
 import types
 import typing
 import uuid
@@ -885,7 +885,7 @@ class RestrictedEvalProvider(ObjectInterpretation):
         )
 
 
-class ReplSession:
+class ReplSession(code.InteractiveInterpreter):
     """A persistent, output-capturing Python session seeded from a lexical
     context.
 
@@ -895,7 +895,8 @@ class ReplSession:
     accumulate exactly like a REPL -- and the session (with its buffer) is
     discarded as a whole when it goes out of scope.  Each call returns only the
     output it produced; a snippet that raises has its traceback appended to that
-    output rather than propagating, so failures are surfaced as text.  There is
+    output rather than propagating -- mirroring `code.InteractiveInterpreter`,
+    only `SystemExit` propagates -- so failures are surfaced as text.  There is
     no bare-expression auto-echo, so use `print()` to surface values.
 
     Compilation -- and therefore syntax checking -- happens earlier, when the
@@ -903,9 +904,24 @@ class ReplSession:
     """
 
     def __init__(self, env: Mapping[str, Any]):
-        self.locals: dict[str, Any] = dict(env)
+        # `InteractiveInterpreter.__init__` sets `self.locals`; subclassing lets
+        # us reuse its `runcode`/`showtraceback`/`write` machinery rather than
+        # re-implementing traceback capture by hand.
+        super().__init__(dict(env))
         # The session's accumulated stdout/stderr, persisting for its lifetime.
         self._buffer = io.StringIO()
+
+    def runcode(self, code: CodeType) -> None:
+        # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
+        # is that `exec` here is the effect operation, so execution routes
+        # through the installed eval provider.  `showtraceback` reports failures
+        # via `self.write`, which `exec_code` has redirected into the buffer.
+        try:
+            exec(code, self.locals)
+        except SystemExit:
+            raise
+        except:
+            self.showtraceback()
 
     @Tool.define
     def exec_code(self, source: EncodableCode) -> str:
@@ -916,14 +932,9 @@ class ReplSession:
         Use print() to surface values.
         """
         start = self._buffer.tell()
-        try:
-            with (
-                contextlib.redirect_stdout(self._buffer),
-                contextlib.redirect_stderr(self._buffer),
-            ):
-                exec(source.code, self.locals)
-        except Exception:
-            # `except Exception` lets SystemExit/KeyboardInterrupt propagate; any
-            # other error is reported as part of this call's output.
-            self._buffer.write(traceback.format_exc())
+        with (
+            contextlib.redirect_stdout(self._buffer),
+            contextlib.redirect_stderr(self._buffer),
+        ):
+            self.runcode(source.code)
         return self._buffer.getvalue()[start:]

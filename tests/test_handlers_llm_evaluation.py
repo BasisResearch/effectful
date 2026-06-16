@@ -1617,12 +1617,16 @@ def test_repl_exception_is_isolated():
         assert session.exec_code(_code("print(kept)")) == "7\n"
 
 
-def test_repl_keyboard_interrupt_propagates():
-    """`KeyboardInterrupt` is not swallowed into a transcript."""
+def test_repl_system_exit_propagates():
+    """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
+    other exception (including `KeyboardInterrupt`) is caught and surfaced as
+    output rather than escaping the call."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        with pytest.raises(KeyboardInterrupt):
-            session.exec_code(_code("raise KeyboardInterrupt"))
+        with pytest.raises(SystemExit):
+            session.exec_code(_code("raise SystemExit"))
+        out = session.exec_code(_code("raise KeyboardInterrupt"))
+        assert "KeyboardInterrupt" in out
 
 
 def test_repl_cross_snippet_traceback_shows_correct_source():
