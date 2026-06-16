@@ -206,7 +206,34 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
             raise e
 
 
-def test_object_interpretation_inheretance():
+@pytest.mark.parametrize(
+    "make_intp",
+    [
+        pytest.param(
+            lambda x: coproduct(coproduct({}, {x: lambda: 0}), {x: fwd}),
+            id="right-assoc-empty-left",
+        ),
+        pytest.param(
+            lambda x: coproduct(coproduct({x: lambda: 0}, {}), {x: fwd}),
+            id="right-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda x: coproduct({x: lambda: 0}, coproduct({}, {x: fwd})),
+            id="left-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda x: coproduct({x: lambda: 0}, coproduct({x: fwd}, {})),
+            id="left-assoc-empty-right",
+        ),
+    ],
+)
+def test_coproduct_identity(make_intp) -> None:
+    x = Operation.define(int)
+    intp = make_intp(x)
+    assert handler(intp)(evaluate)(x()) == 0
+
+
+def test_object_interpretation_inheritance():
     @defop
     def op1():
         return "op1"
@@ -908,3 +935,29 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+def test_coproduct_fwd_chain(benchmark):
+    """Benchmark coproduct + fwd over a deep chain of forwarding handlers.
+
+    Compose n - 1 interpretations that simply ``fwd()`` on top of a single
+    base interpretation that returns 0, then measure the cost of dispatching
+    through the whole chain.
+    """
+    n = 50
+
+    @defop
+    def op() -> int:
+        raise NotHandled
+
+    base: Interpretation[int, int] = {op: lambda: 0}
+    intp = base
+    for _ in range(n - 1):
+        intp = coproduct(intp, {op: lambda: fwd()})
+
+    def run():
+        with handler(intp):
+            return op()
+
+    assert run() == 0
+    assert benchmark(run) == 0

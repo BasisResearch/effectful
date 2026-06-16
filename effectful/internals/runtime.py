@@ -4,8 +4,7 @@ import functools
 from collections.abc import Callable, Mapping
 from threading import local
 
-from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation
 
 
 @dataclasses.dataclass
@@ -33,9 +32,19 @@ def interpreter(intp: "Interpretation"):
         r.interpretation = old_intp
 
 
-@defop
+@Operation.define
 def _get_args() -> tuple[tuple, Mapping]:
     return ((), {})
+
+
+@Operation.define
+def _get_op() -> Operation:
+    raise NotHandled
+
+
+@Operation.define
+def _get_next_handler() -> Callable | None:
+    return None
 
 
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
@@ -53,6 +62,30 @@ def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
         with handler({_get_args: lambda: (a, k)}):
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
+def _save_op[**P, T](fn: Callable[P, T], op: Operation[P, T]) -> Callable[P, T]:
+    from effectful.ops.semantics import handler
+
+    @functools.wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with handler({_get_op: lambda: op}):
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
+def _save_next_handler[**P, T](
+    fn: Callable[P, T], next: Callable[P, T]
+) -> Callable[P, T]:
+    from effectful.ops.semantics import handler
+
+    @functools.wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with handler({_get_next_handler: lambda: next}):
             return fn(*a, **k)
 
     return _cont_wrapper

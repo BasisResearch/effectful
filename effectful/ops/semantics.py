@@ -33,7 +33,13 @@ def fwd(*args, **kwargs) -> Any:
     the current arguments to the next handler.
 
     """
-    raise RuntimeError("fwd should only be called in the context of a handler")
+    from effectful.internals.runtime import _get_args, _get_next_handler, _get_op
+
+    args, kwargs = (args, kwargs) if args or kwargs else _get_args()
+    next_handler = _get_next_handler()
+    if next_handler is not None:
+        return next_handler(*args, **kwargs)
+    return _get_op(*args, **kwargs)
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
@@ -82,20 +88,29 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """
     from effectful.internals.runtime import (
         _get_args,
+        _get_next_handler,
+        _get_op,
         _restore_args,
         _save_args,
+        _save_next_handler,
+        _save_op,
         _set_prompt,
     )
 
     res = dict(intp)
     for op, i2 in intp2.items():
-        if op is fwd or op is _get_args:
+        if op in {fwd, _get_args, _get_op, _get_next_handler}:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
-            i1 = intp.get(op, op.__default_rule__)
+            i1 = intp.get(op)
+            wrapped_i2 = (
+                _save_next_handler(i2, _save_op(_save_args(i1), op))
+                if i1 is not None
+                else i2
+            )
 
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+            res[op] = _save_args(_save_op(wrapped_i2, op))
 
     return res
 
