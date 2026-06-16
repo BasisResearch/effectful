@@ -924,9 +924,8 @@ class ReplSession(code.InteractiveInterpreter):
         This is a long-lived REPL, not a one-shot sandbox: every call runs in the
         SAME namespace, so names you bind in one call stay available in later
         calls within the same task.  Imports, function/class definitions and
-        variable assignments all accumulate -- build state up across several
-        calls instead of resending it.  The namespace starts seeded with the
-        in-scope variables of the surrounding context, which you may read and
+        variable assignments all accumulate during the session of this template.
+        The namespace starts seeded with the in-scope variables of the surrounding context, which you may read and
         rebind.
 
         Output: returns this call's output -- its stdout (what `print` wrote)
