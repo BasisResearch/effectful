@@ -1,7 +1,5 @@
 import ast
 import builtins
-import code
-import codeop
 import collections.abc
 import contextlib
 import copy
@@ -21,6 +19,7 @@ from types import CodeType
 from typing import Any, TypeAliasType
 
 import autoflake
+import pydantic
 from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
@@ -103,6 +102,52 @@ def exec(
     raise NotImplementedError(
         "An eval provider must be installed in order to execute code."
     )
+
+
+_CODE_FILENAME_PREFIX = "<exec_code-"
+_code_counter = itertools.count()
+
+
+class EncodableCode(pydantic.BaseModel):
+    """A snippet of Python source paired with its compiled code object.
+
+    A field validator compiles the source through the `parse`/`compile` effect
+    operations as the model is built, so an `EncodableCode` is, by construction,
+    code that compiled under the installed eval provider -- syntax and
+    compile-time errors raise here, not at run time.  `parse` also records the
+    source in `linecache` under a unique per-snippet filename so tracebacks
+    (including across snippets) resolve correctly, and the ready-to-run `code` is
+    carried so execution never has to recompile.
+    """
+
+    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True, frozen=True)
+
+    source: str
+    code: CodeType
+
+    @pydantic.field_validator("code", mode="before")
+    @classmethod
+    def _compile(cls, value: Any) -> CodeType:
+        # `code` is fed the source string (see `from_source`); compiling it here
+        # means a non-compiling snippet raises at the Encodable boundary rather
+        # than at run time.  A unique per-snippet filename keeps each snippet's
+        # source in `linecache` independently so tracebacks resolve correctly.
+        if isinstance(value, CodeType):
+            return value
+        if not isinstance(value, str):
+            raise ValueError(
+                f"expected source string or code object, got {type(value).__name__}"
+            )
+        filename = f"{_CODE_FILENAME_PREFIX}{next(_code_counter)}>"
+        try:
+            return compile(parse(value, filename), filename)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"source does not compile: {exc}") from exc
+
+    @classmethod
+    def from_source(cls, source: str) -> "EncodableCode":
+        # `code` receives the same source; the field validator compiles it.
+        return cls.model_validate({"source": source, "code": source})
 
 
 # Type checking implementation
@@ -836,98 +881,32 @@ class ReplExecutionError(Exception):
         self.original_error = original_error
 
 
-class _OpCommandCompiler(codeop.CommandCompiler):
-    """A `codeop.CommandCompiler` that routes compilation through the
-    `parse`/`compile` effect operations (so the installed eval-provider owns it
-    and `parse` populates `linecache`), replacing the native single-mode
-    compiler that `code.InteractiveInterpreter` installs.
-    """
-
-    def __call__(
-        self, source: str, filename: str = "<input>", symbol: str = "single"
-    ) -> CodeType:
-        # `runsource` passes symbol="single"; we ignore it and compile in the
-        # exec mode the ops produce, so a complete multi-statement block runs in
-        # one shot.  Incomplete/invalid input raises SyntaxError, which
-        # `runsource` routes to `showsyntaxerror` (we do not buffer partial input
-        # -- there is no line-at-a-time protocol).
-        return compile(parse(source, filename), filename)
-
-
-class ReplSession(code.InteractiveInterpreter):
+class ReplSession:
     """A persistent, output-capturing Python session seeded from a lexical
-    context, built on the stdlib `code.InteractiveInterpreter` substrate.
+    context.
 
-    `exec_code(source)` drives `InteractiveInterpreter.runsource` (its compile ->
-    run -> error-print control flow), with a few overrides for our needs:
+    `exec_code(source)` runs a pre-compiled `EncodableCode` in `self.locals`
+    through the `exec` effect operation, capturing stdout and stderr.  State
+    persists in `self.locals` across calls (variables, imports and definitions
+    accumulate, exactly like a REPL).  On success it returns the captured
+    output; on error it raises `ReplExecutionError` carrying that transcript
+    (the output plus a traceback trimmed to the snippet's own frames).  There is
+    no bare-expression auto-echo, so use `print()` to surface values.
 
-    - compilation routes through the `parse`/`compile` effect operations
-      (replacing the native `CommandCompiler`), so the installed eval-provider
-      owns it and `parse` populates `linecache` -- tracebacks and
-      `inspect.getsource` then see each snippet's source;
-    - `runcode` routes execution through the `exec` effect operation;
-    - `showtraceback` trims the effect-machinery frames so the LLM sees only
-      its own snippet's frames.
-
-    State persists in `self.locals` across `exec_code` calls (variables, imports and
-    definitions accumulate, exactly like a REPL).  Each call runs one complete
-    snippet in `exec` mode; on success it returns the captured stdout/stderr,
-    and on error it raises `ReplExecutionError` carrying that transcript.  There
-    is no bare-expression auto-echo, so use `print()` to surface values.
+    Compilation -- and therefore syntax checking -- happens earlier, when the
+    `EncodableCode` is built; this session only executes.
     """
-
-    _FILENAME_PREFIX: typing.ClassVar[str] = "<exec_code-"
 
     def __init__(self, env: Mapping[str, Any]):
-        super().__init__(dict(env))
-        self._counter = itertools.count()
-        # One session per instance, so a single in-flight `exec_code` owns these: the
-        # buffer captures that run's stdout/stderr, and `_error` holds the
-        # exception it raised, if any.
+        self.locals: dict[str, Any] = dict(env)
+        # One in-flight `exec_code` owns these: the buffer captures its
+        # stdout/stderr, and `_error` holds the exception it raised, if any.
         self._buffer = io.StringIO()
         self._error: Exception | None = None
-        # Replace the native single-mode CommandCompiler with our op-routed,
-        # linecache-populating compiler.
-        self.compile = _OpCommandCompiler()
 
-    def runcode(self, code_obj: CodeType) -> None:
-        try:
-            exec(code_obj, self.locals)
-        except Exception as exc:
-            # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
-            self.showtraceback()
-            self._error = exc
-
-    def showsyntaxerror(self, *args: Any, **kwargs: Any) -> None:
-        # A syntax/compile error is a failed run too; capture it the way
-        # `runcode` captures a runtime error, so `exec_code` raises for both.  The
-        # SyntaxError is the in-flight exception during `runsource`'s except.
-        exc = sys.exc_info()[1]
-        assert isinstance(exc, Exception)
-        self._error = exc
-        super().showsyntaxerror(*args, **kwargs)
-
-    def showtraceback(self) -> None:
-        # InteractiveInterpreter.showtraceback drops only its own frame; routing
-        # through the `exec` op inserts several.  A snippet frame is one running
-        # in our namespace -- its globals *are* `self.locals` (true for the
-        # module-level exec and for any function defined in a snippet, whose
-        # __globals__ is `self.locals`) -- so identify it by identity, not by
-        # matching the `<exec_code-` filename string.
-        exc_type, exc, tb = sys.exc_info()
-        user_tb = tb
-        while user_tb is not None and user_tb.tb_frame.f_globals is not self.locals:
-            user_tb = user_tb.tb_next
-        self.write("".join(traceback.format_exception(exc_type, exc, user_tb or tb)))
-
-    def write(self, data: str) -> None:
-        # Error output from show{traceback,syntaxerror} lands here; route it to
-        # the current run's buffer.
-        self._buffer.write(data)
-
-    def exec_code(self, source: str) -> str:
-        """Execute Python in this persistent session and return its captured
-        stdout/stderr.
+    def exec_code(self, source: EncodableCode) -> str:
+        """Execute an `EncodableCode` in this persistent session and return its
+        captured stdout/stderr.
 
         Variables, imports and definitions persist across calls, exactly like a
         REPL.  There is no bare-expression auto-echo, so use print() to surface
@@ -935,11 +914,6 @@ class ReplSession(code.InteractiveInterpreter):
         transcript) rather than returning, so it behaves like a normal Python
         call.
         """
-        # Per-snippet filename so each cell's source is retained in `linecache`
-        # independently -- a single shared name would overwrite earlier cells
-        # and format earlier-defined functions' tracebacks against the wrong
-        # source.
-        filename = f"{self._FILENAME_PREFIX}{next(self._counter)}>"
         self._buffer = io.StringIO()
         self._error = None
         try:
@@ -947,12 +921,28 @@ class ReplSession(code.InteractiveInterpreter):
                 contextlib.redirect_stdout(self._buffer),
                 contextlib.redirect_stderr(self._buffer),
             ):
-                self.runsource(source, filename)
-        finally:
-            transcript = self._buffer.getvalue()
-            error = self._error
-        if error is not None:
+                exec(source.code, self.locals)
+        except Exception as exc:
+            # `except Exception` lets SystemExit/KeyboardInterrupt propagate.
+            self._show_traceback()
+            self._error = exc
+        transcript = self._buffer.getvalue()
+        if self._error is not None:
             # Like a normal Python call, a failed snippet raises rather than
             # returning; `call_tool` catches it and feeds the transcript back.
-            raise ReplExecutionError(transcript, error)
+            raise ReplExecutionError(transcript, self._error)
         return transcript
+
+    def _show_traceback(self) -> None:
+        # The `exec` op inserts effect-machinery frames between the call site and
+        # the snippet.  A snippet frame is one running in our namespace -- its
+        # globals *are* `self.locals` (true for the module-level exec and for any
+        # function defined in a snippet, whose __globals__ is `self.locals`) -- so
+        # identify it by identity and drop the machinery frames above it.
+        exc_type, exc, tb = sys.exc_info()
+        user_tb = tb
+        while user_tb is not None and user_tb.tb_frame.f_globals is not self.locals:
+            user_tb = user_tb.tb_next
+        self._buffer.write(
+            "".join(traceback.format_exception(exc_type, exc, user_tb or tb))
+        )

@@ -1546,7 +1546,7 @@ from effectful.handlers.llm.completions import (
     _LexicalVariableTool,
     collect_tools,
 )
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import EncodableCode, UnsafeEvalProvider
 
 
 # Helpers for the test matrix
@@ -1765,7 +1765,10 @@ def _drive_repl(body):
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
         def _call(self, *_a, **_k):
-            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            exec_code = collect_tools(collections.ChainMap({}))["exec_code"]
+            # Bodies pass source strings; wrap them in `EncodableCode` as the LLM
+            # tool boundary would (decoding compiles the source).
+            box.append(body(lambda src: exec_code(EncodableCode.from_source(src))))
             return None
 
     @Template.define

@@ -43,7 +43,11 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.evaluation import ReplExecutionError, UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import (
+    EncodableCode,
+    ReplExecutionError,
+    UnsafeEvalProvider,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1625,7 +1629,9 @@ class TestCallToolWrapsExecutionError:
         message renders the transcript."""
 
         def body(exec_code):
-            bound_args = inspect.signature(exec_code).bind("1 / 0")
+            bound_args = inspect.signature(exec_code).bind(
+                EncodableCode.from_source("1 / 0")
+            )
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
             return call_tool(tc)
 
@@ -1644,7 +1650,9 @@ class TestCallToolWrapsExecutionError:
         a tool feedback message carrying the transcript -- not raised."""
 
         def body(exec_code):
-            bound_args = inspect.signature(exec_code).bind("1 / 0")
+            bound_args = inspect.signature(exec_code).bind(
+                EncodableCode.from_source("1 / 0")
+            )
             tc = DecodedToolCall(exec_code, bound_args, "call_exec_fb", "exec_code")
             return call_tool(tc)
 

@@ -19,6 +19,7 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
+    EncodableCode,
     ReplExecutionError,
     ReplSession,
     RestrictedEvalProvider,
@@ -1548,27 +1549,33 @@ def test_builtins_in_env_does_not_bypass_security():
 # ============================================================================
 
 
+def _code(source: str) -> EncodableCode:
+    """Build an `EncodableCode` (compiling the source through the active eval
+    provider) for the session tests below."""
+    return EncodableCode.from_source(source)
+
+
 def test_repl_seeds_from_lexical_context():
     """Names in the seed context are usable in executed code."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({"readings": [10, 20, 30]})
-        assert session.exec_code("print(sum(readings))") == "60\n"
+        assert session.exec_code(_code("print(sum(readings))")) == "60\n"
 
 
 def test_repl_persists_bindings_across_calls():
     """A binding created in one call is visible in the next."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        session.exec_code("total = 41")
-        assert session.exec_code("print(total)") == "41\n"
+        session.exec_code(_code("total = 41"))
+        assert session.exec_code(_code("print(total)")) == "41\n"
 
 
 def test_repl_rebinds_across_calls():
     """A seeded/prior name can be rebound using its prior value."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({"x": 10})
-        session.exec_code("x = x + 1")
-        assert session.exec_code("print(x)") == "11\n"
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
 
 
 def test_repl_runs_complete_multistatement_block():
@@ -1576,24 +1583,24 @@ def test_repl_runs_complete_multistatement_block():
     `single`-mode compilation would reject)."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        out = session.exec_code("def double(n):\n    return n * 2\nprint(double(21))")
+        out = session.exec_code(
+            _code("def double(n):\n    return n * 2\nprint(double(21))")
+        )
         assert out == "42\n"
 
 
 def test_repl_captures_print():
     with handler(UnsafeEvalProvider()):
-        assert ReplSession({}).exec_code("print('hi')") == "hi\n"
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
-def test_repl_syntax_error_raises_with_transcript():
-    """An invalid snippet raises `ReplExecutionError` carrying the transcript,
-    and leaves the session usable."""
+def test_repl_rejects_invalid_source_at_construction():
+    """Invalid source is rejected when the `EncodableCode` is built -- before it
+    ever reaches the session -- and valid code in the same provider still runs."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({})
-        with pytest.raises(ReplExecutionError) as exc_info:
-            session.exec_code("def f(:")
-        assert isinstance(exc_info.value.original_error, SyntaxError)
-        assert session.exec_code("print('ok')") == "ok\n"
+        with pytest.raises(pydantic.ValidationError):
+            EncodableCode.from_source("def f(:")
+        assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
 
 
 def test_repl_exception_is_isolated():
@@ -1601,11 +1608,11 @@ def test_repl_exception_is_isolated():
     retains prior state."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        session.exec_code("kept = 7")
+        session.exec_code(_code("kept = 7"))
         with pytest.raises(ReplExecutionError) as exc_info:
-            session.exec_code("print(1 / 0)")
+            session.exec_code(_code("print(1 / 0)"))
         assert isinstance(exc_info.value.original_error, ZeroDivisionError)
-        assert session.exec_code("print(kept)") == "7\n"
+        assert session.exec_code(_code("print(kept)")) == "7\n"
 
 
 def test_repl_keyboard_interrupt_propagates():
@@ -1613,7 +1620,7 @@ def test_repl_keyboard_interrupt_propagates():
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
         with pytest.raises(KeyboardInterrupt):
-            session.exec_code("raise KeyboardInterrupt")
+            session.exec_code(_code("raise KeyboardInterrupt"))
 
 
 def test_repl_traceback_trims_effect_machinery_frames():
@@ -1621,7 +1628,7 @@ def test_repl_traceback_trims_effect_machinery_frames():
     `.py` frames between the call site and the snippet are dropped."""
     with handler(UnsafeEvalProvider()):
         with pytest.raises(ReplExecutionError) as exc_info:
-            ReplSession({}).exec_code("1 / 0")
+            ReplSession({}).exec_code(_code("1 / 0"))
         transcript = exc_info.value.transcript
     frame_files = re.findall(r'File "([^"]+)"', transcript)
     assert frame_files  # the traceback shows at least one frame
@@ -1634,9 +1641,9 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
     per-snippet filename keeps each cell's source in linecache."""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({})
-        session.exec_code("def boom():\n    return 1 / 0")
+        session.exec_code(_code("def boom():\n    return 1 / 0"))
         with pytest.raises(ReplExecutionError) as exc_info:
-            session.exec_code("boom()")
+            session.exec_code(_code("boom()"))
         assert "return 1 / 0" in exc_info.value.transcript  # boom's real source
 
 
@@ -1646,8 +1653,8 @@ def test_repl_new_binding_does_not_leak_into_seed_context():
     with handler(UnsafeEvalProvider()):
         seed = {"base": 10}
         session = ReplSession(seed)
-        session.exec_code("derived = base + 5")
-        assert session.exec_code("print(derived)") == "15\n"
+        session.exec_code(_code("derived = base + 5"))
+        assert session.exec_code(_code("print(derived)")) == "15\n"
         assert "derived" not in seed  # the lexical seed is untouched
 
 
@@ -1663,8 +1670,8 @@ def test_repl_new_binding_does_not_leak_into_seed_context():
 def test_repl_rebinds_across_calls_restricted():
     with handler(RestrictedEvalProvider()):
         session = ReplSession({"x": 10})
-        session.exec_code("x = x + 1")
-        assert session.exec_code("print(x)") == "11\n"
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
 
 
 @pytest.mark.xfail(
@@ -1673,4 +1680,4 @@ def test_repl_rebinds_across_calls_restricted():
 )
 def test_repl_captures_print_restricted():
     with handler(RestrictedEvalProvider()):
-        assert ReplSession({}).exec_code("print('hi')") == "hi\n"
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"

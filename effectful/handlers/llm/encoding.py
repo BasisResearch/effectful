@@ -189,6 +189,35 @@ def _pydantic_type_complex(ty):
     ]
 
 
+def _validate_code(value: object) -> evaluation.EncodableCode:
+    if isinstance(value, evaluation.EncodableCode):
+        return value
+    if not isinstance(value, str):
+        raise ValueError(
+            f"expected Python source as a string, got {type(value).__name__}"
+        )
+    # `from_source` compiles the source through its field validator, raising a
+    # ValidationError if it does not compile.
+    return evaluation.EncodableCode.from_source(value)
+
+
+def _serialize_code(value: evaluation.EncodableCode) -> str:
+    return value.source
+
+
+@TypeToPydanticType.register(evaluation.EncodableCode)
+def _pydantic_type_code(ty):
+    """Encode `EncodableCode` as a JSON string.  Decoding compiles the source
+    (through the `parse`/`compile` ops), so invalid source is rejected here and
+    a valid `EncodableCode` carries a ready-to-run code object."""
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_code),
+        pydantic.PlainSerializer(_serialize_code),
+        pydantic.WithJsonSchema({"type": "string"}),
+    ]
+
+
 def _inline_refs(schema: dict) -> dict:
     """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
 
