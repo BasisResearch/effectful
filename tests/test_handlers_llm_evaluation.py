@@ -1664,6 +1664,30 @@ def test_repl_binding_is_visible_to_the_rest_of_the_call():
         assert "shared" not in lexical  # but not leaked into the lexical context
 
 
+def test_repl_keeps_stdout_and_stderr_separate():
+    """stdout (print output) and stderr (tracebacks) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(_code("print('hi')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\n"
+        assert "ZeroDivisionError" in session.stderr.getvalue()
+        assert "hi" not in session.stderr.getvalue()  # the streams don't mix
+        assert out == "hi\n" + session.stderr.getvalue()  # returned: stdout then stderr
+
+
+def test_repl_runsource_routes_through_ops():
+    """`runsource` compiles through the `parse`/`compile` ops (so it needs an
+    installed provider), keeping it self-consistent with `runcode`/`exec_code`
+    rather than falling back to the native single-mode compiler."""
+    with pytest.raises(NotImplementedError):
+        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        assert session.runsource("kept = 7") is False  # complete: compiled + ran
+        assert session.locals["kept"] == 7
+
+
 # ----------------------------------------------------------------------------
 # ReplSession under RestrictedEvalProvider (state + print fixed in #686)
 # ----------------------------------------------------------------------------

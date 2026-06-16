@@ -1,6 +1,7 @@
 import ast
 import builtins
 import code
+import codeop
 import collections.abc
 import contextlib
 import copy
@@ -838,6 +839,24 @@ class RestrictedEvalProvider(ObjectInterpretation):
         )
 
 
+class _OpCommandCompiler(codeop.CommandCompiler):
+    """A `codeop.CommandCompiler` that routes compilation through the
+    `parse`/`compile` effect operations (so the installed eval provider owns it
+    and `parse` populates `linecache`), replacing the native single-mode
+    compiler that `code.InteractiveInterpreter` installs.
+    """
+
+    def __call__(
+        self, source: str, filename: str = "<input>", symbol: str = "single"
+    ) -> CodeType:
+        # `runsource` passes symbol="single"; we ignore it and compile in the
+        # exec mode the ops produce, so a complete multi-statement block runs in
+        # one shot.  Incomplete/invalid input raises SyntaxError, which
+        # `runsource` routes to `showsyntaxerror` (we do not buffer partial input
+        # -- there is no line-at-a-time protocol).
+        return compile(parse(source, filename), filename)
+
+
 class ReplSession(code.InteractiveInterpreter):
     """A persistent, output-capturing Python session seeded from a lexical
     context.
@@ -856,8 +875,10 @@ class ReplSession(code.InteractiveInterpreter):
     `Encodable[CodeType]` boundary; this session only executes.
     """
 
-    # Everything the session writes -- stdout, stderr and tracebacks -- captured
-    # for its lifetime and exposed so callers can introspect a session's output.
+    # The session's captured output, accumulated across calls and exposed for
+    # introspection.  stdout (`print` output) and stderr (writes plus tracebacks)
+    # are kept separate; `exec_code` returns each call's slice of both.
+    stdout: io.StringIO
     stderr: io.StringIO
 
     def __init__(self, env: MutableMapping[str, Any]):
@@ -877,13 +898,18 @@ class ReplSession(code.InteractiveInterpreter):
         # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
         # the base's runcode/showtraceback/write machinery.
         super().__init__(scope)
+        # Route `runsource`'s compilation through the `parse`/`compile` ops too, so
+        # it stays consistent with our `runcode` (which execs through the `exec`
+        # op) rather than the native single-mode compiler the base installed.
+        self.compile = _OpCommandCompiler()
+        self.stdout = io.StringIO()
         self.stderr = io.StringIO()
 
     def runcode(self, code: CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
         # is that `exec` here is the effect operation, so execution routes
         # through the installed eval provider.  `showtraceback` reports failures
-        # via `self.write`, which `exec_code` has redirected into the buffer.
+        # via `self.write`, which `exec_code` has redirected into `self.stderr`.
         try:
             exec(code, self.locals)
         except SystemExit:
@@ -903,21 +929,23 @@ class ReplSession(code.InteractiveInterpreter):
         in-scope variables of the surrounding context, which you may read and
         rebind.
 
-        Output: returns exactly the text this call wrote to stdout and stderr.
+        Output: returns this call's output -- its stdout (what `print` wrote)
+        followed by its stderr (which includes the traceback if the code raised).
         There is NO automatic echoing of results -- a bare expression on its own
         line (e.g. `1 + 1`) displays nothing, so call `print(...)` for anything
-        you want to see.  If the code raises, its traceback is captured into the
-        returned text and the session survives, so you can read the error and
-        continue in the next call (only `SystemExit` aborts).
+        you want to see.  A snippet that raises has its traceback returned and the
+        session survives, so you can read the error and continue in the next call
+        (only `SystemExit` aborts).
 
         Provide `code` as a string of Python source.  It must be a complete,
         compilable snippet -- incomplete or invalid source is rejected before it
         runs.
         """
-        start = self.stderr.tell()
+        out_start = self.stdout.tell()
+        err_start = self.stderr.tell()
         with (
-            contextlib.redirect_stdout(self.stderr),
+            contextlib.redirect_stdout(self.stdout),
             contextlib.redirect_stderr(self.stderr),
         ):
             self.runcode(code)
-        return self.stderr.getvalue()[start:]
+        return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
