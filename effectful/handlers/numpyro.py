@@ -1,4 +1,5 @@
 try:
+    import numpyro
     import numpyro.distributions as dist
 except ImportError:
     raise ImportError("Numpyro is required to use effectful.handlers.numpyro")
@@ -225,10 +226,12 @@ class _DistributionTerm(dist.Distribution):
 
     @functools.cached_property
     def _is_eager(self) -> bool:
-        return all(
-            (not isinstance(x, Term) or is_eager_array(x))
-            for x in (*self.args, *self.kwargs.values())
-        )
+        def _arg_is_eager(x):
+            if isinstance(x, _DistributionTerm):
+                return x._is_eager
+            return not isinstance(x, Term) or is_eager_array(x)
+
+        return all(_arg_is_eager(x) for x in (*self.args, *self.kwargs.values()))
 
     @property
     def op(self):
@@ -332,6 +335,13 @@ class _DistributionTerm(dist.Distribution):
         except NotImplementedError:
             raise RuntimeError(f"variance is not implemented for {type(self).__name__}")
 
+    @property
+    @defop
+    def support(self) -> numpyro.distributions.constraints.Constraint:
+        if not self._is_eager:
+            raise NotHandled
+        return self._pos_base_dist.support
+
     @defop
     def enumerate_support(self, expand=True) -> jax.Array:
         if not self._is_eager:
@@ -349,7 +359,7 @@ class _DistributionTerm(dist.Distribution):
         raise NotHandled
 
     @defop
-    def expand(self, batch_shape) -> jax.Array:
+    def expand(self, batch_shape) -> dist.Distribution:
         if not self._is_eager:
             raise NotHandled
 
@@ -386,6 +396,33 @@ enumerate_support = _DistributionTerm.enumerate_support
 entropy = _DistributionTerm.entropy
 to_event = _DistributionTerm.to_event
 expand = _DistributionTerm.expand
+
+
+@defdata.register(dist.Distribution)
+class _DistributionMethodTerm(_DistributionTerm):
+    """Term for distribution-method ops returning the abstract ``dist.Distribution``
+    (``expand``, ``to_event``). Catches the ``defdata`` fallthrough that would
+    otherwise hit ``_CallableTerm``. See #666."""
+
+    def __init__(self, ty, op, *args, **kwargs):
+        receiver = args[0] if args else None
+        constr = (
+            receiver._constr
+            if isinstance(receiver, _DistributionTerm)
+            else dist.Distribution
+        )
+        super().__init__(constr, op, *args, **kwargs)
+
+    @functools.cached_property
+    def _pos_base_dist(self) -> dist.Distribution:
+        # Delegate to NumPyro's method of the same name on the materialised receiver.
+        receiver = self._args[0]
+        base = (
+            receiver._pos_base_dist
+            if isinstance(receiver, _DistributionTerm)
+            else receiver
+        )
+        return getattr(base, self._op.__name__)(*self._args[1:], **self._kwargs)
 
 
 @defop

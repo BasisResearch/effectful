@@ -119,6 +119,21 @@ We can make the evaluation strategy smarter by taking advantage of the commutati
    >>>     print(evaluate(e))
    add(8, add(x(), y()))
 
+Using with AI Agents
+--------------------
+
+A standalone Markdown reference for building effectful LLM applications is
+published with each documentation build. Point your AI coding agent (e.g.
+Claude Code, Cursor, Copilot) to:
+
+::
+
+   https://basisresearch.github.io/effectful/llm.md
+
+This file is auto-generated from the `LLM tutorial notebook <https://basisresearch.github.io/effectful/llm.html>`_
+and contains complete API usage examples for templates, tool calling,
+structured output, retries, and more.
+
 Learn More
 ----------
 

@@ -1,15 +1,15 @@
 {
-  "id": "chatcmpl-D3rNQ45EqoVx6YQZKRX86eowLhhcv",
-  "created": 1769812536,
-  "model": "gpt-5-nano-2025-08-07",
+  "id": "chatcmpl-DoaWNFKpBO8KO9IuPrwpMf2aDayBQ",
+  "created": 1780949159,
+  "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": null,
+  "system_fingerprint": "fp_6c2953e649",
   "choices": [
     {
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing helps catch mistakes before they reach users.\"}",
+        "content": "{\"value\":150}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
@@ -22,22 +22,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 282,
-    "prompt_tokens": 342,
-    "total_tokens": 624,
+    "completion_tokens": 11,
+    "prompt_tokens": 3895,
+    "total_tokens": 3906,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
-      "reasoning_tokens": 256,
+      "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
-      "cached_tokens": 0,
+      "cached_tokens": 3840,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"

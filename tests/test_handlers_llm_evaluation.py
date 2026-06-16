@@ -2,7 +2,10 @@
 
 import ast
 import builtins
+import contextlib
 import inspect
+import io
+import sys
 import textwrap
 import types
 import typing
@@ -17,13 +20,18 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
+    ReplSession,
     RestrictedEvalProvider,
+    UnsafeEvalProvider,
     collect_imports,
     collect_runtime_type_stubs,
     collect_variable_declarations,
     mypy_type_check,
     type_to_ast,
 )
+from effectful.handlers.llm.evaluation import compile as compile_op
+from effectful.handlers.llm.evaluation import exec as exec_op
+from effectful.handlers.llm.evaluation import parse as parse_op
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
@@ -129,6 +137,24 @@ class TestCollectImports:
         unparsed = [ast.unparse(stmt) for stmt in result]
         assert any("math" in s and "import" in s for s in unparsed)
         assert any("os" in s and "import" in s for s in unparsed)
+
+    def test_private_module_is_imported(self):
+        """``_``-prefixed modules in ``sys.modules`` are imported alongside
+        public ones (#674).  Without this, emitted stubs that reference
+        types from internal modules — e.g. pytest's ``request`` fixture
+        whose type is ``_pytest.fixtures.TopRequest`` — crash
+        ``mypy_type_check`` with ``Name '_pytest' is not defined``."""
+        import _pytest.fixtures  # noqa: F401
+
+        result = collect_imports({})
+        modules = {
+            alias.name
+            for stmt in result
+            if isinstance(stmt, ast.Import)
+            for alias in stmt.names
+        }
+        assert "_pytest" in modules
+        assert "_pytest.fixtures" in modules
 
 
 class TestCollectImportsStress:
@@ -285,7 +311,12 @@ class TestTypeToAstTypingAnnotations:
 
         typ = typing.Optional[int]  # noqa: UP045 - intentionally testing old syntax
         result = type_to_ast(typ)
-        assert ast.unparse(result) == "typing.Union[int, None]"
+        # Python 3.14 unified typing.Union with types.UnionType (PEP 604),
+        # so typing.Optional[int] now renders with | syntax.
+        expected = (
+            "int | None" if sys.version_info >= (3, 14) else "typing.Union[int, None]"
+        )
+        assert ast.unparse(result) == expected
 
     def test_typing_dict(self):
         """typing.Dict[str, int]."""
@@ -853,6 +884,7 @@ class TestTypeAliases:
         assert unparsed == "MyList"
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckE2E:
     """End-to-end stress tests for mypy_type_check with get_context and ast.parse. Never empty context."""
 
@@ -862,6 +894,25 @@ class TestMypyTypeCheckE2E:
         source = "def f(x: int, s: str) -> bool:\n    return len(s) > x"
         module = ast.parse(source)
         mypy_type_check(module, get_context(), [int, str], bool)
+
+    def test_private_module_qualified_type_in_context(self):
+        """Regression for #674: a ctx value whose runtime type lives in
+        a ``_``-prefixed module must not crash ``mypy_type_check`` with
+        ``Name '_pytest' is not defined``.  Uses a pytest fixture-request
+        instance because that is the path that surfaced the bug."""
+        import _pytest.fixtures
+
+        # Build a `request`-shaped instance.  We cannot easily instantiate
+        # `TopRequest` properly outside pytest, but `__new__` gives us a
+        # value whose `type(...).__module__` is `_pytest.fixtures`, which
+        # is what triggers the qualname emission in
+        # `collect_variable_declarations`.
+        fake_request = _pytest.fixtures.TopRequest.__new__(_pytest.fixtures.TopRequest)
+        ctx = {"request": fake_request}
+        source = "def f() -> int:\n    return 0"
+        module = ast.parse(source)
+        # Must not raise.
+        mypy_type_check(module, ctx, None, int)
 
     def test_simple_function_no_params_with_get_context(self):
         """Function with no params, returns int; get_context()."""
@@ -1002,6 +1053,7 @@ def f(x: Annotated[int, Tag]) -> int:
         mypy_type_check(module, ctx, [int], int)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckFailures:
     """Failure cases: mypy_type_check must raise TypeError with mypy report. All use get_context()."""
 
@@ -1275,6 +1327,7 @@ def outer(x: int) -> bool:
             mypy_type_check(module, ctx, [], MyErr)
 
 
+@pytest.mark.xdist_group("mypy")
 class TestMypyTypeCheckNameCollision:
     """Tests that mypy_type_check renames synthesized functions whose names
     collide with variable declarations or class stubs from the context."""
@@ -1401,7 +1454,6 @@ class TestMypyTypeCheckNameCollision:
 
 def test_restricted_blocks_private_attribute_access():
     """RestrictedPython blocks access to underscore-prefixed attributes by default."""
-    encodable = Encodable.define(Callable[[str], int], {})
     source = SynthesizedFunction(
         module_code="""def get_private(s: str) -> int:
     return s.__class__.__name__"""
@@ -1409,7 +1461,9 @@ def test_restricted_blocks_private_attribute_access():
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
         with handler(RestrictedEvalProvider()):
-            fn = encodable.decode(source)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
+                source, context={}
+            )
             fn("test")
 
 
@@ -1420,13 +1474,14 @@ def test_restricted_with_custom_policy():
     class CustomPolicy(RestrictingNodeTransformer):
         pass
 
-    encodable = Encodable.define(Callable[[int, int], int], {})
     source = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider(policy=CustomPolicy)):
-        fn = encodable.decode(source)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source, context={}
+        )
     assert fn(2, 3) == 5
 
 
@@ -1443,18 +1498,18 @@ def test_builtins_in_env_does_not_bypass_security():
     dangerous_ctx = {"__builtins__": builtins.__dict__}
 
     # Test 1: open() should not be usable even with __builtins__ in context
-    encodable_open = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_open = SynthesizedFunction(
         module_code="""def read_file(path: str) -> str:
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
         with handler(RestrictedEvalProvider()):
-            fn = encodable_open.decode(source_open)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_open, context=dangerous_ctx
+            )
             fn("/etc/passwd")
 
     # Test 2: __import__ should not be usable
-    encodable_import = Encodable.define(Callable[[], str], dangerous_ctx)
     source_import = SynthesizedFunction(
         module_code="""def get_os_name() -> str:
     os = __import__('os')
@@ -1462,26 +1517,241 @@ def test_builtins_in_env_does_not_bypass_security():
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_import.decode(source_import)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
+                source_import, context=dangerous_ctx
+            )
             fn()
 
     # Test 3: Verify safe code still works with dangerous context
-    encodable_safe = Encodable.define(Callable[[int, int], int], dangerous_ctx)
     source_safe = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider()):
-        fn = encodable_safe.decode(source_safe)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source_safe, context=dangerous_ctx
+        )
         assert fn(2, 3) == 5, "Safe code should still work"
 
     # Test 4: Private attribute access should still be blocked
-    encodable_private = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_private = SynthesizedFunction(
         module_code="""def get_class(s: str) -> str:
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_private.decode(source_private)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_private, context=dangerous_ctx
+            )
             fn("test")
+
+
+# ============================================================================
+# ReplSession (#678)
+# ============================================================================
+
+
+def _code(source: str) -> types.CodeType:
+    """Compile `source` to a code object the way the `exec_code` tool boundary
+    does -- through `Encodable[CodeType]`, which routes the active eval
+    provider's `parse`/`compile` ops (so a handler must be installed)."""
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(source)
+
+
+def test_repl_seeds_from_lexical_context():
+    """Names in the seed context are usable in executed code."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [10, 20, 30]})
+        assert session.exec_code(_code("print(sum(readings))")) == "60\n"
+
+
+def test_repl_persists_bindings_across_calls():
+    """A binding created in one call is visible in the next."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("total = 41"))
+        assert session.exec_code(_code("print(total)")) == "41\n"
+
+
+def test_repl_rebinds_across_calls():
+    """A seeded/prior name can be rebound using its prior value."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_runs_complete_multistatement_block():
+    """A complete `def` + call in one snippet runs in one shot (the case
+    `single`-mode compilation would reject)."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(
+            _code("def double(n):\n    return n * 2\nprint(double(21))")
+        )
+        assert out == "42\n"
+
+
+def test_repl_captures_print():
+    with handler(UnsafeEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+def test_repl_rejects_invalid_source_at_construction():
+    """Invalid source is rejected when it is decoded to a code object -- before it
+    ever reaches the session -- and valid code in the same provider still runs."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("def f(:")
+        assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
+
+
+def test_repl_exception_is_isolated():
+    """A runtime exception is reported in the call's output; the session survives
+    and retains prior state."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("kept = 7"))
+        out = session.exec_code(_code("print(1 / 0)"))
+        assert "ZeroDivisionError" in out
+        assert session.exec_code(_code("print(kept)")) == "7\n"
+
+
+def test_repl_system_exit_propagates():
+    """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
+    other exception (including `KeyboardInterrupt`) is caught and surfaced as
+    output rather than escaping the call."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        with pytest.raises(SystemExit):
+            session.exec_code(_code("raise SystemExit"))
+        out = session.exec_code(_code("raise KeyboardInterrupt"))
+        assert "KeyboardInterrupt" in out
+
+
+def test_repl_cross_snippet_traceback_shows_correct_source():
+    """A function defined in an earlier call that raises in a later call formats
+    with its *own* source line, not the later call's source -- the per-snippet
+    filename keeps each cell's source in linecache."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("def boom():\n    return 1 / 0"))
+        out = session.exec_code(_code("boom()"))
+        assert "return 1 / 0" in out  # boom's real source
+
+
+def test_repl_new_binding_does_not_leak_into_seed_context():
+    """A binding created in executed code stays in the session; the seed mapping
+    the session was created from is not mutated."""
+    with handler(UnsafeEvalProvider()):
+        seed = {"base": 10}
+        session = ReplSession(seed)
+        session.exec_code(_code("derived = base + 5"))
+        assert session.exec_code(_code("print(derived)")) == "15\n"
+        assert "derived" not in seed  # the lexical seed is untouched
+
+
+def test_repl_binding_is_visible_to_the_rest_of_the_call():
+    """Seeded from the per-call `ChainMap`, a binding the REPL makes lands in a
+    shared shadow layer of that chain -- so the rest of the Template call sees it
+    -- while the read-only lexical layer underneath does not, keeping it scoped to
+    the call (mirroring `exec`)."""
+    with handler(UnsafeEvalProvider()):
+        lexical = {"base": 10}
+        env: ChainMap[str, Any] = ChainMap({}, lexical)
+        ReplSession(env).exec_code(_code("shared = base + 5"))
+        assert env["shared"] == 15  # visible to the rest of the call via the chain
+        assert "shared" not in lexical  # but not leaked into the lexical context
+
+
+def test_repl_keeps_stdout_and_stderr_separate():
+    """stdout (print output) and stderr (tracebacks) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(_code("print('hi')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\n"
+        assert "ZeroDivisionError" in session.stderr.getvalue()
+        assert "hi" not in session.stderr.getvalue()  # the streams don't mix
+        assert out == "hi\n" + session.stderr.getvalue()  # returned: stdout then stderr
+
+
+def test_repl_runsource_routes_through_ops():
+    """`runsource` compiles through the `parse`/`compile` ops (so it needs an
+    installed provider), keeping it self-consistent with `runcode`/`exec_code`
+    rather than falling back to the native single-mode compiler."""
+    with pytest.raises(NotImplementedError):
+        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        assert session.runsource("kept = 7") is False  # complete: compiled + ran
+        assert session.locals["kept"] == 7
+
+
+# ----------------------------------------------------------------------------
+# ReplSession under RestrictedEvalProvider (state + print fixed in #686)
+# ----------------------------------------------------------------------------
+
+
+def test_repl_rebinds_across_calls_restricted():
+    with handler(RestrictedEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_captures_print_restricted():
+    with handler(RestrictedEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+# ============================================================================
+# RestrictedEvalProvider state-retention and print (#685)
+# ============================================================================
+
+
+def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
+    """Run one snippet through the parse/compile/exec ops under
+    RestrictedEvalProvider, optionally capturing stdout."""
+    with handler(RestrictedEvalProvider()):
+        code = compile_op(parse_op(source, "<f>"), "<f>")
+        if capture:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exec_op(code, ns)
+            return buf.getvalue()
+        exec_op(code, ns)
+        return None
+
+
+def test_restricted_exec_copies_back_rebound_seed():
+    """#685: rebinding a name already present in the namespace writes the new
+    value back, not just never-before-seen names."""
+    ns = {"x": 1}
+    _restricted_run("x = 99", ns)
+    assert ns["x"] == 99
+
+
+def test_restricted_exec_copies_back_rebound_new_key():
+    """#685: a key that becomes a 'seed' after its first definition is still
+    rebindable on subsequent calls."""
+    ns: dict = {}
+    _restricted_run("y = 1", ns)
+    _restricted_run("y = 2", ns)
+    assert ns["y"] == 2
+
+
+def test_restricted_exec_persists_and_rebinds_across_calls():
+    """#685: the namespace is a real REPL session — a binding from one call is
+    usable in the next, and rebinding it using its prior value works."""
+    ns: dict = {}
+    _restricted_run("x = 10", ns)
+    _restricted_run("x = x + 1", ns)
+    assert ns["x"] == 11
+
+
+def test_restricted_exec_print_captured_to_stdout():
+    """#685: RestrictedPython's `print` is routed to the real stdout so
+    output-capturing callers see it (rather than NameError on `_print_`)."""
+    out = _restricted_run("print('hi')", {}, capture=True)
+    assert out == "hi\n"

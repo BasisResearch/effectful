@@ -1,17 +1,26 @@
 {
-  "id": "chatcmpl-D3rNU2lVVTdXXJhrnqD9Vs2LUtPNT",
-  "created": 1769812540,
+  "id": "chatcmpl-DoaWFqScxo1oUrffPxQIyJYv8ENNr",
+  "created": 1780949151,
   "model": "gpt-4o-mini-2024-07-18",
   "object": "chat.completion",
-  "system_fingerprint": "fp_1590f93f9d",
+  "system_fingerprint": "fp_6c2953e649",
   "choices": [
     {
-      "finish_reason": "stop",
+      "finish_reason": "tool_calls",
       "index": 0,
       "message": {
-        "content": "{\"value\":\"Testing ensures that a product meets its requirements and functions as intended.\"}",
+        "content": null,
         "role": "assistant",
-        "tool_calls": null,
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"a\":10,\"b\":20}",
+              "name": "add_numbers"
+            },
+            "id": "call_TABbctvXDmYyjourZxIgLFo1",
+            "type": "function"
+          }
+        ],
         "function_call": null,
         "provider_specific_fields": {
           "refusal": null
@@ -22,22 +31,24 @@
     }
   ],
   "usage": {
-    "completion_tokens": 21,
-    "prompt_tokens": 262,
-    "total_tokens": 283,
+    "completion_tokens": 18,
+    "prompt_tokens": 3787,
+    "total_tokens": 3805,
     "completion_tokens_details": {
       "accepted_prediction_tokens": 0,
       "audio_tokens": 0,
       "reasoning_tokens": 0,
       "rejected_prediction_tokens": 0,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     },
     "prompt_tokens_details": {
       "audio_tokens": 0,
-      "cached_tokens": 0,
+      "cached_tokens": 3712,
       "text_tokens": null,
-      "image_tokens": null
+      "image_tokens": null,
+      "video_tokens": null
     }
   },
   "service_tier": "default"
