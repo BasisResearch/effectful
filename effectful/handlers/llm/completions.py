@@ -475,9 +475,6 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
             *tool_call.bound_args.args, **tool_call.bound_args.kwargs
         )
     except Exception as e:
-        # An `exec_code` snippet error arrives here as a `ReplExecutionError`
-        # whose ``str`` is the trimmed transcript, so the generic feedback path
-        # surfaces it -- no bespoke exception type needed.
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
