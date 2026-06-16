@@ -30,6 +30,7 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
+from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -287,6 +288,74 @@ class LexicalReaders(ObjectInterpretation):
             ):
                 continue
         return result
+
+
+@Operation.define
+def _repl_session(env: collections.abc.MutableMapping[str, typing.Any]) -> ReplSession:
+    """Return the REPL session for the current Template call, seeded from `env`.
+
+    `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
+    (mirroring how `__history__` is managed), giving the session a lifetime of
+    exactly one Template call.  Outside such a scope there is no managed session,
+    so this falls back to a fresh one -- e.g. when tools are listed outside a
+    Template call.
+    """
+    return ReplSession(env)
+
+
+class PythonRepl(ObjectInterpretation):
+    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
+
+    Off by default; install it where the LLM should be able to run code whose
+    state (variables, imports, definitions) survives across tool calls within a
+    single Template invocation.
+
+    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
+    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
+    the duration of the call, and handles `collect_tools` to inject an `exec_code`
+    Tool routed to that session.  The session is therefore introduced and
+    eliminated by its own handler, bounded to the Template call by construction --
+    there is no global registry of sessions, and nested Template calls get their
+    own isolated sessions.
+
+    The session is seeded from the Template's lexical context and routes execution
+    through the `parse`/`compile`/`exec` effect operations, so it works under any
+    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
+    """
+
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        # One session per Template call, created lazily on first use (the call's
+        # `env`, supplied by `collect_tools`/`exec_code`, seeds it).  The
+        # enclosing `handler(...)` bounds the session's lifetime to this call, so
+        # nested Template calls introduce their own fresh session.
+        session: ReplSession | None = None
+
+        def session_for(
+            env: collections.abc.MutableMapping[str, typing.Any],
+        ) -> ReplSession:
+            nonlocal session
+            if session is None:
+                session = ReplSession(env)
+            return session
+
+        with handler({_repl_session: session_for}):
+            return fwd()
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        tools = dict(fwd())
+        # `collect_tools` only promises a `Mapping`, but the per-call `env` is the
+        # writable `ChainMap` the session splices its shared scope layer into, so
+        # narrow it for `_repl_session`/`ReplSession`.
+        tools["exec_code"] = _repl_session(
+            typing.cast(collections.abc.MutableMapping[str, typing.Any], env)
+        ).exec_code
+        return tools
 
 
 @Operation.define

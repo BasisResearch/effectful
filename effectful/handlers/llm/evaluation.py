@@ -1,8 +1,12 @@
 import ast
 import builtins
+import code
+import codeop
 import collections.abc
+import contextlib
 import copy
 import inspect
+import io
 import keyword
 import linecache
 import random
@@ -10,7 +14,7 @@ import string
 import sys
 import types
 import typing
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from types import CodeType
 from typing import Any, TypeAliasType
 
@@ -25,6 +29,7 @@ from RestrictedPython import (
 )
 from RestrictedPython.PrintCollector import PrintCollector
 
+from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -91,6 +96,9 @@ def exec(
 
     bytecode: A code object to execute (typically produced by compile()).
     env: The namespace mapping used during execution.
+
+    After ``exec(bytecode, env)`` returns, ``env`` reflects all top-level
+    binding effects of the executed code (new names and rebindings alike).
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to execute code."
@@ -829,3 +837,114 @@ class RestrictedEvalProvider(ObjectInterpretation):
                 if key != "__builtins__" and before.get(key, sentinel) is not value
             }
         )
+
+
+class _OpCommandCompiler(codeop.CommandCompiler):
+    """A `codeop.CommandCompiler` that routes compilation through the
+    `parse`/`compile` effect operations (so the installed eval provider owns it
+    and `parse` populates `linecache`), replacing the native single-mode
+    compiler that `code.InteractiveInterpreter` installs.
+    """
+
+    def __call__(
+        self, source: str, filename: str = "<input>", symbol: str = "single"
+    ) -> CodeType:
+        # `runsource` passes symbol="single"; we ignore it and compile in the
+        # exec mode the ops produce, so a complete multi-statement block runs in
+        # one shot.  Incomplete/invalid input raises SyntaxError, which
+        # `runsource` routes to `showsyntaxerror` (we do not buffer partial input
+        # -- there is no line-at-a-time protocol).
+        return compile(parse(source, filename), filename)
+
+
+class ReplSession(code.InteractiveInterpreter):
+    """A persistent, output-capturing Python session seeded from a lexical
+    context.
+
+    `exec_code(source)` runs a pre-compiled code object in `self.locals` through
+    the `exec` effect operation.  Both bindings and captured stdout/stderr
+    persist across calls -- variables, imports and definitions accumulate exactly
+    like a REPL -- and the session (with its buffer) is discarded as a whole when
+    it goes out of scope.  Each call returns only the output it produced; a
+    snippet that raises has its traceback appended to that output rather than
+    propagating -- mirroring `code.InteractiveInterpreter`, only `SystemExit`
+    propagates -- so failures are surfaced as text.  There is no bare-expression
+    auto-echo, so use `print()` to surface values.
+
+    Compilation -- and therefore syntax checking -- happens earlier, at the
+    `Encodable[CodeType]` boundary; this session only executes.
+    """
+
+    # The session's captured output, accumulated across calls and exposed for
+    # introspection.  stdout (`print` output) and stderr (writes plus tracebacks)
+    # are kept separate; `exec_code` returns each call's slice of both.
+    stdout: io.StringIO
+    stderr: io.StringIO
+
+    def __init__(self, env: MutableMapping[str, Any]):
+        # Run in a fresh writable dict seeded with a flat view of `env`.  This is
+        # forced by `exec`: its globals must be one real dict (a ChainMap is
+        # rejected), and a REPL needs a single persistent namespace so a function
+        # defined in one snippet sees a name a later snippet binds.  Seeding a flat
+        # copy also leaves the lexical seed untouched, so REPL assignments never
+        # leak into the surrounding scope.
+        scope: dict[str, Any] = dict(env)
+        # When `env` is the per-call `ChainMap` (its outer layers are read-only
+        # frame proxies), splice this dict in as an extra shadowing first layer so
+        # the bindings are *also* visible to the rest of the Template call
+        # (mirroring `exec`) -- still scoped to the call, since that ChainMap is.
+        if isinstance(env, collections.ChainMap):
+            env.maps.insert(0, scope)
+        # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
+        # the base's runcode/showtraceback/write machinery.
+        super().__init__(scope)
+        # Route `runsource`'s compilation through the `parse`/`compile` ops too, so
+        # it stays consistent with our `runcode` (which execs through the `exec`
+        # op) rather than the native single-mode compiler the base installed.
+        self.compile = _OpCommandCompiler()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+
+    def runcode(self, code: CodeType) -> None:
+        # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
+        # is that `exec` here is the effect operation, so execution routes
+        # through the installed eval provider.  `showtraceback` reports failures
+        # via `self.write`, which `exec_code` has redirected into `self.stderr`.
+        try:
+            exec(code, self.locals)
+        except SystemExit:
+            raise
+        except:
+            self.showtraceback()
+
+    @Tool.define
+    def exec_code(self, code: CodeType) -> str:
+        """Run Python in a persistent, stateful session and return its output.
+
+        This is a long-lived REPL, not a one-shot sandbox: every call runs in the
+        SAME namespace, so names you bind in one call stay available in later
+        calls within the same task.  Imports, function/class definitions and
+        variable assignments all accumulate during the session of this template.
+        The namespace starts seeded with the in-scope variables of the surrounding context, which you may read and
+        rebind.
+
+        Output: returns this call's output -- its stdout (what `print` wrote)
+        followed by its stderr (which includes the traceback if the code raised).
+        There is NO automatic echoing of results -- a bare expression on its own
+        line (e.g. `1 + 1`) displays nothing, so call `print(...)` for anything
+        you want to see.  A snippet that raises has its traceback returned and the
+        session survives, so you can read the error and continue in the next call
+        (only `SystemExit` aborts).
+
+        Provide `code` as a string of Python source.  It must be a complete,
+        compilable snippet -- incomplete or invalid source is rejected before it
+        runs.
+        """
+        out_start = self.stdout.tell()
+        err_start = self.stderr.tell()
+        with (
+            contextlib.redirect_stdout(self.stdout),
+            contextlib.redirect_stderr(self.stderr),
+        ):
+            self.runcode(code)
+        return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]

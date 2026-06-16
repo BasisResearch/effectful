@@ -1537,14 +1537,18 @@ def test_tool_forward_ref():
 import re
 import typing
 from pathlib import Path
+from types import CodeType
 
 import pydantic
 
 from effectful.handlers.llm.completions import (
     LexicalReaders,
+    PythonRepl,
     _LexicalVariableTool,
     collect_tools,
 )
+from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 
 # Helpers for the test matrix
@@ -1722,3 +1726,98 @@ def test_lexical_readers_handler_enables_collection():
         result = collect_tools(env)
     assert result["x"]() == 42
     assert result["s"]() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# PythonRepl handler (#678)
+# ---------------------------------------------------------------------------
+
+
+def test_python_repl_off_by_default():
+    """Without `PythonRepl`, `exec_code` is not collected."""
+    assert "exec_code" not in collect_tools({"x": 1})
+
+
+def test_python_repl_exposes_exec_code():
+    """With `PythonRepl` installed, `exec_code` is collected alongside the
+    base tools."""
+    with handler(PythonRepl()):
+        assert "exec_code" in collect_tools({"x": 1})
+
+
+def test_python_repl_composes_with_lexical_readers():
+    """Readers and the REPL tool coexist when both handlers are installed."""
+    with handler(LexicalReaders()), handler(PythonRepl()):
+        result = collect_tools({"data": [1, 2, 3]})
+    assert "exec_code" in result
+    assert "data" in result
+
+
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop: it collects
+    the tools for a single call and hands `body` that call's `exec_code` tool, so
+    `body` sees exactly one REPL session for its duration.  This is the supported
+    way to reach a session -- `PythonRepl` introduces it per call, mirroring
+    `__history__`.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            exec_code = collect_tools(collections.ChainMap({}))["exec_code"]
+            # Bodies pass source strings; decode them to code objects as the LLM
+            # tool boundary would (`Encodable[CodeType]` compiles the source).
+            decode = pydantic.TypeAdapter(Encodable[CodeType]).validate_python
+            box.append(body(lambda src: exec_code(decode(src))))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
+def test_python_repl_state_persists_within_one_call():
+    """Within one Template call, `exec_code` state carries across calls: a
+    binding made in one snippet is visible in the next."""
+
+    def body(exec_code):
+        exec_code("kept = 5")
+        return exec_code("print(kept)")
+
+    assert _drive_repl(body) == "5\n"
+
+
+def test_python_repl_distinct_calls_get_isolated_sessions():
+    """Each Template call gets its own session: a binding made in one call is
+    not visible in a separate call."""
+    _drive_repl(lambda exec_code: exec_code("leaked = 1"))
+    assert (
+        _drive_repl(lambda exec_code: exec_code("print('leaked' in dir())"))
+        == "False\n"
+    )
+
+
+def test_python_repl_nested_call_is_isolated_and_outer_survives():
+    """A nested Template call introduces its own session by construction: the
+    inner body cannot see the outer's bindings, and the outer session keeps its
+    state across the nested call."""
+
+    def outer(exec_code):
+        exec_code("outer_var = 1")
+        inner_sees_outer = _drive_repl(  # a fully nested Template call
+            lambda inner: inner("print('outer_var' in dir())")
+        )
+        outer_after = exec_code("print(outer_var, 'outer_var' in dir())")
+        return inner_sees_outer, outer_after
+
+    inner_sees_outer, outer_after = _drive_repl(outer)
+    assert inner_sees_outer == "False\n"  # the nested session is isolated
+    assert outer_after == "1 True\n"  # the outer session survived the nested call

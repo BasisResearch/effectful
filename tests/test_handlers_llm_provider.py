@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from types import CodeType
 
 import litellm
 import pydantic
@@ -30,6 +31,7 @@ from effectful.handlers.llm.completions import (
     DecodedToolCall,
     LexicalReaders,
     LiteLLMProvider,
+    PythonRepl,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -38,6 +40,7 @@ from effectful.handlers.llm.completions import (
     _get_history,
     call_assistant,
     call_tool,
+    collect_tools,
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
@@ -1553,6 +1556,32 @@ def type_error_tool(x: int) -> str:
     raise TypeError(f"bad type for {x}")
 
 
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop, handing
+    `body` the call's `exec_code` tool so it runs against one REPL session (the
+    supported way to reach a session).  Install any outer handlers (e.g.
+    `RetryLLMHandler`) around the call.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
 class TestCallToolWrapsExecutionError:
     """call_tool should wrap runtime tool errors in ToolCallExecutionError."""
 
@@ -1590,6 +1619,23 @@ class TestCallToolWrapsExecutionError:
         result = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
+
+    def test_call_tool_returns_exec_code_error_in_output(self):
+        """An `exec_code` runtime error is reported in the returned tool message's
+        content (the traceback), not raised as a `ToolCallExecutionError`, so the
+        assistant loop continues with it as feedback."""
+
+        def body(exec_code):
+            bound_args = inspect.signature(exec_code).bind(
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
+            )
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            return call_tool(tc)
+
+        msg = _drive_repl(body)
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_exec"
+        assert "ZeroDivisionError" in str(msg["content"])
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
@@ -2257,3 +2303,38 @@ class TestSyntheticReaderIntegration:
             tools = describe_hand_action.tools
             assert "Finger" in tools
             assert "Hand" in tools
+
+
+class TestPythonReplIntegration:
+    """The LLM can run code in a persistent session through `exec_code`."""
+
+    @requires_llm
+    def test_llm_computes_via_exec_code(self, request):
+        """A Template seeds a list in lexical scope and asks the LLM to
+        compute a derived statistic by running code.  The LLM uses the
+        `exec_code` tool (possibly across several rounds, with state
+        persisting) and returns the typed result."""
+        readings = [12, 19, 23, 31, 8, 27]
+
+        @Template.define
+        def outlier_count() -> int:
+            """Use the `exec_code` tool to compute how many values in the
+            `readings` list lie strictly more than one population standard
+            deviation from the mean.  `readings` is available in scope.
+            Return that count as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LexicalReaders()),
+            handler(PythonRepl()),
+        ):
+            result = outlier_count()
+
+        import statistics
+
+        m = statistics.mean(readings)
+        s = statistics.pstdev(readings)
+        expected = sum(1 for r in readings if abs(r - m) > s)
+        assert result == expected

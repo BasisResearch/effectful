@@ -20,7 +20,9 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
+    ReplSession,
     RestrictedEvalProvider,
+    UnsafeEvalProvider,
     collect_imports,
     collect_runtime_type_stubs,
     collect_variable_declarations,
@@ -1542,6 +1544,165 @@ def test_builtins_in_env_does_not_bypass_security():
                 source_private, context=dangerous_ctx
             )
             fn("test")
+
+
+# ============================================================================
+# ReplSession (#678)
+# ============================================================================
+
+
+def _code(source: str) -> types.CodeType:
+    """Compile `source` to a code object the way the `exec_code` tool boundary
+    does -- through `Encodable[CodeType]`, which routes the active eval
+    provider's `parse`/`compile` ops (so a handler must be installed)."""
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(source)
+
+
+def test_repl_seeds_from_lexical_context():
+    """Names in the seed context are usable in executed code."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [10, 20, 30]})
+        assert session.exec_code(_code("print(sum(readings))")) == "60\n"
+
+
+def test_repl_persists_bindings_across_calls():
+    """A binding created in one call is visible in the next."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("total = 41"))
+        assert session.exec_code(_code("print(total)")) == "41\n"
+
+
+def test_repl_rebinds_across_calls():
+    """A seeded/prior name can be rebound using its prior value."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_runs_complete_multistatement_block():
+    """A complete `def` + call in one snippet runs in one shot (the case
+    `single`-mode compilation would reject)."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(
+            _code("def double(n):\n    return n * 2\nprint(double(21))")
+        )
+        assert out == "42\n"
+
+
+def test_repl_captures_print():
+    with handler(UnsafeEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+def test_repl_rejects_invalid_source_at_construction():
+    """Invalid source is rejected when it is decoded to a code object -- before it
+    ever reaches the session -- and valid code in the same provider still runs."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("def f(:")
+        assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
+
+
+def test_repl_exception_is_isolated():
+    """A runtime exception is reported in the call's output; the session survives
+    and retains prior state."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("kept = 7"))
+        out = session.exec_code(_code("print(1 / 0)"))
+        assert "ZeroDivisionError" in out
+        assert session.exec_code(_code("print(kept)")) == "7\n"
+
+
+def test_repl_system_exit_propagates():
+    """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
+    other exception (including `KeyboardInterrupt`) is caught and surfaced as
+    output rather than escaping the call."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        with pytest.raises(SystemExit):
+            session.exec_code(_code("raise SystemExit"))
+        out = session.exec_code(_code("raise KeyboardInterrupt"))
+        assert "KeyboardInterrupt" in out
+
+
+def test_repl_cross_snippet_traceback_shows_correct_source():
+    """A function defined in an earlier call that raises in a later call formats
+    with its *own* source line, not the later call's source -- the per-snippet
+    filename keeps each cell's source in linecache."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("def boom():\n    return 1 / 0"))
+        out = session.exec_code(_code("boom()"))
+        assert "return 1 / 0" in out  # boom's real source
+
+
+def test_repl_new_binding_does_not_leak_into_seed_context():
+    """A binding created in executed code stays in the session; the seed mapping
+    the session was created from is not mutated."""
+    with handler(UnsafeEvalProvider()):
+        seed = {"base": 10}
+        session = ReplSession(seed)
+        session.exec_code(_code("derived = base + 5"))
+        assert session.exec_code(_code("print(derived)")) == "15\n"
+        assert "derived" not in seed  # the lexical seed is untouched
+
+
+def test_repl_binding_is_visible_to_the_rest_of_the_call():
+    """Seeded from the per-call `ChainMap`, a binding the REPL makes lands in a
+    shared shadow layer of that chain -- so the rest of the Template call sees it
+    -- while the read-only lexical layer underneath does not, keeping it scoped to
+    the call (mirroring `exec`)."""
+    with handler(UnsafeEvalProvider()):
+        lexical = {"base": 10}
+        env: ChainMap[str, Any] = ChainMap({}, lexical)
+        ReplSession(env).exec_code(_code("shared = base + 5"))
+        assert env["shared"] == 15  # visible to the rest of the call via the chain
+        assert "shared" not in lexical  # but not leaked into the lexical context
+
+
+def test_repl_keeps_stdout_and_stderr_separate():
+    """stdout (print output) and stderr (tracebacks) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(_code("print('hi')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\n"
+        assert "ZeroDivisionError" in session.stderr.getvalue()
+        assert "hi" not in session.stderr.getvalue()  # the streams don't mix
+        assert out == "hi\n" + session.stderr.getvalue()  # returned: stdout then stderr
+
+
+def test_repl_runsource_routes_through_ops():
+    """`runsource` compiles through the `parse`/`compile` ops (so it needs an
+    installed provider), keeping it self-consistent with `runcode`/`exec_code`
+    rather than falling back to the native single-mode compiler."""
+    with pytest.raises(NotImplementedError):
+        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        assert session.runsource("kept = 7") is False  # complete: compiled + ran
+        assert session.locals["kept"] == 7
+
+
+# ----------------------------------------------------------------------------
+# ReplSession under RestrictedEvalProvider (state + print fixed in #686)
+# ----------------------------------------------------------------------------
+
+
+def test_repl_rebinds_across_calls_restricted():
+    with handler(RestrictedEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_captures_print_restricted():
+    with handler(RestrictedEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
 # ============================================================================
