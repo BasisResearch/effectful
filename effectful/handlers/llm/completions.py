@@ -349,11 +349,7 @@ class PythonRepl(ObjectInterpretation):
         self, env: collections.abc.Mapping[str, typing.Any]
     ) -> collections.abc.Mapping[str, Tool]:
         tools = dict(fwd())
-        # Reuse the session the enclosing `Template.__apply__` already installed
-        # for this call (see `_repl_session`) and expose its `exec_code` method
-        # directly -- the tool's behaviour, docstring and name all come from
-        # `ReplSession.exec_code`, nothing is hidden in this handler.
-        tools["exec_code"] = Tool.define(_repl_session(env).exec_code)
+        tools["exec_code"] = _repl_session(env).exec_code
         return tools
 
 

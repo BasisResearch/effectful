@@ -30,6 +30,7 @@ from RestrictedPython import (
 )
 from RestrictedPython.PrintCollector import PrintCollector
 
+from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -906,6 +907,7 @@ class ReplSession:
         # The session's accumulated stdout/stderr, persisting for its lifetime.
         self._buffer = io.StringIO()
 
+    @Tool.define
     def exec_code(self, source: EncodableCode) -> str:
         """Execute an `EncodableCode` and return the output it produced.
 
