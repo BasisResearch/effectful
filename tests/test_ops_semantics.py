@@ -210,27 +210,30 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
     "make_intp",
     [
         pytest.param(
-            lambda x: coproduct(coproduct({}, {x: lambda: 0}), {x: fwd}),
+            lambda f: coproduct(coproduct({}, {f: lambda x: x}), {f: lambda _: fwd()}),
             id="right-assoc-empty-left",
         ),
         pytest.param(
-            lambda x: coproduct(coproduct({x: lambda: 0}, {}), {x: fwd}),
+            lambda f: coproduct(coproduct({f: lambda x: x}, {}), {f: lambda _: fwd()}),
             id="right-assoc-empty-mid",
         ),
         pytest.param(
-            lambda x: coproduct({x: lambda: 0}, coproduct({}, {x: fwd})),
+            lambda f: coproduct({f: lambda x: x}, coproduct({}, {f: lambda _: fwd()})),
             id="left-assoc-empty-mid",
         ),
         pytest.param(
-            lambda x: coproduct({x: lambda: 0}, coproduct({x: fwd}, {})),
+            lambda f: coproduct({f: lambda x: x}, coproduct({f: lambda _: fwd()}, {})),
             id="left-assoc-empty-right",
         ),
     ],
 )
 def test_coproduct_identity(make_intp) -> None:
-    x = Operation.define(int)
-    intp = make_intp(x)
-    assert handler(intp)(evaluate)(x()) == 0
+    @Operation.define
+    def f(x) -> int:
+        raise NotHandled
+
+    intp = make_intp(f)
+    assert handler(intp)(evaluate)(f(42)) == 42
 
 
 def test_object_interpretation_inheritance():

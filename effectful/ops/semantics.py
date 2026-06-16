@@ -35,11 +35,12 @@ def fwd(*args, **kwargs) -> Any:
     """
     from effectful.internals.runtime import _get_args, _get_next_handler, _get_op
 
-    args, kwargs = (args, kwargs) if args or kwargs else _get_args()
+    (args, kwargs) = _get_args() if not args and not kwargs else (args, kwargs)
     next_handler = _get_next_handler()
     if next_handler is not None:
         return next_handler(*args, **kwargs)
-    return _get_op(*args, **kwargs)
+
+    return _get_op().__default_rule__(*args, **kwargs)
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
@@ -90,11 +91,7 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         _get_args,
         _get_next_handler,
         _get_op,
-        _restore_args,
-        _save_args,
-        _save_next_handler,
-        _save_op,
-        _set_prompt,
+        _save_context,
     )
 
     res = dict(intp)
@@ -102,15 +99,10 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         if op in {fwd, _get_args, _get_op, _get_next_handler}:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
-            i1 = intp.get(op)
-            wrapped_i2 = (
-                _save_next_handler(i2, _save_op(_save_args(i1), op))
-                if i1 is not None
-                else i2
-            )
-
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _save_args(_save_op(wrapped_i2, op))
+            i1 = intp.get(op)
+            next_handler = None if i1 is None else _save_context(i1, op=op)
+            res[op] = _save_context(i2, op=op, next_handler=next_handler)
 
     return res
 

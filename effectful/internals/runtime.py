@@ -2,6 +2,7 @@ import contextlib
 import dataclasses
 import functools
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from threading import local
 
 from effectful.ops.types import Interpretation, NotHandled, Operation
@@ -30,6 +31,36 @@ def interpreter(intp: "Interpretation"):
         yield intp
     finally:
         r.interpretation = old_intp
+
+
+@dataclass
+class _FwdContext:
+    op: Operation
+    next_handler: Callable | None
+    args: tuple
+    kwargs: Mapping
+
+
+@Operation.define
+def _get_context() -> _FwdContext:
+    raise NotHandled
+
+
+def _save_context[**P, T](
+    fn: Callable[P, T], op: Operation[P, T], next_handler: Callable[P, T] | None = None
+) -> Callable[P, T]:
+    from effectful.ops.semantics import handler
+
+    intp = {_get_op: lambda: op} | (
+        {} if next_handler is None else {_get_next_handler: lambda: next_handler}
+    )
+
+    @functools.wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        with handler(intp | {_get_args: lambda: (a, k)}):
+            return fn(*a, **k)
+
+    return _cont_wrapper
 
 
 @Operation.define
