@@ -39,7 +39,6 @@ def fwd(*args, **kwargs) -> Any:
     next_handler = _get_next_handler()
     if next_handler is not None:
         return next_handler(*args, **kwargs)
-
     return _get_op().__default_rule__(*args, **kwargs)
 
 

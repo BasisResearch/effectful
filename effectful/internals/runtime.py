@@ -51,13 +51,32 @@ def _save_context[**P, T](
 ) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
-    intp = {_get_op: lambda: op} | (
-        {} if next_handler is None else {_get_next_handler: lambda: next_handler}
-    )
-
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler(intp | {_get_args: lambda: (a, k)}):
+        # The next handler in the chain is whatever was forwarding to this
+        # layer before we install our own context.
+        enclosing = get_interpretation().get(
+            _get_next_handler, _get_next_handler.__default_rule__
+        )
+
+        if next_handler is None:
+            # Nothing to forward to here, so ``fn``'s ``fwd`` continues out to
+            # the enclosing chain.
+            this_next = enclosing
+        else:
+            # ``fn``'s ``fwd`` runs ``next_handler``, but with the enclosing
+            # chain restored so that *its* ``fwd`` continues down the chain
+            # instead of looping back into this layer.
+            restored = handler({_get_next_handler: enclosing})(next_handler)
+            this_next = lambda: restored  # noqa: E731
+
+        with handler(
+            {
+                _get_op: lambda: op,
+                _get_next_handler: this_next,
+                _get_args: lambda: (a, k),
+            }
+        ):
             return fn(*a, **k)
 
     return _cont_wrapper
