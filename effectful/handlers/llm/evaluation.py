@@ -877,20 +877,32 @@ class ReplSession(code.InteractiveInterpreter):
             self.showtraceback()
 
     @Tool.define
-    def exec_code(self, source: CodeType) -> str:
-        """Execute a compiled code object and return the output it produced.
+    def exec_code(self, code: CodeType) -> str:
+        """Run Python in a persistent, stateful session and return its output.
 
-        `source` is a `types.CodeType`; the `Encodable[CodeType]` boundary
-        compiles the LLM's source string into one (rejecting code that does not
-        compile) before it reaches here.  Output accumulates in the session
-        buffer across calls; this returns only the slice from this call
-        (including the traceback if the snippet raised).  Use print() to surface
-        values.
+        This is a long-lived REPL, not a one-shot sandbox: every call runs in the
+        SAME namespace, so names you bind in one call stay available in later
+        calls within the same task.  Imports, function/class definitions and
+        variable assignments all accumulate -- build state up across several
+        calls instead of resending it.  The namespace starts seeded with the
+        in-scope variables of the surrounding context, which you may read and
+        rebind.
+
+        Output: returns exactly the text this call wrote to stdout and stderr.
+        There is NO automatic echoing of results -- a bare expression on its own
+        line (e.g. `1 + 1`) displays nothing, so call `print(...)` for anything
+        you want to see.  If the code raises, its traceback is captured into the
+        returned text and the session survives, so you can read the error and
+        continue in the next call (only `SystemExit` aborts).
+
+        Provide `code` as a string of Python source.  It must be a complete,
+        compilable snippet -- incomplete or invalid source is rejected before it
+        runs.
         """
         start = self._buffer.tell()
         with (
             contextlib.redirect_stdout(self._buffer),
             contextlib.redirect_stderr(self._buffer),
         ):
-            self.runcode(source)
+            self.runcode(code)
         return self._buffer.getvalue()[start:]
