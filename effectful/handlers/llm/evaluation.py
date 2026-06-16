@@ -13,7 +13,7 @@ import string
 import sys
 import types
 import typing
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
 from types import CodeType
 from typing import Any, TypeAliasType
 
@@ -856,7 +856,7 @@ class ReplSession(code.InteractiveInterpreter):
     `Encodable[CodeType]` boundary; this session only executes.
     """
 
-    def __init__(self, env: Mapping[str, Any]):
+    def __init__(self, env: MutableMapping[str, Any]):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
         # rejected), and a REPL needs a single persistent namespace so a function

@@ -291,7 +291,7 @@ class LexicalReaders(ObjectInterpretation):
 
 
 @Operation.define
-def _repl_session(env: collections.abc.Mapping[str, typing.Any]) -> ReplSession:
+def _repl_session(env: collections.abc.MutableMapping[str, typing.Any]) -> ReplSession:
     """Return the REPL session for the current Template call, seeded from `env`.
 
     `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
@@ -334,7 +334,7 @@ class PythonRepl(ObjectInterpretation):
         session: ReplSession | None = None
 
         def session_for(
-            env: collections.abc.Mapping[str, typing.Any],
+            env: collections.abc.MutableMapping[str, typing.Any],
         ) -> ReplSession:
             nonlocal session
             if session is None:
@@ -349,7 +349,12 @@ class PythonRepl(ObjectInterpretation):
         self, env: collections.abc.Mapping[str, typing.Any]
     ) -> collections.abc.Mapping[str, Tool]:
         tools = dict(fwd())
-        tools["exec_code"] = _repl_session(env).exec_code
+        # `collect_tools` only promises a `Mapping`, but the per-call `env` is the
+        # writable `ChainMap` the session splices its shared scope layer into, so
+        # narrow it for `_repl_session`/`ReplSession`.
+        tools["exec_code"] = _repl_session(
+            typing.cast(collections.abc.MutableMapping[str, typing.Any], env)
+        ).exec_code
         return tools
 
 
