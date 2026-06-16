@@ -1,6 +1,7 @@
 import contextlib
 import dataclasses
 import functools
+import inspect
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from threading import local
@@ -33,109 +34,26 @@ def interpreter(intp: "Interpretation"):
         r.interpretation = old_intp
 
 
-@dataclass
-class _FwdContext:
-    op: Operation
-    next_handler: Callable | None
-    args: tuple
-    kwargs: Mapping
-
-
 @Operation.define
-def _get_context() -> _FwdContext:
+def _get_args_op() -> tuple[tuple, Mapping, Operation]:
     raise NotHandled
-
-
-def _save_context[**P, T](
-    fn: Callable[P, T], op: Operation[P, T], next_handler: Callable[P, T] | None = None
-) -> Callable[P, T]:
-    from effectful.ops.semantics import handler
-
-    @functools.wraps(fn)
-    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        # The next handler in the chain is whatever was forwarding to this
-        # layer before we install our own context.
-        enclosing = get_interpretation().get(
-            _get_next_handler, _get_next_handler.__default_rule__
-        )
-
-        if next_handler is None:
-            # Nothing to forward to here, so ``fn``'s ``fwd`` continues out to
-            # the enclosing chain.
-            this_next = enclosing
-        else:
-            # ``fn``'s ``fwd`` runs ``next_handler``, but with the enclosing
-            # chain restored so that *its* ``fwd`` continues down the chain
-            # instead of looping back into this layer.
-            restored = handler({_get_next_handler: enclosing})(next_handler)
-            this_next = lambda: restored  # noqa: E731
-
-        with handler(
-            {
-                _get_op: lambda: op,
-                _get_next_handler: this_next,
-                _get_args: lambda: (a, k),
-            }
-        ):
-            return fn(*a, **k)
-
-    return _cont_wrapper
-
-
-@Operation.define
-def _get_args() -> tuple[tuple, Mapping]:
-    return ((), {})
-
-
-@Operation.define
-def _get_op() -> Operation:
-    raise NotHandled
-
-
-@Operation.define
-def _get_next_handler() -> Callable | None:
-    return None
 
 
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
+        a, k = (a, k) if a or k else _get_args_op()[:2]
         return fn(*a, **k)
 
     return _cont_wrapper
 
 
-def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
+def _save_args_op[**P, T](fn: Callable[P, T], op: Operation[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler({_get_args: lambda: (a, k)}):
-            return fn(*a, **k)
-
-    return _cont_wrapper
-
-
-def _save_op[**P, T](fn: Callable[P, T], op: Operation[P, T]) -> Callable[P, T]:
-    from effectful.ops.semantics import handler
-
-    @functools.wraps(fn)
-    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler({_get_op: lambda: op}):
-            return fn(*a, **k)
-
-    return _cont_wrapper
-
-
-def _save_next_handler[**P, T](
-    fn: Callable[P, T], next: Callable[P, T]
-) -> Callable[P, T]:
-    from effectful.ops.semantics import handler
-
-    @functools.wraps(fn)
-    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler({_get_next_handler: lambda: next}):
+        with handler({_get_args_op: lambda: (a, k, op)}):
             return fn(*a, **k)
 
     return _cont_wrapper
