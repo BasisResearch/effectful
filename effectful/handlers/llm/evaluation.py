@@ -5,7 +5,6 @@ import contextlib
 import copy
 import inspect
 import io
-import itertools
 import keyword
 import linecache
 import random
@@ -14,6 +13,7 @@ import sys
 import traceback
 import types
 import typing
+import uuid
 from collections.abc import Mapping
 from types import CodeType
 from typing import Any, TypeAliasType
@@ -105,7 +105,6 @@ def exec(
 
 
 _CODE_FILENAME_PREFIX = "<exec_code-"
-_code_counter = itertools.count()
 
 
 class EncodableCode(pydantic.BaseModel):
@@ -138,7 +137,7 @@ class EncodableCode(pydantic.BaseModel):
             raise ValueError(
                 f"expected source string or code object, got {type(value).__name__}"
             )
-        filename = f"{_CODE_FILENAME_PREFIX}{next(_code_counter)}>"
+        filename = f"{_CODE_FILENAME_PREFIX}{next(uuid.uuid4())}>"
         try:
             return compile(parse(value, filename), filename)
         except (SyntaxError, ValueError) as exc:
