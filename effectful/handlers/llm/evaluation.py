@@ -856,6 +856,10 @@ class ReplSession(code.InteractiveInterpreter):
     `Encodable[CodeType]` boundary; this session only executes.
     """
 
+    # Everything the session writes -- stdout, stderr and tracebacks -- captured
+    # for its lifetime and exposed so callers can introspect a session's output.
+    stderr: io.StringIO
+
     def __init__(self, env: MutableMapping[str, Any]):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
@@ -873,8 +877,7 @@ class ReplSession(code.InteractiveInterpreter):
         # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
         # the base's runcode/showtraceback/write machinery.
         super().__init__(scope)
-        # The session's accumulated stdout/stderr, persisting for its lifetime.
-        self._buffer = io.StringIO()
+        self.stderr = io.StringIO()
 
     def runcode(self, code: CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
@@ -911,10 +914,10 @@ class ReplSession(code.InteractiveInterpreter):
         compilable snippet -- incomplete or invalid source is rejected before it
         runs.
         """
-        start = self._buffer.tell()
+        start = self.stderr.tell()
         with (
-            contextlib.redirect_stdout(self._buffer),
-            contextlib.redirect_stderr(self._buffer),
+            contextlib.redirect_stdout(self.stderr),
+            contextlib.redirect_stderr(self.stderr),
         ):
             self.runcode(code)
-        return self._buffer.getvalue()[start:]
+        return self.stderr.getvalue()[start:]
