@@ -14,7 +14,7 @@
         "tool_calls": [
           {
             "function": {
-              "arguments": "{\"source\":\"import statistics\\n\\n# Assuming 'readings' is available in the scope\\nmean = statistics.mean(readings)\\nstd_dev = statistics.stdev(readings)\\n\\ndistance_from_mean = [value for value in readings if value > mean + std_dev or value < mean - std_dev]\\n\\n# Count how many values are there\\ncount = len(distance_from_mean)\\n\\ncount\"}",
+              "arguments": "{\"code\":\"import statistics\\n\\n# Assuming 'readings' is available in the scope\\nmean = statistics.mean(readings)\\nstd_dev = statistics.stdev(readings)\\n\\ndistance_from_mean = [value for value in readings if value > mean + std_dev or value < mean - std_dev]\\n\\n# Count how many values are there\\ncount = len(distance_from_mean)\\n\\ncount\"}",
               "name": "exec_code"
             },
             "id": "call_v3YxolHwxaLBzP4FWwTjgJkc",
