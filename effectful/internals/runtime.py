@@ -1,9 +1,7 @@
 import contextlib
 import dataclasses
 import functools
-import inspect
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
 from threading import local
 
 from effectful.ops.types import Interpretation, NotHandled, Operation
