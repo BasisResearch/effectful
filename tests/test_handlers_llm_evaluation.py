@@ -1651,6 +1651,19 @@ def test_repl_new_binding_does_not_leak_into_seed_context():
         assert "derived" not in seed  # the lexical seed is untouched
 
 
+def test_repl_binding_is_visible_to_the_rest_of_the_call():
+    """Seeded from the per-call `ChainMap`, a binding the REPL makes lands in a
+    shared shadow layer of that chain -- so the rest of the Template call sees it
+    -- while the read-only lexical layer underneath does not, keeping it scoped to
+    the call (mirroring `exec`)."""
+    with handler(UnsafeEvalProvider()):
+        lexical = {"base": 10}
+        env: ChainMap[str, Any] = ChainMap({}, lexical)
+        ReplSession(env).exec_code(_code("shared = base + 5"))
+        assert env["shared"] == 15  # visible to the rest of the call via the chain
+        assert "shared" not in lexical  # but not leaked into the lexical context
+
+
 # ----------------------------------------------------------------------------
 # ReplSession under RestrictedEvalProvider (state + print fixed in #686)
 # ----------------------------------------------------------------------------

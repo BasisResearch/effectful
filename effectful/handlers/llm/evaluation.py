@@ -857,10 +857,22 @@ class ReplSession(code.InteractiveInterpreter):
     """
 
     def __init__(self, env: Mapping[str, Any]):
-        # `InteractiveInterpreter.__init__` sets `self.locals`; subclassing lets
-        # us reuse its `runcode`/`showtraceback`/`write` machinery rather than
-        # re-implementing traceback capture by hand.
-        super().__init__(dict(env))
+        # Run in a fresh writable dict seeded with a flat view of `env`.  This is
+        # forced by `exec`: its globals must be one real dict (a ChainMap is
+        # rejected), and a REPL needs a single persistent namespace so a function
+        # defined in one snippet sees a name a later snippet binds.  Seeding a flat
+        # copy also leaves the lexical seed untouched, so REPL assignments never
+        # leak into the surrounding scope.
+        scope: dict[str, Any] = dict(env)
+        # When `env` is the per-call `ChainMap` (its outer layers are read-only
+        # frame proxies), splice this dict in as an extra shadowing first layer so
+        # the bindings are *also* visible to the rest of the Template call
+        # (mirroring `exec`) -- still scoped to the call, since that ChainMap is.
+        if isinstance(env, collections.ChainMap):
+            env.maps.insert(0, scope)
+        # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
+        # the base's runcode/showtraceback/write machinery.
+        super().__init__(scope)
         # The session's accumulated stdout/stderr, persisting for its lifetime.
         self._buffer = io.StringIO()
 
