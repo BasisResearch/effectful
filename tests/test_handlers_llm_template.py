@@ -1537,6 +1537,7 @@ def test_tool_forward_ref():
 import re
 import typing
 from pathlib import Path
+from types import CodeType
 
 import pydantic
 
@@ -1546,7 +1547,8 @@ from effectful.handlers.llm.completions import (
     _LexicalVariableTool,
     collect_tools,
 )
-from effectful.handlers.llm.evaluation import EncodableCode, UnsafeEvalProvider
+from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 
 # Helpers for the test matrix
@@ -1766,9 +1768,10 @@ def _drive_repl(body):
         @implements(Template.__apply__)
         def _call(self, *_a, **_k):
             exec_code = collect_tools(collections.ChainMap({}))["exec_code"]
-            # Bodies pass source strings; wrap them in `EncodableCode` as the LLM
-            # tool boundary would (decoding compiles the source).
-            box.append(body(lambda src: exec_code(EncodableCode.from_source(src))))
+            # Bodies pass source strings; decode them to code objects as the LLM
+            # tool boundary would (`Encodable[CodeType]` compiles the source).
+            decode = pydantic.TypeAdapter(Encodable[CodeType]).validate_python
+            box.append(body(lambda src: exec_code(decode(src))))
             return None
 
     @Template.define

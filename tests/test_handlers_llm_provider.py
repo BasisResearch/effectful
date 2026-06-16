@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from types import CodeType
 
 import litellm
 import pydantic
@@ -43,7 +44,7 @@ from effectful.handlers.llm.completions import (
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
-from effectful.handlers.llm.evaluation import EncodableCode, UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -1626,7 +1627,7 @@ class TestCallToolWrapsExecutionError:
 
         def body(exec_code):
             bound_args = inspect.signature(exec_code).bind(
-                EncodableCode.from_source("1 / 0")
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
             )
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
             return call_tool(tc)

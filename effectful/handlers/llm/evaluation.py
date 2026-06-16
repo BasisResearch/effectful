@@ -13,13 +13,11 @@ import string
 import sys
 import types
 import typing
-import uuid
 from collections.abc import Mapping
 from types import CodeType
 from typing import Any, TypeAliasType
 
 import autoflake
-import pydantic
 from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
@@ -104,51 +102,6 @@ def exec(
     raise NotImplementedError(
         "An eval provider must be installed in order to execute code."
     )
-
-
-_CODE_FILENAME_PREFIX = "<exec_code-"
-
-
-class EncodableCode(pydantic.BaseModel):
-    """A snippet of Python source paired with its compiled code object.
-
-    A field validator compiles the source through the `parse`/`compile` effect
-    operations as the model is built, so an `EncodableCode` is, by construction,
-    code that compiled under the installed eval provider -- syntax and
-    compile-time errors raise here, not at run time.  `parse` also records the
-    source in `linecache` under a unique per-snippet filename so tracebacks
-    (including across snippets) resolve correctly, and the ready-to-run `code` is
-    carried so execution never has to recompile.
-    """
-
-    model_config = pydantic.ConfigDict(arbitrary_types_allowed=True, frozen=True)
-
-    source: str
-    code: CodeType
-
-    @pydantic.field_validator("code", mode="before")
-    @classmethod
-    def _compile(cls, value: Any) -> CodeType:
-        # `code` is fed the source string (see `from_source`); compiling it here
-        # means a non-compiling snippet raises at the Encodable boundary rather
-        # than at run time.  A unique per-snippet filename keeps each snippet's
-        # source in `linecache` independently so tracebacks resolve correctly.
-        if isinstance(value, CodeType):
-            return value
-        if not isinstance(value, str):
-            raise ValueError(
-                f"expected source string or code object, got {type(value).__name__}"
-            )
-        filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
-        try:
-            return compile(parse(value, filename), filename)
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"source does not compile: {exc}") from exc
-
-    @classmethod
-    def from_source(cls, source: str) -> "EncodableCode":
-        # `code` receives the same source; the field validator compiles it.
-        return cls.model_validate({"source": source, "code": source})
 
 
 # Type checking implementation
@@ -889,18 +842,18 @@ class ReplSession(code.InteractiveInterpreter):
     """A persistent, output-capturing Python session seeded from a lexical
     context.
 
-    `exec_code(source)` runs a pre-compiled `EncodableCode` in `self.locals`
-    through the `exec` effect operation.  Both bindings and captured
-    stdout/stderr persist across calls -- variables, imports and definitions
-    accumulate exactly like a REPL -- and the session (with its buffer) is
-    discarded as a whole when it goes out of scope.  Each call returns only the
-    output it produced; a snippet that raises has its traceback appended to that
-    output rather than propagating -- mirroring `code.InteractiveInterpreter`,
-    only `SystemExit` propagates -- so failures are surfaced as text.  There is
-    no bare-expression auto-echo, so use `print()` to surface values.
+    `exec_code(source)` runs a pre-compiled code object in `self.locals` through
+    the `exec` effect operation.  Both bindings and captured stdout/stderr
+    persist across calls -- variables, imports and definitions accumulate exactly
+    like a REPL -- and the session (with its buffer) is discarded as a whole when
+    it goes out of scope.  Each call returns only the output it produced; a
+    snippet that raises has its traceback appended to that output rather than
+    propagating -- mirroring `code.InteractiveInterpreter`, only `SystemExit`
+    propagates -- so failures are surfaced as text.  There is no bare-expression
+    auto-echo, so use `print()` to surface values.
 
-    Compilation -- and therefore syntax checking -- happens earlier, when the
-    `EncodableCode` is built; this session only executes.
+    Compilation -- and therefore syntax checking -- happens earlier, at the
+    `Encodable[CodeType]` boundary; this session only executes.
     """
 
     def __init__(self, env: Mapping[str, Any]):
@@ -924,17 +877,20 @@ class ReplSession(code.InteractiveInterpreter):
             self.showtraceback()
 
     @Tool.define
-    def exec_code(self, source: EncodableCode) -> str:
-        """Execute an `EncodableCode` and return the output it produced.
+    def exec_code(self, source: CodeType) -> str:
+        """Execute a compiled code object and return the output it produced.
 
-        Output accumulates in the session buffer across calls; this returns only
-        the slice from this call (including the traceback if the snippet raised).
-        Use print() to surface values.
+        `source` is a `types.CodeType`; the `Encodable[CodeType]` boundary
+        compiles the LLM's source string into one (rejecting code that does not
+        compile) before it reaches here.  Output accumulates in the session
+        buffer across calls; this returns only the slice from this call
+        (including the traceback if the snippet raised).  Use print() to surface
+        values.
         """
         start = self._buffer.tell()
         with (
             contextlib.redirect_stdout(self._buffer),
             contextlib.redirect_stderr(self._buffer),
         ):
-            self.runcode(source.code)
+            self.runcode(source)
         return self._buffer.getvalue()[start:]

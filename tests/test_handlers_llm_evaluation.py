@@ -20,7 +20,6 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
 from effectful.handlers.llm.evaluation import (
-    EncodableCode,
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
@@ -1552,10 +1551,11 @@ def test_builtins_in_env_does_not_bypass_security():
 # ============================================================================
 
 
-def _code(source: str) -> EncodableCode:
-    """Build an `EncodableCode` (compiling the source through the active eval
-    provider) for the session tests below."""
-    return EncodableCode.from_source(source)
+def _code(source: str) -> types.CodeType:
+    """Compile `source` to a code object the way the `exec_code` tool boundary
+    does -- through `Encodable[CodeType]`, which routes the active eval
+    provider's `parse`/`compile` ops (so a handler must be installed)."""
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(source)
 
 
 def test_repl_seeds_from_lexical_context():
@@ -1598,11 +1598,11 @@ def test_repl_captures_print():
 
 
 def test_repl_rejects_invalid_source_at_construction():
-    """Invalid source is rejected when the `EncodableCode` is built -- before it
+    """Invalid source is rejected when it is decoded to a code object -- before it
     ever reaches the session -- and valid code in the same provider still runs."""
     with handler(UnsafeEvalProvider()):
         with pytest.raises(pydantic.ValidationError):
-            EncodableCode.from_source("def f(:")
+            _code("def f(:")
         assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
 
 

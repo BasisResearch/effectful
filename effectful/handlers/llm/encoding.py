@@ -5,9 +5,11 @@ import functools
 import inspect
 import io
 import json
+import linecache
 import textwrap
 import types
 import typing
+import uuid
 from collections.abc import (
     Callable,
     Mapping,
@@ -189,27 +191,42 @@ def _pydantic_type_complex(ty):
     ]
 
 
-@TypeToPydanticType.register(evaluation.EncodableCode)
-def _pydantic_type_code(ty):
-    """Encode `EncodableCode` as a JSON string.  Decoding compiles the source
-    (through the `parse`/`compile` ops), so invalid source is rejected here and
-    a valid `EncodableCode` carries a ready-to-run code object."""
+_CODE_FILENAME_PREFIX = "<exec_code-"
 
-    def validate(value: object) -> evaluation.EncodableCode:
-        if isinstance(value, evaluation.EncodableCode):
+
+@TypeToPydanticType.register(types.CodeType)
+def _pydantic_type_code(ty):
+    """Encode a `types.CodeType` as a JSON string of Python source.
+
+    This is the internal `Encodable` implementation for code objects -- the
+    public type is `types.CodeType`, with no separate model (analogous to
+    `_ComplexModel`).  Decoding compiles the source through the `parse`/`compile`
+    effect operations under a unique per-snippet filename, so invalid source is
+    rejected here rather than at run time and the snippet's source lands in
+    `linecache` (keeping each snippet's tracebacks resolvable).  A decoded value
+    is therefore a ready-to-run code object; re-encoding recovers its source from
+    `linecache`, which carries everything the source string did.
+    """
+
+    def validate(value: object) -> types.CodeType:
+        if isinstance(value, types.CodeType):
             return value
         if not isinstance(value, str):
             raise ValueError(
                 f"expected Python source as a string, got {type(value).__name__}"
             )
-        # `from_source` compiles via its field validator, raising a
-        # ValidationError if the source does not compile.
-        return evaluation.EncodableCode.from_source(value)
+        filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
+        try:
+            return evaluation.compile(evaluation.parse(value, filename), filename)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"source does not compile: {exc}") from exc
 
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(validate),
-        pydantic.PlainSerializer(lambda value: value.source),
+        pydantic.PlainSerializer(
+            lambda value: "".join(linecache.getlines(value.co_filename))
+        ),
         pydantic.WithJsonSchema({"type": "string"}),
     ]
 
