@@ -23,6 +23,7 @@ from RestrictedPython import (
     compile_restricted,
     safe_globals,
 )
+from RestrictedPython.PrintCollector import PrintCollector
 
 from effectful.internals.unification import nested_type
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
@@ -724,6 +725,16 @@ class UnsafeEvalProvider(ObjectInterpretation):
         builtins.exec(bytecode, env, env)
 
 
+class _StdoutPrintCollector(PrintCollector):
+    """`_print_` factory whose `print(...)` writes to the real `sys.stdout`
+    (so output-capturing callers see it) rather than accumulating into the
+    collector's discarded `printed` buffer."""
+
+    def _call_print(self, *objects, **kwargs):
+        kwargs.setdefault("file", sys.stdout)
+        builtins.print(*objects, **kwargs)
+
+
 class RestrictedEvalProvider(ObjectInterpretation):
     """
     Safer provider using RestrictedPython.
@@ -800,12 +811,21 @@ class RestrictedEvalProvider(ObjectInterpretation):
         rglobals["setattr"] = Guards.guarded_setattr
         rglobals["_write_"] = lambda x: x
 
-        # Track keys before execution to identify new definitions
-        keys_before = set(rglobals.keys())
+        # RestrictedPython rewrites `print(...)` into its `_print_` collector
+        # protocol; route it to the real stdout so output-capturing callers
+        # (e.g. redirect_stdout) see it instead of a discarded collector.
+        rglobals["_print_"] = _StdoutPrintCollector
 
+        # Snapshot value identities before execution so we can copy back every
+        # *binding effect* — both new names and rebindings of seeded names.
+        before = dict(rglobals)
         builtins.exec(bytecode, rglobals, rglobals)
 
-        # Copy newly defined items back to env so caller can access them
-        for key in rglobals:
-            if key not in keys_before:
-                env[key] = rglobals[key]
+        sentinel = object()
+        env.update(
+            {
+                key: value
+                for key, value in rglobals.items()
+                if key != "__builtins__" and before.get(key, sentinel) is not value
+            }
+        )

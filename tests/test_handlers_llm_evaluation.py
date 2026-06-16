@@ -2,7 +2,9 @@
 
 import ast
 import builtins
+import contextlib
 import inspect
+import io
 import sys
 import textwrap
 import types
@@ -25,6 +27,9 @@ from effectful.handlers.llm.evaluation import (
     mypy_type_check,
     type_to_ast,
 )
+from effectful.handlers.llm.evaluation import compile as compile_op
+from effectful.handlers.llm.evaluation import exec as exec_op
+from effectful.handlers.llm.evaluation import parse as parse_op
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
@@ -1537,3 +1542,55 @@ def test_builtins_in_env_does_not_bypass_security():
                 source_private, context=dangerous_ctx
             )
             fn("test")
+
+
+# ============================================================================
+# RestrictedEvalProvider state-retention and print (#685)
+# ============================================================================
+
+
+def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
+    """Run one snippet through the parse/compile/exec ops under
+    RestrictedEvalProvider, optionally capturing stdout."""
+    with handler(RestrictedEvalProvider()):
+        code = compile_op(parse_op(source, "<f>"), "<f>")
+        if capture:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exec_op(code, ns)
+            return buf.getvalue()
+        exec_op(code, ns)
+        return None
+
+
+def test_restricted_exec_copies_back_rebound_seed():
+    """#685: rebinding a name already present in the namespace writes the new
+    value back, not just never-before-seen names."""
+    ns = {"x": 1}
+    _restricted_run("x = 99", ns)
+    assert ns["x"] == 99
+
+
+def test_restricted_exec_copies_back_rebound_new_key():
+    """#685: a key that becomes a 'seed' after its first definition is still
+    rebindable on subsequent calls."""
+    ns: dict = {}
+    _restricted_run("y = 1", ns)
+    _restricted_run("y = 2", ns)
+    assert ns["y"] == 2
+
+
+def test_restricted_exec_persists_and_rebinds_across_calls():
+    """#685: the namespace is a real REPL session — a binding from one call is
+    usable in the next, and rebinding it using its prior value works."""
+    ns: dict = {}
+    _restricted_run("x = 10", ns)
+    _restricted_run("x = x + 1", ns)
+    assert ns["x"] == 11
+
+
+def test_restricted_exec_print_captured_to_stdout():
+    """#685: RestrictedPython's `print` is routed to the real stdout so
+    output-capturing callers see it (rather than NameError on `_print_`)."""
+    out = _restricted_run("print('hi')", {}, capture=True)
+    assert out == "hi\n"
