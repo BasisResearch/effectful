@@ -319,11 +319,8 @@ class PythonRepl(ObjectInterpretation):
     own isolated sessions.
 
     The session is seeded from the Template's lexical context and routes execution
-    through the `parse`/`compile`/`exec` effect operations.
-
-    v1 requires `UnsafeEvalProvider`: `RestrictedEvalProvider`'s exec drops
-    rebindings of seeded names and does not wire RestrictedPython's print
-    collector (tracked in #685), both of which break the REPL contract.
+    through the `parse`/`compile`/`exec` effect operations, so it works under any
+    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
     """
 
     @implements(Template.__apply__)
