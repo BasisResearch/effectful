@@ -22,6 +22,7 @@ from effectful.handlers.jax.monoid import (
 from effectful.ops.monoid import (
     CartesianProduct,
     DeltaEmpty,
+    EvaluateIntp,
     NormalizeIntp,
     Product,
     Sum,
@@ -396,10 +397,12 @@ def test_reduce_matmul(backend: JaxBackend):
     (b, i, j, k) = backend.define_vars("b", "i", "j", "k", ret="scalar")
 
     with handler(NormalizeIntp):
-        actual = Sum.reduce(
+        norm = Sum.reduce(
             delta((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)),
             {b: range(B), i: range(I), j: range(J), k: range(K)},
         )
+    with handler(EvaluateIntp), handler(NormalizeIntp):
+        actual = evaluate(norm)
 
     expected = jnp.einsum("bij,bjk->bik", X, Y)
     assert jnp.allclose(actual, expected)

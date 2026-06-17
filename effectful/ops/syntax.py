@@ -1477,10 +1477,14 @@ class Array(ABC):
     @abstractmethod
     def __getitem__(self, key: tuple) -> "Array": ...
 
+    @property
+    @abstractmethod
+    def shape(self) -> tuple[int, ...]: ...
+
 
 @defdata.register(Array)
 class _ArrayTerm(_IterableTerm[Array]):
-    @defop
+    @Operation.define
     def __getitem__(self: Array, key: tuple) -> Array:
         if not isinstance(key, Term) and not key:
             return self
@@ -1491,6 +1495,14 @@ class _ArrayTerm(_IterableTerm[Array]):
             and not any(isinstance(t, Term) for t in key)
         ):
             return self[key]
+        else:
+            raise NotHandled
+
+    @property
+    @Operation.define
+    def shape(self: Array) -> tuple[int, ...]:
+        if not isinstance(self, Term):
+            return self.shape
         else:
             raise NotHandled
 

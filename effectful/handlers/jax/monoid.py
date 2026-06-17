@@ -32,7 +32,7 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import Array, ObjectInterpretation, deffn, implements
+from effectful.ops.syntax import Array, ObjectInterpretation, deffn, getitem, implements
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,6 @@ class ReduceArray(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        breakpoint()
         reductor = ARRAY_REDUCTORS.get(monoid, None)
         if reductor is None:
             return fwd()
@@ -236,7 +235,6 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        breakpoint()
         if not (isinstance(body, Term) and body.op == delta):
             return fwd()
 
@@ -464,6 +462,14 @@ class ReduceSumProductContraction(ObjectInterpretation):
         return contraction
 
 
+class GetitemJaxGetitem(ObjectInterpretation):
+    @implements(getitem)
+    def _(self, arr, index):
+        if isinstance(arr, jax.Array):
+            return jax_getitem(arr, index)
+        return fwd()
+
+
 @dataclass
 class Node:
     ordinal: frozenset[str]
@@ -659,27 +665,29 @@ def einsum(
     """
     expr = _einsum_expr(subscripts, *operands, plates=plates)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
-    with handler(EvaluateIntp):
+    with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
+        breakpoint()
         result = evaluate(norm_expr(*operands))
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
         return result
 
 
 EvaluateIntp.extend(
-    # SumPlusJax(),
-    # ProductPlusJax(),
-    # MinPlusJax(),
-    # MaxPlusJax(),
-    # LogSumExpPlusJax(),
-    # ReduceSumProductContraction(),
+    SumPlusJax(),
+    ProductPlusJax(),
+    MinPlusJax(),
+    MaxPlusJax(),
+    LogSumExpPlusJax(),
+    ReduceSumProductContraction(),
     ReduceArray(),
-    # ReduceDeltaSimpleRange(),
+    ReduceDeltaSimpleRange(),
+    GetitemJaxGetitem(),
 )
 
 NormalizeIntp.extend(
-    # ReduceArrayGather(),
-    # ReduceDependentRangeMask(),
-    # ContractLongestArrayStream(),
-    # PlusJaxUpcast(),
+    ReduceArrayGather(),
+    ReduceDependentRangeMask(),
+    ContractLongestArrayStream(),
+    PlusJaxUpcast(),
 )

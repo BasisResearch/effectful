@@ -202,7 +202,6 @@ class Backend(ABC):
     def check_rewrite(
         self, lhs, rhs, rule, *, max_examples: int = 25, deadline=None, normalize=None
     ) -> None:
-        breakpoint()
         normalize = (
             normalize
             if normalize is not None
@@ -233,7 +232,7 @@ class Backend(ABC):
             max_examples=max_examples, deadline=deadline, report_multiple_bugs=False
         )
         def _check_semantics(intp):
-            with handler(NormalizeIntp), handler(EvaluateIntp), handler(intp):
+            with handler(normalize), handler(intp):
                 lhs_val = evaluate(lhs)
                 rhs_val = evaluate(rhs)
                 assert self.eq(lhs_val, rhs_val)

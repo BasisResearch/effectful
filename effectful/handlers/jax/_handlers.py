@@ -3,7 +3,7 @@ import itertools
 import typing
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import EllipsisType
-from typing import Annotated
+from typing import Annotated, Any
 
 from opt_einsum import get_symbol
 from opt_einsum.parser import parse_einsum_input
@@ -298,7 +298,7 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
 def bind_dims[T, A, B](
     __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], jax.Array], Scoped[B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
 ) -> Annotated[T, Scoped[A]]:
     """Convert named dimensions to positional dimensions.
 
@@ -324,17 +324,27 @@ def bind_dims[T, A, B](
     return jax.tree.map(lambda v: bind_dims(v, *names), value)
 
 
+@bind_dims.register(object)
+def _(*args, **kwargs):
+    raise NotHandled
+
+
 @defop
 @_CustomSingleDispatchCallable
 def unbind_dims[T, A, B](
     __dispatch: Callable[[type], Callable[..., T]],
     value: Annotated[T, Scoped[A | B]],
-    *names: Annotated[Operation[[], jax.Array], Scoped[B]],
+    *names: Annotated[Operation[[], Any], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: unbind_dims(v, *names), value)
+
+
+@unbind_dims.register(object)
+def _(*args, **kwargs):
+    raise NotHandled
 
 
 def jit(f, *args, **kwargs):
