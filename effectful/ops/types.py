@@ -42,59 +42,6 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
         return self.func(self.dispatch, *args, **kwargs)
 
 
-class _CustomSingleDispatchMethod[**P, **Q, S, T]:
-    """Method analog of :class:`_CustomSingleDispatchCallable`.
-
-    The wrapped function has signature ``(self, dispatch, *args, **kwargs)``,
-    where ``dispatch`` is :meth:`functools.singledispatch.dispatch`. As a
-    descriptor, it binds ``self`` on attribute access, so callers invoke it
-    as ``instance.method(*args, **kwargs)``.
-    """
-
-    def __init__(
-        self,
-        func: Callable[Concatenate[Any, Callable[[type], Callable[Q, S]], P], T],
-    ):
-        self.func = func
-        self._registry = functools.singledispatch(func)
-        self.__signature__ = inspect.signature(
-            functools.partial(func, None, None)  # type: ignore[arg-type]
-        )
-        functools.update_wrapper(self, func)  # type: ignore[arg-type]
-
-    @property
-    def dispatch(self):
-        return self._registry.dispatch
-
-    @property
-    def register(self):
-        return self._registry.register
-
-    def __get__(self, instance, owner=None):
-        if instance is None:
-            return self
-        return _BoundCustomSingleDispatchMethod(self, instance)
-
-
-class _BoundCustomSingleDispatchMethod:
-    __slots__ = ("_method", "_instance")
-
-    def __init__(self, method: _CustomSingleDispatchMethod, instance: Any):
-        self._method = method
-        self._instance = instance
-
-    @property
-    def dispatch(self):
-        return self._method.dispatch
-
-    @property
-    def register(self):
-        return self._method.register
-
-    def __call__(self, *args, **kwargs):
-        return self._method.func(self._instance, self._method.dispatch, *args, **kwargs)
-
-
 class _ClassMethodOpDescriptor(classmethod):
     def __init__(self, define, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -410,20 +357,6 @@ class Operation[**Q, V]:
         op = cls.define(func, **kwargs)
         op.dispatch = default._registry.dispatch  # type: ignore[attr-defined]
         op.register = default._registry.register  # type: ignore[attr-defined]
-        return op
-
-    @define.register(_CustomSingleDispatchMethod)
-    @classmethod
-    def _define_customsingledispatchmethod(
-        cls, default: _CustomSingleDispatchMethod, **kwargs
-    ):
-        @functools.wraps(default.func)
-        def _wrapper(obj, *args, **kwargs):
-            return default.__get__(obj)(*args, **kwargs)
-
-        op = cls.define(_wrapper, **kwargs)
-        op.register = default.register  # type: ignore[attr-defined]
-        op.dispatch = default.dispatch  # type: ignore[attr-defined]
         return op
 
     @typing.final
