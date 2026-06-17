@@ -498,13 +498,23 @@ class Operation[**Q, V]:
             return self
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import _restore_args, get_interpretation
+        from effectful.internals.runtime import (
+            _get_args,
+            _restore_args,
+            get_interpretation,
+        )
         from effectful.ops.semantics import fwd, handler
 
         intp = get_interpretation()
 
         self_handler = intp.get(self)
         if self_handler is not None:
+            # these cases improve performance of fwd but do not change its behavior
+            if self == _get_args:
+                return self_handler(*args, **kwargs)
+            if self == fwd:
+                return _restore_args(self_handler)(*args, **kwargs)
+
             # ensure that fwd is bound to the default rule. if this handler has
             # a bound fwd, it will override this binding
             fwd_intp = typing.cast(
