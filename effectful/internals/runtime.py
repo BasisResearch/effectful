@@ -1,10 +1,11 @@
 import contextlib
 import dataclasses
 import functools
+import inspect
 from collections.abc import Callable, Mapping
 from threading import local
 
-from effectful.ops.types import Interpretation, NotHandled, Operation
+from effectful.ops.types import Interpretation, Operation
 
 
 @dataclasses.dataclass
@@ -34,10 +35,14 @@ def interpreter(intp: "Interpretation"):
 
 @Operation.define
 def _get_args() -> tuple[tuple, Mapping]:
-    raise NotHandled
+    return ((), {})
 
 
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
+    sig = inspect.signature(fn)
+    if not sig.parameters:
+        return fn
+
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
         a, k = (a, k) if a or k else _get_args()
@@ -48,6 +53,10 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
 def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
+
+    sig = inspect.signature(fn)
+    if not sig.parameters:
+        return fn
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
