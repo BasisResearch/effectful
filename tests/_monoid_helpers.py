@@ -1,145 +1,21 @@
+import builtins
 import itertools
-from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
-from typing import Any, get_args, get_origin
+import typing
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Mapping
+from typing import Any, Literal, overload
 
 import jax
 from hypothesis import given, settings
 from hypothesis import strategies as st
+from hypothesis.strategies import SearchStrategy
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import NormalizeIntp
-from effectful.ops.semantics import apply, evaluate, handler
+from effectful.ops.monoid import NormalizeIntp, Stream, _is_monoid_weighted
+from effectful.ops.semantics import apply, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
-
-_JAX_ARRAY_SHAPE = (2,)
-
-
-def _jax_array_value_strategy() -> st.SearchStrategy[jax.Array]:
-    return st.lists(
-        st.integers(min_value=-5, max_value=5),
-        min_size=_JAX_ARRAY_SHAPE[0],
-        max_size=_JAX_ARRAY_SHAPE[0],
-    ).map(lambda xs: jax.numpy.asarray(xs, dtype=jax.numpy.float32))
-
-
-# Unary jax fns map a scalar to a 1-D array (analogous to ``_UNARY_LIST_FNS``
-# for ints). Uses the effectful-wrapped jnp so named-dim broadcasting works.
-_UNARY_JAX_FNS: list[Callable[[jax.Array], jax.Array]] = [
-    lambda a: _jnp.stack([a, a + 1]),
-    lambda a: _jnp.stack([a, -a]),
-    lambda a: _jnp.stack([a, a + 1, 2 * a]),
-]
-
-_BINARY_JAX_FNS: list[Callable[[jax.Array, jax.Array], jax.Array]] = [
-    lambda a, b: a + b,
-    lambda a, b: a - b,
-    lambda a, b: a * b,
-]
-
-
-def _value_strategy_for(annotation: Any) -> st.SearchStrategy[Any]:
-    """Strategy for the value an *0-arg* Operation should return."""
-    if annotation is int:
-        return st.integers(min_value=-100, max_value=100)
-    if annotation is float:
-        return st.floats(allow_nan=False)
-    if get_origin(annotation) is list and get_args(annotation) == (int,):
-        return st.lists(st.integers(min_value=-100, max_value=100), max_size=2)
-    if annotation is jax.Array:
-        return _jax_array_value_strategy()
-    if get_origin(annotation) is list and get_args(annotation) == (jax.Array,):
-        return st.lists(_jax_array_value_strategy(), max_size=2)
-    raise NotImplementedError(
-        f"No value strategy for return annotation {annotation!r}; "
-        "supported: int, list[int], jax.Array, list[jax.Array]"
-    )
-
-
-_UNARY_NUM_FNS: list[Callable[[int], int]] = [
-    lambda x: x,
-    lambda x: x + 1,
-    lambda x: x - 1,
-    lambda x: -x,
-    lambda x: 2 * x,
-    lambda x: 3 * x + 1,
-]
-
-_BINARY_NUM_FNS: list[Callable[[int, int], int]] = [
-    lambda x, y: x + y,
-    lambda x, y: x - y,
-    lambda x, y: x * y,
-    lambda x, y: x + 2 * y,
-    lambda x, y: 2 * x - y,
-]
-
-_UNARY_LIST_FNS: list[Callable[[int], list[int]]] = [
-    lambda _x: [],
-    lambda x: [x],
-    lambda x: [x, x + 1],
-    lambda x: [x, -x],
-    lambda x: [0, x, x + 1],
-]
-
-_UNARY_JAX_LIST_FNS: list[Callable[[jax.Array], list[jax.Array]]] = [
-    lambda _x: [],
-    lambda x: [x],
-    lambda x: [x, x + 1],
-    lambda x: [x, -x],
-]
-
-
-def _strategy_for_op(op: Operation) -> st.SearchStrategy[Callable[..., Any]]:
-    """Pick a strategy producing a callable suitable for binding `op` in an
-    interpretation. Inspects the operation's signature.
-    """
-    sig = op.__signature__
-    params = list(sig.parameters.values())
-    ret = sig.return_annotation
-    param_types = tuple(p.annotation for p in params)
-
-    if not params:
-        return _value_strategy_for(ret).map(deffn)
-    if ret in (int, float) and param_types == (int,):
-        return st.sampled_from(_UNARY_NUM_FNS)
-    if ret in (int, float) and param_types == (int, int):
-        return st.sampled_from(_BINARY_NUM_FNS)
-    if get_origin(ret) is list and get_args(ret) == (int,) and param_types == (int,):
-        return st.sampled_from(_UNARY_LIST_FNS)
-    if ret is jax.Array and param_types == (jax.Array,):
-        return st.sampled_from(_UNARY_JAX_FNS)
-    if ret is jax.Array and param_types == (jax.Array, jax.Array):
-        return st.sampled_from(_BINARY_JAX_FNS)
-    if (
-        get_origin(ret) is list
-        and get_args(ret) == (jax.Array,)
-        and param_types == (jax.Array,)
-    ):
-        return st.sampled_from(_UNARY_JAX_LIST_FNS)
-    raise NotImplementedError(
-        f"No callable strategy for free var with return {ret!r}, params {param_types!r}"
-    )
-
-
-@st.composite
-def random_interpretation(
-    draw: st.DrawFn, free_vars: Sequence[Operation]
-) -> Mapping[Operation, Callable[..., Any]]:
-    """Draw an Interpretation binding every Operation in `case.free_vars` to
-    a randomly chosen value/callable. Keys are Operation identities.
-    """
-    intp: dict[Operation, Callable[..., Any]] = {}
-    for op in free_vars:
-        intp[op] = draw(_strategy_for_op(op))
-    return intp
-
-
-def define_vars(*names, typ=int):
-    if len(names) == 1:
-        return Operation.define(typ, name=names[0])
-    return tuple(Operation.define(typ, name=n) for n in names)
 
 
 def syntactic_eq_alpha(x, y) -> bool:
@@ -251,8 +127,7 @@ def _canonicalize(expr, _canonical_op):
         return evaluate(expr)
 
 
-@dataclass(frozen=True)
-class Backend:
+class Backend(ABC):
     """A value-domain spec used to share monoid tests across int and jax.Array
     backends. Provides the concrete value type, the hypothesis strategy for
     drawing scalars in property tests, and an equality predicate that works
@@ -262,10 +137,29 @@ class Backend:
     name: str
     scalar_typ: Any
     stream_typ: Any
-    scalar_strategy: st.SearchStrategy[Any]
-    eq: Callable[[Any, Any], bool]
+    strategy_for_op: dict[Operation, st.SearchStrategy[Callable[..., Any]]]
 
-    def fresh_op(self, name: str, n_args: int = 1, ret: str = "scalar") -> Operation:
+    def __init__(self):
+        self.strategy_for_op = {}
+
+    @abstractmethod
+    def eq(self, a: Any, b: Any) -> bool:
+        raise NotImplementedError
+
+    @abstractmethod
+    def strategy(
+        self,
+        arg_types: tuple[type, ...] = (),
+        ret: Literal["scalar", "stream"] = "scalar",
+    ) -> SearchStrategy:
+        raise NotImplementedError
+
+    def _fresh_op(
+        self,
+        name: str,
+        arg_types: tuple[type, ...] = (),
+        ret: Literal["scalar", "stream"] = "scalar",
+    ) -> Operation:
         """Build a fresh, unhandled Operation whose parameter and return
         annotations are derived from this backend.
 
@@ -275,81 +169,245 @@ class Backend:
         """
         scalar = self.scalar_typ
         out = self.stream_typ if ret == "stream" else scalar
-        params = ", ".join(f"_a{i}" for i in range(n_args))
+        params = ", ".join(f"_a{i}" for i in range(len(arg_types)))
         ns: dict[str, Any] = {"NotHandled": NotHandled}
         exec(f"def _fn({params}):\n    raise NotHandled\n", ns)
         fn = ns["_fn"]
         fn.__annotations__ = {
-            **{f"_a{i}": scalar for i in range(n_args)},
+            **{f"_a{i}": t for i, t in enumerate(arg_types)},
             "return": out,
         }
-        return Operation.define(fn, name=name)
+        op = Operation.define(fn, name=name)
+        self.strategy_for_op[op] = self.strategy(arg_types, ret)
+        return op
+
+    @overload
+    def define_vars(self, name: str, /, **kwargs) -> Operation: ...
+
+    @overload
+    def define_vars(
+        self, n1: str, n2: str, /, *names: str, **kwargs
+    ) -> tuple[Operation, ...]: ...
+
+    def define_vars(self, *names: str, **kwargs) -> Operation | tuple[Operation, ...]:  # type: ignore[misc]
+        if len(names) == 1:
+            return self._fresh_op(names[0], **kwargs)
+        return tuple(self._fresh_op(n, **kwargs) for n in names)
+
+    def check_rewrite(
+        self,
+        lhs,
+        rhs,
+        rule,
+        *,
+        max_examples: int = 25,
+        deadline=None,
+        normalize=NormalizeIntp,
+    ) -> None:
+        with handler(rule):
+            norm = evaluate(lhs)
+        assert syntactic_eq_alpha(norm, rhs)
+
+        fvs = fvsof(lhs) | fvsof(rhs)
+
+        @st.composite
+        def random_interpretation(
+            draw: st.DrawFn,
+        ) -> Mapping[Operation, Callable[..., Any]]:
+            """Draw an Interpretation binding every Operation in `free_vars` to
+            a randomly chosen value/callable. Keys are Operation identities.
+            """
+            intp: dict[Operation, Callable[..., Any]] = {}
+            for op, strategy in self.strategy_for_op.items():
+                if op in fvs:
+                    intp[op] = draw(strategy)
+            return intp
+
+        @given(intp=random_interpretation())
+        @settings(
+            max_examples=max_examples, deadline=deadline, report_multiple_bugs=False
+        )
+        def _check_semantics(intp):
+            with handler(normalize), handler(intp):
+                lhs_val = evaluate(lhs)
+                rhs_val = evaluate(rhs)
+                assert self.eq(lhs_val, rhs_val)
+
+        _check_semantics()
 
 
-def _int_eq(a: Any, b: Any) -> bool:
-    return not isinstance(a, Term) and not isinstance(b, Term) and a == b
+def _is_weighted(x: Any) -> bool:
+    return isinstance(x, Term) and _is_monoid_weighted(x.op)
 
 
-def _jax_eq(a: Any, b: Any) -> bool:
-    def _leaf_eq(x: Any, y: Any) -> bool:
-        return bool(jax.numpy.all(jax.numpy.isclose(x, y, equal_nan=True)))
+def _weight_pairs(x: Any, monoid: Any) -> list[tuple[Any, Any]] | None:
+    """Return ``(element, weight)`` pairs for a stream.
 
-    try:
-        leaves = jax.tree.leaves(jax.tree.map(_leaf_eq, a, b))
-    except (ValueError, TypeError):
+    A weighted-monoid Term yields each element paired with its weight. A plain
+    (unweighted) stream yields each element paired with ``monoid.identity`` --
+    the no-op weight -- so an unweighted stream compares equal to a weighted one
+    exactly when every weight reduces to the identity (e.g. ``[()]`` vs a
+    weighted ``[()]`` whose single empty row reduces to the identity, and, more
+    generally, whenever both streams are empty). Returns ``None`` for a
+    non-stream Term, which never compares equal to a weighted stream.
+    """
+    if isinstance(x, Term):
+        if not _is_monoid_weighted(x.op):
+            return None
+        stream, weight = x.args
+        assert not isinstance(stream, Term)
+        return [(e, typing.cast(Callable, weight)(e)) for e in stream]
+    return [(e, monoid.identity) for e in x]
+
+
+def _weighted_stream_eq(a, b, leaf_eq: Callable[[Any, Any], bool]) -> bool:
+    monoids = {x.op.__self__ for x in (a, b) if _is_weighted(x)}
+    # distinct weight monoids can never be equal
+    if len(monoids) != 1:
         return False
-    return all(leaves)
+    monoid = next(iter(monoids))
+
+    a_pairs = _weight_pairs(a, monoid)
+    b_pairs = _weight_pairs(b, monoid)
+    if a_pairs is None or b_pairs is None or len(a_pairs) != len(b_pairs):
+        return False
+    for (ea, wa), (eb, wb) in zip(a_pairs, b_pairs):
+        if not leaf_eq(ea, eb) or not leaf_eq(wa, wb):
+            return False
+    return True
 
 
-def check_rewrite(
-    lhs,
-    rhs,
-    rule,
-    *,
-    backend: Backend,
-    free_vars=[],
-    max_examples: int = 25,
-    deadline=None,
-) -> None:
-    with handler(rule):
-        norm = evaluate(lhs)
-    assert syntactic_eq_alpha(norm, rhs)
+class IntBackend(Backend):
+    name = "int"
+    scalar_typ = int
+    stream_typ = Stream[int]
 
-    @given(intp=random_interpretation(free_vars))
-    @settings(max_examples=max_examples, deadline=deadline)
-    def _check_semantics(intp):
-        with handler(NormalizeIntp), handler(intp):
-            lhs_val = evaluate(lhs)
-            rhs_val = evaluate(rhs)
-        assert backend.eq(lhs_val, rhs_val)
+    _unary_num_fns: list[Callable[[int], int]] = [
+        lambda x: x,
+        lambda x: x + 1,
+        lambda x: x - 1,
+        lambda x: -x,
+        lambda x: 2 * x,
+        lambda x: 3 * x + 1,
+    ]
 
-    _check_semantics()
+    _binary_num_fns: list[Callable[[int, int], int]] = [
+        lambda x, y: x + y,
+        lambda x, y: x - y,
+        lambda x, y: x * y,
+        lambda x, y: x + 2 * y,
+        lambda x, y: 2 * x - y,
+    ]
+
+    _unary_list_fns: list[Callable[[int], list[int]]] = [
+        lambda _x: [],
+        lambda x: [x],
+        lambda x: [x, x + 1],
+        lambda x: [x, -x],
+        lambda x: [0, x, x + 1],
+    ]
+
+    def strategy(
+        self,
+        arg_types: tuple[type, ...] = (),
+        ret: Literal["scalar", "stream"] = "scalar",
+    ) -> SearchStrategy:
+        match arg_types, ret:
+            case (), "scalar":
+                return st.integers(min_value=-100, max_value=100).map(deffn)
+            case (), "stream":
+                scalars = st.integers(min_value=-100, max_value=100)
+                return st.lists(scalars, max_size=2).map(deffn)
+            case (builtins.int,), "scalar":
+                return st.sampled_from(self._unary_num_fns)
+            case (builtins.int, builtins.int), "scalar":
+                return st.sampled_from(self._binary_num_fns)
+            case (builtins.int,), "stream":
+                return st.sampled_from(self._unary_list_fns)
+        raise NotImplementedError(
+            f"No int strategy for op with return {ret!r} and {arg_types} args"
+        )
+
+    def eq(self, a: Any, b: Any) -> bool:
+        if _is_weighted(a) or _is_weighted(b):
+            return _weighted_stream_eq(a, b, self.eq)
+        return not isinstance(a, Term) and not isinstance(b, Term) and a == b
 
 
-INT_BACKEND = Backend(
-    name="int",
-    scalar_typ=int,
-    stream_typ=list[int],
-    scalar_strategy=st.integers(min_value=-100, max_value=100),
-    eq=_int_eq,
-)
+class JaxBackend(Backend):
+    name = "jax"
+    scalar_typ = jax.Array
+    stream_typ = jax.Array
+
+    _unary_jax_scalar_fns: list[Callable[[jax.Array], jax.Array]] = [
+        lambda a: a,
+        lambda a: a + 1,
+        lambda a: a - 1,
+        lambda a: -a,
+        lambda a: 2 * a,
+    ]
+
+    _unary_jax_stream_fns: list[Callable[[jax.Array], Stream[jax.Array]]] = [
+        lambda a: _jnp.stack([a, a + 1]),
+        lambda a: _jnp.stack([a, -a]),
+        lambda a: _jnp.stack([a, a + 1, 2 * a]),
+    ]
+
+    _binary_jax_scalar_fns: list[Callable[[jax.Array, jax.Array], jax.Array]] = [
+        lambda a, b: a + b,
+        lambda a, b: a - b,
+        lambda a, b: a * b,
+    ]
+
+    def strategy(
+        self,
+        arg_types: tuple[type, ...] = (),
+        ret: Literal["scalar", "stream"] = "scalar",
+    ) -> st.SearchStrategy[Callable]:
+        match arg_types, ret:
+            case (), "scalar":
+                return (
+                    st.lists(
+                        st.integers(min_value=-5, max_value=5),
+                        min_size=2,
+                        max_size=2,
+                    )
+                    .map(lambda xs: jax.numpy.asarray(xs, dtype=jax.numpy.float32))
+                    .map(deffn)
+                )
+            case (), "stream":
+                return (
+                    st.lists(
+                        st.integers(min_value=-5, max_value=5),
+                        min_size=1,
+                        max_size=2,
+                    )
+                    .map(lambda xs: jax.numpy.asarray(xs, dtype=jax.numpy.float32))
+                    .map(deffn)
+                )
+            case (jax.Array,), "scalar":
+                return st.sampled_from(self._unary_jax_scalar_fns)
+            case (jax.Array, jax.Array), "scalar":
+                return st.sampled_from(self._binary_jax_scalar_fns)
+            case (jax.Array,), "stream":
+                return st.sampled_from(self._unary_jax_stream_fns)
+
+        raise NotImplementedError(
+            f"No jax strategy for op with return {ret!r} and {arg_types} args"
+        )
+
+    def eq(self, a: Any, b: Any) -> bool:
+        if _is_weighted(a) or _is_weighted(b):
+            return _weighted_stream_eq(a, b, self.eq)
+
+        def _leaf_eq(x: Any, y: Any) -> bool:
+            return bool(jax.numpy.all(jax.numpy.isclose(x, y, equal_nan=True)))
+
+        try:
+            leaves = jax.tree.leaves(jax.tree.map(_leaf_eq, a, b))
+        except (ValueError, TypeError):
+            return False
+        return all(leaves)
 
 
-JAX_BACKEND = Backend(
-    name="jax",
-    scalar_typ=jax.Array,
-    stream_typ=jax.Array,
-    scalar_strategy=_jax_array_value_strategy(),
-    eq=_jax_eq,
-)
-
-
-__all__ = [
-    "Backend",
-    "INT_BACKEND",
-    "JAX_BACKEND",
-    "random_interpretation",
-    "define_vars",
-    "syntactic_eq_alpha",
-    "check_rewrite",
-]
+__all__ = ["Backend", "IntBackend", "JaxBackend", "syntactic_eq_alpha"]
