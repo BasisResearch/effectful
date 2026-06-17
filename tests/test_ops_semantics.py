@@ -842,3 +842,12 @@ def test_coproduct_fwd_chain(benchmark):
 
     assert run() == 0
     assert benchmark(run) == 0
+
+
+def test_fwd_in_definition_raises():
+    @Operation.define
+    def f():
+        return fwd()
+
+    with pytest.raises(RuntimeError):
+        f()
