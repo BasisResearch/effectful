@@ -33,7 +33,7 @@ def fwd(*args, **kwargs) -> Any:
     the current arguments to the next handler.
 
     """
-    raise NotHandled
+    raise RuntimeError("fwd should only be called in the context of a handler")
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
