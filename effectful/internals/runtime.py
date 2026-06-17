@@ -33,25 +33,25 @@ def interpreter(intp: "Interpretation"):
 
 
 @Operation.define
-def _get_args_op() -> tuple[tuple, Mapping, Operation]:
+def _get_args() -> tuple[tuple, Mapping]:
     raise NotHandled
 
 
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args_op()[:2]
+        a, k = (a, k) if a or k else _get_args()
         return fn(*a, **k)
 
     return _cont_wrapper
 
 
-def _save_args_op[**P, T](fn: Callable[P, T], op: Operation[P, T]) -> Callable[P, T]:
+def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        with handler({_get_args_op: lambda: (a, k, op)}):
+        with handler({_get_args: lambda: (a, k)}):
             return fn(*a, **k)
 
     return _cont_wrapper

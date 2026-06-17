@@ -33,10 +33,7 @@ def fwd(*args, **kwargs) -> Any:
     the current arguments to the next handler.
 
     """
-    from effectful.internals.runtime import _get_args_op
-
-    (args, kwargs, op) = _get_args_op()
-    return op.__default_rule__(*args, **kwargs)
+    raise NotHandled
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
@@ -84,25 +81,23 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     """
     from effectful.internals.runtime import (
-        _get_args_op,
+        _get_args,
         _restore_args,
-        _save_args_op,
+        _save_args,
         _set_prompt,
     )
 
     res = dict(intp)
     for op, i2 in intp2.items():
-        if op in {fwd, _get_args_op}:
+        if op in {fwd, _get_args}:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
             # calling fwd in the right handler should dispatch to the left handler
             i1 = intp.get(op)
             res[op] = (
-                _set_prompt(
-                    fwd, _restore_args(_save_args_op(i1, op)), _save_args_op(i2, op)
-                )
+                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
                 if i1 is not None
-                else _save_args_op(i2, op)
+                else _save_args(i2)
             )
 
     return res
