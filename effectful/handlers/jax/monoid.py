@@ -1,6 +1,9 @@
 import functools
 import logging
 import typing
+from collections import defaultdict
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 import jax
@@ -14,6 +17,7 @@ from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
+    EvaluateIntp,
     Max,
     Min,
     Monoid,
@@ -23,26 +27,15 @@ from effectful.ops.monoid import (
     Sum,
     _is_monoid_plus,
     choose_contraction,
+    delta,
     distributes_over,
 )
+from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+from effectful.ops.syntax import Array, ObjectInterpretation, deffn, implements
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
-
-
-def cartesian_prod(x, y):
-    if x.ndim == 1:
-        x = x[:, None]
-    if y.ndim == 1:
-        y = y[:, None]
-    nx, dx = x.shape
-    ny, dy = y.shape
-    # Broadcast into (nx, ny, dx+dy), then flatten the first two axes
-    x_b = jnp.broadcast_to(x[:, None, :], (nx, ny, dx))
-    y_b = jnp.broadcast_to(y[None, :, :], (nx, ny, dy))
-    return jnp.concatenate([x_b, y_b], axis=-1).reshape(nx * ny, dx + dy)
 
 
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
@@ -127,46 +120,8 @@ class LogSumExpPlusJax(ObjectInterpretation):
         return functools.reduce(jnp.logaddexp, args)
 
 
-class CartesianProductPlusJax(ObjectInterpretation):
-    @implements(CartesianProduct.plus)
-    def plus(self, *args):
-        # Skip identity ``[()]`` args; short-circuit on zero ``[]``. Both
-        # sentinels arrive as Python lists alongside jax-array factors, so
-        # check for them explicitly before composing.
-        if not any(isinstance(a, jax.Array) for a in args):
-            return fwd()
-        result = None
-        for a in args:
-            if a is CartesianProduct.zero:
-                return CartesianProduct.zero
-            if a is CartesianProduct.identity:
-                continue
-            if not isinstance(a, jax.Array):
-                return fwd()
-            result = a if result is None else cartesian_prod(result, a)
-        if result is None:
-            return CartesianProduct.identity
-        # CartesianProduct values are streams of rows. ``cartesian_prod``
-        # already lifts 1D inputs to 2D, but a single-array call seeds
-        # ``result = a`` unchanged — promote so the rank invariant holds for
-        # every array-path return.
-        if result.ndim == 1:
-            result = result[:, None]
-        return result
-
-
 class ReduceArrayGather(ObjectInterpretation):
-    """Split an array-valued stream into an index range and a length-1 stream:
-
-    M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body, {i: range(a.shape[0]), k: (a[i()],)} ∪ S)
-
-    where ``i`` is fresh and ``a[i()] = unbind_dims(a, i)``. The length-1 stream
-    ``{k: (a[i()],)}`` is then eliminated by
-    :class:`~effectful.ops.monoid.EliminateSingletonStreams`, which substitutes
-    ``k := a[i()]`` into the body and the remaining streams. Together the two
-    steps perform the gather
-    ``M.reduce(body[k := a[i()]], {i: range(a.shape[0])} ∪ S)``.
-    """
+    """M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body[k := a[k']], {k': range(a.shape[0])} ∪ S)"""
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
@@ -179,21 +134,26 @@ class ReduceArrayGather(ObjectInterpretation):
         body_fvs = fvsof(body)
         stream_keys = set(streams)
 
-        new_streams: dict = {}
+        body_subst = {}
+        streams_subst = {}
+        range_streams = {}
         progress = False
         for k, v in streams.items():
             if is_eager_array(v) and k in body_fvs and not (fvsof(v) & stream_keys):
-                index = Operation.define(k)
-                new_streams[index] = range(v.shape[0])
-                new_streams[k] = (unbind_dims(v, index),)
+                kk = Operation.define(k)
+                body_subst[k] = deffn(unbind_dims(v, kk))
+                streams_subst[k] = kk
+                range_streams[kk] = range(v.shape[0])
                 progress = True
             else:
-                new_streams[k] = v
+                range_streams[k] = v
 
         if not progress:
             return fwd()
 
-        return monoid.reduce(body, new_streams)
+        subst_body = handler(body_subst)(evaluate)(body)
+        subst_streams = handler(streams_subst)(evaluate)(range_streams)
+        return monoid.reduce(subst_body, subst_streams)
 
 
 class Reductor(Protocol):
@@ -221,6 +181,7 @@ class ReduceArray(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        breakpoint()
         reductor = ARRAY_REDUCTORS.get(monoid, None)
         if reductor is None:
             return fwd()
@@ -228,20 +189,18 @@ class ReduceArray(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        pos_dims = {}
-        if isinstance(body, Term):
-            if body.op == delta:
-                pos_dims = {
-                    d.op
-                    for d in body.args[0]
-                    if isinstance(d, Term) and d.op in streams
-                }
-            elif _is_monoid_plus(body.op) and distributes_over(
-                body.op.__self__, monoid
-            ):
-                # delegate to factorization
-                return fwd()
+        if (
+            isinstance(body, Term)
+            and _is_monoid_plus(body.op)
+            and distributes_over(body.op.__self__, monoid)
+        ):
+            return fwd()
 
+        pos_dims = (
+            {d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams}
+            if isinstance(body, Term) and body.op == delta
+            else {}
+        )
         body_fvs = fvsof(body)
         used = {
             k
@@ -257,11 +216,6 @@ class ReduceArray(ObjectInterpretation):
         return reduced_body
 
 
-@Operation.define
-def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
-    raise NotHandled
-
-
 def _range_stop(term: Term):
     assert term.op == jnp.arange
     if "stop" in term.kwargs:
@@ -269,26 +223,6 @@ def _range_stop(term: Term):
     if len(term.args) < 2:
         return term.args[0]
     return term.args[1]
-
-
-class DeltaEmpty(ObjectInterpretation):
-    """delta((), weight) ≡ weight"""
-
-    @implements(delta)
-    def _(self, index, weight):
-        if not index:
-            return weight
-        return fwd()
-
-
-class DeltaFusion(ObjectInterpretation):
-    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
-
-    @implements(delta)
-    def _(self, index, weight):
-        if isinstance(weight, Term) and weight.op == delta:
-            return delta(index + weight.args[0], weight.args[1])
-        return fwd()
 
 
 class ReduceDeltaSimpleRange(ObjectInterpretation):
@@ -302,6 +236,7 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
+        breakpoint()
         if not (isinstance(body, Term) and body.op == delta):
             return fwd()
 
@@ -529,9 +464,97 @@ class ReduceSumProductContraction(ObjectInterpretation):
         return contraction
 
 
-@jax.jit(static_argnums=(0,))
-def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
-    """Evaluate an einsum expression using monoid reductions."""
+@dataclass
+class Node:
+    ordinal: frozenset[str]
+    children: list["Node"]
+    factors: list[int]
+
+
+def _build_plate_tree(factor_specs: list[str], plates: frozenset[str]) -> Node:
+    # 1. ordinal (plate context) of each factor
+    factor_ordinal = {
+        k: frozenset(spec) & plates for k, spec in enumerate(factor_specs)
+    }
+
+    # 2. node set: every factor ordinal, the global root ∅, and every pairwise
+    #    intersection. The intersection of two ordinals is the deepest context
+    #    that contains both, i.e. their common ancestor -- a shared plate MUST
+    #    have a node to live at, or containment can't be a tree. Closing under
+    #    ∩ materializes those frame nodes (finite lattice, so it terminates).
+    ordinals = set(factor_ordinal.values()) | {frozenset()}
+    changed = True
+    while changed:
+        changed = False
+        for A in list(ordinals):
+            for B in list(ordinals):
+                if (A & B) not in ordinals:
+                    ordinals.add(A & B)
+                    changed = True
+
+    nodes = {o: Node(ordinal=o, children=[], factors=[]) for o in ordinals}
+
+    # 3. parent of o = the largest ordinal strictly inside o ("next context out").
+    #    Validity: that maximum must dominate EVERY other strict subset, i.e. the
+    #    strict subsets form a chain. Two incomparable maximal subsets means o is a
+    #    join over two separate branches -- not a tree -> raise.
+    for o in ordinals:
+        if not o:  # root ∅ has no parent
+            continue
+        subs = [p for p in ordinals if p < o]  # strict subsets, present as nodes
+        parent = max(subs, key=len)
+        offenders = [s for s in subs if not (s <= parent)]
+        if offenders:
+            raise ValueError(
+                f"factors do not form a plate tree: context {set(o)} sits above "
+                f"incomparable sub-plates {[set(s) for s in offenders]} (a join, not a nest)"
+            )
+        nodes[parent].children.append(nodes[o])
+
+    # 4. hang each factor on its ordinal's node
+    for k, o in factor_ordinal.items():
+        nodes[o].factors.append(k)
+
+    return nodes[frozenset()]  # the root
+
+
+def _build_plate_reductions(
+    plate_tree: Node,
+    factors: Sequence[Array],
+    factor_specs: Sequence[str],
+    dim_index: Mapping[str, Expr],
+    plate_sizes: Mapping[str, int],
+    parent_plates: frozenset[str] = frozenset(),
+) -> Array:
+    product = Product.plus(
+        *(
+            factors[f][tuple(dim_index[c] for c in factor_specs[f])]
+            for f in plate_tree.factors
+        ),
+        *(
+            _build_plate_reductions(
+                n,
+                factors,
+                factor_specs,
+                dim_index,
+                plate_sizes,
+                parent_plates | plate_tree.ordinal,
+            )
+            for n in plate_tree.children
+        ),
+    )
+    if plate_tree.ordinal:
+        plate_streams = {
+            dim_index[p].op: range(plate_sizes[p])
+            for p in sorted(plate_tree.ordinal - parent_plates)
+        }
+        return Product.reduce(product, plate_streams)
+    return product
+
+
+def _einsum_expr(
+    subscripts: str, /, *operands: jax.Array, plates: str | None = None
+) -> Term:
     if not operands:
         raise ValueError("einsum requires at least one operand")
 
@@ -539,9 +562,6 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
         [subscripts, *(op.shape for op in operands)], shapes=True
     )
     in_specs = in_spec.split(",")
-
-    all_letters = set(out_spec) | {c for s in in_specs for c in s}
-    ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
 
     sizes: dict[str, int] = {}
     for spec, op in zip(in_specs, operands, strict=True):
@@ -554,36 +574,112 @@ def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
         if c not in sizes:
             raise ValueError(f"einsum: output index {c!r} not present in any input")
 
-    arrays = [Operation.define(jax.Array) for _ in operands]
-    factors = [
-        unbind_dims(arr(), *(ops[c] for c in spec))
-        for arr, spec in zip(arrays, in_specs, strict=True)
-    ]
-    body = Product.plus(*factors)
+    plate_set = frozenset(plates or "")
 
-    out_tuple = tuple(ops[c]() for c in out_spec)
-    streams = {op: range(sizes[c]) for c, op in ops.items()}
-    with handler(NormalizeIntp):
-        norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
-        result = norm(*operands)
-        assert isinstance(result, jax.Array)
+    # the plate context of each sum dim: the intersection of the plate sets of
+    # the inputs that mention it (so a dim that ever appears unplated is global)
+    ordinal = defaultdict(lambda: plate_set)
+    for spec in in_specs:
+        spec_set = frozenset(spec)
+        for c in spec_set - plate_set:
+            ordinal[c] &= spec_set
+
+    out_spec_set = frozenset(out_spec)
+    out_plates = out_spec_set & plate_set
+    for c in out_spec_set - plate_set:
+        missing_plates = ordinal[c] - out_plates
+        if missing_plates:
+            raise ValueError(
+                "It is nonsensical to preserve a plated dim without preserving "
+                f"all of that dim's plates, but found {c!r} without "
+                f"{','.join(sorted(missing_plates))!r}"
+            )
+
+    def dim_type(c):
+        return int if c in plate_set else Array if ordinal[c] else int
+
+    dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
+    dim_index = {
+        c: dim_op[c]()
+        if c in plate_set or not ordinal[c]
+        else dim_op[c]()[tuple(dim_op[p]() for p in sorted(ordinal[c]))]
+        for c in dim_op
+    }
+    arrays = [Operation.define(Array, name=f"f{i}") for (i, _) in enumerate(operands)]
+    plate_tree = _build_plate_tree(in_specs, plate_set)
+    reductions = _build_plate_reductions(
+        plate_tree, [a() for a in arrays], in_specs, dim_index, sizes
+    )
+
+    global_enums = {c for c, o in ordinal.items() if not o}
+    plated_enums = {c: o for c, o in ordinal.items() if o}
+
+    # one stream of per-plate-assignment rows for each plated sum dim
+    rows = {}
+    for c, o in plated_enums.items():
+        ps = [(p, dim_op[p]) for p in sorted(o)]
+        delta_idx = tuple(op() for (_, op) in ps)
+        c_streams = {op: range(sizes[p]) for (p, op) in ps}
+        v = Operation.define(int)
+        rows[c] = CartesianProduct.reduce(
+            UnionM.reduce([delta(delta_idx, v())], {v: range(sizes[c])}), c_streams
+        )
+
+    # The output index of each plated enum dim is the row's value for that
+    # output slice -- distinct rows that assign the same value collide on the
+    # same delta index and accumulate, so no per-output-dim pinning is needed.
+    out_tuple = tuple(dim_index[c] for c in out_spec)
+    streams: Streams = (
+        {dim_op[c]: range(sizes[c]) for c in global_enums}
+        | {dim_op[c]: r for c, r in rows.items()}
+        | {dim_op[c]: range(sizes[c]) for c in out_plates}
+    )
+
+    return deffn(Sum.reduce(delta(out_tuple, reductions), streams), *arrays)
+
+
+@jax.jit(static_argnums=(0,), static_argnames=("plates",))
+def einsum(
+    subscripts: str, /, *operands: jax.Array, plates: str | None = None
+) -> jax.Array:
+    """Evaluate an einsum expression using monoid reductions.
+
+    Generalizes :func:`jax.numpy.einsum` with plated dimensions in the style of
+    :func:`pyro.ops.contract.einsum`: indices in ``plates`` are plate
+    dimensions, and reductions along plates are product reductions. A sum
+    dimension that always appears together with a plate denotes a distinct
+    variable for each slice of that plate; its plate context (ordinal) is the
+    intersection of the plate sets of the inputs that mention it. When such a
+    dimension appears in the output it must be accompanied by all of its
+    plates.
+
+    The expression is represented naively: each plated sum dimension ranges
+    over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
+    each plated input is a :data:`Product` reduction over its plates.
+    """
+    expr = _einsum_expr(subscripts, *operands, plates=plates)
+    norm_expr = handler(NormalizeIntp)(evaluate)(expr)
+    with handler(EvaluateIntp):
+        assert callable(norm_expr)
+        result = evaluate(norm_expr(*operands))
+        assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
         return result
 
 
-NormalizeIntp.extend(
+EvaluateIntp.extend(
+    # SumPlusJax(),
+    # ProductPlusJax(),
+    # MinPlusJax(),
+    # MaxPlusJax(),
+    # LogSumExpPlusJax(),
+    # ReduceSumProductContraction(),
     ReduceArray(),
-    ReduceSumProductContraction(),
-    ReduceArrayGather(),
-    ReduceDeltaSimpleRange(),
-    ReduceDependentRangeMask(),
-    DeltaEmpty(),
-    DeltaFusion(),
-    SumPlusJax(),
-    ProductPlusJax(),
-    MinPlusJax(),
-    MaxPlusJax(),
-    LogSumExpPlusJax(),
-    CartesianProductPlusJax(),
-    ContractLongestArrayStream(),
-    PlusJaxUpcast(),
+    # ReduceDeltaSimpleRange(),
+)
+
+NormalizeIntp.extend(
+    # ReduceArrayGather(),
+    # ReduceDependentRangeMask(),
+    # ContractLongestArrayStream(),
+    # PlusJaxUpcast(),
 )

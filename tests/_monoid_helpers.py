@@ -12,8 +12,13 @@ from hypothesis.strategies import SearchStrategy
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import NormalizeIntp, Stream, _is_monoid_weighted
-from effectful.ops.semantics import apply, evaluate, fvsof, handler
+from effectful.ops.monoid import (
+    EvaluateIntp,
+    NormalizeIntp,
+    Stream,
+    _is_monoid_weighted,
+)
+from effectful.ops.semantics import apply, coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 
@@ -195,15 +200,15 @@ class Backend(ABC):
         return tuple(self._fresh_op(n, **kwargs) for n in names)
 
     def check_rewrite(
-        self,
-        lhs,
-        rhs,
-        rule,
-        *,
-        max_examples: int = 25,
-        deadline=None,
-        normalize=NormalizeIntp,
+        self, lhs, rhs, rule, *, max_examples: int = 25, deadline=None, normalize=None
     ) -> None:
+        breakpoint()
+        normalize = (
+            normalize
+            if normalize is not None
+            else coproduct(EvaluateIntp, NormalizeIntp)
+        )
+
         with handler(rule):
             norm = evaluate(lhs)
         assert syntactic_eq_alpha(norm, rhs)
@@ -228,7 +233,7 @@ class Backend(ABC):
             max_examples=max_examples, deadline=deadline, report_multiple_bugs=False
         )
         def _check_semantics(intp):
-            with handler(normalize), handler(intp):
+            with handler(NormalizeIntp), handler(EvaluateIntp), handler(intp):
                 lhs_val = evaluate(lhs)
                 rhs_val = evaluate(rhs)
                 assert self.eq(lhs_val, rhs_val)

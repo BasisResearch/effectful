@@ -5,7 +5,8 @@ import inspect
 import numbers
 import operator
 import typing
-from collections.abc import Callable, Iterable, Mapping
+from abc import ABC, abstractmethod
+from collections.abc import Callable, Iterable, KeysView, Mapping, ValuesView
 from typing import Annotated, Any
 
 from effectful.ops.types import (
@@ -777,6 +778,61 @@ iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
 
 
+@defdata.register(collections.abc.Collection)
+class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
+    @defop
+    def __contains__(self: collections.abc.Collection[T], x: T) -> bool:
+        if not isinstance(self, Term) and not isinstance(x, Term):
+            return x in self
+        else:
+            raise NotHandled
+
+    @defop
+    def __len__(self: collections.abc.Collection[T]) -> int:
+        if not isinstance(self, Term):
+            return len(self)
+        else:
+            raise NotHandled
+
+
+@defdata.register(collections.abc.Mapping)
+class _MappingTerm[K, V](_CollectionTerm[K]):
+    @defop
+    def __getitem__(self: collections.abc.Mapping[K, V], key: K) -> V:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self[key]
+        else:
+            raise NotHandled
+
+    @defop
+    def get(self: collections.abc.Mapping[K, V], key: K, default: V | None = None) -> V:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self.get(key, default=default)
+        else:
+            raise NotHandled
+
+    @defop
+    def keys(self: collections.abc.Mapping[K, V]) -> KeysView[K]:
+        if not isinstance(self, Term):
+            return self.keys()
+        else:
+            raise NotHandled
+
+    @defop
+    def values(self: collections.abc.Mapping[K, V]) -> ValuesView[V]:
+        if not isinstance(self, Term):
+            return self.values()
+        else:
+            raise NotHandled
+
+    @defop
+    def __eq__(self: collections.abc.Mapping[K, V], other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self == other
+        else:
+            raise NotHandled
+
+
 @_CustomSingleDispatchCallable
 def syntactic_eq(
     __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
@@ -1415,3 +1471,28 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+class Array(ABC):
+    @abstractmethod
+    def __getitem__(self, key: tuple) -> "Array": ...
+
+
+@defdata.register(Array)
+class _ArrayTerm(_IterableTerm[Array]):
+    @defop
+    def __getitem__(self: Array, key: tuple) -> Array:
+        if not isinstance(key, Term) and not key:
+            return self
+
+        if (
+            not isinstance(self, Term)
+            and not isinstance(key, Term)
+            and not any(isinstance(t, Term) for t in key)
+        ):
+            return self[key]
+        else:
+            raise NotHandled
+
+
+getitem = _ArrayTerm.__getitem__

@@ -1,33 +1,40 @@
 import functools
 
 import jax
+import jax.dlpack
+import pyro.ops.contract
 import pytest
+import torch
 from jax import random as random
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import (
     ARRAY_REDUCTORS,
-    DeltaEmpty,
     ReduceArray,
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    delta,
+    _einsum_expr,
     einsum,
 )
 from effectful.ops.monoid import (
-    EliminateSingletonStreams,
+    CartesianProduct,
+    DeltaEmpty,
     NormalizeIntp,
     Product,
     Sum,
+    Union,
+    delta,
 )
-from effectful.ops.semantics import coproduct, handler
-from tests._monoid_helpers import JaxBackend
+from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.syntax import Array, deffn
+from effectful.ops.types import Operation
+from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
 
 MONOIDS = [
-    pytest.param(monoid, reductor, id=monoid._name)
+    pytest.param(monoid, reductor, id=monoid.__name__)
     for (monoid, reductor) in ARRAY_REDUCTORS.items()
 ]
 
@@ -49,23 +56,6 @@ def test_reduce_array_gather(monoid, reductor, backend: JaxBackend):
 
     lhs = monoid.reduce(x(), {x: X})
     rhs = monoid.reduce(unbind_dims(X, k), {k: range(X.shape[0])})
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(ReduceArrayGather(), EliminateSingletonStreams()),
-    )
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_array_gather_step1(monoid, reductor, backend: JaxBackend):
-    """Step 1 alone: an array stream becomes an index range plus a length-1
-    stream holding the gathered element. ``ReduceArrayGather`` does not perform
-    the gather substitution itself -- that is ``EliminateSingletonStreams``."""
-    (x, k) = backend.define_vars("x", "k", ret="scalar")
-    X = jnp.arange(3)
-
-    lhs = monoid.reduce(x(), {x: X})
-    rhs = monoid.reduce(x(), {k: range(X.shape[0]), x: (unbind_dims(X, k),)})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceArrayGather())
 
 
@@ -78,17 +68,12 @@ def test_reduce_array_gather_dep(monoid, reductor, backend: JaxBackend):
     )
     X = jnp.arange(3)
 
-    # The dependent stream ``y: f(x())`` gets the *gathered element* X[x]
-    # substituted for x -- i.e. ``f(X[x])`` -- not the bare index.
     lhs = monoid.reduce(g(x(), y()), {y: f(x()), x: X})
     rhs = monoid.reduce(
-        g(unbind_dims(X, x), y()),
-        {y: f(unbind_dims(X, x)), x: range(X.shape[0])},
+        g(unbind_dims(X[:3], x), y()), {y: f(x()), x: range(X.shape[0])}
     )
     backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(ReduceArrayGather(), EliminateSingletonStreams()),
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceArrayGather(), ReduceDeltaSimpleRange())
     )
 
 
@@ -104,12 +89,7 @@ def test_reduce_array_1(monoid, reductor, backend: JaxBackend):
         rhs=rhs,
         rule=functools.reduce(
             coproduct,  # type: ignore[arg-type]
-            [
-                ReduceArrayGather(),
-                EliminateSingletonStreams(),
-                ReduceArray(),
-                ReduceDeltaSimpleRange(),
-            ],
+            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
         ),
     )
 
@@ -132,12 +112,7 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
         rhs=rhs,
         rule=functools.reduce(
             coproduct,  # type: ignore[arg-type]
-            [
-                ReduceArrayGather(),
-                EliminateSingletonStreams(),
-                ReduceArray(),
-                ReduceDeltaSimpleRange(),
-            ],
+            [ReduceArrayGather(), ReduceArray(), ReduceDeltaSimpleRange()],
         ),
     )
 
@@ -168,7 +143,6 @@ def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
             coproduct,  # type: ignore[arg-type]
             [
                 ReduceArrayGather(),
-                EliminateSingletonStreams(),
                 ReduceArray(),
                 ReduceDeltaSimpleRange(),
                 DeltaEmpty(),
@@ -556,3 +530,408 @@ def test_einsum_matches_jnp(spec: str, sizes, rng_key):
     assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-4), (
         f"value mismatch for {spec!r}"
     )
+
+
+# see https://github.com/pyro-ppl/pyro/blob/dev/tests/ops/test_contract.py
+# Let abcde be enum dims and ijk be plates.
+PLATED_EINSUM_CASES = [
+    ("abi,abi->", "i"),
+    ("aij,bi->", "ij"),
+    ("aij,bi,c->", "ij"),
+    ("abi,b->", "i"),
+]
+
+
+@pytest.mark.parametrize("spec,plates", PLATED_EINSUM_CASES)
+def test_plated_einsum(spec, plates, rng_key):
+    def _to_torch(arr):
+        return torch.from_dlpack(arr)
+
+    operands = _make_operands(
+        spec,
+        {
+            "a": 2,
+            "b": 3,
+            "c": 4,
+            "d": 5,
+            "e": 6,
+            "f": 7,
+            "g": 8,
+            "i": 2,
+            "j": 3,
+            "k": 4,
+        },
+        rng_key,
+    )
+    torch_operands = (_to_torch(op) for op in operands)
+
+    try:
+        expected = pyro.ops.contract.naive_ubersum(
+            spec, *torch_operands, plates=plates, backend="torch"
+        )[0]
+    except NotImplementedError:
+        pytest.skip("Not implemented by pyro.ops.contract.einsum")
+
+    actual = einsum(spec, *operands, plates=plates)
+    assert actual.shape == expected.shape, (
+        f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
+    )
+    assert torch.allclose(_to_torch(actual), expected, atol=1e-4, rtol=1e-4), (
+        f"value mismatch for {spec!r}"
+    )
+
+
+def test_plated_einsum_expr_one_plate(rng_key):
+    spec = "iab,ib->"
+    plates = "i"
+    operands = _make_operands(
+        spec,
+        {
+            "a": 2,
+            "b": 3,
+            "c": 4,
+            "d": 5,
+            "e": 6,
+            "f": 7,
+            "g": 8,
+            "i": 2,
+            "j": 3,
+            "k": 4,
+        },
+        rng_key,
+    )
+    i = Operation.define(int)
+    a = Operation.define(Array)
+    b = Operation.define(Array)
+    d = Operation.define(int)
+    X = Operation.define(jax.Array)
+    Y = Operation.define(jax.Array)
+
+    actual = _einsum_expr(spec, *operands, plates=plates)
+    expected = deffn(
+        Sum.reduce(
+            delta(
+                (),
+                Product.plus(
+                    Product.reduce(
+                        Product.plus(X()[i(), a()[i()], b()[i()]], Y()[i(), b()[i()]]),
+                        {i: range(2)},
+                    )
+                ),
+            ),
+            {
+                b: CartesianProduct.reduce(
+                    Union.reduce(delta((i(), d()), d()), {d: range(3)}), {i: range(2)}
+                ),
+                a: CartesianProduct.reduce(
+                    Union.reduce(delta((i(), d()), d()), {d: range(2)}), {i: range(2)}
+                ),
+            },
+        ),
+        X,
+        Y,
+    )
+    assert syntactic_eq_alpha(actual, expected)
+
+
+def test_plated_einsum_expr_two_plates(rng_key):
+    spec = "ijab,ijb->"
+    plates = "ij"
+    operands = _make_operands(
+        spec,
+        {
+            "a": 2,
+            "b": 3,
+            "c": 4,
+            "d": 5,
+            "e": 6,
+            "f": 7,
+            "g": 8,
+            "i": 2,
+            "j": 3,
+            "k": 4,
+        },
+        rng_key,
+    )
+    i = Operation.define(jax.Array)
+    j = Operation.define(jax.Array)
+    a = Operation.define(jax.Array)
+    b = Operation.define(jax.Array)
+    v = Operation.define(jax.Array)
+    X = Operation.define(jax.Array)
+    Y = Operation.define(jax.Array)
+
+    actual = _einsum_expr(spec, *operands, plates=plates)
+    expected = deffn(
+        Sum.reduce(
+            delta(
+                (),
+                Product.plus(
+                    Product.reduce(
+                        Product.plus(
+                            jax_getitem(
+                                X(),
+                                [
+                                    i(),
+                                    j(),
+                                    jax_getitem(a(), [i(), j()]),
+                                    jax_getitem(b(), [i(), j()]),
+                                ],
+                            ),
+                            jax_getitem(Y(), [i(), j(), jax_getitem(b(), [i(), j()])]),
+                        ),
+                        {i: range(2), j: range(3)},
+                    )
+                ),
+            ),
+            {
+                a: CartesianProduct.reduce(
+                    bind_dims(delta((i(), j()), unbind_dims(jnp.arange(2), v)), v),
+                    {i: range(2), j: range(3)},
+                ),
+                b: CartesianProduct.reduce(
+                    bind_dims(delta((i(), j()), unbind_dims(jnp.arange(3), v)), v),
+                    {i: range(2), j: range(3)},
+                ),
+            },
+        ),
+        X,
+        Y,
+    )
+    assert syntactic_eq_alpha(actual, expected)
+
+
+def test_plated_einsum_expr_nested_plates(rng_key):
+    spec = "ijab,ib->"
+    plates = "ij"
+    operands = _make_operands(
+        spec,
+        {
+            "a": 2,
+            "b": 3,
+            "c": 4,
+            "d": 5,
+            "e": 6,
+            "f": 7,
+            "g": 8,
+            "i": 2,
+            "j": 3,
+            "k": 4,
+        },
+        rng_key,
+    )
+    i = Operation.define(jax.Array)
+    j = Operation.define(jax.Array)
+    a = Operation.define(jax.Array)
+    b = Operation.define(jax.Array)
+    v = Operation.define(jax.Array)
+    X = Operation.define(jax.Array)
+    Y = Operation.define(jax.Array)
+
+    actual = _einsum_expr(spec, *operands, plates=plates)
+    expected = deffn(
+        Sum.reduce(
+            delta(
+                (),
+                Product.plus(
+                    Product.reduce(
+                        Product.plus(
+                            Product.reduce(
+                                jax_getitem(
+                                    X,
+                                    [
+                                        i(),
+                                        j(),
+                                        jax_getitem(a(), [i(), j()]),
+                                        jax_getitem(b(), [i()]),
+                                    ],
+                                ),
+                                {j: range(3)},
+                            ),
+                            jax_getitem(Y, [i(), jax_getitem(b(), [i()])]),
+                        ),
+                        {i: range(2)},
+                    )
+                ),
+            ),
+            {
+                a: CartesianProduct.reduce(
+                    bind_dims(delta((i(), j()), unbind_dims(jnp.arange(2)), v), v),
+                    {i: range(2), j: range(3)},
+                ),
+                b: CartesianProduct.reduce(
+                    bind_dims(delta((i(),), unbind_dims(jnp.arange(3)), v), v),
+                    {i: range(2)},
+                ),
+            },
+        ),
+        X,
+        Y,
+    )
+    assert syntactic_eq_alpha(actual, expected)
+
+
+def test_plated_einsum_expr_plate_tree(rng_key):
+    spec = "ia,ijb,ikc->"
+    plates = "ijk"
+    operands = _make_operands(
+        spec,
+        {
+            "a": 2,
+            "b": 3,
+            "c": 4,
+            "d": 5,
+            "e": 6,
+            "f": 7,
+            "g": 8,
+            "i": 2,
+            "j": 3,
+            "k": 4,
+        },
+        rng_key,
+    )
+    i = Operation.define(jax.Array)
+    j = Operation.define(jax.Array)
+    k = Operation.define(jax.Array)
+    a = Operation.define(jax.Array)
+    b = Operation.define(jax.Array)
+    c = Operation.define(jax.Array)
+    v = Operation.define(jax.Array)
+    X = Operation.define(jax.Array)
+    Y = Operation.define(jax.Array)
+    Z = Operation.define(jax.Array)
+
+    actual = _einsum_expr(spec, *operands, plates=plates)
+    expected = deffn(
+        Sum.reduce(
+            delta(
+                (),
+                Product.reduce(
+                    Product.plus(
+                        jax_getitem(X, [i(), jax_getitem(a(), [i()])]),
+                        Product.reduce(
+                            jax_getitem(Y, [i(), j(), jax_getitem(b(), [i(), j()])]),
+                            {j: range(3)},
+                        ),
+                        Product.reduce(
+                            jax_getitem(Z, [i(), k(), jax_getitem(c(), [i(), k()])]),
+                            {k: range(4)},
+                        ),
+                    ),
+                    {i: range(2)},
+                ),
+            ),
+            {
+                a: CartesianProduct.reduce(
+                    bind_dims(delta((i()), unbind_dims(jnp.arange(2)), v), v),
+                    {i: range(2)},
+                ),
+                b: CartesianProduct.reduce(
+                    bind_dims(delta((i(), j()), unbind_dims(jnp.arange(3)), v), v),
+                    {i: range(2), j: range(3)},
+                ),
+                c: CartesianProduct.reduce(
+                    bind_dims(delta((i(), k()), unbind_dims(jnp.arange(4)), v), v),
+                    {i: range(2), k: range(4)},
+                ),
+            },
+        ),
+        X,
+        Y,
+        Z,
+    )
+    assert syntactic_eq_alpha(actual, expected)
+
+
+def test_plated_einsum_expr_inversion():
+    i = Operation.define(jax.Array, name="i")
+    j = Operation.define(jax.Array, name="j")
+    a = Operation.define(jax.Array, name="a")
+    b = Operation.define(jax.Array, name="b")
+    v = Operation.define(jax.Array, name="v")
+    X = Operation.define(jax.Array, name="X")
+    Y = Operation.define(jax.Array, name="Y")
+
+    t1 = Sum.reduce(
+        Product.reduce(jax_getitem(X, [i(), jax_getitem(a(), [i()])]), {i: range(2)}),
+        {
+            a: CartesianProduct.reduce(
+                bind_dims(delta((i(),), unbind_dims(jnp.arange(2), v)), v),
+                {i: range(2)},
+            )
+        },
+    )
+    a1 = handler(NormalizeIntp)(evaluate)(t1)
+    e1 = Product.reduce(
+        Sum.reduce(
+            jax_getitem(X, [i(), jax_getitem(jnp.arange(2), [a()])]), {a: range(2)}
+        ),
+        {i: range(2)},
+    )
+
+    assert syntactic_eq_alpha(a1, e1)
+
+    t2 = Sum.reduce(
+        Product.reduce(
+            jax_getitem(X, [i(), j(), jax_getitem(a(), [i(), j()])]),
+            {i: range(2), j: range(3)},
+        ),
+        {
+            a: CartesianProduct.reduce(
+                bind_dims(delta((i(), j()), unbind_dims(jnp.arange(2), v)), v),
+                {i: range(2), j: range(3)},
+            )
+        },
+    )
+    a2 = handler(NormalizeIntp)(evaluate)(t2)
+    e2 = Product.reduce(
+        Sum.reduce(
+            jax_getitem(X, [i(), j(), jax_getitem(jnp.arange(2), [a()])]),
+            {a: range(2)},
+        ),
+        {i: range(2), j: range(3)},
+    )
+
+    assert syntactic_eq_alpha(a2, e2)
+
+    t3 = Sum.reduce(
+        Product.reduce(
+            Product.plus(
+                Product.reduce(
+                    jax_getitem(X, [i(), j(), jax_getitem(a(), [i(), j()])]),
+                    {j: range(3)},
+                ),
+                jax_getitem(Y, [i(), jax_getitem(b(), [i()])]),
+            ),
+            {i: range(2)},
+        ),
+        {
+            a: CartesianProduct.reduce(
+                bind_dims(delta((i(), j()), unbind_dims(jnp.arange(2), v)), v),
+                {i: range(2), j: range(3)},
+            ),
+            b: CartesianProduct.reduce(
+                bind_dims(delta((i(),), unbind_dims(jnp.arange(3), v)), v),
+                {i: range(2)},
+            ),
+        },
+    )
+    a3 = handler(NormalizeIntp)(evaluate)(t3)
+    e3 = Product.reduce(
+        Product.plus(
+            Product.reduce(
+                Sum.reduce(
+                    jax_getitem(X(), [i(), j(), jax_getitem(jnp.arange(2), [a()])]),
+                    {a: range(2)},
+                ),
+                {j: range(3)},
+            ),
+            Sum.reduce(
+                jax_getitem(Y(), [i(), jax_getitem(jnp.arange(3), [b()])]),
+                {b: range(3)},
+            ),
+        ),
+        {i: range(2)},
+    )
+
+    assert syntactic_eq_alpha(a3, e3)

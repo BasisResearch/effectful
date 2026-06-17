@@ -158,6 +158,8 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             )
         ):
             raise NotHandled
+        elif _jax_op is jax_getitem and not args[1]:
+            return args[0]
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
             # note: this cast is a lie. partial_eval can return non-arrays, as
             # can jax_fn. for example, some jax functions return tuples,

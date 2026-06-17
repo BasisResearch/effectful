@@ -68,6 +68,8 @@ import types
 import typing
 from dataclasses import dataclass
 
+from effectful.ops.syntax import Array
+
 try:
     from typing import _collect_type_parameters as _freetypevars  # type: ignore
 except ImportError:
@@ -573,7 +575,7 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
             import jax
 
             if typing.get_origin(typ) is collections.abc.Iterable and issubclass(
-                subtyp, jax.Array
+                subtyp, jax.Array | Array
             ):
                 return unify(typing.get_args(typ)[0], jax.Array, subs)
         except ImportError:
@@ -697,7 +699,9 @@ def _(typ: type | abc.ABCMeta):
     elif typ in {types.FunctionType, types.BuiltinFunctionType, types.LambdaType}:
         return collections.abc.Callable[..., typing.Any]
     elif isinstance(typ, abc.ABCMeta) and (
-        typ in collections.abc.__dict__.values() or typ in numbers.__dict__.values()
+        typ in collections.abc.__dict__.values()
+        or typ in numbers.__dict__.values()
+        or typ == Array
     ):
         return typ
     elif isinstance(typ, type) and (

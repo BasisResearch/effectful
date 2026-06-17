@@ -11,10 +11,12 @@ from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
+    Array,
     ObjectInterpretation,
     Scoped,
     defdata,
     deffn,
+    getitem,
     implements,
     syntactic_eq,
     syntactic_hash,
@@ -94,18 +96,23 @@ def inner_streams_first(streams: dict[Operation, Expr]) -> Iterable[Operation]:
     return topo.static_order()
 
 
+@Operation.define
+def delta(_index: tuple, _weight: Any) -> Array:
+    raise NotHandled
+
+
 class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
-    _name: str
+    __name__: str
     identity: W
 
     def __init__(self, identity: W, name: str):
-        self._name = name
+        self.__name__ = name
         self.identity = identity
 
     def __repr__(self):
-        return f"Monoid({self._name!r})"
+        return f"Monoid({self.__name__!r}, {self.identity!r})"
 
     def __eq__(self, other):
         return id(self) == id(other)
@@ -168,10 +175,8 @@ ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
-# CartesianProduct values are "two-level indexable" (rows × positions). The
-# identity ``[()]`` is one row of zero positions (composing with it preserves
-# shape); the zero ``[]`` is no rows (absorbs under product).
-CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[()], zero=[])
+CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[{}], zero=[])
+Union = Monoid(name="Union", identity=[])
 
 
 @dataclass
@@ -201,7 +206,14 @@ class _ExtensibleBinaryRelation[S, T]:
 
 
 distributes_over = _ExtensibleBinaryRelation(
-    {(Max, Min), (Min, Max), (Sum, Min), (Sum, Max), (Product, Sum)}
+    {
+        (Max, Min),
+        (Min, Max),
+        (Sum, Min),
+        (Sum, Max),
+        (Product, Sum),
+        (CartesianProduct, Union),
+    }
 )
 
 
@@ -221,6 +233,26 @@ def _is_monoid_weighted(op: Operation) -> bool:
     """True if ``op`` is the ``weighted`` operation of some :class:`Monoid`."""
     owner = getattr(op, "__self__", None)
     return isinstance(owner, Monoid) and op is owner.weighted
+
+
+class DeltaEmpty(ObjectInterpretation):
+    """delta((), weight) ≡ weight"""
+
+    @implements(delta)
+    def _(self, index, weight):
+        if not index:
+            return weight
+        return fwd()
+
+
+class DeltaFusion(ObjectInterpretation):
+    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
+
+    @implements(delta)
+    def _(self, index, weight):
+        if isinstance(weight, Term) and weight.op == delta:
+            return delta(index + weight.args[0], weight.args[1])
+        return fwd()
 
 
 class PlusEmpty(ObjectInterpretation):
@@ -532,71 +564,144 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
     """
 
     @implements(Monoid.reduce)
-    def reduce(self, sum_monoid: Monoid, sum_body, sum_streams):
-        if not (is_commutative(sum_monoid) and isinstance(sum_body, Term)):
+    def reduce(self, monoid: Monoid, body, streams):
+        if not (isinstance(body, Term)):
             return fwd()
 
-        # body is a product or multiplication of products
-        if _is_monoid_plus(sum_body.op) and distributes_over(
-            sum_body.op.__self__, sum_monoid
-        ):
-            prod_reduces = sum_body.args
-        else:
-            prod_reduces = [sum_body]
+        if not _is_monoid_reduce(body.op):
+            return fwd()
 
-        products: list[tuple[Monoid, Callable, Operation, Term]] = []
-        for prod_reduce in prod_reduces:
+        inner_monoid = body.op.__self__
+        if not distributes_over(inner_monoid, monoid):
+            return fwd()
+        inner_body, inner_streams = body.args
+
+        for stream_key, stream_body in streams.items():
+            # stream is cartesian
             if not (
-                isinstance(prod_reduce, Term) and _is_monoid_reduce(prod_reduce.op)
-            ):
-                return fwd()
-            prod_monoid: Monoid = prod_reduce.op.__self__
-            prod_body = prod_reduce.args[0]
-            prod_streams = typing.cast(Mapping, prod_reduce.args[1])
-            if not (
-                distributes_over(prod_monoid, sum_monoid)
-                and (len(products) == 0 or products[-1][0] == prod_monoid)
-            ):
-                return fwd()
-
-            if len(prod_streams) > 1 or len(prod_streams) == 0:
-                return fwd()
-            (prod_op, prod_stream) = next(iter(prod_streams.items()))
-            products.append(
-                (prod_monoid, deffn(prod_body, prod_op), prod_op, prod_stream)
-            )
-
-        assert len(products) > 0
-
-        for outer_sum_streams, cprod_op, cprod_term in inner_stream(sum_streams):
-            if not (
-                isinstance(cprod_term, Term)
-                and cprod_term.op is CartesianProduct.reduce
+                isinstance(stream_body, Term)
+                and stream_body.op is CartesianProduct.reduce
             ):
                 continue
-            (cprod_body, cprod_streams) = cprod_term.args
 
+            (cprod_body, cprod_streams) = stream_body.args
+
+            # plates are rectangular
             if not all(
-                prod_stream.op == cprod_op for (_, _, _, prod_stream) in products
+                isinstance(plate_stream, range)
+                for plate_stream in cprod_streams.values()
             ):
                 continue
 
-            prod_op = Operation.define(products[0][2])
-            prod_monoid = products[0][0]
-            inner_sum = sum_monoid.reduce(
-                prod_monoid.plus(
-                    *(prod_body(prod_op()) for (_, prod_body, _, _) in products)
-                ),
-                {prod_op: cprod_body},
-            )
-            prod = prod_monoid.reduce(inner_sum, cprod_streams)
-            outer_sum = (
-                sum_monoid.reduce(prod, outer_sum_streams)
-                if outer_sum_streams
-                else prod
-            )
-            return outer_sum
+            if stream_key in fvsof(inner_streams):
+                continue
 
+            # stream body is a sequence of mappings from plate index to domain value
+            match cprod_body:
+                case Term(
+                    Union.reduce,
+                    ([Term(delta1, (idx, union_body), {})], union_streams),
+                    {},
+                ) if delta1 == delta and set(
+                    i.op for i in idx if isinstance(i, Term)
+                ) >= set(cprod_streams):
+                    pass
+                case _:
+                    continue
+
+            assert len(idx) > 0
+
+            # inner product folds over all plates
+            plate_index, plate_op = next(
+                (j, i.op) for (j, i) in enumerate(idx) if i.op in cprod_streams
+            )
+            plate_range = cprod_streams[plate_op]
+            inner_plate_op = None
+
+            class InvalidIndexError(Exception): ...
+
+            def drop_elem(ls, index):
+                return tuple(x for (i, x) in enumerate(ls) if i != index)
+
+            # substitute all instances of row[i, *rest] -> row[*rest]
+            def _getitem(mapping, idx1):
+                nonlocal inner_plate_op
+
+                if isinstance(mapping, Term) and mapping.op == stream_key:
+                    if not (
+                        isinstance(idx1, Sequence)
+                        and len(idx1) > plate_index
+                        and isinstance(idx1[plate_index], Term)
+                        and idx1[plate_index].op in inner_streams
+                        and syntactic_eq(
+                            inner_streams[idx1[plate_index].op], plate_range
+                        )
+                    ):
+                        raise InvalidIndexError()
+
+                    if inner_plate_op is None:
+                        inner_plate_op = idx1[plate_index].op
+                    elif inner_plate_op != idx1[plate_index].op:
+                        raise InvalidIndexError()
+
+                    return fwd(mapping, drop_elem(idx1, plate_index))
+                return fwd()
+
+            row_subst = {getitem: _getitem}
+            try:
+                subst_inner_body = handler(row_subst)(evaluate)(inner_body)
+            except InvalidIndexError:
+                continue
+
+            peeled_body = Union.reduce(
+                [delta(drop_elem(idx, plate_index), union_body)], union_streams
+            )
+            peeled_cprod_streams = {
+                k: v for (k, v) in cprod_streams.items() if k != plate_op
+            }
+            if not peeled_cprod_streams:
+                peeled_cprod = peeled_body
+            else:
+                peeled_cprod = CartesianProduct.reduce(
+                    peeled_body, peeled_cprod_streams
+                )
+
+            # include any extra inner product streams
+            inner_tail_streams = {
+                k: v for (k, v) in inner_streams.items() if k != inner_plate_op
+            }
+            if inner_tail_streams:
+                inner_reduce = inner_monoid.reduce(
+                    subst_inner_body,
+                    inner_tail_streams,
+                )
+            else:
+                inner_reduce = subst_inner_body
+
+            peeled_reduce = inner_monoid.reduce(
+                monoid.reduce(inner_reduce, {stream_key: peeled_cprod}),
+                {k: v for (k, v) in inner_streams.items() if k == inner_plate_op},
+            )
+
+            # include any extra sum streams outermost
+            tail_streams = {k: v for (k, v) in streams.items() if k != stream_key}
+            if tail_streams:
+                result = monoid.reduce(peeled_reduce, tail_streams)
+            else:
+                result = peeled_reduce
+
+            return result
+
+        return fwd()
+
+
+class ReduceUnion(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        for k, v in streams.items():
+            if isinstance(v, Term) and v.op == Union.reduce:
+                union_body, union_streams = v.args
+                return monoid.reduce(body, streams | {k: union_body} | union_streams)
         return fwd()
 
 
@@ -802,24 +907,38 @@ class ArgMaxPlus(ObjectInterpretation):
         return max(args, key=lambda a: a[0])
 
 
+def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
+    merged = {}
+    for d in dicts:
+        for key, value in d.items():
+            if key in merged:
+                raise ValueError(f"Duplicate key found: '{key}'")
+        merged[key] = value
+    return merged
+
+
 class CartesianProductPlus(ObjectInterpretation):
     """Pure-Python implementation of :data:`CartesianProduct`."""
 
     @implements(CartesianProduct.plus)
     def plus(self, *args):
-        if not args:
-            return fwd()
+        assert args
         if any(isinstance(x, Term) for x in args):
             return fwd()
         if not all(isinstance(x, Iterable) for x in args):
             return fwd()
+        return [_disjoint_merge(*vals) for vals in itertools.product(*args)]
 
-        def to_tuple(x):
-            return x if isinstance(x, tuple) else (x,)
 
-        return [
-            sum((to_tuple(v) for v in vals), ()) for vals in itertools.product(*args)
-        ]
+class UnionPlus(ObjectInterpretation):
+    @implements(Union.plus)
+    def plus(self, *args):
+        assert args
+        if any(isinstance(x, Term) for x in args):
+            return fwd()
+        if not all(isinstance(x, Iterable) for x in args):
+            return fwd()
+        return list(itertools.chain(*args))
 
 
 is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product})
@@ -872,57 +991,6 @@ class PlusCastFloat(ObjectInterpretation):
         return fwd()
 
 
-class EliminateSingletonStreams(ObjectInterpretation):
-    """Eliminate a length-1 stream by substituting its sole element.
-
-    reduce(M, body, {k: (v,)} ∪ S) = reduce(M, body[k := v], S[k := v])
-
-    Fires only when the sole element ``v`` is a :class:`Term`, i.e. a *symbolic*
-    singleton. This is exactly the form ``ReduceArrayGather`` produces (a gather
-    ``(a[i()],)``) and, more generally, every dependent singleton that
-    :class:`ReducePartial` cannot peel -- a non-outermost stream whose element
-    references another stream var. Concrete enumerated streams (``[0]``,
-    ``range(1)``) and monoid sentinels (``CartesianProduct.identity == [()]``)
-    have non-``Term`` elements and are left to ``ReducePartial`` / the
-    per-monoid rules.
-
-    Unlike ``ReducePartial``, this peels the stream wherever it sits in the loop
-    nest and substitutes symbolically rather than unrolling, leaving a
-    vectorized index range (e.g. the gather's range) intact instead of
-    materializing it.
-    """
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        # Eliminate *all* symbolic length-1 streams in one pass via a
-        # simultaneous substitution. Doing them together (rather than one per
-        # invocation) keeps an interleaving reduction rule -- e.g.
-        # ``ReduceArray`` consuming a now-live index range -- from firing
-        # between eliminations, so sibling index ranges stay together and fuse
-        # into a single reduction.
-        singletons = {
-            k: vs[0]
-            for k, vs in streams.items()
-            if not isinstance(vs, Term)
-            and isinstance(vs, collections.abc.Sequence)
-            and len(vs) == 1
-            and isinstance(vs[0], Term)
-        }
-        if not singletons:
-            return fwd()
-
-        subs = {k: deffn(v) for k, v in singletons.items()}
-        new_body = handler(subs)(evaluate)(body)
-        new_streams = {
-            kk: handler(subs)(evaluate)(vv)
-            for kk, vv in streams.items()
-            if kk not in singletons
-        }
-        # reduce over no streams is a single (empty) assignment, i.e. the body
-        # itself -- not the monoid identity.
-        return monoid.reduce(new_body, new_streams) if new_streams else new_body
-
-
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -930,32 +998,38 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
         return self
 
 
+EvaluateIntp = _ExtensibleInterpretation().extend(
+    # ReducePartial(),
+    # SumPlus(),
+    # MinPlus(),
+    # MaxPlus(),
+    # ProductPlus(),
+    # ArgMinPlus(),
+    # ArgMaxPlus(),
+    # CartesianProductPlus(),
+    # UnionPlus(),
+)
+
 NormalizeIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
-    EliminateSingletonStreams(),
-    MonoidOverSequence(),
-    MonoidOverMapping(),
-    MonoidOverCallable(),
+    # DeltaEmpty(),
+    # DeltaFusion(),
+    # MonoidOverSequence(),
+    # MonoidOverMapping(),
+    # MonoidOverCallable(),
     ReduceFusion(),
-    ReduceSplit(),
-    ReduceFactorization(),
-    ReduceDistributeCartesianProduct(),
-    ReduceWeightedStream(),
-    ReduceCartesianWeightedStream(),
-    PlusEmpty(),
-    PlusSingle(),
-    PlusAssoc(),
-    PlusDistr(),
-    PlusConsecutiveDups(),
-    PlusDups(),
-    SumPlus(),
-    MinPlus(),
-    MaxPlus(),
-    ProductPlus(),
-    ArgMinPlus(),
-    ArgMaxPlus(),
-    CartesianProductPlus(),
-    PlusCastFloat(),
+    # ReduceUnion(),
+    # # ReduceSplit(),
+    # ReduceDistributeCartesianProduct(),
+    # ReduceFactorization(),
+    # ReduceWeightedStream(),
+    # ReduceCartesianWeightedStream(),
+    # PlusEmpty(),
+    # PlusSingle(),
+    # PlusAssoc(),
+    # PlusDistr(),
+    # PlusConsecutiveDups(),
+    # PlusDups(),
+    # PlusCastFloat(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).
