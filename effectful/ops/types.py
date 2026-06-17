@@ -497,13 +497,20 @@ class Operation[**Q, V]:
             return self
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
+        from effectful.internals.runtime import _restore_args, get_interpretation
+        from effectful.ops.semantics import fwd, handler
 
         intp = get_interpretation()
 
         self_handler = intp.get(self)
         if self_handler is not None:
-            return self_handler(*args, **kwargs)
+            # ensure that fwd is bound to the default rule. if this handler has
+            # a bound fwd, it will override this binding
+            fwd_intp = typing.cast(
+                Interpretation, {fwd: _restore_args(self.__default_rule__)}
+            )
+            with handler(fwd_intp):
+                return self_handler(*args, **kwargs)
         elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
             # Prevent infinite recursion when calling self.apply directly
             return self.__default__(*args, **kwargs)

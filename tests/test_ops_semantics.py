@@ -8,16 +8,7 @@ from typing import Annotated, Any, Literal, Union
 
 import pytest
 
-from effectful.ops.semantics import (
-    coproduct,
-    evaluate,
-    fvsof,
-    fwd,
-    handler,
-    product,
-    runner,
-    typeof,
-)
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
@@ -206,7 +197,37 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
             raise e
 
 
-def test_object_interpretation_inheretance():
+@pytest.mark.parametrize(
+    "make_intp",
+    [
+        pytest.param(
+            lambda f: coproduct(coproduct({}, {f: lambda x: x}), {f: lambda _: fwd()}),
+            id="right-assoc-empty-left",
+        ),
+        pytest.param(
+            lambda f: coproduct(coproduct({f: lambda x: x}, {}), {f: lambda _: fwd()}),
+            id="right-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda f: coproduct({f: lambda x: x}, coproduct({}, {f: lambda _: fwd()})),
+            id="left-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda f: coproduct({f: lambda x: x}, coproduct({f: lambda _: fwd()}, {})),
+            id="left-assoc-empty-right",
+        ),
+    ],
+)
+def test_coproduct_identity(make_intp) -> None:
+    @Operation.define
+    def f(x) -> int:
+        raise NotHandled
+
+    intp = make_intp(f)
+    assert handler(intp)(evaluate)(f(42)) == 42
+
+
+def test_object_interpretation_inheritance():
     @defop
     def op1():
         return "op1"
@@ -422,112 +443,6 @@ def test_fwd_default():
     with handler(coproduct({}, {do_stuff: do_more_stuff})):
         assert do_stuff() == "default stuff and more"
 
-    # ditto products
-    with handler(product({}, {do_stuff: do_more_stuff})):
-        assert do_stuff() == "default stuff and more"
-
-
-def test_product_resets_fwd():
-    @defop
-    def do_stuff():
-        raise NotHandled
-
-    @defop
-    def do_other_stuff():
-        return "other stuff"
-
-    h_outer = {
-        do_stuff: lambda: "default stuff",
-        do_other_stuff: lambda: fwd() + " and more " + do_stuff(),
-    }
-    h_inner = {do_stuff: lambda: "fancy " + do_other_stuff()}
-    h_topmost = {do_stuff: lambda: "should not be called"}
-
-    with handler(product(h_topmost, product(h_outer, h_inner))):
-        assert do_stuff() == "fancy other stuff and more default stuff"
-
-
-@defop
-def op0():
-    raise NotHandled
-
-
-@defop
-def op1():
-    raise NotHandled
-
-
-@defop
-def op2():
-    raise NotHandled
-
-
-def f_op2():
-    return op2()
-
-
-def test_product_alpha_equivalent():
-    h0 = {op0: lambda: (op1(), 0), op1: lambda: 2}
-    h1 = {op0: lambda: (op2(), 0), op2: lambda: 2}
-    h2 = {op2: lambda: (op0(), 2)}
-
-    h_lhs = product(h0, h2)
-    h_rhs = product(h1, h2)
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_associative():
-    h0 = {op0: lambda: 0}
-    h1 = {op1: lambda: (op0(), 1)}
-    h2 = {op2: lambda: (op1(), 2)}
-
-    h_lhs = product(h0, product(h1, h2))
-    h_rhs = product(product(h0, h1), h2)
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_commute_orthogonal():
-    h0 = {op0: lambda: 0}
-    h1 = {op1: lambda: 1}
-    h2 = {op2: lambda: (op1(), op0(), 2)}
-
-    h_lhs = product(h0, product(h1, h2))
-    h_rhs = product(h1, product(h0, h2))
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_distributive():
-    h0 = {op0: lambda: 0, op1: lambda: (op0(), 1)}
-    h1 = {op2: lambda: (op0(), op1(), 1)}
-    h2 = {op2: lambda: (fwd(), op0(), op1(), 2)}
-
-    h_lhs = product(h0, coproduct(h1, h2))
-    h_rhs = coproduct(product(h0, h1), product(h0, h2))
-
-    h00 = {op0: lambda: 5, op1: lambda: (op0(), 6)}
-    h_invalid_1 = product(h00, coproduct(product(h0, h1), h2))
-    h_invalid_2 = product(h00, coproduct(h1, product(h0, h2)))
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-    invalid_1 = handler(h_invalid_1)(f_op2)()
-    invalid_2 = handler(h_invalid_2)(f_op2)()
-
-    assert lhs == rhs
-    assert invalid_1 != invalid_2 and invalid_1 != lhs and invalid_2 != lhs
-
 
 def test_evaluate():
     @defop
@@ -575,19 +490,12 @@ def test_handler_typing() -> None:
     i: Interpretation = {f: lambda x: x + 1, g: lambda x, y: x + str(y)}
 
     handler(i)
-    runner(i)
-    product(i, i)
     coproduct(i, i)
     evaluate(0, intp=i)
 
     # include tests with inlined interpretation, because mypy might do inference
     # differently
     handler({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
-    runner({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
-    product(
-        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
-        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
-    )
     coproduct(
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
@@ -908,3 +816,38 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+def test_coproduct_fwd_chain(benchmark):
+    """Benchmark coproduct + fwd over a deep chain of forwarding handlers.
+
+    Compose n - 1 interpretations that simply ``fwd()`` on top of a single
+    base interpretation that returns 0, then measure the cost of dispatching
+    through the whole chain.
+    """
+    n = 50
+
+    @defop
+    def op() -> int:
+        raise NotHandled
+
+    base: Interpretation[int, int] = {op: lambda: 0}
+    intp = base
+    for _ in range(n - 1):
+        intp = coproduct(intp, {op: lambda: fwd()})
+
+    def run():
+        with handler(intp):
+            return op()
+
+    assert run() == 0
+    assert benchmark(run) == 0
+
+
+def test_fwd_in_definition_raises():
+    @Operation.define
+    def f():
+        return fwd()
+
+    with pytest.raises(RuntimeError):
+        f()
