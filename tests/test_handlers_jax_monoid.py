@@ -16,24 +16,19 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    _einsum_expr,
     einsum,
 )
 from effectful.ops.monoid import (
-    EliminateSingletonStreams,
-    CartesianProduct,
     DeltaEmpty,
+    EliminateSingletonStreams,
     EvaluateIntp,
     NormalizeIntp,
     Product,
     Sum,
-    Union,
     delta,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import Array, deffn
-from effectful.ops.types import Operation
-from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
+from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
     pytest.param(monoid, reductor, id=monoid.__name__)
