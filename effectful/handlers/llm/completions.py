@@ -33,6 +33,7 @@ from effectful.handlers.llm.encoding import (
 from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
+    FinalTool,
     Template,
     Tool,
     _is_recursive_signature,
@@ -174,9 +175,6 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
                 "content": error_message,
             },
         )
-
-
-type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
 class _LexicalVariableTool[T](Tool[[], T]):
@@ -359,6 +357,166 @@ class PythonRepl(ObjectInterpretation):
 
 
 @Operation.define
+def _synthesis_signature() -> inspect.Signature | None:
+    """Return the signature of the in-flight Template call, or ``None``.
+
+    `SynthesizeAndCall` installs a fresh handler for this inside each
+    `Template.__apply__` (mirroring `_repl_session`), giving it a lifetime of
+    exactly one Template call.  Outside such a scope there is no synthesis
+    target, so this falls back to ``None`` -- e.g. when tools are listed outside
+    a Template call -- and no synthesis tool is injected.
+    """
+    return None
+
+
+def _synthesis_final_tool(
+    signature: inspect.Signature,
+    env: collections.abc.Mapping[str, typing.Any],
+    name: str = "submit_solution",
+) -> FinalTool:
+    """Build a :class:`FinalTool` that finalizes a Template by code synthesis.
+
+    The tool takes one argument -- a function with the Template's signature,
+    synthesized from the model's code by the existing ``Encodable[Callable[...]]``
+    machinery -- and applies it to the original inputs (recovered from ``env``),
+    returning the value.  Because it is a :class:`FinalTool`, calling it
+    terminates the completion loop and its return value is the Template's result.
+    """
+    param_types = []
+    for pname, param in signature.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise TypeError(
+                f"SynthesizeAndCall cannot synthesize a function for parameter "
+                f"'{pname}' of kind {param.kind.description}: variadic parameters "
+                "cannot be expressed as a Callable type signature."
+            )
+        param_types.append(
+            param.annotation
+            if param.annotation is not inspect.Parameter.empty
+            else typing.Any
+        )
+    return_type = signature.return_annotation
+    if return_type is inspect.Signature.empty:
+        raise TypeError(
+            "SynthesizeAndCall requires a return annotation on the Template's "
+            "signature to construct the synthesis tool's Callable type."
+        )
+
+    callable_type = collections.abc.Callable[param_types, return_type]  # type: ignore[valid-type]
+
+    # Recover the original arguments from `env` by name, respecting each
+    # parameter's kind so positional-only and keyword-only parameters bind
+    # correctly (variadic kinds were rejected above).
+    pos_names = [
+        pname
+        for pname, param in signature.parameters.items()
+        if param.kind
+        in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        )
+    ]
+    kw_names = [
+        pname
+        for pname, param in signature.parameters.items()
+        if param.kind is inspect.Parameter.KEYWORD_ONLY
+    ]
+
+    def submit_solution(implementation):
+        bound = signature.bind(
+            *(env[pname] for pname in pos_names),
+            **{pname: env[pname] for pname in kw_names},
+        )
+        return implementation(*bound.args, **bound.kwargs)
+
+    submit_solution.__name__ = name
+    submit_solution.__qualname__ = name
+    submit_solution.__module__ = __name__
+    submit_solution.__doc__ = (
+        "Submit your final answer as a Python function implementing the task. "
+        "The function must have the required signature; it is applied to the "
+        "original inputs and its return value is your final answer."
+    )
+    submit_solution.__annotations__ = {
+        "implementation": callable_type,
+        "return": signature.return_annotation,
+    }
+    return FinalTool.define(submit_solution)
+
+
+class SynthesizeAndCall(ObjectInterpretation):
+    """Answer a Template by synthesizing a function and calling it.
+
+    Instead of asking the LLM to generate an instance of the Template's return
+    type directly, this handler exposes a :class:`FinalTool` that lets the model
+    "answer" by writing a Python function with the Template's signature.  The
+    harness applies that function to the original arguments and its return value
+    becomes the Template's result.  This is the declarative "CodeAdapt" workflow:
+    the LLM writes code implementing the body of the Template rather than
+    reasoning out the answer itself.
+
+    The synthesis tool is offered *alongside* the Template's normal completion
+    paths rather than replacing them: across turns the model may freely call any
+    other tool in scope (their results are fed back as usual), and it may still
+    answer the return type directly via structured output.  The loop terminates
+    when it either answers directly or calls the synthesis :class:`FinalTool`.
+    To force the synthesis path, pass ``tool_choice="required"`` (handler config
+    is forwarded to the model request).  The function is synthesized by reusing
+    the existing ``Callable`` synthesis machinery: the tool's argument is typed
+    as ``Callable[[params], ret]``, so :func:`call_assistant`'s tool-call
+    decoding parses, type-checks, compiles and executes the model's code into a
+    real function before it is applied.
+
+    Scoping mirrors :class:`PythonRepl`: this handles `Template.__apply__` to
+    introduce a fresh `_synthesis_signature` handler bound to that call's
+    signature, and handles `collect_tools` to inject the synthesis tool built
+    from it.  The synthesis target is therefore introduced and eliminated by its
+    own handler, bounded to the Template call by construction -- nested Template
+    calls get their own target.
+
+    Failures compose with :class:`RetryLLMHandler`: a function that fails to
+    synthesize surfaces as a :class:`ToolCallDecodingError`, and one that raises
+    when applied to the inputs as a :class:`ToolCallExecutionError`; both are fed
+    back to the model as a tool message and the loop continues so it can revise::
+
+        with (
+            handler(LiteLLMProvider(model="gpt-5-mini")),
+            handler(SynthesizeAndCall()),
+            handler(RetryLLMHandler()),
+        ):
+            ...
+
+    Requires an eval provider (e.g. :class:`UnsafeEvalProvider` or
+    :class:`RestrictedEvalProvider`) to be installed so the synthesized code can
+    be compiled and executed.
+    """
+
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        # Bind the synthesis target to this Template call's signature for the
+        # duration of the call, so `collect_tools` can build the tool from it.
+        signature = template.__signature__
+        with handler({_synthesis_signature: lambda: signature}):
+            return fwd()
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        tools = dict(fwd())
+        signature = _synthesis_signature()
+        if signature is not None:
+            final_tool = _synthesis_final_tool(signature, env)
+            tools[final_tool.__name__] = final_tool
+        return tools
+
+
+@Operation.define
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> typing.Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
@@ -374,13 +532,16 @@ class _BoxedResponse[T](pydantic.BaseModel):
     value: T
 
 
+type AssistantResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+
+
 @Operation.define
 def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     model: str,
     **kwargs,
-) -> MessageResult[T]:
+) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
     This effect is emitted for model request/response rounds so handlers can
@@ -426,13 +587,29 @@ def call_assistant[T](
     raw_message = _make_message({**message.model_dump(mode="json")})
     append_message(raw_message)
 
+    raw_tool_calls = message.get("tool_calls") or []
     tool_calls: list[DecodedToolCall] = []
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
-    for raw_tool_call in message.get("tool_calls") or []:
+    for raw_tool_call in raw_tool_calls:
         try:
             tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            if isinstance(tool_calls[-1].tool, FinalTool):
+                if not (
+                    tool_calls[-1].result_type == response_type
+                    or issubclass(tool_calls[-1].result_type, response_type)
+                ):
+                    raise TypeError(
+                        f"FinalTool '{tool_calls[-1].name}' returns {tool_calls[-1].result_type!r}, "
+                        f"which does not match the Template's result type {response_type!r}."
+                    )
+                if len(raw_tool_calls) > 1:
+                    raise TypeError(
+                        f"A FinalTool call must be the only tool call in its turn, but "
+                        f"{len(raw_tool_calls)} tool calls were requested "
+                        f"({sum(isinstance(encoding.validate_python(tc, context=tools).tool, FinalTool) for tc in raw_tool_calls)} of them final). Call the final tool alone."
+                    )
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -460,12 +637,18 @@ def call_assistant[T](
     return (raw_message, tool_calls, result)
 
 
+type ToolResult[T] = tuple[Message, T | None, bool]
+
+
 @Operation.define
-def call_tool(tool_call: DecodedToolCall) -> Message:
+def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     """Implements a roundtrip call to a python function. Input is a json
     string representing an LLM tool call request parameters. The output is
     the serialised response to the model.
 
+    Returns the appended tool message, the tool's return value, and whether the
+    call was a finalizing one (a :class:`FinalTool` call, whose value becomes the
+    Template's result and terminates the completion loop).
     """
     # call tool with python types
     try:
@@ -485,7 +668,7 @@ def call_tool(tool_call: DecodedToolCall) -> Message:
         dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
     )
     append_message(message)
-    return message
+    return (message, result, isinstance(tool_call.tool, FinalTool))
 
 
 @Operation.define
@@ -616,7 +799,7 @@ class RetryLLMHandler(ObjectInterpretation):
         response_type: type[T],
         model: str,
         **kwargs,
-    ) -> MessageResult[T]:
+    ) -> AssistantResult[T]:
         _message_sequence = _get_history().copy()
 
         with handler({_get_history: lambda: _message_sequence}):
@@ -626,12 +809,16 @@ class RetryLLMHandler(ObjectInterpretation):
         return (message, tool_calls, result)
 
     @implements(call_tool)
-    def _call_tool(self, tool_call: DecodedToolCall) -> Message:
+    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as
         error messages to the LLM. Only exceptions matching `catch_tool_errors`
         are caught; others propagate up.
+
+        A captured failure is reported as ``is_final=False`` so that the
+        completion loop continues even when a :class:`FinalTool` call raised:
+        the model sees the error message and gets another turn to retry.
         """
         try:
             return fwd(tool_call)
@@ -639,7 +826,7 @@ class RetryLLMHandler(ObjectInterpretation):
             if isinstance(e.original_error, self.catch_tool_errors):
                 message = e.to_feedback_message(self.include_traceback)
                 append_message(message)
-                return message
+                return (message, None, False)
             else:
                 raise
 
@@ -682,14 +869,17 @@ class LiteLLMProvider(ObjectInterpretation):
             message: Message = call_user(template.__prompt_template__, env)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
-            tool_calls: list[DecodedToolCall] = []
             result: T | None = None
-            while message["role"] != "assistant" or tool_calls:
+            is_final: bool = False
+            while not is_final:
                 message, tool_calls, result = call_assistant(
                     env, template.__signature__.return_annotation, **self.config
                 )
-                for tool_call in tool_calls:
-                    message = call_tool(tool_call)
+                if tool_calls:
+                    for tool_call in tool_calls:
+                        message, result, is_final = call_tool(tool_call)
+                else:
+                    is_final = True
 
         try:
             _get_history()

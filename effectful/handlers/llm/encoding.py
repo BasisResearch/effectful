@@ -108,6 +108,10 @@ class DecodedToolCall[T]:
     id: ToolCallID
     name: str
 
+    @property
+    def result_type(self) -> type[T]:
+        return inspect.signature(self.tool).return_annotation
+
 
 if typing.TYPE_CHECKING:
     type Encodable[T] = typing.Annotated[T, "encoded"]
