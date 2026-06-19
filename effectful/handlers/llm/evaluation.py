@@ -5,6 +5,7 @@ import codeop
 import collections.abc
 import contextlib
 import copy
+import doctest
 import inspect
 import io
 import keyword
@@ -68,6 +69,26 @@ def type_check(
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to parse code."
+    )
+
+
+@defop
+def run_doctests(
+    obj: collections.abc.Callable | type | types.ModuleType,
+    globs: typing.Mapping[str, Any],
+) -> None:
+    """Run the doctests found in a synthesized object's docstring.
+
+    obj: The synthesized object (typically a function) whose docstring may
+        contain interactive ``>>>`` examples.
+    globs: The namespace the examples execute in (typically the exec namespace,
+        which already contains the function plus its lexical context).
+
+    Returns None, raises TypeError if any doctest example fails. A docstring
+    with no examples is a no-op (passes trivially).
+    """
+    raise NotImplementedError(
+        "An eval provider must be installed in order to run doctests."
     )
 
 
@@ -686,9 +707,6 @@ def mypy_type_check(
     return None
 
 
-# Eval Providers
-
-
 class UnsafeEvalProvider(ObjectInterpretation):
     """UNSAFE provider that handles parse, comple and exec operations
     by shelling out to python *without* any further checks. Only use for testing."""
@@ -731,6 +749,32 @@ class UnsafeEvalProvider(ObjectInterpretation):
 
         # Execute module-style so top-level defs land in `env`.
         builtins.exec(bytecode, env, env)
+
+    @implements(run_doctests)
+    def run_doctests(
+        self,
+        obj: collections.abc.Callable | type | types.ModuleType,
+        globs: typing.Mapping[str, Any],
+    ) -> None:
+        assert hasattr(obj, "__name__")
+        name = obj.__name__
+        finder = doctest.DocTestFinder(recurse=False)
+        runner = doctest.DocTestRunner(verbose=False)
+        # Collect each example's want/got report via `out=...` and read failure
+        # counts from `run`'s return value, avoiding `summarize`, which would print
+        # to stdout instead of returning the report.
+        output: list[str] = []
+        failed = attempted = 0
+        for test in finder.find(obj, name=name, globs=dict(globs)):
+            results = runner.run(test, out=output.append)
+            failed += results.failed
+            attempted += results.attempted
+        if failed:
+            report = "".join(output).strip()
+            if not report:
+                report = f"{failed} doctest(s) failed out of {attempted} attempted."
+            raise TypeError(f"doctest failed:\n{report}")
+        return None
 
 
 class _StdoutPrintCollector(PrintCollector):

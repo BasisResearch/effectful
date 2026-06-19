@@ -1515,6 +1515,106 @@ def test_validate_format_spec_on_undefined_var():
             raise NotHandled
 
 
+# ---------------------------------------------------------------------------
+# Doctests in a Template docstring must be constant (no spliced arguments).
+# Templates are defined *inside* each test so pytest's --doctest-modules does
+# not try to collect/run these docstring examples.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_constant_doctest_ok():
+    """A doctest with no format fields is accepted."""
+
+    @Template.define
+    def dbl(x: int) -> int:
+        """Double {x}.
+
+        >>> dbl(2)
+        4
+        """
+        raise NotHandled
+
+    assert "dbl(2)" in dbl.__prompt_template__
+
+
+def test_validate_param_spliced_into_doctest_source_rejected():
+    """A parameter spliced into the doctest source is rejected at define time."""
+    with pytest.raises(TypeError, match="constant") as exc:
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> dbl({x})
+            4
+            """
+            raise NotHandled
+
+    assert "'x'" in str(exc.value)
+
+
+def test_validate_field_spliced_into_doctest_want_rejected():
+    """A field spliced into the expected output is rejected."""
+    with pytest.raises(TypeError, match="constant"):
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> dbl(2)
+            {x}
+            """
+            raise NotHandled
+
+
+def test_validate_bare_braces_in_doctest_rejected():
+    """A bare ``{}`` in a doctest is non-constant (str.format treats it as a
+    positional field) and is rejected."""
+    with pytest.raises(TypeError, match="constant"):
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> d = {}
+            >>> dbl(2)
+            4
+            """
+            raise NotHandled
+
+
+def test_validate_escaped_braces_in_doctest_ok():
+    """Escaped braces ``{{``/``}}`` format to literal braces, so they are
+    constant and accepted."""
+
+    @Template.define
+    def make_dict(x: int) -> dict:
+        """Build a dict from {x}.
+
+        >>> d = {{}}
+        >>> make_dict(2)
+        {{'k': 2}}
+        """
+        raise NotHandled
+
+    assert "make_dict(2)" in make_dict.__prompt_template__
+
+
+def test_validate_field_in_prose_with_constant_doctest_ok():
+    """Format fields are still allowed in the prose around constant doctests."""
+
+    @Template.define
+    def about(theme: str) -> int:
+        """Count words about {theme}.
+
+        >>> about("cats")
+        1
+        """
+        raise NotHandled
+
+    assert "{theme}" in about.__prompt_template__
+
+
 # Forward ref through Tool subclass of Operation.
 # Use types Pydantic can serialize (not arbitrary classes) to avoid
 # PydanticSchemaGenerationError when other tests build tool schemas.

@@ -41,6 +41,7 @@ from effectful.handlers.llm.completions import (
     ToolCallExecutionError,
     _get_history,
     _synthesis_final_tool,
+    _synthesis_template,
     call_assistant,
     call_tool,
     collect_tools,
@@ -1556,16 +1557,147 @@ class TestSynthesizeAndCall:
     def test_rejects_variadic_parameters(self):
         """A signature with *args/**kwargs cannot be expressed as a Callable type,
         so building the synthesis tool for it is rejected."""
-        sig = inspect.Signature(
-            [
-                inspect.Parameter(
-                    "args", inspect.Parameter.VAR_POSITIONAL, annotation=int
-                )
-            ],
-            return_annotation=int,
-        )
+
+        @Template.define
+        def variadic(*args: int) -> int:
+            """Sum the arguments."""
+            raise NotHandled
+
         with pytest.raises(TypeError, match="variadic"):
-            _synthesis_final_tool(sig, {})
+            _synthesis_final_tool(variadic, {})
+
+
+class TestSynthesizeAndCallDoctests:
+    """SynthesizeAndCall validates the synthesized function against the
+    Template's own docstring doctests (#433), rerouting Template calls in the
+    doctests to the synthesized function so they never re-synthesize.
+
+    The doctest-bearing Templates are defined *inside* each test rather than at
+    module scope so pytest's ``--doctest-modules`` collection does not try to run
+    them (they reference a Template that needs an LLM to resolve)."""
+
+    def test_passes_when_synthesized_function_meets_template_doctests(self):
+        # The Template's docstring carries the doctests; the synthesized
+        # function's OWN docstring is deliberately wrong to prove the Template's
+        # docstring is what gets run.
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}.
+
+            >>> triple_it(2)
+            6
+            >>> triple_it(0)
+            0
+            """
+            raise NotHandled
+
+        good = (
+            "def impl(x: int) -> int:\n"
+            '    """>>> triple_it(2)\n'
+            "    999\n"
+            '    """\n'
+            "    return x * 3\n"
+        )
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        # A single completion: the doctest's `triple_it(...)` calls dispatched to
+        # the synthesized function, never re-entering synthesis.
+        assert mock.call_count == 1
+
+    def test_rejects_then_retries_when_doctests_fail(self):
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}.
+
+            >>> triple_it(2)
+            6
+            """
+            raise NotHandled
+
+        bad = "def impl(x: int) -> int:\n    return x * 2\n"  # doubles, not triples
+        good = "def impl(x: int) -> int:\n    return x * 3\n"
+        mock = MockCompletionHandler(
+            [
+                make_submit_solution_response(bad, tool_call_id="bad"),
+                make_submit_solution_response(good, tool_call_id="good"),
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+            handler(RetryLLMHandler()),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        assert mock.call_count == 2
+
+    def test_template_without_doctests_synthesizes_normally(self):
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}."""
+            raise NotHandled
+
+        good = "def impl(x: int) -> int:\n    return x * 3\n"
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        assert mock.call_count == 1
+
+    def test_run_doctests_not_globally_hijacked_during_synthesis(self):
+        """The name/docstring/doctest behavior is local to the synthesis argument
+        (carried by _SynthesisSpec on its type), not a global run_doctests
+        override. So a *separate* Encodable[Callable] decode validates against its
+        OWN docstring even while a doctest-bearing Template is the synthesis
+        target -- under the old override it would have had the Template's
+        docstring spliced in and failed."""
+
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple {x}.
+
+            >>> triple_it(2)
+            6
+            """
+            raise NotHandled
+
+        # A plain synthesized function whose OWN doctest passes but which doubles
+        # (so it would fail triple_it's spliced-in doctest under the old code).
+        module_code = (
+            "def double(x: int) -> int:\n"
+            '    """Double x.\n'
+            "\n"
+            "    >>> double(2)\n"
+            "    4\n"
+            '    """\n'
+            "    return x * 2\n"
+        )
+        with (
+            handler(UnsafeEvalProvider()),
+            handler({_synthesis_template: lambda: triple_it}),
+        ):
+            f = pydantic.TypeAdapter(Encodable[Callable[[int], int]]).validate_python(
+                {"module_code": module_code}, context={}
+            )
+
+        assert f(3) == 6
 
 
 class TestMessageSequence:

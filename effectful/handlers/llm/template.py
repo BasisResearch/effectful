@@ -1,4 +1,5 @@
 import abc
+import doctest
 import functools
 import inspect
 import re
@@ -203,6 +204,52 @@ class Template[**P, T](Tool[P, T]):
     __system_prompt__: str
 
     @classmethod
+    def _validate_doctests_constant(cls, template: "Template", doc: str) -> None:
+        """Validate that no format string variables are spliced into doctests.
+
+        The whole docstring is ``str.format``-ed into the prompt at call time,
+        so an active replacement field inside a ``>>>`` example would be
+        substituted, breaking the example. Doctests must therefore be constant:
+        the example source, expected output and exception message may contain
+        only escaped braces (``{{``/``}}``), never active fields.
+
+        :raises TypeError: If any doctest example contains an active field.
+        """
+        try:
+            parts = doctest.DocTestParser().parse(doc, template.__name__)
+        except ValueError:
+            # Malformed doctest -- not a prompt-field concern; it surfaces when
+            # the doctests are actually run, so skip the constancy check here.
+            return
+
+        formatter = string.Formatter()
+        spliced: list[str] = []
+        for part in parts:
+            if not isinstance(part, doctest.Example):
+                continue
+            for text in (part.source, part.want, part.exc_msg or ""):
+                try:
+                    spliced.extend(
+                        field_name
+                        for _, field_name, _, _ in formatter.parse(text)
+                        if field_name is not None
+                    )
+                except ValueError:
+                    # An unbalanced brace (e.g. a bare ``{`` or ``}``) is also
+                    # non-constant: ``str.format`` would reject it at call time.
+                    spliced.append("<unbalanced brace>")
+
+        if spliced:
+            # Render the auto-numbered empty field ``{}`` readably.
+            shown = sorted({f or "{}" for f in spliced})
+            raise TypeError(
+                f"Template '{template.__name__}' splices {shown} "
+                f"into a doctest example. Doctests must be constant -- they are "
+                f"formatted into the prompt at call time, so they may not contain "
+                f"format fields. Escape literal braces as '{{{{' and '}}}}'."
+            )
+
+    @classmethod
     def _validate_prompt(
         cls,
         template: "Template",
@@ -212,11 +259,15 @@ class Template[**P, T](Tool[P, T]):
         refer to names resolvable at call time.
 
         Each variable must be either a parameter in the signature
-        or a name captured in the lexical context.
+        or a name captured in the lexical context. Additionally, doctest
+        examples in the docstring must be constant (see
+        :meth:`_validate_doctests_constant`).
 
-        :raises TypeError: If any format string variable cannot be resolved.
+        :raises TypeError: If any format string variable cannot be resolved, or
+            a format field is spliced into a doctest example.
         """
         doc = template.__prompt_template__
+        cls._validate_doctests_constant(template, doc)
         formatter = string.Formatter()
         param_names = set(template.__signature__.parameters.keys())
         context_keys = set(context.keys())

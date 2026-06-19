@@ -28,6 +28,7 @@ from litellm import (
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
+    _SynthesisSpec,
     to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import ReplSession
@@ -272,17 +273,10 @@ class LexicalReaders(ObjectInterpretation):
                 continue
             try:
                 result[name] = _LexicalVariableTool.define(obj, name=name)
-            # `TypeError` joins the three Pydantic errors because the
-            # `Encodable[T]` registry raises `TypeError` to signal
-            # "no schema possible" — e.g. `_pydantic_type_operation`,
-            # `_pydantic_type_term`, and `_pydantic_callable`'s
-            # incomplete-signature path. Same intent as the Pydantic
-            # cases, different exception class.
             except (
                 pydantic.errors.PydanticSchemaGenerationError,
                 pydantic.errors.PydanticInvalidForJsonSchema,
                 pydantic.errors.PydanticUserError,
-                TypeError,
             ):
                 continue
         return result
@@ -357,20 +351,24 @@ class PythonRepl(ObjectInterpretation):
 
 
 @Operation.define
-def _synthesis_signature() -> inspect.Signature | None:
-    """Return the signature of the in-flight Template call, or ``None``.
+def _synthesis_template() -> Template | None:
+    """Return the in-flight Template being answered by synthesis, or ``None``.
 
     `SynthesizeAndCall` installs a fresh handler for this inside each
     `Template.__apply__` (mirroring `_repl_session`), giving it a lifetime of
     exactly one Template call.  Outside such a scope there is no synthesis
     target, so this falls back to ``None`` -- e.g. when tools are listed outside
     a Template call -- and no synthesis tool is injected.
+
+    `collect_tools` uses it to build the synthesis tool from the Template's
+    signature, and to bind the Template onto the synthesized function's type (see
+    :class:`~effectful.handlers.llm.encoding._SynthesisSpec`).
     """
     return None
 
 
 def _synthesis_final_tool(
-    signature: inspect.Signature,
+    template: Template,
     env: collections.abc.Mapping[str, typing.Any],
     name: str = "submit_solution",
 ) -> FinalTool:
@@ -382,6 +380,7 @@ def _synthesis_final_tool(
     returning the value.  Because it is a :class:`FinalTool`, calling it
     terminates the completion loop and its return value is the Template's result.
     """
+    signature = template.__signature__
     param_types = []
     for pname, param in signature.parameters.items():
         if param.kind in (
@@ -406,6 +405,7 @@ def _synthesis_final_tool(
         )
 
     callable_type = collections.abc.Callable[param_types, return_type]  # type: ignore[valid-type]
+    callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
 
     # Recover the original arguments from `env` by name, respecting each
     # parameter's kind so positional-only and keyword-only parameters bind
@@ -442,7 +442,7 @@ def _synthesis_final_tool(
     )
     submit_solution.__annotations__ = {
         "implementation": callable_type,
-        "return": signature.return_annotation,
+        "return": return_type,
     }
     return FinalTool.define(submit_solution)
 
@@ -471,11 +471,11 @@ class SynthesizeAndCall(ObjectInterpretation):
     real function before it is applied.
 
     Scoping mirrors :class:`PythonRepl`: this handles `Template.__apply__` to
-    introduce a fresh `_synthesis_signature` handler bound to that call's
-    signature, and handles `collect_tools` to inject the synthesis tool built
-    from it.  The synthesis target is therefore introduced and eliminated by its
-    own handler, bounded to the Template call by construction -- nested Template
-    calls get their own target.
+    introduce a fresh `_synthesis_template` handler bound to that call's Template,
+    and handles `collect_tools` to inject the synthesis tool built from it.  The
+    synthesis target is therefore introduced and eliminated by its own handler,
+    bounded to the Template call by construction -- nested Template calls get
+    their own target.
 
     Failures compose with :class:`RetryLLMHandler`: a function that fails to
     synthesize surfaces as a :class:`ToolCallDecodingError`, and one that raises
@@ -498,10 +498,7 @@ class SynthesizeAndCall(ObjectInterpretation):
     def _apply[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        # Bind the synthesis target to this Template call's signature for the
-        # duration of the call, so `collect_tools` can build the tool from it.
-        signature = template.__signature__
-        with handler({_synthesis_signature: lambda: signature}):
+        with handler({_synthesis_template: lambda: template}):
             return fwd()
 
     @implements(collect_tools)
@@ -509,9 +506,9 @@ class SynthesizeAndCall(ObjectInterpretation):
         self, env: collections.abc.Mapping[str, typing.Any]
     ) -> collections.abc.Mapping[str, Tool]:
         tools = dict(fwd())
-        signature = _synthesis_signature()
-        if signature is not None:
-            final_tool = _synthesis_final_tool(signature, env)
+        template = _synthesis_template()
+        if template is not None:
+            final_tool = _synthesis_final_tool(template, env)
             tools[final_tool.__name__] = final_tool
         return tools
 
@@ -553,7 +550,13 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = dict(collect_tools(env))
+    tools = collect_tools(env)
+    # Decode tool calls (and the code synthesized for them) against the lexical
+    # context, so they resolve names from the Template's scope.
+    env = collections.ChainMap(
+        typing.cast("collections.abc.MutableMapping[str, typing.Any]", env),
+        typing.cast("collections.abc.MutableMapping[str, typing.Any]", tools),
+    )
     tool_specs = {
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],
@@ -594,7 +597,7 @@ def call_assistant[T](
     )
     for raw_tool_call in raw_tool_calls:
         try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            tool_calls += [encoding.validate_python(raw_tool_call, context=env)]
             if isinstance(tool_calls[-1].tool, FinalTool):
                 if not (
                     tool_calls[-1].result_type == response_type
@@ -607,8 +610,7 @@ def call_assistant[T](
                 if len(raw_tool_calls) > 1:
                     raise TypeError(
                         f"A FinalTool call must be the only tool call in its turn, but "
-                        f"{len(raw_tool_calls)} tool calls were requested "
-                        f"({sum(isinstance(encoding.validate_python(tc, context=tools).tool, FinalTool) for tc in raw_tool_calls)} of them final). Call the final tool alone."
+                        f"{len(raw_tool_calls)} tool calls were requested."
                     )
         except Exception as e:
             raise ToolCallDecodingError(

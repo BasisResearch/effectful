@@ -27,6 +27,7 @@ from effectful.handlers.llm.evaluation import (
     collect_runtime_type_stubs,
     collect_variable_declarations,
     mypy_type_check,
+    run_doctests,
     type_to_ast,
 )
 from effectful.handlers.llm.evaluation import compile as compile_op
@@ -1755,3 +1756,137 @@ def test_restricted_exec_print_captured_to_stdout():
     output-capturing callers see it (rather than NameError on `_print_`)."""
     out = _restricted_run("print('hi')", {}, capture=True)
     assert out == "hi\n"
+
+
+class TestRunDoctests:
+    """Doctest validation stage for synthesized functions (#433)."""
+
+    def test_passing_doctests_pass(self):
+        def count_char(s: str, c: str) -> int:
+            """Count occurrences of ``c`` in ``s``.
+
+            >>> count_char("hello", "l")
+            2
+            >>> count_char("", "x")
+            0
+            """
+            return s.count(c)
+
+        # No exception means the doctests passed.
+        run_doctests(count_char, {"count_char": count_char})
+
+    def test_failing_doctest_raises_with_report(self):
+        def count_char(s: str, c: str) -> int:
+            """Wrong expected output.
+
+            >>> count_char("hello", "l")
+            99
+            """
+            return s.count(c)
+
+        with pytest.raises(TypeError) as exc:
+            run_doctests(count_char, {"count_char": count_char})
+        msg = str(exc.value)
+        assert "doctest failed" in msg
+        assert "Expected:" in msg and "99" in msg
+
+    def test_no_doctests_is_noop(self):
+        def plain(x: int) -> int:
+            """No interactive examples here."""
+            return x
+
+        run_doctests(plain, {"plain": plain})
+
+    def test_no_docstring_is_noop(self):
+        def nodoc(x: int) -> int:
+            return x
+
+        run_doctests(nodoc, {"nodoc": nodoc})
+
+    def test_doctest_uses_globs(self):
+        offset = 10
+
+        def add_offset(x: int) -> int:
+            """Add the captured ``offset`` to ``x``.
+
+            >>> add_offset(5)
+            15
+            """
+            return x + offset
+
+        # `offset` resolves from globs, not the example's literals.
+        run_doctests(add_offset, {"add_offset": add_offset, "offset": offset})
+
+    def test_op_runs_via_default_rule_without_provider(self):
+        # `run_doctests` carries its mechanics in its default rule, so it works
+        # with no eval provider installed (wrappers like SynthesizeAndCall still
+        # always enclose it).
+        def f(x: int) -> int:
+            """Identity.
+
+            >>> f(1)
+            1
+            """
+            return x
+
+        run_doctests(f, {"f": f})  # passes
+
+        def g(x: int) -> int:
+            """Wrong.
+
+            >>> g(1)
+            2
+            """
+            return x
+
+        with pytest.raises(TypeError, match="doctest failed"):
+            run_doctests(g, {"g": g})
+
+
+class TestRunDoctestsThroughCallableDecode:
+    """`Encodable[Callable[...]]` runs the synthesized function's doctests."""
+
+    def _decode(self, module_code: str, provider=None):
+        provider = provider or UnsafeEvalProvider()
+        with handler(provider):
+            return pydantic.TypeAdapter(
+                Encodable[Callable[[str, str], int]]
+            ).validate_python(SynthesizedFunction(module_code=module_code), context={})
+
+    def test_decode_runs_passing_doctests(self):
+        fn = self._decode(
+            "def count_char(s: str, c: str) -> int:\n"
+            '    """Count occurrences.\n'
+            "\n"
+            '    >>> count_char("hello", "l")\n'
+            "    2\n"
+            '    """\n'
+            "    return s.count(c)\n"
+        )
+        assert fn("banana", "a") == 3
+
+    def test_decode_rejects_failing_doctests(self):
+        with pytest.raises(Exception) as exc:
+            self._decode(
+                "def count_char(s: str, c: str) -> int:\n"
+                '    """Count occurrences.\n'
+                "\n"
+                '    >>> count_char("hello", "l")\n'
+                "    99\n"
+                '    """\n'
+                "    return s.count(c)\n"
+            )
+        assert "doctest failed" in str(exc.value)
+
+    def test_decode_restricted_provider(self):
+        fn = self._decode(
+            "def count_char(s: str, c: str) -> int:\n"
+            '    """Count occurrences.\n'
+            "\n"
+            '    >>> count_char("hello", "l")\n'
+            "    2\n"
+            '    """\n'
+            "    return s.count(c)\n",
+            provider=RestrictedEvalProvider(),
+        )
+        assert fn("hello", "l") == 2

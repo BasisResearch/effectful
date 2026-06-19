@@ -33,8 +33,9 @@ from openai.types.chat import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
+from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
@@ -122,6 +123,11 @@ else:
             return TypeToPydanticType().evaluate(item)
 
 
+@dataclasses.dataclass(frozen=True)
+class _SynthesisSpec[T]:
+    template: Template[..., T]
+
+
 class TypeToPydanticType(TypeEvaluator):
     """Substitute custom types with their Pydantic Annotated equivalents.
 
@@ -143,6 +149,14 @@ class TypeToPydanticType(TypeEvaluator):
         return cls._registry.register(*args, **kwargs)
 
     def evaluate(self, ty):
+        if typing.get_origin(ty) is typing.Annotated and any(
+            isinstance(m, _SynthesisSpec) for m in ty.__metadata__
+        ):
+            inner, *meta = typing.get_args(ty)
+            return self._registry.dispatch(typing.get_origin(inner) or inner)(
+                inner, *meta
+            )
+
         app = super().evaluate(ty)
         origin = typing.get_origin(app)
         # Only dispatch on regular types. Special forms (Literal, Annotated,
@@ -351,12 +365,16 @@ def _pydantic_type_tuple(ty):
 
 @TypeToPydanticType.register(Term)
 def _pydantic_type_term(ty: type[Term]):
-    raise TypeError("Terms cannot be converted to Pydantic types.")
+    raise pydantic.errors.PydanticSchemaGenerationError(
+        "Terms cannot be converted to Pydantic types."
+    )
 
 
 @TypeToPydanticType.register(Operation)
 def _pydantic_type_operation(ty: type[Operation]):
-    raise TypeError("Operations cannot be converted to Pydantic types.")
+    raise pydantic.errors.PydanticSchemaGenerationError(
+        "Operations cannot be converted to Pydantic types."
+    )
 
 
 @pydantic.validate_call(validate_return=False)
@@ -437,7 +455,10 @@ def _create_typed_synthesized_function(
 1. Produce one block of Python code.
 2. The function MUST have type annotations for all parameters and the return type.
 3. The function definition must be the LAST statement - do not add any code after it.
-4. Do not include usage examples or function calls.
+4. You may include doctest examples (lines starting with >>>) inside the function's
+   docstring to demonstrate and verify its behavior; these examples are run as tests.
+5. Do not add any executable code after the function definition (the doctest examples
+   in the docstring are the only usage examples allowed).
 </instructions>
 """
 
@@ -492,7 +513,9 @@ def _validate_signature_callable(
 
 
 @TypeToPydanticType.register(Callable)
-def _pydantic_callable(callable_type: Any) -> Any:
+def _pydantic_callable(
+    callable_type: Any, metadata: _SynthesisSpec | None = None
+) -> Any:
     """Create a Pydantic-compatible Annotated type for a parameterized Callable.
 
     Usage: PydanticCallable(Callable[[int, str], bool])
@@ -505,7 +528,7 @@ def _pydantic_callable(callable_type: Any) -> Any:
         expected_return = None
     else:
         if len(type_args) < 2:
-            raise TypeError(
+            raise pydantic.errors.PydanticSchemaGenerationError(
                 f"Callable type signature incomplete: {callable_type}. "
                 "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
             )
@@ -575,6 +598,13 @@ def _pydantic_callable(callable_type: Any) -> Any:
             )
 
         _validate_signature_callable(result, expected_params, expected_return)
+
+        if metadata is not None:
+            result = functools.wraps(metadata.template)(
+                handler({metadata.template: result})(result)
+            )
+            g.update({metadata.template.__name__: result})
+        evaluation.run_doctests(result, g)
         return result
 
     def _serialize(value: Callable) -> dict:
