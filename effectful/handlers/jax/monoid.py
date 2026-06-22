@@ -23,6 +23,7 @@ from effectful.ops.monoid import (
     Min,
     Monoid,
     NormalizeIntp,
+    Or,
     Product,
     Streams,
     Sum,
@@ -529,26 +530,48 @@ def _build_plate_reductions(
     factors: Sequence[Array],
     factor_specs: Sequence[str],
     dim_index: Mapping[str, Expr],
+    out_op: Mapping[str, Operation],
     plate_sizes: Mapping[str, int],
+    ordinal: Mapping[str, frozenset[str]],
     parent_plates: frozenset[str] = frozenset(),
 ) -> Array:
-    product = Product.plus(
-        *(
-            factors[f][tuple(dim_index[c] for c in factor_specs[f])]
-            for f in plate_tree.factors
-        ),
-        *(
-            _build_plate_reductions(
-                n,
-                factors,
-                factor_specs,
-                dim_index,
-                plate_sizes,
-                parent_plates | plate_tree.ordinal,
+    indexed_factors = [
+        factors[f][tuple(dim_index[c] for c in factor_specs[f])]
+        for f in plate_tree.factors
+    ]
+
+    masks = []
+    for f in plate_tree.factors:
+        spec = factor_specs[f]
+        factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
+        factor_out_dims = set(ordinal) & set(out_op) & set(spec)
+        masks.append(
+            Or.plus(
+                *(dim_index[p] != out_op[p]() for p in factor_out_plates),
+                And.plus(*(dim_index[d] == out_op[d]() for d in factor_out_dims)),
             )
-            for n in plate_tree.children
-        ),
+            if factor_out_dims and factor_out_plates
+            else True
+        )
+
+    masked_factors = [
+        Sum.mask(f, m) for (f, m) in zip(indexed_factors, masks, strict=True)
+    ]
+
+    child_reductions = (
+        _build_plate_reductions(
+            n,
+            factors,
+            factor_specs,
+            dim_index,
+            out_op,
+            plate_sizes,
+            ordinal,
+            parent_plates | plate_tree.ordinal,
+        )
+        for n in plate_tree.children
     )
+    product = Product.plus(*masked_factors, *child_reductions)
     if plate_tree.ordinal:
         plate_streams = {
             dim_index[p].op: range(plate_sizes[p])
@@ -589,6 +612,8 @@ def _einsum_expr(
         spec_set = frozenset(spec)
         for c in spec_set - plate_set:
             ordinal[c] &= spec_set
+    global_enums = {c for c, o in ordinal.items() if not o}
+    plated_enums = {c: o for c, o in ordinal.items() if o}
 
     out_spec_set = frozenset(out_spec)
     out_plates = out_spec_set & plate_set
@@ -613,12 +638,10 @@ def _einsum_expr(
     }
     arrays = [Operation.define(Array, name=f"f{i}") for (i, _) in enumerate(operands)]
     plate_tree = _build_plate_tree(in_specs, plate_set)
+    out_vars = {c: Operation.define(int, name=f"out_{c}") for c in out_spec}
     reductions = _build_plate_reductions(
-        plate_tree, [a() for a in arrays], in_specs, dim_index, sizes
+        plate_tree, [a() for a in arrays], in_specs, dim_index, out_vars, sizes, ordinal
     )
-
-    global_enums = {c for c, o in ordinal.items() if not o}
-    plated_enums = {c: o for c, o in ordinal.items() if o}
 
     # one stream of per-plate-assignment rows for each plated sum dim
     rows = {}
@@ -626,26 +649,23 @@ def _einsum_expr(
         ps = [(p, dim_op[p]) for p in sorted(o)]
         delta_idx = tuple(op() for (_, op) in ps)
         c_streams = {op: range(sizes[p]) for (p, op) in ps}
-        v = Operation.define(int)
+        v = Operation.define(int, name=f"{c}_v")
         rows[c] = CartesianProduct.reduce(
             UnionM.reduce([UnionM.delta(delta_idx, v())], {v: range(sizes[c])}),
             c_streams,
         )
 
-    # The output index of each plated enum dim is the row's value for that
-    # output slice -- distinct rows that assign the same value collide on the
-    # same delta index and accumulate, so no per-output-dim pinning is needed.
-    streams: Streams = (
-        {dim_op[c]: range(sizes[c]) for c in global_enums}
-        | {dim_op[c]: r for c, r in rows.items()}
-        | {dim_op[c]: range(sizes[c]) for c in out_plates}
-    )
+    streams: Streams = {dim_op[c]: range(sizes[c]) for c in global_enums} | {
+        dim_op[c]: r for c, r in rows.items()
+    }
 
-    out_tuple = tuple(dim_index[c] for c in out_spec)
-    out_vars = [Operation.define(int, name=f"out_{c}") for c in out_spec]
-    out_mask = And.plus(*(v() == d for (v, d) in zip(out_vars, out_tuple, strict=True)))
+    out_globals = global_enums & set(out_spec)
+    out_mask = And.plus(*(out_vars[c]() == dim_index[c] for c in out_globals))
     return deffn(
-        bind_dims(Sum.reduce(Sum.mask(reductions, out_mask), streams), *out_vars),
+        bind_dims(
+            Sum.reduce(Sum.mask(reductions, out_mask), streams),
+            *(out_vars[c] for c in out_spec),
+        ),
         *arrays,
     )
 

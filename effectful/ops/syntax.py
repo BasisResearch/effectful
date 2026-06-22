@@ -594,11 +594,6 @@ class _BaseTerm[T](Term[T]):
         self._args = args
         self._kwargs = kwargs
 
-    def __eq__(self, other) -> bool:
-        from effectful.ops.syntax import syntactic_eq
-
-        return syntactic_eq(self, other)
-
     @property
     def op(self):
         return self._op
@@ -1232,6 +1227,13 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __eq__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
+        else:
+            raise NotHandled
+
+    @defop
+    def __ne__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__ne__(other)
         else:
             raise NotHandled
 

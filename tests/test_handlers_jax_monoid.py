@@ -571,7 +571,11 @@ PLATED_EINSUM_CASES = [
     ("aij,bi,c->", "ij"),
     ("abi,b->", "i"),
     ("abi,b->i", "i"),
-    ("abj,b->aj", "j"),
+    ("abi,b->b", "i"),
+    ("abi,b->ai", "i"),
+    ("abij,bi->aij", "ij"),
+    ("abij,bci->acij", "ij"),
+    ("abij,bci->", "ij"),
 ]
 
 

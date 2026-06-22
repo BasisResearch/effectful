@@ -182,7 +182,7 @@ Product = MonoidWithZero(name="Product", identity=1, zero=0)
 CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[{}], zero=[])
 Union = Monoid(name="Union", identity=[])
 And = MonoidWithZero(name="And", identity=True, zero=False)
-Or = Monoid(name="And", identity=False)
+Or = Monoid(name="Or", identity=False)
 
 
 @dataclass
@@ -301,18 +301,6 @@ class MaskFalse(ObjectInterpretation):
 class MaskFusion(ObjectInterpretation):
     """M.mask(M.mask(value, i1), i2) ≡ M.mask(value, And.plus(i1, i2))"""
 
-    @implements(Monoid.mask)
-    def _(self, monoid, value, cond):
-        if (
-            isinstance(value, Term)
-            and _is_monoid_mask(value.op)
-            and value.op.__self__ == monoid
-        ):
-            return monoid.mask(value.args[0], And.plus(value.args[1], cond))
-        return fwd()
-
-
-class MaskDistr(ObjectInterpretation):
     @implements(Monoid.mask)
     def _(self, monoid, value, cond):
         if (
