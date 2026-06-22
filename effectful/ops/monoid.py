@@ -14,6 +14,7 @@ from effectful.ops.syntax import (
     Array,
     ObjectInterpretation,
     Scoped,
+    _NumberTerm,
     defdata,
     deffn,
     getitem,
@@ -96,11 +97,6 @@ def inner_streams_first(streams: dict[Operation, Expr]) -> Iterable[Operation]:
     return topo.static_order()
 
 
-@Operation.define
-def delta(_index: tuple, _weight: Any) -> Array:
-    raise NotHandled
-
-
 class Monoid[W]:
     """A monoid with ``plus`` and ``reduce`` :class:`Operation` s."""
 
@@ -160,6 +156,14 @@ class Monoid[W]:
         """
         raise NotHandled
 
+    @Operation.define
+    def mask(self, value: W, cond: bool = True) -> W:
+        raise NotHandled
+
+    @Operation.define
+    def delta[K](self, index: K, weight: W) -> Mapping[K, W]:
+        raise NotHandled
+
 
 class MonoidWithZero[T](Monoid[T]):
     zero: T
@@ -177,6 +181,8 @@ Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
 CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[{}], zero=[])
 Union = Monoid(name="Union", identity=[])
+And = MonoidWithZero(name="And", identity=True, zero=False)
+Or = Monoid(name="And", identity=False)
 
 
 @dataclass
@@ -190,8 +196,8 @@ class _ExtensiblePredicate[T]:
         return t in self.elems
 
 
-is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product})
-is_idempotent = _ExtensiblePredicate({Max, Min})
+is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or})
+is_idempotent = _ExtensiblePredicate({Max, Min, And, Or})
 
 
 @dataclass
@@ -213,6 +219,7 @@ distributes_over = _ExtensibleBinaryRelation(
         (Sum, Max),
         (Product, Sum),
         (CartesianProduct, Union),
+        (And, Or),
     }
 )
 
@@ -235,11 +242,23 @@ def _is_monoid_weighted(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.weighted
 
 
+def _is_monoid_mask(op: Operation) -> bool:
+    """True if ``op`` is the ``mask`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.mask
+
+
+def _is_monoid_delta(op: Operation) -> bool:
+    """True if ``op`` is the ``delta`` operation of some :class:`Monoid`."""
+    owner = getattr(op, "__self__", None)
+    return isinstance(owner, Monoid) and op is owner.delta
+
+
 class DeltaEmpty(ObjectInterpretation):
     """delta((), weight) ≡ weight"""
 
-    @implements(delta)
-    def _(self, index, weight):
+    @implements(Monoid.delta)
+    def _(self, monoid, index, weight):
         if not index:
             return weight
         return fwd()
@@ -248,10 +267,119 @@ class DeltaEmpty(ObjectInterpretation):
 class DeltaFusion(ObjectInterpretation):
     """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
 
-    @implements(delta)
-    def _(self, index, weight):
-        if isinstance(weight, Term) and weight.op == delta:
-            return delta(index + weight.args[0], weight.args[1])
+    @implements(Monoid.delta)
+    def _(self, monoid, index, weight):
+        if (
+            isinstance(weight, Term)
+            and _is_monoid_delta(weight.op)
+            and weight.op.__self__ == monoid
+        ):
+            return monoid.delta(index + weight.args[0], weight.args[1])
+        return fwd()
+
+
+class MaskTrue(ObjectInterpretation):
+    """mask(value, True) ≡ value"""
+
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        if not isinstance(cond, Term) and cond:
+            return value
+        return fwd()
+
+
+class MaskFalse(ObjectInterpretation):
+    """M.mask(value, False) ≡ M.identity"""
+
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        if not isinstance(cond, Term) and not cond:
+            return monoid.identity
+        return fwd()
+
+
+class MaskFusion(ObjectInterpretation):
+    """M.mask(M.mask(value, i1), i2) ≡ M.mask(value, And.plus(i1, i2))"""
+
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        if (
+            isinstance(value, Term)
+            and _is_monoid_mask(value.op)
+            and value.op.__self__ == monoid
+        ):
+            return monoid.mask(value.args[0], And.plus(value.args[1], cond))
+        return fwd()
+
+
+class MaskDistr(ObjectInterpretation):
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        if (
+            isinstance(value, Term)
+            and _is_monoid_mask(value.op)
+            and value.op.__self__ == monoid
+        ):
+            return monoid.mask(value.args[0], And.plus(value.args[1], cond))
+        return fwd()
+
+
+class ReduceEqualityMaskRange(ObjectInterpretation):
+    """M.reduce(M.mask(v, And.plus(i = x, *m)), {i: range(N)} ∪ S) ≡
+    M.mask(M.reduce(M.mask(v, *m), {i: [x]} ∪ S), And.plus(0 <= x, x < N))
+
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams):
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_mask(body.op)
+            and body.op.__self__ == monoid
+        ):
+            return fwd()
+
+        (value, mask) = body.args
+        match mask:
+            case Term(And.plus, conds, {}):
+                ...
+            case cond:
+                conds = (cond,)
+
+        for i, cond in enumerate(conds):
+
+            def test(stream_op, mask_key):
+                return (
+                    stream_op in streams
+                    and isinstance(stream := streams[stream_op], range)
+                    and stream.start == 0
+                    and stream.step == 1
+                    and not (fvsof(mask_key) & set(streams))
+                )
+
+            match cond:
+                case Term(
+                    _NumberTerm.__eq__, ((Term(stream_op, (), {}), mask_key)), {}
+                ) if test(stream_op, mask_key):
+                    ...
+                case Term(
+                    _NumberTerm.__eq__, ((mask_key, Term(stream_op, (), {}))), {}
+                ) if test(stream_op, mask_key):
+                    ...
+                case _:
+                    continue
+
+            stream = streams[stream_op]
+            return monoid.mask(
+                monoid.reduce(
+                    monoid.mask(
+                        value, And.plus(*(c for (j, c) in enumerate(conds) if i != j))
+                    ),
+                    {stream_op: (mask_key,)}
+                    | {k: v for (k, v) in streams.items() if k != stream_op},
+                ),
+                And.plus(stream.start <= mask_key, mask_key < stream.stop),
+            )
         return fwd()
 
 
@@ -600,11 +728,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             match cprod_body:
                 case Term(
                     Union.reduce,
-                    ([Term(delta1, (idx, union_body), {})], union_streams),
+                    ([Term(Union.delta, (idx, union_body), {})], union_streams),
                     {},
-                ) if delta1 == delta and set(
-                    i.op for i in idx if isinstance(i, Term)
-                ) >= set(cprod_streams):
+                ) if set(i.op for i in idx if isinstance(i, Term)) >= set(
+                    cprod_streams
+                ):
                     pass
                 case _:
                     continue
@@ -654,7 +782,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 continue
 
             peeled_body = Union.reduce(
-                [delta(drop_elem(idx, plate_index), union_body)], union_streams
+                [Union.delta(drop_elem(idx, plate_index), union_body)], union_streams
             )
             peeled_cprod_streams = {
                 k: v for (k, v) in cprod_streams.items() if k != plate_op
@@ -1051,7 +1179,6 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
-    EliminateSingletonStreams(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),
@@ -1075,6 +1202,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFactorization(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
+    ReduceEqualityMaskRange(),
+    EliminateSingletonStreams(),
     PlusEmpty(),
     PlusSingle(),
     PlusAssoc(),
@@ -1082,6 +1211,9 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusConsecutiveDups(),
     PlusDups(),
     PlusCastFloat(),
+    MaskTrue(),
+    MaskFalse(),
+    MaskFusion(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).

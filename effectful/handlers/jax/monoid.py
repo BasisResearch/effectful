@@ -16,6 +16,7 @@ from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
+    And,
     CartesianProduct,
     EvaluateIntp,
     Max,
@@ -27,7 +28,6 @@ from effectful.ops.monoid import (
     Sum,
     _is_monoid_plus,
     choose_contraction,
-    delta,
     distributes_over,
 )
 from effectful.ops.monoid import Union as UnionM
@@ -628,20 +628,26 @@ def _einsum_expr(
         c_streams = {op: range(sizes[p]) for (p, op) in ps}
         v = Operation.define(int)
         rows[c] = CartesianProduct.reduce(
-            UnionM.reduce([delta(delta_idx, v())], {v: range(sizes[c])}), c_streams
+            UnionM.reduce([UnionM.delta(delta_idx, v())], {v: range(sizes[c])}),
+            c_streams,
         )
 
     # The output index of each plated enum dim is the row's value for that
     # output slice -- distinct rows that assign the same value collide on the
     # same delta index and accumulate, so no per-output-dim pinning is needed.
-    out_tuple = tuple(dim_index[c] for c in out_spec)
     streams: Streams = (
         {dim_op[c]: range(sizes[c]) for c in global_enums}
         | {dim_op[c]: r for c, r in rows.items()}
         | {dim_op[c]: range(sizes[c]) for c in out_plates}
     )
 
-    return deffn(Sum.reduce(delta(out_tuple, reductions), streams), *arrays)
+    out_tuple = tuple(dim_index[c] for c in out_spec)
+    out_vars = [Operation.define(int, name=f"out_{c}") for c in out_spec]
+    out_mask = And.plus(*(v() == d for (v, d) in zip(out_vars, out_tuple, strict=True)))
+    return deffn(
+        bind_dims(Sum.reduce(Sum.mask(reductions, out_mask), streams), *out_vars),
+        *arrays,
+    )
 
 
 @jax.jit(static_argnums=(0,), static_argnames=("plates",))

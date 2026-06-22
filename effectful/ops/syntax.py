@@ -1233,7 +1233,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
         else:
-            return syntactic_eq(self, other)
+            raise NotHandled
 
     @defop
     def __lt__(self, other) -> bool:

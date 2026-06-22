@@ -25,7 +25,6 @@ from effectful.ops.monoid import (
     NormalizeIntp,
     Product,
     Sum,
-    delta,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
 from tests._monoid_helpers import JaxBackend
@@ -571,6 +570,8 @@ PLATED_EINSUM_CASES = [
     ("aij,bi->", "ij"),
     ("aij,bi,c->", "ij"),
     ("abi,b->", "i"),
+    ("abi,b->i", "i"),
+    ("abj,b->aj", "j"),
 ]
 
 
