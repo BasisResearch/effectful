@@ -45,6 +45,7 @@ numpyro = [
   "jax<0.10"
 ]
 llm = [
+  "langfuse",
   "litellm",
   "tenacity",
   "mypy",

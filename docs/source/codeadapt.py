@@ -12,13 +12,16 @@ and refine incorrect attempts given feedback from failures of ``submit_solution`
 """
 
 import argparse
+import contextlib
 import os
 from typing import Literal, NamedTuple
 
-from tenacity import stop_after_attempt
+import tenacity
 
 from effectful.handlers.llm import Template
 from effectful.handlers.llm.completions import (
+    LangfuseTracer,
+    LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
@@ -70,25 +73,25 @@ class LineupClue(NamedTuple):
 
 
 @Template.define
-def solve_lineup(n: int, clues: list[LineupClue]) -> tuple[int, ...]:
+def solve_lineup(n: int, clues: list[LineupClue]) -> list[int]:
     """Solve a 'zebra'-style ordering puzzle: place n={n} people, numbered 0 to
     n - 1, in a line in positions 1 to n (each position used once) so that every
     `LineupClue` in the following list holds:
 
     <clues>{clues}</clues>
 
-    Every puzzle has exactly one consistent arrangement. Return the tuple of
-    positions ``(position of 0, position of 1, ..., position of n - 1)``,
+    Every puzzle has exactly one consistent arrangement. Return the list of
+    positions ``[position of 0, position of 1, ..., position of n - 1]``,
     as shown in the following worked examples:
 
     >>> solve_lineup(3, [LineupClue("at", 0, 1), LineupClue("left", 1, 2)])
-    (1, 2, 3)
+    [1, 2, 3]
     >>> solve_lineup(4, [LineupClue("left", 0, 1), LineupClue("left", 1, 2), LineupClue("left", 2, 3)])
-    (1, 2, 3, 4)
+    [1, 2, 3, 4]
     >>> solve_lineup(4, [LineupClue("imm_left", 0, 1), LineupClue("at", 2, 4), LineupClue("left", 3, 0)])
-    (2, 3, 4, 1)
+    [2, 3, 4, 1]
     >>> solve_lineup(5, [LineupClue("at", 0, 3), LineupClue("imm_left", 1, 2), LineupClue("left", 3, 4), LineupClue("at", 4, 5)])
-    (3, 1, 2, 4, 5)
+    [3, 1, 2, 4, 5]
     """
     raise NotHandled
 
@@ -261,12 +264,19 @@ if __name__ == "__main__":
         default=5,
         help="Number of retries for malformed/failing LLM output",
     )
+    parser.add_argument(
+        "--langfuse",
+        action="store_true",
+        help="Whether to log LLM calls and metadata to Langfuse",
+    )
     args = parser.parse_args()
     with (
         handler(LiteLLMProvider(model=args.model, tool_choice="required")),
         handler(UnsafeEvalProvider()),
         handler(PythonRepl()),
         handler(SynthesizeAndCall()),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
+        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(args.num_retries))),
+        handler(LexicalReaders()),
+        handler(LangfuseTracer()) if args.langfuse else contextlib.nullcontext(),
     ):
         main(args.task)
