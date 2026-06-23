@@ -769,7 +769,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                     return fwd(mapping, drop_elem(idx1, plate_index))
                 return fwd()
 
-            row_subst = {getitem: _getitem}
+            row_subst = {_MappingTerm.__getitem__: _getitem}
             try:
                 subst_inner_body = handler(row_subst)(evaluate)(inner_body)
             except InvalidIndexError:
