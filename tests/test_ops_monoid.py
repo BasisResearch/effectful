@@ -445,16 +445,37 @@ def test_reduce_reduce(monoid, backend: Backend):
 
 
 @pytest.mark.parametrize("monoid", COMMUTATIVE)
-def test_reduce_plus(monoid, backend: Backend):
-    a, b = backend.define_vars("a", "b", ret="scalar")
-    A, B = backend.define_vars("A", "B", ret="stream")
+def test_reduce_split_subset(monoid, backend: Backend):
+    """ReduceSplit confines a stream to the summands that use it: ``a`` is used
+    only by the first summand, so it is pushed into a reduce over just that
+    summand (the constant summand keeps its -- now innermost -- ``a`` reduce).
+    """
+    a = backend.define_vars("a", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
+    c = backend.define_vars("c", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    lhs = monoid.reduce(monoid.plus(a(), b()), {a: A(), b: B()})
+    lhs = monoid.reduce(monoid.plus(f(a()), c()), {a: A()})
     rhs = monoid.plus(
-        monoid.reduce(a(), {a: A(), b: B()}),
-        monoid.reduce(b(), {a: A(), b: B()}),
+        monoid.reduce(f(a()), {a: A()}),
+        monoid.reduce(c(), {a: A()}),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSplit())
+
+
+@pytest.mark.parametrize("monoid", COMMUTATIVE)
+def test_reduce_split_shared_noop(monoid, backend: Backend):
+    """ReduceSplit leaves a reduce fused when every summand uses the stream --
+    the form ``ReduceDistributeCartesianProduct`` relies on.
+    """
+    a = backend.define_vars("a", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
+    f, g = backend.define_vars(
+        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
+    )
+
+    term = monoid.reduce(monoid.plus(f(a()), g(a())), {a: A()})
+    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceSplit())
 
 
 def test_reduce_independent_1(backend: Backend):

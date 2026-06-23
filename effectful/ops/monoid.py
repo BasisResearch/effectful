@@ -544,16 +544,58 @@ class ReduceFusion(ObjectInterpretation):
 
 
 class ReduceSplit(ObjectInterpretation):
-    """Implements the identity
-    reduce(R, S, b1 + ... + bn) = reduce(R, S, b1) + ... + reduce(R, S, bn)
+    """Confines a stream to the summands that use it, factorization-style.
+
+    For an innermost stream ``v`` used by a strict, non-empty subset of the
+    summands, this implements
+
+        reduce(R, ⊕(B_T, B_R), {v} ∪ S)
+            = reduce(R, ⊕(reduce(R, B_T, {v}), reduce(R, B_R, {v})), S)
+
+    where ``B_T`` are the summands that mention ``v`` and ``B_R`` the rest. Both
+    sides equal ``⊕_S ⊕_v (B_T ⊕ B_R)`` so this is correct for any commutative
+    monoid (no cardinality term is needed -- both groups stay under the
+    ``{v}``-reduce). The outer reduce sheds ``v`` and the ``v``-users are
+    isolated for further factorization.
+
+    The rule deliberately does *not* fire when ``v`` is used by every summand:
+    such reduces stay fused, which is what :class:`ReduceDistributeCartesianProduct`
+    expects. Repeated application confines each subset-used stream in turn and
+    terminates once every remaining stream is used by all (or no) summands.
     """
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         if not is_commutative(monoid):
             return fwd()
-        if isinstance(body, Term) and body.op is monoid.plus:
-            return monoid.plus(*(monoid.reduce(x, streams) for x in body.args))
+        if not (isinstance(body, Term) and body.op is monoid.plus):
+            return fwd()
+
+        summand_fvs = [fvsof(arg) for arg in body.args]
+
+        for v in streams:
+            # innermost-eligible: no other stream depends on v
+            if any(v in fvsof(s) for k, s in streams.items() if k is not v):
+                continue
+            # used by a strict, non-empty subset of the summands
+            users = [v in fvs for fvs in summand_fvs]
+            if all(users) or not any(users):
+                continue
+
+            inner_streams = {v: streams[v]}
+            outer_streams = {k: s for k, s in streams.items() if k is not v}
+
+            def group(args):
+                return args[0] if len(args) == 1 else monoid.plus(*args)
+
+            using = [arg for arg, used in zip(body.args, users) if used]
+            rest = [arg for arg, used in zip(body.args, users) if not used]
+            body2 = monoid.plus(
+                monoid.reduce(group(using), inner_streams),
+                monoid.reduce(group(rest), inner_streams),
+            )
+            return monoid.reduce(body2, outer_streams) if outer_streams else body2
+
         return fwd()
 
 
@@ -1195,7 +1237,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MonoidOverCallable(),
     ReduceFusion(),
     ReduceUnion(),
-    # ReduceSplit(),
+    ReduceSplit(),
     ReduceDistributeCartesianProduct(),
     ReduceFactorization(),
     ReduceWeightedStream(),
