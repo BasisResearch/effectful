@@ -357,13 +357,13 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             )
 
         match cond:
-            case Term(
-                _NumberTerm.__eq__, (Term(stream_op, (), {}), mask_key), {}
-            ) if test(stream_op, mask_key):
+            case Term(_NumberTerm.__eq__, (Term(stream_op, (), {}), mask_key), {}) if (
+                test(stream_op, mask_key)
+            ):
                 return (stream_op, mask_key)
-            case Term(
-                _NumberTerm.__eq__, (mask_key, Term(stream_op, (), {})), {}
-            ) if test(stream_op, mask_key):
+            case Term(_NumberTerm.__eq__, (mask_key, Term(stream_op, (), {})), {}) if (
+                test(stream_op, mask_key)
+            ):
                 return (stream_op, mask_key)
             case _:
                 return None
