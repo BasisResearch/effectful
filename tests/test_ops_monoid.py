@@ -9,6 +9,7 @@ from hypothesis import strategies as st
 import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
+    And,
     CartesianProduct,
     CartesianProductPlus,
     EliminateSingletonStreams,
@@ -27,8 +28,10 @@ from effectful.ops.monoid import (
     Product,
     ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
+    ReduceEqualityMaskRange,
     ReduceFactorization,
     ReduceFusion,
+    ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
     ReduceWeightedStream,
@@ -476,6 +479,67 @@ def test_reduce_split_shared_noop(monoid, backend: Backend):
 
     term = monoid.reduce(monoid.plus(f(a()), g(a())), {a: A()})
     backend.check_rewrite(lhs=term, rhs=term, rule=ReduceSplit())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_mask_hoist(monoid):
+    """A reduce-stream-independent mask condition lifts out of the reduce:
+    ``M.reduce(M.mask(v, c), {a: A}) == M.mask(M.reduce(v, {a: A}), c)``.
+
+    Pinned to ``IntBackend``: ``Monoid.mask`` evaluates symbolically (via
+    ``MaskConcrete``) under the ops stack used by ``check_rewrite``; jax-array
+    masks are exercised separately in ``test_handlers_jax_monoid``.
+    """
+    backend = IntBackend()
+    a, c, d = backend.define_vars("a", "c", "d", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    cond = c() == d()  # independent of the reduced stream `a`
+    lhs = monoid.reduce(monoid.mask(f(a()), cond), {a: A()})
+    rhs = monoid.mask(monoid.reduce(f(a()), {a: A()}), cond)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceMaskHoist())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_mask_hoist_dependent_noop(monoid):
+    """The mask does NOT hoist when its condition depends on the reduced
+    stream (that case is gather territory for ``ReduceEqualityMaskRange``).
+    """
+    backend = IntBackend()
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    term = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: A()})
+    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceMaskHoist())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_equality_mask_plus(monoid):
+    """ReduceEqualityMaskRange distributes over a plus body, discharging an
+    equality on the reduced stream in one summand via a singleton-stream gather
+    while leaving the other summand as an ordinary masked reduce.
+    """
+    backend = IntBackend()
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    f, g = backend.define_vars(
+        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
+    )
+
+    body = monoid.plus(
+        monoid.mask(f(a()), a() == c()),  # eliminable: a == c over range
+        monoid.mask(g(a()), c() == 0),  # not eliminable (no reduced-stream eq)
+    )
+    lhs = monoid.reduce(body, {a: range(3)})
+    rhs = monoid.plus(
+        monoid.mask(
+            monoid.reduce(monoid.mask(f(a()), And.plus()), {a: (c(),)}),
+            And.plus(0 <= c(), c() < 3),
+        ),
+        monoid.reduce(monoid.mask(g(a()), c() == 0), {a: range(3)}),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
 
 
 def test_reduce_independent_1(backend: Backend):

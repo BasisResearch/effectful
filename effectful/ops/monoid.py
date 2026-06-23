@@ -418,6 +418,31 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
         return fwd()
 
 
+class ReduceMaskHoist(ObjectInterpretation):
+    """M.reduce(M.mask(v, c), S) ≡ M.mask(M.reduce(v, S), c) when ``c`` does not
+    depend on any stream in ``S``.
+
+    A reduce-stream-independent condition gates the whole reduction uniformly,
+    so it can be lifted out: when ``c`` holds both sides are ``reduce(v, S)``,
+    and when it fails both are the identity (``reduce(identity, S) = identity``).
+    This holds for any monoid -- no commutativity or distributivity required.
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and _is_monoid_mask(body.op)
+            and body.op.__self__ == monoid
+        ):
+            return fwd()
+        value, cond = body.args
+        if fvsof(cond) & set(streams):
+            return fwd()
+        return monoid.mask(monoid.reduce(value, streams), cond)
+
+
 class PlusEmpty(ObjectInterpretation):
     """plus() = 0"""
 
@@ -1283,6 +1308,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
     ReduceEqualityMaskRange(),
+    ReduceMaskHoist(),
     EliminateSingletonStreams(),
     PlusEmpty(),
     PlusSingle(),
