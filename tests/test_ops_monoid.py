@@ -10,6 +10,7 @@ import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
     CartesianProduct,
+    CartesianProductPlus,
     EliminateSingletonStreams,
     Max,
     Min,
@@ -836,3 +837,155 @@ def test_weighted_expectation_demo():
         result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
 
     assert math.isclose(result, 10.0)
+
+
+# ---------------------------------------------------------------------------
+# CartesianProduct.plus (pure-Python ``CartesianProductPlus`` implementation)
+# ---------------------------------------------------------------------------
+#
+# A ``CartesianProduct`` value is a list of "rows", each row a ``dict`` mapping
+# index variables to values. ``plus`` takes the cartesian product of its
+# argument lists, disjoint-merging the dicts of each combination into a single
+# row. The identity is ``[{}]`` (one empty row) and the zero is ``[]`` (no
+# rows).
+
+
+@pytest.fixture
+def cprod():
+    """A handler scope in which ``CartesianProduct.plus`` is concrete."""
+    with handler(CartesianProductPlus()):
+        yield
+
+
+def test_cprod_plus_two_singletons(cprod):
+    """Two single-row lists merge into one row with the union of their keys."""
+    assert CartesianProduct.plus([{"a": 1}], [{"b": 2}]) == [{"a": 1, "b": 2}]
+
+
+def test_cprod_plus_multi_key_rows(cprod):
+    """Every key of a multi-key row survives the merge (regression: the merge
+    used to keep only the last key of each dict)."""
+    assert CartesianProduct.plus([{"a": 1, "b": 2}], [{"c": 3, "d": 4}]) == [
+        {"a": 1, "b": 2, "c": 3, "d": 4}
+    ]
+
+
+def test_cprod_plus_cartesian_expansion(cprod):
+    """The result enumerates the full cartesian product of the input rows."""
+    result = CartesianProduct.plus([{"a": 1}, {"a": 2}, {"a": 3}], [{"b": 4}, {"b": 5}])
+    assert result == [
+        {"a": 1, "b": 4},
+        {"a": 1, "b": 5},
+        {"a": 2, "b": 4},
+        {"a": 2, "b": 5},
+        {"a": 3, "b": 4},
+        {"a": 3, "b": 5},
+    ]
+
+
+def test_cprod_plus_cardinality(cprod):
+    """|plus(A, B, C)| == |A| * |B| * |C|."""
+    a = [{"a": i} for i in range(2)]
+    b = [{"b": i} for i in range(3)]
+    c = [{"c": i} for i in range(4)]
+    assert len(CartesianProduct.plus(a, b, c)) == 2 * 3 * 4
+
+
+def test_cprod_plus_three_args(cprod):
+    """``plus`` is variadic and merges across all arguments at once."""
+    assert CartesianProduct.plus([{"a": 1}], [{"b": 2}], [{"c": 3}]) == [
+        {"a": 1, "b": 2, "c": 3}
+    ]
+
+
+def test_cprod_plus_single_arg(cprod):
+    """A single argument is returned row-for-row (product of one factor)."""
+    assert CartesianProduct.plus([{"a": 1}, {"a": 2}]) == [{"a": 1}, {"a": 2}]
+
+
+def test_cprod_plus_identity_right(cprod):
+    """The identity ``[{}]`` is a right unit: merging an empty row changes
+    nothing."""
+    assert CartesianProduct.plus([{"a": 1}, {"a": 2}], CartesianProduct.identity) == [
+        {"a": 1},
+        {"a": 2},
+    ]
+
+
+def test_cprod_plus_identity_left(cprod):
+    """The identity ``[{}]`` is a left unit."""
+    assert CartesianProduct.plus(CartesianProduct.identity, [{"a": 1}, {"a": 2}]) == [
+        {"a": 1},
+        {"a": 2},
+    ]
+
+
+def test_cprod_plus_identity_with_identity(cprod):
+    """Identity ⊕ identity == identity."""
+    assert (
+        CartesianProduct.plus(CartesianProduct.identity, CartesianProduct.identity)
+        == CartesianProduct.identity
+    )
+
+
+def test_cprod_plus_zero_right(cprod):
+    """The zero ``[]`` absorbs on the right (empty cartesian product)."""
+    assert CartesianProduct.plus([{"a": 1}], CartesianProduct.zero) == []
+
+
+def test_cprod_plus_zero_left(cprod):
+    """The zero ``[]`` absorbs on the left."""
+    assert CartesianProduct.plus(CartesianProduct.zero, [{"a": 1}]) == []
+
+
+def test_cprod_plus_zero_among_many(cprod):
+    """A single zero factor anywhere collapses the whole product to ``[]``."""
+    assert CartesianProduct.plus([{"a": 1}], [], [{"c": 3}]) == []
+
+
+def test_cprod_plus_empty_rows_preserved(cprod):
+    """Rows that are themselves empty dicts merge cleanly."""
+    assert CartesianProduct.plus([{}], [{"a": 1}]) == [{"a": 1}]
+    assert CartesianProduct.plus([{}], [{}]) == [{}]
+
+
+def test_cprod_plus_associative(cprod):
+    """plus(plus(A, B), C) == plus(A, plus(B, C)) == plus(A, B, C)."""
+    a = [{"a": 1}, {"a": 2}]
+    b = [{"b": 3}]
+    c = [{"c": 4}, {"c": 5}]
+    flat = CartesianProduct.plus(a, b, c)
+    assert CartesianProduct.plus(CartesianProduct.plus(a, b), c) == flat
+    assert CartesianProduct.plus(a, CartesianProduct.plus(b, c)) == flat
+
+
+def test_cprod_plus_duplicate_key_raises(cprod):
+    """Merging rows that share a key is ill-defined and rejected."""
+    with pytest.raises(ValueError, match="Duplicate key found: 'a'"):
+        CartesianProduct.plus([{"a": 1}], [{"a": 2}])
+
+
+def test_cprod_plus_duplicate_key_in_multi_key_row_raises(cprod):
+    """The duplicate-key check sees every key of a multi-key row, not just the
+    last (regression for the same merge bug)."""
+    with pytest.raises(ValueError, match="Duplicate key found: 'a'"):
+        CartesianProduct.plus([{"a": 1, "x": 9}], [{"a": 2}])
+
+
+def test_cprod_plus_does_not_mutate_inputs(cprod):
+    """The input rows are left untouched; merges build fresh dicts."""
+    left = [{"a": 1}]
+    right = [{"b": 2}]
+    CartesianProduct.plus(left, right)
+    assert left == [{"a": 1}]
+    assert right == [{"b": 2}]
+
+
+def test_cprod_plus_forwards_on_term():
+    """A symbolic (``Term``) argument cannot be enumerated, so ``plus`` forwards
+    and the call builds an unevaluated ``Term`` instead of a value."""
+    x = Operation.define(Iterable, name="x")
+    with handler(CartesianProductPlus()):
+        result = CartesianProduct.plus(x(), [{"a": 1}])
+    assert isinstance(result, Term)
+    assert result.op is CartesianProduct.plus

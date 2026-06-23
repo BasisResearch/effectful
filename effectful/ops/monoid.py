@@ -11,7 +11,6 @@ from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
-    Array,
     ObjectInterpretation,
     Scoped,
     _MappingTerm,
@@ -1038,7 +1037,7 @@ def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
         for key, value in d.items():
             if key in merged:
                 raise ValueError(f"Duplicate key found: '{key}'")
-        merged[key] = value
+            merged[key] = value
     return merged
 
 
