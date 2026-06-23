@@ -322,47 +322,61 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
     """M.reduce(M.mask(v, And.plus(i = x, *m)), {i: range(N)} ∪ S) ≡
     M.mask(M.reduce(M.mask(v, *m), {i: [x]} ∪ S), And.plus(0 <= x, x < N))
 
+    The equality constraint ``i = x`` on a range-stream reduce is discharged by
+    a gather (the stream becomes the singleton ``[x]``) guarded by a bounds
+    check.
+
+    When the reduce body is a ``plus`` of the same monoid, the rule distributes
+    the reduce over the plus -- but only when doing so exposes an eliminable
+    equality mask in some summand. This is a *targeted* split (it leaves
+    ``ReduceSplit`` conservative): summands whose reduced index appears in an
+    equality become gathers, while the rest stay as ordinary masked reduces.
     """
 
-    @implements(Monoid.reduce)
-    def _(self, monoid, body, streams):
-        if not (
-            isinstance(body, Term)
-            and _is_monoid_mask(body.op)
-            and body.op.__self__ == monoid
-        ):
-            return fwd()
-
-        (value, mask) = body.args
+    @staticmethod
+    def _conds(mask):
         match mask:
             case Term(And.plus, conds, {}):
-                ...
+                return conds
             case cond:
-                conds = (cond,)
+                return (cond,)
 
+    @staticmethod
+    def _match_eq(cond, streams):
+        """If ``cond`` is ``stream_op == key`` (either order) where ``stream_op``
+        is a ``range(0, N)`` stream and ``key`` is stream-independent, return
+        ``(stream_op, key)``; otherwise ``None``."""
+
+        def test(stream_op, mask_key):
+            return (
+                stream_op in streams
+                and isinstance(stream := streams[stream_op], range)
+                and stream.start == 0
+                and stream.step == 1
+                and not (fvsof(mask_key) & set(streams))
+            )
+
+        match cond:
+            case Term(
+                _NumberTerm.__eq__, (Term(stream_op, (), {}), mask_key), {}
+            ) if test(stream_op, mask_key):
+                return (stream_op, mask_key)
+            case Term(
+                _NumberTerm.__eq__, (mask_key, Term(stream_op, (), {})), {}
+            ) if test(stream_op, mask_key):
+                return (stream_op, mask_key)
+            case _:
+                return None
+
+    def _eliminate(self, monoid, value, mask, streams):
+        """Discharge one eliminable equality constraint via a gather, or return
+        ``None`` if no constraint is eliminable."""
+        conds = self._conds(mask)
         for i, cond in enumerate(conds):
-
-            def test(stream_op, mask_key):
-                return (
-                    stream_op in streams
-                    and isinstance(stream := streams[stream_op], range)
-                    and stream.start == 0
-                    and stream.step == 1
-                    and not (fvsof(mask_key) & set(streams))
-                )
-
-            match cond:
-                case Term(
-                    _NumberTerm.__eq__, ((Term(stream_op, (), {}), mask_key)), {}
-                ) if test(stream_op, mask_key):
-                    ...
-                case Term(
-                    _NumberTerm.__eq__, ((mask_key, Term(stream_op, (), {}))), {}
-                ) if test(stream_op, mask_key):
-                    ...
-                case _:
-                    continue
-
+            matched = self._match_eq(cond, streams)
+            if matched is None:
+                continue
+            stream_op, mask_key = matched
             stream = streams[stream_op]
             return monoid.mask(
                 monoid.reduce(
@@ -374,6 +388,33 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
                 ),
                 And.plus(stream.start <= mask_key, mask_key < stream.stop),
             )
+        return None
+
+    def _summand_eliminable(self, monoid, summand, streams):
+        return (
+            isinstance(summand, Term)
+            and _is_monoid_mask(summand.op)
+            and summand.op.__self__ == monoid
+            and self._eliminate(monoid, summand.args[0], summand.args[1], streams)
+            is not None
+        )
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams):
+        if not isinstance(body, Term):
+            return fwd()
+
+        # single mask body: discharge an equality constraint directly
+        if _is_monoid_mask(body.op) and body.op.__self__ == monoid:
+            result = self._eliminate(monoid, body.args[0], body.args[1], streams)
+            return result if result is not None else fwd()
+
+        # plus body: distribute the reduce only when it exposes an eliminable
+        # equality mask in some summand
+        if _is_monoid_plus(body.op) and body.op.__self__ == monoid:
+            if any(self._summand_eliminable(monoid, s, streams) for s in body.args):
+                return monoid.plus(*(monoid.reduce(s, streams) for s in body.args))
+
         return fwd()
 
 
