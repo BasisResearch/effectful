@@ -35,7 +35,7 @@ from PIL import Image
 import effectful.handlers.llm.evaluation as evaluation
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
@@ -126,6 +126,25 @@ else:
 @dataclasses.dataclass(frozen=True)
 class _SynthesisSpec[T]:
     template: Template[..., T]
+
+    @property
+    def _class_template(self) -> Template[..., T] | None:
+        if isinstance(self.template.__default__, types.MethodType):
+            return self.template.__default__.__func__.__wrapped__  # type: ignore[attr-defined]
+        else:
+            return None
+
+    def _method_instance(self, other: Template) -> Any | None:
+        """The instance ``op`` is bound to, if ``op`` is this synthesized
+        Agent-method on *some* instance; otherwise ``None``.
+        """
+        if (
+            self._class_template is not None
+            and _SynthesisSpec(other)._class_template is self._class_template
+        ):
+            return other.__default__.__self__  # type: ignore[attr-defined]
+        else:
+            return None
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -600,12 +619,38 @@ def _pydantic_callable(
         _validate_signature_callable(result, expected_params, expected_return)
 
         if metadata is not None:
-            result = functools.wraps(metadata.template)(
-                handler({metadata.template: result})(result)
-            )
-            g.update({metadata.template.__name__: result})
-        evaluation.run_doctests(result, g)
-        return result
+            if metadata._class_template is not None:
+                # Agent-method template: doctests build their own instances, so the
+                # method must route to `synth` on *any* instance (not just the one
+                # that triggered synthesis).  A fresh instance's call dispatches
+                # through `Template.__apply__`, which we intercept here.
+                result = functools.wraps(metadata._class_template)(result)
+
+                def _doctest_apply(op, *args, **kwargs):
+                    instance = metadata._method_instance(op)
+                    if instance is None:
+                        return fwd()
+                    return metadata._class_template(instance, *args, **kwargs)
+
+                with handler(
+                    {
+                        Template.__apply__: _doctest_apply,
+                        metadata._class_template: result,
+                    }
+                ):
+                    evaluation.run_doctests(result, g)
+                return result
+            else:
+                # Free-function template: shadow the global name the doctest calls,
+                # and route the template op back into `synth` for recursion.
+                result = functools.wraps(metadata.template)(result)
+                g.update({metadata.template.__name__: result})
+                with handler({metadata.template: result}):
+                    evaluation.run_doctests(result, g)
+                return result
+        else:
+            evaluation.run_doctests(result, g)
+            return result
 
     def _serialize(value: Callable) -> dict:
         if not callable(value):

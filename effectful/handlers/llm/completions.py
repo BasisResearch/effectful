@@ -8,6 +8,7 @@ import json
 import string
 import textwrap
 import traceback
+import types
 import typing
 import uuid
 
@@ -381,7 +382,14 @@ def _synthesis_final_tool(
     returning the value.  Because it is a :class:`FinalTool`, calling it
     terminates the completion loop and its return value is the Template's result.
     """
-    signature = template.__signature__
+    # Synthesize a drop-in syntactic replacement for the Template body, so the
+    # function carries the Template's full signature -- including `self` for
+    # Agent-method Templates (whose `__default__` is a bound method).
+    if isinstance(template.__default__, types.MethodType):
+        signature = inspect.signature(template.__default__.__func__)
+    else:
+        signature = template.__signature__
+
     param_types = []
     for pname, param in signature.parameters.items():
         if param.kind in (

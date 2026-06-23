@@ -1467,7 +1467,7 @@ class TestSynthesizeAndCall:
         mock = MockCompletionHandler(
             [
                 make_submit_solution_response(
-                    "def double(x: int) -> int:\n    return x * 2\n"
+                    "def double(self, x: int) -> int:\n    return x * 2\n"
                 )
             ]
         )
@@ -1698,6 +1698,54 @@ class TestSynthesizeAndCallDoctests:
             )
 
         assert f(3) == 6
+
+    def test_agent_method_doctests_route_to_synthesized_function(self):
+        """An Agent-method Template's doctests build their own instances
+        (``agent = Doubler()``), so each ``agent.double(...)`` call dispatches a
+        *fresh* per-instance op -- distinct from the one that triggered
+        synthesis.  Matching on the shared class-level template reroutes every
+        such call to the synthesized function (with the instance passed as
+        ``self``), so the doctests validate the synthesized code instead of
+        re-synthesizing or hitting the LLM."""
+
+        class Doubler(Agent):
+            @Template.define
+            def double(self, x: int) -> int:
+                """Return double the integer {x}.
+
+                >>> agent = Doubler()
+                >>> agent.double(2)
+                4
+                >>> agent.double(0)
+                0
+                """
+                raise NotHandled
+
+        # A drop-in syntactic replacement for the method body keeps `self` in the
+        # signature; the synthesized function's OWN docstring is deliberately
+        # wrong to prove the Template's docstring is what gets run.
+        good = (
+            "def double(self, x: int) -> int:\n"
+            '    """>>> never\n'
+            "    run\n"
+            '    """\n'
+            "    return x * 2\n"
+        )
+        agent = Doubler()
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = agent.double(21)
+
+        assert result == 42
+        # A single completion: the doctest's `agent.double(...)` calls on a fresh
+        # instance were answered by the synthesized function, never re-entering
+        # synthesis.
+        assert mock.call_count == 1
 
 
 class TestMessageSequence:
