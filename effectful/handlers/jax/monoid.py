@@ -129,7 +129,7 @@ class ReduceArrayGather(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        if isinstance(body, Term) and body.op is delta:
+        if isinstance(body, Term) and body.op is monoid.delta:
             return fwd()
 
         body_fvs = fvsof(body)
@@ -198,7 +198,7 @@ class ReduceArray(ObjectInterpretation):
 
         pos_dims = (
             {d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams}
-            if isinstance(body, Term) and body.op == delta
+            if isinstance(body, Term) and body.op == monoid.delta
             else {}
         )
         body_fvs = fvsof(body)
@@ -210,8 +210,8 @@ class ReduceArray(ObjectInterpretation):
         if not used:
             return fwd()
 
-        delta_key = tuple(k() for k in streams if k in used)
-        arr = monoid.reduce(delta(delta_key, body), streams)
+        index = tuple(k for k in streams if k in used)
+        arr = monoid.reduce(bind_dims(body, *index), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
 
@@ -236,7 +236,7 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        if not (isinstance(body, Term) and body.op == delta):
+        if not (isinstance(body, Term) and body.op == monoid.delta):
             return fwd()
 
         index, weight = body.args
@@ -304,7 +304,7 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
         gathered_streams = handler(gather_subst)(evaluate)(sliced_streams)
 
         inner = (
-            monoid.reduce(delta(tail_index, gathered_weight), gathered_streams)
+            monoid.reduce(monoid.delta(tail_index, gathered_weight), gathered_streams)
             if gathered_streams
             else gathered_weight
         )
@@ -377,8 +377,8 @@ class ReduceDependentRangeMask(ObjectInterpretation):
 
                     # there are other commuting rules for delta that we do not
                     # currently include
-                    if isinstance(body, Term) and body.op == delta:
-                        fresh_body = delta(
+                    if isinstance(body, Term) and body.op == monoid.delta:
+                        fresh_body = monoid.delta(
                             body.args[0],
                             jnp.where(v() < u(), body.args[1], monoid.identity),  # type: ignore[arg-type]
                         )
@@ -454,9 +454,9 @@ class ReduceSumProductContraction(ObjectInterpretation):
             return fwd()
 
         # create leading reduction dimensions
-        delta_key = tuple(k() for k in streams)
-        pos_lhs = Sum.reduce(delta(delta_key, lhs), streams)
-        pos_rhs = Sum.reduce(delta(delta_key, rhs), streams)
+        index = tuple(k for k in streams)
+        pos_lhs = Sum.reduce(bind_dims(lhs, *index), streams)
+        pos_rhs = Sum.reduce(bind_dims(rhs, *index), streams)
 
         dims = "".join(get_symbol(i) for i in range(len(streams)))
         contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)
@@ -540,23 +540,27 @@ def _build_plate_reductions(
         for f in plate_tree.factors
     ]
 
-    masks = []
-    for f in plate_tree.factors:
+    masked_factors = []
+    for f, factor in zip(plate_tree.factors, indexed_factors, strict=True):
         spec = factor_specs[f]
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
         factor_out_dims = set(ordinal) & set(out_op) & set(spec)
-        masks.append(
-            Or.plus(
-                *(dim_index[p] != out_op[p]() for p in factor_out_plates),
-                And.plus(*(dim_index[d] == out_op[d]() for d in factor_out_dims)),
+        masked_factors.append(
+            Sum.mask(
+                factor,
+                And.plus(
+                    *(dim_index[p] == out_op[p]() for p in factor_out_plates),
+                    *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+                ),
             )
-            if factor_out_dims and factor_out_plates
-            else True
         )
-
-    masked_factors = [
-        Sum.mask(f, m) for (f, m) in zip(indexed_factors, masks, strict=True)
-    ]
+        if factor_out_plates:
+            masked_factors.append(
+                Sum.mask(
+                    factor,
+                    Or.plus(*(dim_index[p] != out_op[p]() for p in factor_out_plates)),
+                )
+            )
 
     child_reductions = (
         _build_plate_reductions(
@@ -662,11 +666,9 @@ def _einsum_expr(
     out_globals = global_enums & set(out_spec)
     out_mask = And.plus(*(out_vars[c]() == dim_index[c] for c in out_globals))
     return deffn(
-        bind_dims(
-            Sum.reduce(Sum.mask(reductions, out_mask), streams),
-            *(out_vars[c] for c in out_spec),
-        ),
+        Sum.reduce(Sum.mask(reductions, out_mask), streams),
         *arrays,
+        *(out_vars[c] for c in out_spec),
     )
 
 
@@ -707,7 +709,7 @@ EvaluateIntp.extend(
     LogSumExpPlusJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
-    ReduceDeltaSimpleRange(),
+    # ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
 )
 

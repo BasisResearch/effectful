@@ -1,7 +1,9 @@
 import functools
+import itertools
 
 import jax
 import jax.dlpack
+import numpy as np
 import pyro.ops.contract
 import pytest
 import torch
@@ -16,6 +18,7 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
+    _einsum_expr,
     einsum,
 )
 from effectful.ops.monoid import (
@@ -584,22 +587,23 @@ def test_plated_einsum(spec, plates, rng_key):
     def _to_torch(arr):
         return torch.from_dlpack(arr)
 
-    operands = _make_operands(
-        spec,
-        {
-            "a": 2,
-            "b": 3,
-            "c": 4,
-            "d": 5,
-            "e": 6,
-            "f": 7,
-            "g": 8,
-            "i": 2,
-            "j": 3,
-            "k": 4,
-        },
-        rng_key,
-    )
+    def _to_mapping(arr):
+        return {i: float(arr[*i]) for i in np.ndindex(arr.shape)}
+
+    dim_sizes = {
+        "a": 2,
+        "b": 3,
+        "c": 4,
+        "d": 5,
+        "e": 6,
+        "f": 7,
+        "g": 8,
+        "i": 2,
+        "j": 3,
+        "k": 4,
+    }
+
+    operands = _make_operands(spec, dim_sizes, rng_key)
     torch_operands = (_to_torch(op) for op in operands)
 
     try:
@@ -609,10 +613,12 @@ def test_plated_einsum(spec, plates, rng_key):
     except NotImplementedError:
         pytest.skip("Not implemented by pyro.ops.contract.einsum")
 
-    actual = einsum(spec, *operands, plates=plates)
-    assert actual.shape == expected.shape, (
-        f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
-    )
-    assert torch.allclose(_to_torch(actual), expected, atol=1e-4, rtol=1e-4), (
-        f"value mismatch for {spec!r}"
-    )
+    actual = _einsum_expr(spec, *operands, plates=plates)
+    operand_mappings = [_to_mapping(op) for op in operands]
+    for index in itertools.product(*(range(dim_sizes[c]) for c in spec.split("->")[1])):
+        with handler(EvaluateIntp), handler(NormalizeIntp):
+            a = actual(*operand_mappings, *index)
+        e = expected[*index]
+        assert torch.allclose(torch.tensor(a), e, atol=1e-4, rtol=1e-4), (
+            f"mismatch at index {index}: got {a}, expected {e}"
+        )

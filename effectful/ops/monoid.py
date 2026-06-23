@@ -14,6 +14,7 @@ from effectful.ops.syntax import (
     Array,
     ObjectInterpretation,
     Scoped,
+    _MappingTerm,
     _NumberTerm,
     defdata,
     deffn,
@@ -278,23 +279,29 @@ class DeltaFusion(ObjectInterpretation):
         return fwd()
 
 
-class MaskTrue(ObjectInterpretation):
-    """mask(value, True) ≡ value"""
+class GetitemDelta(ObjectInterpretation):
+    """M.delta(i, v)[q] ≡ M.mask(i, v == q)"""
 
-    @implements(Monoid.mask)
-    def _(self, monoid, value, cond):
-        if not isinstance(cond, Term) and cond:
-            return value
+    @implements(_MappingTerm.__getitem__)
+    def _(self, value, index):
+        if isinstance(value, Term) and _is_monoid_delta(value.op):
+            return value.op.__self__.mask(value.args[1], value.args[0] == index)
         return fwd()
 
 
-class MaskFalse(ObjectInterpretation):
-    """M.mask(value, False) ≡ M.identity"""
+class DeltaConcrete(ObjectInterpretation):
+    @implements(Monoid.delta)
+    def _(self, monoid, index, value):
+        if not fvsof(index):
+            return {index: value}
+        return fwd()
 
+
+class MaskConcrete(ObjectInterpretation):
     @implements(Monoid.mask)
     def _(self, monoid, value, cond):
-        if not isinstance(cond, Term) and not cond:
-            return monoid.identity
+        if not isinstance(cond, Term):
+            return value if cond else monoid.identity
         return fwd()
 
 
@@ -1026,6 +1033,8 @@ class ArgMaxPlus(ObjectInterpretation):
 def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
     merged = {}
     for d in dicts:
+        if isinstance(d, Term):
+            return fwd()
         for key, value in d.items():
             if key in merged:
                 raise ValueError(f"Duplicate key found: '{key}'")
@@ -1057,7 +1066,7 @@ class UnionPlus(ObjectInterpretation):
         return list(itertools.chain(*args))
 
 
-is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product})
+is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product, And, Or})
 
 
 class MonoidOverSequence(ObjectInterpretation):
@@ -1180,6 +1189,8 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
 NormalizeIntp = _ExtensibleInterpretation().extend(
     DeltaEmpty(),
     DeltaFusion(),
+    GetitemDelta(),
+    DeltaConcrete(),
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
@@ -1199,9 +1210,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusConsecutiveDups(),
     PlusDups(),
     PlusCastFloat(),
-    MaskTrue(),
-    MaskFalse(),
     MaskFusion(),
+    MaskConcrete(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).
