@@ -33,7 +33,7 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import Array, ObjectInterpretation, deffn, getitem, implements
+from effectful.ops.syntax import ObjectInterpretation, deffn, getitem, implements
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -527,14 +527,14 @@ def _build_plate_tree(factor_specs: list[str], plates: frozenset[str]) -> Node:
 
 def _build_plate_reductions(
     plate_tree: Node,
-    factors: Sequence[Array],
+    factors: Sequence[Mapping[tuple[int, ...], float]],
     factor_specs: Sequence[str],
     dim_index: Mapping[str, Expr],
     out_op: Mapping[str, Operation],
     plate_sizes: Mapping[str, int],
     ordinal: Mapping[str, frozenset[str]],
     parent_plates: frozenset[str] = frozenset(),
-) -> Array:
+) -> Mapping[tuple[int, ...], float]:
     indexed_factors = [
         factors[f][tuple(dim_index[c] for c in factor_specs[f])]
         for f in plate_tree.factors
@@ -546,21 +546,20 @@ def _build_plate_reductions(
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
         factor_out_dims = set(ordinal) & set(out_op) & set(spec)
         masked_factors.append(
-            Sum.mask(
-                factor,
-                And.plus(
-                    *(dim_index[p] == out_op[p]() for p in factor_out_plates),
-                    *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+            Sum.plus(
+                Sum.mask(
+                    factor,
+                    And.plus(
+                        *(dim_index[p] == out_op[p]() for p in factor_out_plates),
+                        *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+                    ),
                 ),
-            )
-        )
-        if factor_out_plates:
-            masked_factors.append(
                 Sum.mask(
                     factor,
                     Or.plus(*(dim_index[p] != out_op[p]() for p in factor_out_plates)),
-                )
+                ),
             )
+        )
 
     child_reductions = (
         _build_plate_reductions(
@@ -631,7 +630,13 @@ def _einsum_expr(
             )
 
     def dim_type(c):
-        return int if c in plate_set else Array if ordinal[c] else int
+        return (
+            int
+            if c in plate_set
+            else Mapping[tuple[int, ...], int]
+            if ordinal[c]
+            else int
+        )
 
     dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
     dim_index = {
@@ -640,7 +645,10 @@ def _einsum_expr(
         else dim_op[c]()[tuple(dim_op[p]() for p in sorted(ordinal[c]))]
         for c in dim_op
     }
-    arrays = [Operation.define(Array, name=f"f{i}") for (i, _) in enumerate(operands)]
+    arrays = [
+        Operation.define(Mapping[tuple[int, ...], float], name=f"f{i}")
+        for (i, _) in enumerate(operands)
+    ]
     plate_tree = _build_plate_tree(in_specs, plate_set)
     out_vars = {c: Operation.define(int, name=f"out_{c}") for c in out_spec}
     reductions = _build_plate_reductions(

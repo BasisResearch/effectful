@@ -794,14 +794,18 @@ class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
 class _MappingTerm[K, V](_CollectionTerm[K]):
     @defop
     def __getitem__(self: collections.abc.Mapping[K, V], key: K) -> V:
-        if not isinstance(self, Term) and not isinstance(key, Term):
+        from effectful.ops.semantics import fvsof
+
+        if not isinstance(self, Term) and not fvsof(key):
             return self[key]
         else:
             raise NotHandled
 
     @defop
     def get(self: collections.abc.Mapping[K, V], key: K, default: V | None = None) -> V:
-        if not isinstance(self, Term) and not isinstance(key, Term):
+        from effectful.ops.semantics import fvsof
+
+        if not isinstance(self, Term) and not fvsof(key):
             return self.get(key, default=default)
         else:
             raise NotHandled

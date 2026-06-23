@@ -570,12 +570,12 @@ def test_einsum_matches_jnp(spec: str, sizes, rng_key):
 # Let abcde be enum dims and ijk be plates.
 PLATED_EINSUM_CASES = [
     ("abi,abi->", "i"),
-    ("aij,bi->", "ij"),
-    ("aij,bi,c->", "ij"),
     ("abi,b->", "i"),
     ("abi,b->i", "i"),
     ("abi,b->b", "i"),
     ("abi,b->ai", "i"),
+    ("aij,bi->", "ij"),
+    ("aij,bi,c->", "ij"),
     ("abij,bi->aij", "ij"),
     ("abij,bci->acij", "ij"),
     ("abij,bci->", "ij"),
