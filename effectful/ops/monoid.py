@@ -1191,7 +1191,6 @@ class EliminateSingletonStreams(ObjectInterpretation):
             if not isinstance(vs, Term)
             and isinstance(vs, collections.abc.Sequence)
             and len(vs) == 1
-            and isinstance(vs[0], Term)
         }
         if not singletons:
             return fwd()
