@@ -277,20 +277,37 @@ class ReduceArrayScan(ObjectInterpretation):
                 ):
                     tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
                     reverse = cmp_op in (_NumberTerm.__ge__, _NumberTerm.__gt__)
-                    pad = (
-                        1 if cmp_op == _NumberTerm.__lt__ else 0,
-                        1 if cmp_op == _NumberTerm.__ge__ else 0,
-                    )
+                    n = len(stream)
                     pos_value = monoid.reduce(
                         monoid.delta((stream_op(),), value),
                         {stream_op: stream},
                     )
-                    scan_val = jnp.pad(
-                        lax.associative_scan(pos_value, monoid.plus, reverse=reverse),
-                        pad,
-                        mode="constant",
-                        constant_values=monoid.identity,
+                    # inclusive prefix (or suffix, when reverse) scan over the stream
+                    inclusive = lax.associative_scan(
+                        monoid.plus, pos_value, reverse=reverse
                     )
+                    # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
+                    # an identity element on the appropriate side and shift the result
+                    # so that scan_val[k] aggregates only the positions satisfying the
+                    # comparison against k. The non-strict comparisons (`<=`, `>=`) use
+                    # the inclusive scan directly.
+                    match cmp_op:
+                        case _NumberTerm.__lt__:
+                            scan_val = jnp.pad(
+                                inclusive,
+                                (1, 0),
+                                mode="constant",
+                                constant_values=monoid.identity,
+                            )[:n]
+                        case _NumberTerm.__gt__:
+                            scan_val = jnp.pad(
+                                inclusive,
+                                (0, 1),
+                                mode="constant",
+                                constant_values=monoid.identity,
+                            )[1:]
+                        case _:
+                            scan_val = inclusive
 
                     tail_body = monoid.mask(
                         jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)

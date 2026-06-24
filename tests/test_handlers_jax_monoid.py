@@ -619,15 +619,17 @@ def test_plated_einsum(spec, plates, rng_key):
         norm = evaluate(actual)
 
     with handler(NormalizeIntp), handler(EvaluateIntp):
-        jax_norm = evaluate(norm(*(Operation.define(jax.Array)() for _ in operands)))
+        jax_norm = evaluate(norm(*operands))
 
     operand_mappings = [_to_mapping(op) for op in operands]
     for index in itertools.product(*(range(dim_sizes[c]) for c in spec.split("->")[1])):
         with handler(EvaluateIntp), handler(NormalizeIntp):
             j = jax_norm(*index)
-        with handler(EvaluateIntp), handler(NormalizeIntp):
-            a = norm(*operand_mappings, *index)
+        # with handler(EvaluateIntp), handler(NormalizeIntp):
+        #     a = norm(*operand_mappings, *index)
+
+        breakpoint()
         e = expected[*index]
-        assert torch.allclose(torch.tensor(a), e, atol=1e-4, rtol=1e-4), (
-            f"mismatch at index {index}: got {a}, expected {e}"
+        assert torch.allclose(torch.tensor(j), e, atol=1e-4, rtol=1e-4), (
+            f"mismatch at index {index}: got {j}, expected {e}"
         )
