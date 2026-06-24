@@ -617,6 +617,7 @@ def test_plated_einsum(spec, plates, rng_key):
     with handler(NormalizeIntp):
         norm = evaluate(actual)
 
+    breakpoint()
     operand_mappings = [_to_mapping(op) for op in operands]
     for index in itertools.product(*(range(dim_sizes[c]) for c in spec.split("->")[1])):
         with handler(EvaluateIntp), handler(NormalizeIntp):

@@ -11,6 +11,7 @@ import jax.core
 import opt_einsum
 from opt_einsum import get_symbol
 
+import effectful.handlers.jax.lax as lax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
@@ -27,13 +28,20 @@ from effectful.ops.monoid import (
     Product,
     Streams,
     Sum,
+    _is_monoid_mask,
     _is_monoid_plus,
     choose_contraction,
     distributes_over,
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, getitem, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    _NumberTerm,
+    deffn,
+    getitem,
+    implements,
+)
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -214,6 +222,67 @@ class ReduceArray(ObjectInterpretation):
         arr = monoid.reduce(bind_dims(body, *index), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
+
+
+class ReduceArrayScan(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+
+            case _:
+                return fwd()
+
+        match mask:
+            case Term(And.plus, mask_elems, {}):
+                ...
+            case _:
+                mask_elems = (mask,)
+
+        for i, elem in enumerate(mask_elems):
+            match elem:
+                case Term(
+                    (
+                        _NumberTerm.__le__
+                        | _NumberTerm.__ge__
+                        | _NumberTerm.__lt__
+                        | _NumberTerm.__gt__
+                    ) as cmp_op,
+                    (Term(stream_op, (), {}), index),
+                ) if stream_op in streams and isinstance(
+                    stream := streams[stream_op], range
+                ):
+                    tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+                    reverse = cmp_op in (_NumberTerm.__ge__, _NumberTerm.__gt__)
+                    pad = (
+                        1 if cmp_op == _NumberTerm.__lt__ else 0,
+                        1 if cmp_op == _NumberTerm.__ge__ else 0,
+                    )
+                    pos_value = monoid.reduce(
+                        monoid.delta((stream_op(),), value),
+                        {stream_op: stream},
+                    )
+                    scan_val = jnp.pad(
+                        lax.associative_scan(pos_value, monoid.plus, reverse=reverse),
+                        pad,
+                        mode="constant",
+                        constant_values=monoid.identity,
+                    )
+
+                    tail_body = monoid.mask(
+                        jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
+                    )
+
+                    tail_streams = {
+                        k: v for (k, v) in streams.items() if k != stream_op
+                    }
+                    if tail_streams:
+                        return monoid.reduce(tail_body, tail_streams)
+                    return tail_body
+        return fwd()
 
 
 def _range_stop(term: Term):
@@ -546,6 +615,39 @@ def _build_plate_reductions(
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
         factor_out_dims = set(ordinal) & set(out_op) & set(spec)
         masked_factors.append(
+            # Sum.plus(
+            #     Sum.mask(
+            #         factor,
+            #         And.plus(
+            #             *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+            #         ),
+            #     ),
+            #     Sum.mask(
+            #         Product.plus(
+            #             Product.mask(
+            #                 0.0,
+            #                 And.plus(
+            #                     *(
+            #                         dim_index[p] == out_op[p]()
+            #                         for p in factor_out_plates
+            #                     )
+            #                 ),
+            #             ),
+            #             Product.mask(
+            #                 factor,
+            #                 Or.plus(
+            #                     *(
+            #                         dim_index[p] != out_op[p]()
+            #                         for p in factor_out_plates
+            #                     )
+            #                 ),
+            #             ),
+            #         ),
+            #         Or.plus(
+            #             *(dim_index[d] != out_op[d]() for d in factor_out_dims),
+            #         ),
+            #     ),
+            # )
             Sum.plus(
                 Sum.mask(
                     factor,
@@ -717,8 +819,9 @@ EvaluateIntp.extend(
     LogSumExpPlusJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
-    # ReduceDeltaSimpleRange(),
+    ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
+    ReduceArrayScan(),
 )
 
 NormalizeIntp.extend(

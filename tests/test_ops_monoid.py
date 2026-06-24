@@ -19,6 +19,7 @@ from effectful.ops.monoid import (
     MonoidOverMapping,
     MonoidOverSequence,
     NormalizeIntp,
+    Or,
     PlusAssoc,
     PlusConsecutiveDups,
     PlusDistr,
@@ -35,6 +36,7 @@ from effectful.ops.monoid import (
     ReducePartial,
     ReduceSplit,
     ReduceWeightedStream,
+    SplitDisjointProduct,
     Sum,
     distributes_over,
 )
@@ -473,9 +475,7 @@ def test_reduce_split_shared_noop(monoid, backend: Backend):
     """
     a = backend.define_vars("a", ret="scalar")
     A = backend.define_vars("A", ret="stream")
-    f, g = backend.define_vars(
-        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
-    )
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     term = monoid.reduce(monoid.plus(f(a()), g(a())), {a: A()})
     backend.check_rewrite(lhs=term, rhs=term, rule=ReduceSplit())
@@ -523,9 +523,7 @@ def test_reduce_equality_mask_plus(monoid):
     """
     backend = IntBackend()
     a, c = backend.define_vars("a", "c", ret="scalar")
-    f, g = backend.define_vars(
-        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
-    )
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     body = monoid.plus(
         monoid.mask(f(a()), a() == c()),  # eliminable: a == c over range
@@ -1074,3 +1072,29 @@ def test_cprod_plus_forwards_on_term():
         result = CartesianProduct.plus(x(), [{"a": 1}])
     assert isinstance(result, Term)
     assert result.op is CartesianProduct.plus
+
+
+def test_split_disjoint_product_simple():
+    backend = IntBackend()
+    i, j, i_out, j_out = backend.define_vars("i", "j", "i_out", "j_out", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = Product.reduce(
+        Sum.plus(
+            Sum.mask(f(i()), And.plus(i() == i_out(), j() == j_out())),
+            Sum.mask(g(i()), i() != i_out()),
+        ),
+        {i: range(3)},
+    )
+
+    rhs = Product.reduce(
+        Product.plus(
+            Product.mask(
+                Sum.mask(f(i()), And.plus(j() == j_out())), And.plus(i() == i_out())
+            ),
+            Product.mask(Sum.mask(g(i()), True), Or.plus(i() != i_out())),
+        ),
+        {i: range(3)},
+    )
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=SplitDisjointProduct())

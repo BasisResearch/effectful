@@ -32,9 +32,6 @@ for name in _REDUCTION:
     op = globals()[name]
     globals()[name] = handler({op: _reduce_named})(op)
 
-# einsum = effectful.handlers.jax._handlers.einsum
-# tensordot = handler({tensordot: _tensordot_named})(tensordot)
-
 
 einsum = Operation.define(_einsum_named)
 
