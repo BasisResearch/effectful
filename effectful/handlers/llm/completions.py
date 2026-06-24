@@ -5,8 +5,6 @@ import dataclasses
 import functools
 import inspect
 import json
-import string
-import textwrap
 import traceback
 import types
 import typing
@@ -19,18 +17,18 @@ import tenacity
 from litellm import (
     ChatCompletionFunctionMessage,
     ChatCompletionMessageToolCall,
-    ChatCompletionTextObject,
     ChatCompletionToolMessage,
     OpenAIChatCompletionAssistantMessage,
     OpenAIChatCompletionSystemMessage,
     OpenAIChatCompletionUserMessage,
-    OpenAIMessageContentListBlock,
 )
 
 from effectful.handlers.llm.encoding import (
     DecodedToolCall,
     Encodable,
+    _callable_type_from_signature,
     _SynthesisSpec,
+    format_as_content_blocks,
     to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import ReplSession
@@ -180,47 +178,6 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
         )
 
 
-class _LexicalVariableTool[T](Tool[[], T]):
-    """A zero-arg `Tool` that returns the captured value of a variable
-    from a `Template`'s lexical context.
-
-    Tools are constructed fresh each `call_assistant` invocation, so
-    the reader closes over the snapshot `value` rather than the
-    surrounding `env` — in-place mutation of a mutable value is still
-    visible (same object reference), but rebinding the source name is
-    not.
-    """
-
-    @classmethod
-    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
-        """Construct a synthetic reader Tool that returns `value`.
-
-        Raises if `Encodable[nested_type(value)]` cannot be generated.
-        The caller is responsible for catching the failure and deciding
-        whether to skip the symbol.
-        """
-        assert not isinstance(value, Tool), (
-            "Tools are real tools and must not be re-wrapped as lexical readers."
-        )
-        typ: typing.Any = nested_type(value).value
-        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
-        pydantic.TypeAdapter(Encodable[typ]).json_schema()
-
-        def tool_fn():
-            return value
-
-        tool_fn.__name__ = name
-        tool_fn.__qualname__ = name
-        tool_fn.__module__ = type(value).__module__
-        tool_fn.__doc__ = (
-            f"Reads the value of lexical variable `{name}` from the "
-            f"enclosing scope where this Template was defined.  Takes "
-            f"no arguments; returns the current value."
-        )
-        tool_fn.__annotations__ = {"return": typ}
-        return super().define(tool_fn)
-
-
 @Operation.define
 def collect_tools(
     env: collections.abc.Mapping[str, typing.Any],
@@ -255,271 +212,6 @@ def collect_tools(
             del result[name]
 
     return result
-
-
-class LexicalReaders(ObjectInterpretation):
-    """Override `collect_tools` to also expose plain values from the
-    lexical context as zero-argument read-only Tools.  Each non-Tool,
-    non-Template, non-Agent value bound to a valid identifier is
-    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
-    schema-generation failures cause the symbol to be skipped.
-    """
-
-    @implements(collect_tools)
-    def _collect(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> collections.abc.Mapping[str, Tool]:
-        result = dict(fwd())
-        for name, obj in env.items():
-            if name in result or not name.isidentifier() or isinstance(obj, Tool):
-                continue
-            try:
-                result[name] = _LexicalVariableTool.define(obj, name=name)
-            except (
-                pydantic.errors.PydanticSchemaGenerationError,
-                pydantic.errors.PydanticInvalidForJsonSchema,
-                pydantic.errors.PydanticUserError,
-            ):
-                continue
-        return result
-
-
-@Operation.define
-def _repl_session(env: collections.abc.MutableMapping[str, typing.Any]) -> ReplSession:
-    """Return the REPL session for the current Template call, seeded from `env`.
-
-    `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
-    (mirroring how `__history__` is managed), giving the session a lifetime of
-    exactly one Template call.  Outside such a scope there is no managed session,
-    so this falls back to a fresh one -- e.g. when tools are listed outside a
-    Template call.
-    """
-    return ReplSession(env)
-
-
-class PythonRepl(ObjectInterpretation):
-    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
-
-    Off by default; install it where the LLM should be able to run code whose
-    state (variables, imports, definitions) survives across tool calls within a
-    single Template invocation.
-
-    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
-    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
-    the duration of the call, and handles `collect_tools` to inject an `exec_code`
-    Tool routed to that session.  The session is therefore introduced and
-    eliminated by its own handler, bounded to the Template call by construction --
-    there is no global registry of sessions, and nested Template calls get their
-    own isolated sessions.
-
-    The session is seeded from the Template's lexical context and routes execution
-    through the `parse`/`compile`/`exec` effect operations, so it works under any
-    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
-    """
-
-    @implements(Template.__apply__)
-    def _apply[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        # One session per Template call, created lazily on first use (the call's
-        # `env`, supplied by `collect_tools`/`exec_code`, seeds it).  The
-        # enclosing `handler(...)` bounds the session's lifetime to this call, so
-        # nested Template calls introduce their own fresh session.
-        session: ReplSession | None = None
-
-        def session_for(
-            env: collections.abc.MutableMapping[str, typing.Any],
-        ) -> ReplSession:
-            nonlocal session
-            if session is None:
-                session = ReplSession(env)
-            return session
-
-        with handler({_repl_session: session_for}):
-            return fwd()
-
-    @implements(collect_tools)
-    def _collect(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> collections.abc.Mapping[str, Tool]:
-        tools = dict(fwd())
-        # `collect_tools` only promises a `Mapping`, but the per-call `env` is the
-        # writable `ChainMap` the session splices its shared scope layer into, so
-        # narrow it for `_repl_session`/`ReplSession`.
-        tools["exec_code"] = _repl_session(
-            typing.cast(collections.abc.MutableMapping[str, typing.Any], env)
-        ).exec_code
-        return tools
-
-
-@Operation.define
-def _synthesis_template() -> Template | None:
-    """Return the in-flight Template being answered by synthesis, or ``None``.
-
-    `SynthesizeAndCall` installs a fresh handler for this inside each
-    `Template.__apply__` (mirroring `_repl_session`), giving it a lifetime of
-    exactly one Template call.  Outside such a scope there is no synthesis
-    target, so this falls back to ``None`` -- e.g. when tools are listed outside
-    a Template call -- and no synthesis tool is injected.
-
-    `collect_tools` uses it to build the synthesis tool from the Template's
-    signature, and to bind the Template onto the synthesized function's type (see
-    :class:`~effectful.handlers.llm.encoding._SynthesisSpec`).
-    """
-    return None
-
-
-def _synthesis_final_tool(
-    template: Template,
-    env: collections.abc.Mapping[str, typing.Any],
-    name: str = "submit_solution",
-) -> FinalTool:
-    """Build a :class:`FinalTool` that finalizes a Template by code synthesis.
-
-    The tool takes one argument -- a function with the Template's signature,
-    synthesized from the model's code by the existing ``Encodable[Callable[...]]``
-    machinery -- and applies it to the original inputs (recovered from ``env``),
-    returning the value.  Because it is a :class:`FinalTool`, calling it
-    terminates the completion loop and its return value is the Template's result.
-    """
-    # Synthesize a drop-in syntactic replacement for the Template body, so the
-    # function carries the Template's full signature -- including `self` for
-    # Agent-method Templates (whose `__default__` is a bound method).
-    if isinstance(template.__default__, types.MethodType):
-        signature = inspect.signature(template.__default__.__func__)
-    else:
-        signature = template.__signature__
-
-    param_types = []
-    for pname, param in signature.parameters.items():
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            raise TypeError(
-                f"SynthesizeAndCall cannot synthesize a function for parameter "
-                f"'{pname}' of kind {param.kind.description}: variadic parameters "
-                "cannot be expressed as a Callable type signature."
-            )
-        param_types.append(
-            param.annotation
-            if param.annotation is not inspect.Parameter.empty
-            else typing.Any
-        )
-    return_type = signature.return_annotation
-    if return_type is inspect.Signature.empty:
-        raise TypeError(
-            "SynthesizeAndCall requires a return annotation on the Template's "
-            "signature to construct the synthesis tool's Callable type."
-        )
-
-    callable_type = collections.abc.Callable[param_types, return_type]  # type: ignore[valid-type]
-    callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
-
-    # Recover the original arguments from `env` by name, respecting each
-    # parameter's kind so positional-only and keyword-only parameters bind
-    # correctly (variadic kinds were rejected above).
-    pos_names = [
-        pname
-        for pname, param in signature.parameters.items()
-        if param.kind
-        in (
-            inspect.Parameter.POSITIONAL_ONLY,
-            inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        )
-    ]
-    kw_names = [
-        pname
-        for pname, param in signature.parameters.items()
-        if param.kind is inspect.Parameter.KEYWORD_ONLY
-    ]
-
-    def submit_solution(implementation):
-        bound = signature.bind(
-            *(env[pname] for pname in pos_names),
-            **{pname: env[pname] for pname in kw_names},
-        )
-        return implementation(*bound.args, **bound.kwargs)
-
-    submit_solution.__name__ = name
-    submit_solution.__qualname__ = name
-    submit_solution.__module__ = __name__
-    submit_solution.__doc__ = (
-        "Submit your final answer as a Python function implementing the task. "
-        "The function must have the required signature; it is applied to the "
-        "original inputs and its return value is your final answer."
-    )
-    submit_solution.__annotations__ = {
-        "implementation": callable_type,
-        "return": return_type,
-    }
-    return FinalTool.define(submit_solution)
-
-
-class SynthesizeAndCall(ObjectInterpretation):
-    """Answer a Template by synthesizing a function and calling it.
-
-    Instead of asking the LLM to generate an instance of the Template's return
-    type directly, this handler exposes a :class:`FinalTool` that lets the model
-    "answer" by writing a Python function with the Template's signature.  The
-    harness applies that function to the original arguments and its return value
-    becomes the Template's result.  This is the declarative "CodeAdapt" workflow:
-    the LLM writes code implementing the body of the Template rather than
-    reasoning out the answer itself.
-
-    The synthesis tool is offered *alongside* the Template's normal completion
-    paths rather than replacing them: across turns the model may freely call any
-    other tool in scope (their results are fed back as usual), and it may still
-    answer the return type directly via structured output.  The loop terminates
-    when it either answers directly or calls the synthesis :class:`FinalTool`.
-    To force the synthesis path, pass ``tool_choice="required"`` (handler config
-    is forwarded to the model request).  The function is synthesized by reusing
-    the existing ``Callable`` synthesis machinery: the tool's argument is typed
-    as ``Callable[[params], ret]``, so :func:`call_assistant`'s tool-call
-    decoding parses, type-checks, compiles and executes the model's code into a
-    real function before it is applied.
-
-    Scoping mirrors :class:`PythonRepl`: this handles `Template.__apply__` to
-    introduce a fresh `_synthesis_template` handler bound to that call's Template,
-    and handles `collect_tools` to inject the synthesis tool built from it.  The
-    synthesis target is therefore introduced and eliminated by its own handler,
-    bounded to the Template call by construction -- nested Template calls get
-    their own target.
-
-    Failures compose with :class:`RetryLLMHandler`: a function that fails to
-    synthesize surfaces as a :class:`ToolCallDecodingError`, and one that raises
-    when applied to the inputs as a :class:`ToolCallExecutionError`; both are fed
-    back to the model as a tool message and the loop continues so it can revise::
-
-        with (
-            handler(LiteLLMProvider(model="gpt-5-mini")),
-            handler(SynthesizeAndCall()),
-            handler(RetryLLMHandler()),
-        ):
-            ...
-
-    Requires an eval provider (e.g. :class:`UnsafeEvalProvider` or
-    :class:`RestrictedEvalProvider`) to be installed so the synthesized code can
-    be compiled and executed.
-    """
-
-    @implements(Template.__apply__)
-    def _apply[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        with handler({_synthesis_template: lambda: template}):
-            return fwd()
-
-    @implements(collect_tools)
-    def _collect(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> collections.abc.Mapping[str, Tool]:
-        tools = dict(fwd())
-        template = _synthesis_template()
-        if template is not None:
-            final_tool = _synthesis_final_tool(template, env)
-            tools[final_tool.__name__] = final_tool
-        return tools
 
 
 @Operation.define
@@ -690,46 +382,7 @@ def call_user(
     """
     Format a template applied to arguments into a user message.
     """
-    formatter = string.Formatter()
-    parts: list[OpenAIMessageContentListBlock] = []
-
-    buf: list[str] = []
-
-    def flush_text() -> None:
-        if buf:
-            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
-            buf.clear()
-
-    for literal, field_name, format_spec, conversion in formatter.parse(
-        textwrap.dedent(template)
-    ):
-        if literal:
-            buf.append(literal)
-
-        if field_name is None:
-            continue
-
-        obj, _ = formatter.get_field(field_name, (), env)
-        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[nested_type(obj).value]  # type: ignore[misc]
-        )
-        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
-        for part in to_content_blocks(encoded_obj):
-            if part["type"] == "text":
-                text = (
-                    formatter.convert_field(part["text"], conversion)
-                    if conversion
-                    else part["text"]
-                )
-                buf.append(formatter.format_field(text, format_spec or ""))
-            else:
-                flush_text()
-                parts.append(part)
-
-    flush_text()
-
-    # Note: The OpenAI api only seems to accept images in the 'user' role. The
-    # effect of different roles on the model's response is currently unclear.
+    parts = format_as_content_blocks(template, env)
     message = _make_message(dict(role="user", content=parts))
     append_message(message)
     return message
@@ -737,11 +390,236 @@ def call_user(
 
 @Operation.define
 def call_system(template: Template) -> Message:
-    """Get system instruction message(s) to prepend to all LLM prompts."""
+    """
+    Get system instruction message(s) to prepend to all LLM prompts.
+    """
     system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
     message = _make_message(dict(role="system", content=system_prompt))
     append_message(message, last=False)
     return message
+
+
+class _LexicalVariableTool[T](Tool[[], T]):
+    """A zero-arg `Tool` that returns the captured value of a variable
+    from a `Template`'s lexical context.
+
+    Tools are constructed fresh each `call_assistant` invocation, so
+    the reader closes over the snapshot `value` rather than the
+    surrounding `env` — in-place mutation of a mutable value is still
+    visible (same object reference), but rebinding the source name is
+    not.
+    """
+
+    @classmethod
+    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
+        """Construct a synthetic reader Tool that returns `value`.
+
+        Raises if `Encodable[nested_type(value)]` cannot be generated.
+        The caller is responsible for catching the failure and deciding
+        whether to skip the symbol.
+        """
+        assert not isinstance(value, Tool), (
+            "Tools are real tools and must not be re-wrapped as lexical readers."
+        )
+        typ: typing.Any = nested_type(value).value
+        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
+        pydantic.TypeAdapter(Encodable[typ]).json_schema()
+
+        def tool_fn():
+            return value
+
+        tool_fn.__name__ = name
+        tool_fn.__qualname__ = name
+        tool_fn.__module__ = type(value).__module__
+        tool_fn.__doc__ = (
+            f"Reads the value of lexical variable `{name}` from the "
+            f"enclosing scope where this Template was defined.  Takes "
+            f"no arguments; returns the current value."
+        )
+        tool_fn.__annotations__ = {"return": typ}
+        return super().define(tool_fn)
+
+
+class LexicalReaders(ObjectInterpretation):
+    """Override `collect_tools` to also expose plain values from the
+    lexical context as zero-argument read-only Tools.  Each non-Tool,
+    non-Template, non-Agent value bound to a valid identifier is
+    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
+    schema-generation failures cause the symbol to be skipped.
+    """
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        result = dict(fwd())
+        for name, obj in env.items():
+            if name in result or not name.isidentifier() or isinstance(obj, Tool):
+                continue
+            try:
+                result[name] = _LexicalVariableTool.define(obj, name=name)
+            except (
+                pydantic.errors.PydanticSchemaGenerationError,
+                pydantic.errors.PydanticInvalidForJsonSchema,
+                pydantic.errors.PydanticUserError,
+            ):
+                continue
+        return result
+
+
+class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
+    """A :class:`FinalTool` that finalizes a Template by synthesizing a function.
+
+    The tool takes one argument -- a function with the Template's signature,
+    synthesized from the model's code by the existing ``Encodable[Callable[...]]``
+    machinery -- and applies it to the original inputs (recovered from ``env``),
+    returning the value.  Because it is a :class:`FinalTool`, calling it
+    terminates the completion loop and its return value is the Template's result.
+    """
+
+    @classmethod
+    def define(
+        cls,
+        template: Template[..., T],
+        bound_args: inspect.BoundArguments,
+        *,
+        name: str,
+    ) -> FinalTool[[collections.abc.Callable[..., T]], T]:
+        # Synthesize a drop-in syntactic replacement for the Template body, so the
+        # function carries the Template's full signature -- including `self` for
+        # Agent-method Templates (whose `__default__` is a bound method).
+        if isinstance(template.__default__, types.MethodType):
+            signature = inspect.signature(template.__default__.__func__)
+            args, kwargs = (
+                (template.__default__.__self__,) + bound_args.args,
+                bound_args.kwargs,
+            )
+        else:
+            signature = inspect.signature(template)
+            args, kwargs = bound_args.args, bound_args.kwargs
+
+        callable_type = _callable_type_from_signature(signature)
+        callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
+        return_type = signature.return_annotation
+
+        def submit_solution(implementation: callable_type) -> return_type:  # type: ignore
+            """
+            Submit your final answer as a Python function implementing the task.
+            The function must have the required signature; it is applied to the
+            original inputs and its return value is your final answer.
+            """
+            return implementation(*args, **kwargs)  # type: ignore
+
+        return super().define(submit_solution, name=name)
+
+
+class SynthesizeAndCall(ObjectInterpretation):
+    """Answer a Template by synthesizing a function and calling it.
+
+    Instead of asking the LLM to generate an instance of the Template's return
+    type directly, this handler exposes a :class:`FinalTool` that lets the model
+    "answer" by writing a Python function with the Template's signature.  The
+    harness applies that function to the original arguments and its return value
+    becomes the Template's result.  This is the declarative "CodeAdapt" workflow:
+    the LLM writes code implementing the body of the Template rather than
+    reasoning out the answer itself.
+
+    The synthesis tool is offered *alongside* the Template's normal completion
+    paths rather than replacing them: across turns the model may freely call any
+    other tool in scope (their results are fed back as usual), and it may still
+    answer the return type directly via structured output.  The loop terminates
+    when it either answers directly or calls the synthesis :class:`FinalTool`.
+    To force the synthesis path, pass ``tool_choice="required"`` (handler config
+    is forwarded to the model request).  The function is synthesized by reusing
+    the existing ``Callable`` synthesis machinery: the tool's argument is typed
+    as ``Callable[[params], ret]``, so :func:`call_assistant`'s tool-call
+    decoding parses, type-checks, compiles and executes the model's code into a
+    real function before it is applied.
+
+    Failures compose with :class:`RetryLLMHandler`: a function that fails to
+    synthesize surfaces as a :class:`ToolCallDecodingError`, and one that raises
+    when applied to the inputs as a :class:`ToolCallExecutionError`; both are fed
+    back to the model as a tool message and the loop continues so it can revise::
+
+        with (
+            handler(LiteLLMProvider(model="gpt-5-mini")),
+            handler(SynthesizeAndCall()),
+            handler(RetryLLMHandler()),
+        ):
+            ...
+
+    Requires an eval provider (e.g. :class:`UnsafeEvalProvider` or
+    :class:`RestrictedEvalProvider`) to be installed so the synthesized code can
+    be compiled and executed.
+    """
+
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        tool = _SynthesisFinalTool.define(template, bound_args, name="submit_solution")
+        with handler({collect_tools: lambda _: {**fwd(), tool.__name__: tool}}):  # type: ignore
+            return fwd()
+
+
+class PythonRepl(ObjectInterpretation):
+    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
+
+    Off by default; install it where the LLM should be able to run code whose
+    state (variables, imports, definitions) survives across tool calls within a
+    single Template invocation.
+
+    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
+    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
+    the duration of the call, and handles `collect_tools` to inject an `exec_code`
+    Tool routed to that session.  The session is therefore introduced and
+    eliminated by its own handler, bounded to the Template call by construction --
+    there is no global registry of sessions, and nested Template calls get their
+    own isolated sessions.
+
+    The session is seeded from the Template's lexical context and routes execution
+    through the `parse`/`compile`/`exec` effect operations, so it works under any
+    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
+    """
+
+    @Tool.define
+    @functools.wraps(ReplSession.exec_code)
+    def exec_code(self, code: types.CodeType) -> str:
+        raise NotImplementedError("No handler")
+
+    @Tool.define
+    def read_lexical_variable(self, name: str) -> typing.Any:
+        """
+        Read the value of lexical variable ``name`` into the LLM context.
+        """
+        raise NotImplementedError("No handler")
+
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = collections.ChainMap(bound_args.arguments, template.__context__)
+        session = ReplSession(env=env)
+        with handler(
+            {
+                self.exec_code: session.exec_code,
+                self.read_lexical_variable: env.get,
+            }
+        ):
+            return fwd()
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        tools = dict(fwd())
+        tools[self.exec_code.__name__] = self.exec_code
+        tools[self.read_lexical_variable.__name__] = self.read_lexical_variable
+        return tools
 
 
 class RetryLLMHandler(ObjectInterpretation):

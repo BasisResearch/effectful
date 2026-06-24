@@ -1,11 +1,13 @@
 import ast
 import base64
+import collections.abc
 import dataclasses
 import functools
 import inspect
 import io
 import json
 import linecache
+import string
 import textwrap
 import types
 import typing
@@ -98,6 +100,80 @@ def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
     return blocks
 
 
+def format_as_content_blocks(
+    template: str,
+    env: collections.abc.Mapping[str, typing.Any],
+) -> list[OpenAIMessageContentListBlock]:
+    """
+    Format a template applied to arguments into a list of content blocks.
+    This is similar to str.format() but produces a list of content blocks
+    instead of a single string, so that non-text content is preserved.
+    """
+    formatter = string.Formatter()
+    parts: list[OpenAIMessageContentListBlock] = []
+
+    buf: list[str] = []
+
+    def flush_text() -> None:
+        if buf:
+            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            buf.clear()
+
+    for literal, field_name, format_spec, conversion in formatter.parse(
+        textwrap.dedent(template)
+    ):
+        if literal:
+            buf.append(literal)
+
+        if field_name is None:
+            continue
+
+        obj, _ = formatter.get_field(field_name, (), env)
+        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(obj).value]  # type: ignore[misc]
+        )
+        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
+        for part in to_content_blocks(encoded_obj):
+            if part["type"] == "text":
+                text = (
+                    formatter.convert_field(part["text"], conversion)
+                    if conversion
+                    else part["text"]
+                )
+                buf.append(formatter.format_field(text, format_spec or ""))
+            else:
+                flush_text()
+                parts.append(part)
+
+    flush_text()
+
+    return parts
+
+
+def _inline_refs(schema: dict) -> dict:
+    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
+
+    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
+    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
+    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
+    causes a ``KeyError`` when the annotated type is composed into a model.
+    """
+    defs = schema.get("$defs", {})
+
+    def _resolve(obj):
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                ref_name = obj["$ref"].split("/")[-1]
+                if ref_name in defs:
+                    return _resolve(defs[ref_name])
+            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
+        if isinstance(obj, list):
+            return [_resolve(item) for item in obj]
+        return obj
+
+    return _resolve(schema)
+
+
 @dataclasses.dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
@@ -121,30 +197,6 @@ else:
     class Encodable:
         def __class_getitem__(cls, item):
             return TypeToPydanticType().evaluate(item)
-
-
-@dataclasses.dataclass(frozen=True)
-class _SynthesisSpec[T]:
-    template: Template[..., T]
-
-    @property
-    def _class_template(self) -> Template[..., T] | None:
-        if isinstance(self.template.__default__, types.MethodType):
-            return self.template.__default__.__func__.__wrapped__  # type: ignore[attr-defined]
-        else:
-            return None
-
-    def _method_instance(self, other: Template) -> Any | None:
-        """The instance ``op`` is bound to, if ``op`` is this synthesized
-        Agent-method on *some* instance; otherwise ``None``.
-        """
-        if (
-            self._class_template is not None
-            and _SynthesisSpec(other)._class_template is self._class_template
-        ):
-            return other.__default__.__self__  # type: ignore[attr-defined]
-        else:
-            return None
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -266,30 +318,6 @@ def _pydantic_type_code(ty):
         ),
         pydantic.WithJsonSchema({"type": "string"}),
     ]
-
-
-def _inline_refs(schema: dict) -> dict:
-    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
-
-    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
-    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
-    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
-    causes a ``KeyError`` when the annotated type is composed into a model.
-    """
-    defs = schema.get("$defs", {})
-
-    def _resolve(obj):
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref_name = obj["$ref"].split("/")[-1]
-                if ref_name in defs:
-                    return _resolve(defs[ref_name])
-            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
-        if isinstance(obj, list):
-            return [_resolve(item) for item in obj]
-        return obj
-
-    return _resolve(schema)
 
 
 @TypeToPydanticType.register(tuple)
@@ -425,6 +453,59 @@ def _pydantic_type_image(ty: type[Image.Image]):
         pydantic.PlainSerializer(_serialize_image),
         pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
+
+
+def _callable_type_from_signature(
+    signature: inspect.Signature,
+) -> type[types.FunctionType]:
+    """Construct a `Callable` type from a signature.
+
+    Raises if the signature is recursive (e.g. a Template that returns itself)
+    or contains variadic parameters (which cannot be expressed in a `Callable`
+    type).
+    """
+    param_types = []
+    for pname, param in signature.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"Cannot synthesize a function for parameter "
+                f"'{pname}' of kind {param.kind.description}: variadic parameters "
+                "cannot be expressed as a Callable type signature."
+            )
+        param_types.append(
+            param.annotation
+            if param.annotation is not inspect.Parameter.empty
+            else typing.Any
+        )
+    return_type = signature.return_annotation
+    return collections.abc.Callable[param_types, return_type]  # type: ignore
+
+
+@dataclasses.dataclass(frozen=True)
+class _SynthesisSpec[T]:
+    template: Template[..., T]
+
+    @property
+    def _class_template(self) -> Template[..., T] | None:
+        if isinstance(self.template.__default__, types.MethodType):
+            return self.template.__default__.__func__.__wrapped__  # type: ignore[attr-defined]
+        else:
+            return None
+
+    def _method_instance(self, other: Template) -> Any | None:
+        """The instance ``op`` is bound to, if ``op`` is this synthesized
+        Agent-method on *some* instance; otherwise ``None``.
+        """
+        if (
+            self._class_template is not None
+            and _SynthesisSpec(other)._class_template is self._class_template
+        ):
+            return other.__default__.__self__  # type: ignore[attr-defined]
+        else:
+            return None
 
 
 class SynthesizedFunction(pydantic.BaseModel):

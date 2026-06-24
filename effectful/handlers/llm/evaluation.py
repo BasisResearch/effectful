@@ -30,7 +30,6 @@ from RestrictedPython import (
 )
 from RestrictedPython.PrintCollector import PrintCollector
 
-from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
@@ -961,7 +960,6 @@ class ReplSession(code.InteractiveInterpreter):
         except:
             self.showtraceback()
 
-    @Tool.define
     def exec_code(self, code: CodeType) -> str:
         """Run Python in a persistent, stateful session and return its output.
 
