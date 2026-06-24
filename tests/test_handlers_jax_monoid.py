@@ -30,6 +30,7 @@ from effectful.ops.monoid import (
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.types import Operation
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
@@ -617,9 +618,13 @@ def test_plated_einsum(spec, plates, rng_key):
     with handler(NormalizeIntp):
         norm = evaluate(actual)
 
-    breakpoint()
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        jax_norm = evaluate(norm(*(Operation.define(jax.Array)() for _ in operands)))
+
     operand_mappings = [_to_mapping(op) for op in operands]
     for index in itertools.product(*(range(dim_sizes[c]) for c in spec.split("->")[1])):
+        with handler(EvaluateIntp), handler(NormalizeIntp):
+            j = jax_norm(*index)
         with handler(EvaluateIntp), handler(NormalizeIntp):
             a = norm(*operand_mappings, *index)
         e = expected[*index]

@@ -37,9 +37,9 @@ from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
+    _MappingTerm,
     _NumberTerm,
     deffn,
-    getitem,
     implements,
 )
 from effectful.ops.types import Expr, Interpretation, Operation, Term
@@ -129,6 +129,14 @@ class LogSumExpPlusJax(ObjectInterpretation):
         return functools.reduce(jnp.logaddexp, args)
 
 
+class MaskJax(ObjectInterpretation):
+    @implements(Monoid.mask)
+    def mask(self, monoid, value, mask):
+        if isinstance(value, jax.Array) and isinstance(mask, jax.Array):
+            return jnp.where(mask, value, monoid.identity)
+        return fwd()
+
+
 class ReduceArrayGather(ObjectInterpretation):
     """M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body[k := a[k']], {k': range(a.shape[0])} ∪ S)"""
 
@@ -197,13 +205,6 @@ class ReduceArray(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        if (
-            isinstance(body, Term)
-            and _is_monoid_plus(body.op)
-            and distributes_over(body.op.__self__, monoid)
-        ):
-            return fwd()
-
         pos_dims = (
             {d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams}
             if isinstance(body, Term) and body.op == monoid.delta
@@ -218,8 +219,8 @@ class ReduceArray(ObjectInterpretation):
         if not used:
             return fwd()
 
-        index = tuple(k for k in streams if k in used)
-        arr = monoid.reduce(bind_dims(body, *index), streams)
+        index = tuple(k() for k in streams if k in used)
+        arr = monoid.reduce(monoid.delta(index, body), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
 
@@ -244,6 +245,25 @@ class ReduceArrayScan(ObjectInterpretation):
 
         for i, elem in enumerate(mask_elems):
             match elem:
+                case Term(_NumberTerm.__ne__, (Term(stream_op, (), {}), index)) if (
+                    stream_op in streams
+                    and isinstance(stream := streams[stream_op], range)
+                ):
+                    other_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+                    return monoid.plus(
+                        monoid.reduce(
+                            monoid.mask(
+                                value, And.plus(stream_op() < index, *other_mask_elems)
+                            ),
+                            streams,
+                        ),
+                        monoid.reduce(
+                            monoid.mask(
+                                value, And.plus(stream_op() > index, *other_mask_elems)
+                            ),
+                            streams,
+                        ),
+                    )
                 case Term(
                     (
                         _NumberTerm.__le__
@@ -533,9 +553,11 @@ class ReduceSumProductContraction(ObjectInterpretation):
 
 
 class GetitemJaxGetitem(ObjectInterpretation):
-    @implements(getitem)
+    @implements(_MappingTerm.__getitem__)
     def _(self, arr, index):
-        if isinstance(arr, jax.Array):
+        if isinstance(arr, jax.Array) or issubclass(
+            typeof(arr), jax.Array | jax.core.Tracer
+        ):
             return jax_getitem(arr, index)
         return fwd()
 
@@ -817,6 +839,7 @@ EvaluateIntp.extend(
     MinPlusJax(),
     MaxPlusJax(),
     LogSumExpPlusJax(),
+    MaskJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
     ReduceDeltaSimpleRange(),

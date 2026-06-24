@@ -17,7 +17,6 @@ from effectful.ops.syntax import (
     _NumberTerm,
     defdata,
     deffn,
-    getitem,
     implements,
     syntactic_eq,
     syntactic_hash,
@@ -1314,7 +1313,7 @@ class SplitDisjointProduct(ObjectInterpretation):
                 and t.op == op
                 and all(self._is_var(a) for a in t.args)
             ):
-                comps.add(tuple(sorted((a.op for a in t.args))))
+                comps.add(tuple(sorted(a.op for a in t.args)))
             else:
                 resid.append(t)
         return comps, resid
@@ -1408,6 +1407,61 @@ class SplitDisjointProduct(ObjectInterpretation):
         return result
 
 
+class MaskOrderStreamOps(ObjectInterpretation):
+    """Rearrange mask terms so that stream operations appear as the first
+    argument to binary operations.
+
+    """
+
+    flipped_ops = {
+        _NumberTerm.__eq__: _NumberTerm.__eq__,
+        _NumberTerm.__ne__: _NumberTerm.__ne__,
+        _NumberTerm.__lt__: _NumberTerm.__gt__,
+        _NumberTerm.__gt__: _NumberTerm.__lt__,
+        _NumberTerm.__le__: _NumberTerm.__ge__,
+        _NumberTerm.__ge__: _NumberTerm.__le__,
+    }
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+            case _:
+                return fwd()
+
+        match mask:
+            case Term(And.plus, mask_elems, {}):
+                pass
+            case _:
+                mask_elems = (mask,)
+
+        def is_stream_op(x):
+            return isinstance(x, Term) and x.op in streams
+
+        new_mask_elems = []
+        progress = False
+        for elem in mask_elems:
+            match elem:
+                case Term(op, (lhs, rhs), {}) if (
+                    op in self.flipped_ops
+                    and is_stream_op(rhs)
+                    and not is_stream_op(lhs)
+                ):
+                    new_mask_elems.append(self.flipped_ops[op](rhs, lhs))
+                    progress = True
+                case _:
+                    new_mask_elems.append(elem)
+
+        return (
+            monoid.reduce(monoid.mask(value, And.plus(*new_mask_elems)), streams)
+            if progress
+            else fwd()
+        )
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -1416,7 +1470,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
+    # ReducePartial(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),
@@ -1456,6 +1510,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusCastFloat(),
     MaskFusion(),
     MaskConcrete(),
+    MaskOrderStreamOps(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).
