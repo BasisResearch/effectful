@@ -681,7 +681,14 @@ class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
                 },
             }
             with handler(subs):
-                return evaluate(body)
+                new_body = evaluate(body)
+
+            # support partial application: keep any unsupplied parameters bound
+            remaining_argvars = argvars[len(args) :]
+            remaining_kwvars = {k: v for k, v in kwvars.items() if k not in kwargs}
+            if remaining_argvars or remaining_kwvars:
+                return deffn(new_body, *remaining_argvars, **remaining_kwvars)
+            return new_body
         elif not fvsof((self, args, kwargs)):
             return self(*args, **kwargs)
         else:
