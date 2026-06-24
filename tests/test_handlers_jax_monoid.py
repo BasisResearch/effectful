@@ -614,22 +614,5 @@ def test_plated_einsum(spec, plates, rng_key):
     except NotImplementedError:
         pytest.skip("Not implemented by pyro.ops.contract.einsum")
 
-    actual = _einsum_expr(spec, *operands, plates=plates)
-    with handler(NormalizeIntp):
-        norm = evaluate(actual)
-
-    with handler(NormalizeIntp), handler(EvaluateIntp):
-        jax_norm = evaluate(norm(*operands))
-
-    operand_mappings = [_to_mapping(op) for op in operands]
-    for index in itertools.product(*(range(dim_sizes[c]) for c in spec.split("->")[1])):
-        with handler(EvaluateIntp), handler(NormalizeIntp):
-            j = jax_norm(*index)
-        # with handler(EvaluateIntp), handler(NormalizeIntp):
-        #     a = norm(*operand_mappings, *index)
-
-        breakpoint()
-        e = expected[*index]
-        assert torch.allclose(torch.tensor(j), e, atol=1e-4, rtol=1e-4), (
-            f"mismatch at index {index}: got {j}, expected {e}"
-        )
+    actual = einsum(spec, *operands, plates=plates)
+    assert torch.allclose(torch.tensor(actual), expected, atol=1e-4, rtol=1e-4)

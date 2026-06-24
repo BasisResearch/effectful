@@ -1250,7 +1250,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
 
     @defop
     def __lt__(self, other) -> bool:
-        if not isinstance(self, Term) and not isinstance(other, Term):
+        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__lt__(other)
         else:
             raise NotHandled
@@ -1271,7 +1271,7 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
 
     @defop
     def __ge__(self, other) -> bool:
-        if not isinstance(self, Term) and not isinstance(other, Term):
+        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__ge__(other)
         else:
             raise NotHandled

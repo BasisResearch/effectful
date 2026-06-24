@@ -295,10 +295,10 @@ class DeltaConcrete(ObjectInterpretation):
         return fwd()
 
 
-class MaskConcrete(ObjectInterpretation):
+class MaskBool(ObjectInterpretation):
     @implements(Monoid.mask)
     def _(self, monoid, value, cond):
-        if not isinstance(cond, Term):
+        if isinstance(cond, bool):
             return value if cond else monoid.identity
         return fwd()
 
@@ -1330,8 +1330,8 @@ class SplitDisjointProduct(ObjectInterpretation):
                 return fwd()
 
         def match(lhs, rhs):
-            if (
-                not isinstance(lhs, Term)
+            if not (
+                isinstance(lhs, Term)
                 and _is_monoid_mask(lhs.op)
                 and lhs.op.__self__ == body.op.__self__
             ):
@@ -1344,8 +1344,8 @@ class SplitDisjointProduct(ObjectInterpretation):
             )
             (eqs, lhs_residual) = self._var_comps(lhs_mask_terms, _NumberTerm.__eq__)
 
-            if (
-                not isinstance(rhs, Term)
+            if not (
+                isinstance(rhs, Term)
                 and _is_monoid_mask(rhs.op)
                 and rhs.op.__self__ == body.op.__self__
             ):
@@ -1505,11 +1505,11 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusSingle(),
     PlusAssoc(),
     PlusDistr(),
-    PlusConsecutiveDups(),
-    PlusDups(),
+    # PlusConsecutiveDups(),
+    # PlusDups(),
     PlusCastFloat(),
     MaskFusion(),
-    MaskConcrete(),
+    MaskBool(),
     MaskOrderStreamOps(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,

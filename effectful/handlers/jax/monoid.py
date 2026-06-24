@@ -129,12 +129,28 @@ class LogSumExpPlusJax(ObjectInterpretation):
         return functools.reduce(jnp.logaddexp, args)
 
 
+class AndPlusJax(ObjectInterpretation):
+    @implements(And.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.logical_and, args)
+
+
+class OrPlusJax(ObjectInterpretation):
+    @implements(Or.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.logical_or, args)
+
+
 class MaskJax(ObjectInterpretation):
     @implements(Monoid.mask)
     def mask(self, monoid, value, mask):
-        if isinstance(value, jax.Array) and isinstance(mask, jax.Array):
-            return jnp.where(mask, value, monoid.identity)
-        return fwd()
+        if not _jax_args((value, mask)):
+            return fwd()
+        return jnp.where(mask, value, monoid.identity)
 
 
 class ReduceArrayGather(ObjectInterpretation):
@@ -654,39 +670,6 @@ def _build_plate_reductions(
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
         factor_out_dims = set(ordinal) & set(out_op) & set(spec)
         masked_factors.append(
-            # Sum.plus(
-            #     Sum.mask(
-            #         factor,
-            #         And.plus(
-            #             *(dim_index[d] == out_op[d]() for d in factor_out_dims),
-            #         ),
-            #     ),
-            #     Sum.mask(
-            #         Product.plus(
-            #             Product.mask(
-            #                 0.0,
-            #                 And.plus(
-            #                     *(
-            #                         dim_index[p] == out_op[p]()
-            #                         for p in factor_out_plates
-            #                     )
-            #                 ),
-            #             ),
-            #             Product.mask(
-            #                 factor,
-            #                 Or.plus(
-            #                     *(
-            #                         dim_index[p] != out_op[p]()
-            #                         for p in factor_out_plates
-            #                     )
-            #                 ),
-            #             ),
-            #         ),
-            #         Or.plus(
-            #             *(dim_index[d] != out_op[d]() for d in factor_out_dims),
-            #         ),
-            #     ),
-            # )
             Sum.plus(
                 Sum.mask(
                     factor,
@@ -818,7 +801,7 @@ def _einsum_expr(
         Sum.reduce(Sum.mask(reductions, out_mask), streams),
         *arrays,
         *(out_vars[c] for c in out_spec),
-    )
+    ), [(out_vars[c], sizes[c]) for c in out_spec]
 
 
 @jax.jit(static_argnums=(0,), static_argnames=("plates",))
@@ -840,12 +823,18 @@ def einsum(
     over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
     each plated input is a :data:`Product` reduction over its plates.
     """
-    expr = _einsum_expr(subscripts, *operands, plates=plates)
+    expr, dims = _einsum_expr(subscripts, *operands, plates=plates)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
-        breakpoint()
-        result = evaluate(norm_expr(*operands))
+        result = evaluate(
+            bind_dims(
+                norm_expr(
+                    *operands, *(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
+                ),
+                *(v for (v, _) in dims),
+            )
+        )
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
         return result
 
@@ -856,6 +845,8 @@ EvaluateIntp.extend(
     MinPlusJax(),
     MaxPlusJax(),
     LogSumExpPlusJax(),
+    AndPlusJax(),
+    OrPlusJax(),
     MaskJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
