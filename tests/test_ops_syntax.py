@@ -231,6 +231,30 @@ def test_deffn_keyword_args():
     assert isinstance(result2, Term)
 
 
+def test_deffn_partial_application():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    term = deffn(x() + y(), x, y)
+
+    # supplying fewer positional args keeps the remaining parameters bound
+    partial = term(0)
+    assert isinstance(partial, Term)
+    assert partial.op is deffn
+
+    # the partially applied function can still be fully applied
+    assert partial(1) == 1
+    assert term(0)(1) == 1
+
+    # partial application via keyword arguments, in either direction
+    kwterm = deffn(2 * x() + y(), x, y=y)
+    partial_x = kwterm(3)
+    assert isinstance(partial_x, Term) and partial_x.op is deffn
+    assert partial_x(y=4) == 10
+
+    partial_y = kwterm(y=4)
+    assert isinstance(partial_y, Term) and partial_y.op is deffn
+    assert partial_y(3) == 10
+
+
 def test_defdata_renaming():
     @defop
     def Let[S, T, A, B](
