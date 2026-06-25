@@ -156,7 +156,7 @@ class Monoid[W]:
         raise NotHandled
 
     @Operation.define
-    def mask(self, value: W, cond: bool = True) -> W:
+    def mask(self, value: W, cond: Any = True) -> W:
         raise NotHandled
 
     @Operation.define
@@ -1494,7 +1494,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
+    # ReducePartial(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),

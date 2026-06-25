@@ -1236,45 +1236,63 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
 
     @defop
     def __eq__(self, other) -> bool:
-        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
+        if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __ne__(self, other) -> bool:
-        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
+        if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__ne__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __lt__(self, other) -> bool:
-        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
+        if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__lt__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __gt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__gt__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __le__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__le__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __ge__(self, other) -> bool:
         if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__ge__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __add__(self, other: T) -> T:

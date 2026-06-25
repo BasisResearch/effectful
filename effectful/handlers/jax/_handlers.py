@@ -317,6 +317,8 @@ def bind_dims[T, A, B](
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
+    if not names:
+        return value
     if isinstance(value, Term) and value.op == bind_dims:
         return bind_dims(value.args[0], *(names + tuple(value.args[1:])))
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
@@ -337,6 +339,8 @@ def unbind_dims[T, A, B](
     *names: Annotated[Operation[[], Any], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
+    if not names:
+        return value
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: unbind_dims(v, *names), value)

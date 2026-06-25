@@ -60,14 +60,16 @@ def _jax_args(args):
     a jax-related type.
 
     """
-    return (
-        bool(args)
-        and all(is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args)
-        and any(is_eager_array(a) or isinstance(a, jax.Array) for a in args)
-    )
+    if not args:
+        return False
+
+    types = tuple(typeof(a) for a in args)
+    return all(
+        issubclass(t, jax.typing.ArrayLike | jax.core.Tracer) for t in types
+    ) and any(issubclass(t, jax.Array | jax.core.Tracer) for t in types)
 
 
-class PlusJaxUpcast(ObjectInterpretation):
+class PlusCastArray(ObjectInterpretation):
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         arg_types = [typeof(a) for a in args]
@@ -89,6 +91,45 @@ class PlusJaxUpcast(ObjectInterpretation):
         return fwd()
 
 
+class CmpJax(ObjectInterpretation):
+    @implements(_NumberTerm.__eq__)
+    def _(self, lhs, rhs):
+        breakpoint()
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.equal(lhs, rhs)
+
+    @implements(_NumberTerm.__ne__)
+    def _(self, lhs, rhs):
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.not_equal(lhs, rhs)
+
+    @implements(_NumberTerm.__le__)
+    def _(self, lhs, rhs):
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.less_equal(lhs, rhs)
+
+    @implements(_NumberTerm.__lt__)
+    def _(self, lhs, rhs):
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.less(lhs, rhs)
+
+    @implements(_NumberTerm.__ge__)
+    def _(self, lhs, rhs):
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.greater_equal(lhs, rhs)
+
+    @implements(_NumberTerm.__gt__)
+    def _(self, lhs, rhs):
+        if not _jax_args((lhs, rhs)):
+            return fwd()
+        return jnp.greater(lhs, rhs)
+
+
 class SumPlusJax(ObjectInterpretation):
     @implements(Sum.plus)
     def plus(self, *args):
@@ -101,6 +142,7 @@ class ProductPlusJax(ObjectInterpretation):
     @implements(Product.plus)
     def plus(self, *args):
         if not _jax_args(args):
+            breakpoint()
             return fwd()
         return functools.reduce(jnp.multiply, args)
 
@@ -133,6 +175,7 @@ class AndPlusJax(ObjectInterpretation):
     @implements(And.plus)
     def plus(self, *args):
         if not _jax_args(args):
+            breakpoint()
             return fwd()
         return functools.reduce(jnp.logical_and, args)
 
@@ -790,11 +833,10 @@ def _einsum_expr(
         for c in dim_op
     }
     arrays = [
-        Operation.define(Mapping[tuple[int, ...], float], name=f"f{i}")
-        for (i, _) in enumerate(operands)
+        Operation.define(jax.Array, name=f"f{i}") for (i, _) in enumerate(operands)
     ]
     plate_tree = _build_plate_tree(in_specs, plate_set)
-    out_vars = {c: Operation.define(int, name=f"out_{c}") for c in out_spec}
+    out_vars = {c: Operation.define(jax.Array, name=f"out_{c}") for c in out_spec}
     reductions = _build_plate_reductions(
         plate_tree, [a() for a in arrays], in_specs, dim_index, out_vars, sizes, ordinal
     )
@@ -873,16 +915,17 @@ EvaluateIntp.extend(
     AndPlusJax(),
     OrPlusJax(),
     MaskJax(),
+    CmpJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
     ReduceArrayScan(),
+    PlusCastArray(),
 )
 
 NormalizeIntp.extend(
     ReduceArrayGather(),
     ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
-    PlusJaxUpcast(),
 )
