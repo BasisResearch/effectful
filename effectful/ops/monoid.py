@@ -720,21 +720,43 @@ class ReduceFactorization(ObjectInterpretation):
     where F_v = factors mentioning v, F_rest = the others. Fires only when
     v has no dependents among the remaining streams (so it can be innermost)
     and F_rest is nonempty (universal variables stay in the outer core).
+
+    A reduce-monoid mask wrapping the plus is handled too:
+
+        reduce(M.mask(⊗(F_v ∪ F_rest), c), {v} ∪ S)
+            = reduce(M.mask(⊗F_rest ⊗ reduce(⊗F_v, {v}), c), S)
+
+    Because the mask gates the whole product, every factor effectively depends
+    on the condition's variables; folding ``fvsof(c)`` into each factor's free
+    variables keeps those streams in the outer core (a stream the mask depends
+    on is treated as universal and never pulled into the inner reduce). The
+    mask therefore stays outside the inner reduce unchanged. Soundness relies
+    on ``M.identity`` annihilating the inner monoid's plus (the semiring zero),
+    so masking distributes over the inner product.
     """
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        if not (is_commutative(monoid) and isinstance(body, Term)):
+            return fwd()
+
+        # Optionally peel an outer mask of the reduce monoid.
+        cond = None
+        plus_term = body
+        if _is_monoid_mask(body.op) and body.op.__self__ is monoid:
+            plus_term, cond = body.args
+
         if not (
-            is_commutative(monoid)
-            and isinstance(body, Term)
-            and _is_monoid_plus(body.op)
-            and distributes_over(body.op.__self__, monoid)
+            isinstance(plus_term, Term)
+            and _is_monoid_plus(plus_term.op)
+            and distributes_over(plus_term.op.__self__, monoid)
         ):
             return fwd()
 
-        inner = body.op.__self__
+        inner = plus_term.op.__self__
         stream_keys = set(streams)
-        factors = [(a, fvsof(a)) for a in body.args]
+        cond_fvs = fvsof(cond) if cond is not None else set()
+        factors = [(a, fvsof(a) | cond_fvs) for a in plus_term.args]
 
         # candidates: innermost-eligible (no remaining stream depends on v),
         # non-universal (some factor doesn't mention v)
@@ -753,7 +775,7 @@ class ReduceFactorization(ObjectInterpretation):
         if len(eligible) == 1:
             inner_stream = next(iter(eligible))
         else:
-            inner_stream = choose_contraction(body.args, eligible)
+            inner_stream = choose_contraction(plus_term.args, eligible)
 
         inner_factor_ids = frozenset(
             i for i, (_, fvs) in enumerate(factors) if inner_stream in fvs
@@ -796,6 +818,8 @@ class ReduceFactorization(ObjectInterpretation):
 
         rest_streams = {k: s for k, s in streams.items() if k in outer_stream_keys}
         new_body = inner.plus(*outer_factors, inner_red)
+        if cond is not None:
+            new_body = monoid.mask(new_body, cond)
         return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
 
 

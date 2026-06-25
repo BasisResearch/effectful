@@ -626,6 +626,45 @@ def test_reduce_chain(backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
+def test_reduce_factorization_mask(backend: Backend):
+    """A reduce-monoid mask wrapping the plus is preserved across factorization.
+
+    The mask condition depends only on the outer stream ``a``, so ``b`` factors
+    into an inner reduce while the mask stays at the outer level (``a`` is
+    treated as universal because the mask gates every factor)."""
+    a, b, k = backend.define_vars("a", "b", "k", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    cond = a() == k()  # depends on the outer stream `a`, not on `b`
+    lhs = Sum.reduce(
+        Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()}
+    )
+    rhs = Sum.reduce(
+        Sum.mask(
+            Product.plus(f(a()), Sum.reduce(Product.plus(g(b())), {b: B()})),
+            cond,
+        ),
+        {a: A()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+def test_reduce_factorization_mask_universal_noop(backend: Backend):
+    """When the mask condition depends on every stream, the mask makes each
+    stream universal, so no stream is innermost-eligible and the rule is a
+    no-op."""
+    a, b, k = backend.define_vars("a", "b", "k", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    cond = And.plus(a() == k(), b() == k())
+    term = Sum.reduce(
+        Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()}
+    )
+    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceFactorization())
+
+
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lift_shared(outer, inner, backend: Backend):
     """A stream free in every factor is hoisted into an outer reduce:
