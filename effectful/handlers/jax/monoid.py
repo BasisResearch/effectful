@@ -683,21 +683,27 @@ def _build_plate_reductions(
         spec = factor_specs[f]
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
         factor_out_dims = set(ordinal) & set(out_op) & set(spec)
-        masked_factors.append(
-            Sum.plus(
-                Sum.mask(
-                    factor,
-                    And.plus(
-                        *(dim_index[p] == out_op[p]() for p in factor_out_plates),
-                        *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+
+        if factor_out_dims:
+            masked_factors.append(
+                Sum.plus(
+                    Sum.mask(
+                        factor,
+                        And.plus(
+                            *(dim_index[p] == out_op[p]() for p in factor_out_plates),
+                            *(dim_index[d] == out_op[d]() for d in factor_out_dims),
+                        ),
                     ),
-                ),
-                Sum.mask(
-                    factor,
-                    Or.plus(*(dim_index[p] != out_op[p]() for p in factor_out_plates)),
-                ),
+                    Sum.mask(
+                        factor,
+                        Or.plus(
+                            *(dim_index[p] != out_op[p]() for p in factor_out_plates)
+                        ),
+                    ),
+                )
             )
-        )
+        else:
+            masked_factors.append(factor)
 
     child_reductions = (
         _build_plate_reductions(
