@@ -1236,14 +1236,14 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
 
     @defop
     def __eq__(self, other) -> bool:
-        if not isinstance(self, Term) and not isinstance(other, Term):
+        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__eq__(other)
         else:
             raise NotHandled
 
     @defop
     def __ne__(self, other) -> bool:
-        if not isinstance(self, Term) and not isinstance(other, Term):
+        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__ne__(other)
         else:
             raise NotHandled

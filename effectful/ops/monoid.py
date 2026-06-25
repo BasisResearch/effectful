@@ -1470,7 +1470,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    # ReducePartial(),
+    ReducePartial(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),
@@ -1479,6 +1479,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
+    ReduceEqualityMaskRange(),
 )
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
@@ -1497,7 +1498,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFactorization(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
-    ReduceEqualityMaskRange(),
     PlusMaskHoist(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),

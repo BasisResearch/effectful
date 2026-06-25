@@ -148,7 +148,12 @@ class OrPlusJax(ObjectInterpretation):
 class MaskJax(ObjectInterpretation):
     @implements(Monoid.mask)
     def mask(self, monoid, value, mask):
-        if not _jax_args((value, mask)):
+        if not (
+            isinstance(value, jax.Array)
+            or issubclass(typeof(value), jax.Array | jax.core.Tracer)
+            or isinstance(mask, jax.Array)
+            or issubclass(typeof(mask), jax.Array | jax.core.Tracer)
+        ):
             return fwd()
         return jnp.where(mask, value, monoid.identity)
 
@@ -588,8 +593,17 @@ class ReduceSumProductContraction(ObjectInterpretation):
 class GetitemJaxGetitem(ObjectInterpretation):
     @implements(_MappingTerm.__getitem__)
     def _(self, arr, index):
-        if isinstance(arr, jax.Array) or issubclass(
-            typeof(arr), jax.Array | jax.core.Tracer
+        if (
+            isinstance(arr, jax.Array)
+            or issubclass(typeof(arr), jax.Array | jax.core.Tracer)
+            or (
+                isinstance(index, Sequence)
+                and any(
+                    isinstance(i, jax.Array)
+                    or issubclass(typeof(i), jax.Array | jax.core.Tracer)
+                    for i in index
+                )
+            )
         ):
             return jax_getitem(arr, index)
         return fwd()
@@ -825,6 +839,11 @@ def einsum(
     """
     expr, dims = _einsum_expr(subscripts, *operands, plates=plates)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
+
+    assert CartesianProduct.reduce not in fvsof(norm_expr), (
+        "failed to eliminate cartesian products"
+    )
+
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
         result = evaluate(
