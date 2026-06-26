@@ -516,10 +516,10 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                     if isinstance(body, Term) and body.op == monoid.delta:
                         fresh_body = monoid.delta(
                             body.args[0],
-                            jnp.where(v() < u(), body.args[1], monoid.identity),  # type: ignore[arg-type]
+                            monoid.mask(v() < u(), body.args[1]),  # type: ignore[arg-type]
                         )
                     else:
-                        fresh_body = jnp.where(v() < u(), body, monoid.identity)
+                        fresh_body = monoid.mask(v() < u(), body)
 
                     return monoid.reduce(fresh_body, fresh_streams)
 

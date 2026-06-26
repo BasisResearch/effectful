@@ -24,11 +24,15 @@ from effectful.ops.monoid import (
     DeltaEmpty,
     EliminateSingletonStreams,
     EvaluateIntp,
+    Max,
     NormalizeIntp,
+    PlusDups,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.syntax import syntactic_eq
+from effectful.ops.types import Term
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
@@ -356,9 +360,7 @@ def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
     body = f(u(), v())
 
     lhs = monoid.reduce(body, {u: range(N), v: jnp.arange(u())})
-    rhs = monoid.reduce(
-        jnp.where(v() < u(), body, monoid.identity), {u: range(N), v: range(N)}
-    )
+    rhs = monoid.reduce(monoid.mask(v() < u(), body), {u: range(N), v: range(N)})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
 
@@ -382,8 +384,7 @@ def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBa
 
     lhs = monoid.reduce(monoid.delta(idx, weight), {u: range(N), v: jnp.arange(u())})
     rhs = monoid.reduce(
-        monoid.delta(idx, jnp.where(v() < u(), weight, monoid.identity)),
-        {u: range(N), v: range(N)},
+        monoid.delta(idx, monoid.mask(v() < u(), weight)), {u: range(N), v: range(N)}
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
@@ -623,3 +624,35 @@ def test_plated_einsum(spec, plates, rng_key):
 
     actual = einsum(spec, *operands, plates=plates)
     assert torch.allclose(torch.tensor(actual), expected, atol=1e-4, rtol=1e-4)
+
+
+def test_plusdups_with_tracer(backend: JaxBackend):
+    """``PlusDups`` must dedup summands even when their term trees contain JAX
+    tracers as leaves.
+
+    Tracers are unhashable and their ``==`` returns an array rather than a
+    bool, so ``syntactic_hash`` / ``syntactic_eq`` blow up on them. We build the
+    duplicated summand inside a ``jax.make_jaxpr`` trace -- where ``t`` is a live
+    tracer -- and check that ``x() + t ⊕ y() ⊕ x() + t`` collapses to
+    ``x() + t ⊕ y()`` (idempotent + commutative ``Max``) without raising.
+    """
+    (x, y) = backend.define_vars("x", "y", ret="scalar")
+
+    def trace_body(t):
+        a = x() + t  # a Term whose arg tree holds the tracer ``t``
+        b = y()
+        with handler(PlusDups()):
+            result = Max.plus(a, b, a)
+
+        assert isinstance(result, Term)
+        assert result.op is Max.plus
+        # the duplicate ``a`` is gone: two summands remain, in order.
+        assert len(result.args) == 2
+        assert syntactic_eq(result.args[0], a)
+        assert syntactic_eq(result.args[1], b)
+        return t
+
+    # Run under a trace so ``t`` is a real DynamicJaxprTracer, not a concrete
+    # array. ``make_jaxpr`` discards the result; the assertions run as a side
+    # effect while the tracer is live.
+    jax.make_jaxpr(trace_body)(jnp.asarray(1.0))

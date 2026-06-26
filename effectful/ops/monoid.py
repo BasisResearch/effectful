@@ -1521,14 +1521,120 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusSingle(),
     PlusAssoc(),
     PlusDistr(),
-    # PlusConsecutiveDups(),
-    # PlusDups(),
+    PlusConsecutiveDups(),
+    PlusDups(),
     PlusCastFloat(),
     MaskFusion(),
     MaskBool(),
     MaskOrderStreamOps(),
 )
-"""``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
-identity elimination, fusion, factorization, etc.).
+"""``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
+identity elimination, fusion, factorization, etc.) that drive a reduce
+expression toward a *normal form*.
+
+Normal form
+===========
+
+The rules collectively push expressions toward an einsum / variable-elimination
+shape: a factored sum-of-products over independent index ranges, with weights
+carried symbolically by ``mask`` and ``delta`` rather than lowered to concrete
+array ops. Throughout, "sum" means a ``reduce``/``plus`` of an additive monoid
+``R`` and "product" a ``plus`` of a multiplicative monoid ``M`` with
+``distributes_over(M, R)``.
+
+A fully normalized leaf expression matches the grammar (for additive ``R`` /
+multiplicative ``M``)::
+
+    nf     ::= container[nf]                    # lambdas/dicts/sequences outermost
+             | M.mask(prod, cond)              # at most one mask layer
+             | prod
+    prod   ::= M.plus(factor, ...)             # flattened, n-ary
+             | factor
+    factor ::= atom                            # array, getitem, delta(idx, w), ...
+             | R.reduce(prod, ranges)          # every factor in prod uses a range var
+    cond   ::= And.plus(cmp, ...)              # comparison atoms, stream-var first
+    ranges ::= { var: range(0, N, 1), ... }
+
+The invariants, grouped by the rules that establish them:
+
+A. Sums are factored over products (the einsum shape).
+   - Stream-quantified sums are factored, not expanded: under any
+     ``R.reduce(M.plus(...), streams)`` every remaining factor mentions a
+     reduced stream variable. :class:`ReduceFactorization` pulls stream-invariant
+     factors out as outer product factors; :class:`ReduceSplit` confines a stream
+     to just the summands that use it. So no factor sits under a reduce whose
+     streams it does not use.
+   - Explicit (materialized) products-of-sums are expanded to sums-of-products
+     by :class:`PlusDistr`. (This is the opposite direction from factorization,
+     but it acts on explicit ``plus`` terms, never on ``reduce`` nodes, so the
+     two never fight.)
+
+B. Streams are independent ranges ``range(0, N, 1)``.
+   Every non-range binding has a rule that removes it: eager arrays
+   (:class:`~effectful.handlers.jax.monoid.ReduceArrayGather` +
+   :class:`EliminateSingletonStreams`), unions (:class:`ReduceUnion`), weighted
+   streams (:class:`ReduceWeightedStream`), cartesian products (eliminated by
+   inversion in :class:`ReduceDistributeCartesianProduct`), dependent ranges
+   (:class:`~effectful.handlers.jax.monoid.ReduceDependentRangeMask`), and
+   symbolic length-1 streams (:class:`EliminateSingletonStreams`). In particular
+   ``CartesianProduct.reduce`` is fully eliminated.
+
+C. ``plus``, ``mask``, and ``delta`` stay symbolic (not lowered).
+   - ``plus`` is only normalized structurally: flattened/associative
+     (:class:`PlusAssoc`), with nullary/unary collapsed
+     (:class:`PlusEmpty`/:class:`PlusSingle`) and int/float operands unified
+     (:class:`PlusCastFloat`). The scalar/array implementations live in
+     ``EvaluateIntp``, not here.
+   - ``mask`` floats to a canonical position: fused to a single layer with a
+     conjunctive (``And.plus``) condition (:class:`MaskFusion`), constant-bool
+     conditions discharged (:class:`MaskBool`), hoisted above ``plus`` combining
+     conditions with ``Or`` (:class:`PlusMaskHoist`) and out of a ``reduce`` when
+     the condition is stream-independent (:class:`ReduceMaskHoist`). A mask
+     remaining inside a reduce body therefore depends on a reduced stream.
+     Comparison atoms are oriented stream-variable-first
+     (:class:`MaskOrderStreamOps`).
+   - ``delta`` is flattened: nested deltas merge (:class:`DeltaFusion`),
+     empty-index deltas collapse to their weight (:class:`DeltaEmpty`), and
+     subscripting a delta becomes a mask (:class:`GetitemDelta`). A normal-form
+     delta has a non-empty index, a single layer, and is never subscripted.
+
+D. Structural invariants.
+   - No same-monoid ``reduce`` is nested directly in a ``reduce`` body: they are
+     fused into one reduce over the combined stream set (:class:`ReduceFusion`),
+     so each reduce is maximal in its stream set per monoid.
+   - Containers are outermost: :class:`MonoidOverCallable`,
+     :class:`MonoidOverMapping`, and :class:`MonoidOverSequence` push
+     ``reduce``/``plus`` through lambdas, mappings, and sequences down to the
+     scalar/array leaves, so a monoid op never wraps a container.
+
+Termination and confluence
+===========================
+
+The rules run as a deterministic, priority-ordered, innermost normalization
+(``evaluate`` rewrites args before parents, and each constructed replacement
+re-enters the interpretation to a fixpoint). For a fixed *syntactic* input the
+result is therefore unique.
+
+The normal form is **not canonical**, however: semantically equal but
+differently-presented inputs can reach distinct (still semantically equal)
+forms. There is no AC-normalization (commutative ``plus`` arguments are never
+sorted and duplicate-elimination is disabled -- see the commented-out
+:class:`PlusDups`/:class:`PlusConsecutiveDups`), and the variable-elimination
+order depends on ``streams`` insertion order via
+:func:`choose_contraction`/:func:`outer_stream`. So summand order, stream
+insertion order, and factor order all survive normalization. Downstream code
+relies only on the *semantic* normal form (the result is ultimately evaluated to
+a concrete array), not on syntactic canonicity.
+
+Termination rests on per-family progress (each "lowering" rule strictly
+consumes a resource -- a cartesian/weighted/union/array/singleton stream, a
+nested reduce/mask/delta, or a liftable factor) plus redex-shape disjointness
+that keeps the families from cycling (e.g. :class:`ReduceSplit` deliberately
+does not fire when a stream is used by *every* summand, leaving those for
+:class:`ReduceDistributeCartesianProduct`/:class:`ReduceFactorization`). There
+is no single global measure and no confluence theorem: the system is
+normalizing by construction, so a new rule that overlaps an existing redex shape
+can introduce a loop or shift which normal form is reached. Note also that
+:class:`PlusDistr` is exponential in the number of distributed sums.
 
 """

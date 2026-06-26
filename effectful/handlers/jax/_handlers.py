@@ -10,6 +10,7 @@ from opt_einsum.parser import parse_einsum_input
 
 try:
     import jax
+    import jax.core
     import jax.numpy as jnp
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
@@ -404,7 +405,18 @@ def _(x: jax.Array, other) -> bool:
     )
 
 
-@syntactic_hash.register(jax.Array)
+@syntactic_eq.register
+def _(x: jax.core.Tracer, other) -> bool:
+    return isinstance(other, jax.core.Tracer) and id(x) == id(other)
+
+
+@syntactic_hash.register
 def _(x: jax.Array) -> int:
     # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
     return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
+
+
+@syntactic_hash.register
+def _(x: jax.core.Tracer) -> int:
+    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
+    return hash(("jax.core.Tracer", id(x)))
