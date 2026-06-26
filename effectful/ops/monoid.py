@@ -287,14 +287,6 @@ class GetitemDelta(ObjectInterpretation):
         return fwd()
 
 
-class DeltaConcrete(ObjectInterpretation):
-    @implements(Monoid.delta)
-    def _(self, monoid, index, value):
-        if not fvsof(index):
-            return {index: value}
-        return fwd()
-
-
 class MaskBool(ObjectInterpretation):
     @implements(Monoid.mask)
     def _(self, monoid, value, cond):
@@ -1510,7 +1502,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     DeltaEmpty(),
     DeltaFusion(),
     GetitemDelta(),
-    DeltaConcrete(),
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),

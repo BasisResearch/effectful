@@ -91,45 +91,6 @@ class PlusCastArray(ObjectInterpretation):
         return fwd()
 
 
-class CmpJax(ObjectInterpretation):
-    @implements(_NumberTerm.__eq__)
-    def _(self, lhs, rhs):
-        breakpoint()
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.equal(lhs, rhs)
-
-    @implements(_NumberTerm.__ne__)
-    def _(self, lhs, rhs):
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.not_equal(lhs, rhs)
-
-    @implements(_NumberTerm.__le__)
-    def _(self, lhs, rhs):
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.less_equal(lhs, rhs)
-
-    @implements(_NumberTerm.__lt__)
-    def _(self, lhs, rhs):
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.less(lhs, rhs)
-
-    @implements(_NumberTerm.__ge__)
-    def _(self, lhs, rhs):
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.greater_equal(lhs, rhs)
-
-    @implements(_NumberTerm.__gt__)
-    def _(self, lhs, rhs):
-        if not _jax_args((lhs, rhs)):
-            return fwd()
-        return jnp.greater(lhs, rhs)
-
-
 class SumPlusJax(ObjectInterpretation):
     @implements(Sum.plus)
     def plus(self, *args):
@@ -202,7 +163,17 @@ class MaskJax(ObjectInterpretation):
 
 
 class ReduceArrayGather(ObjectInterpretation):
-    """M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body[k := a[k']], {k': range(a.shape[0])} ∪ S)"""
+    """Split an array-valued stream into an index range and a length-1 stream:
+
+    M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body, {i: range(a.shape[0]), k: (a[i()],)} ∪ S)
+
+    where ``i`` is fresh and ``a[i()] = unbind_dims(a, i)``. The length-1 stream
+    ``{k: (a[i()],)}`` is then eliminated by
+    :class:`~effectful.ops.monoid.EliminateSingletonStreams`, which substitutes
+    ``k := a[i()]`` into the body and the remaining streams. Together the two
+    steps perform the gather
+    ``M.reduce(body[k := a[i()]], {i: range(a.shape[0])} ∪ S)``.
+    """
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
@@ -215,26 +186,21 @@ class ReduceArrayGather(ObjectInterpretation):
         body_fvs = fvsof(body)
         stream_keys = set(streams)
 
-        body_subst = {}
-        streams_subst = {}
-        range_streams = {}
+        new_streams: dict = {}
         progress = False
         for k, v in streams.items():
             if is_eager_array(v) and k in body_fvs and not (fvsof(v) & stream_keys):
-                kk = Operation.define(k)
-                body_subst[k] = deffn(unbind_dims(v, kk))
-                streams_subst[k] = kk
-                range_streams[kk] = range(v.shape[0])
+                index = Operation.define(k)
+                new_streams[index] = range(v.shape[0])
+                new_streams[k] = (unbind_dims(v, index),)
                 progress = True
             else:
-                range_streams[k] = v
+                new_streams[k] = v
 
         if not progress:
             return fwd()
 
-        subst_body = handler(body_subst)(evaluate)(body)
-        subst_streams = handler(streams_subst)(evaluate)(range_streams)
-        return monoid.reduce(subst_body, subst_streams)
+        return monoid.reduce(body, new_streams)
 
 
 class Reductor(Protocol):
@@ -915,7 +881,6 @@ EvaluateIntp.extend(
     AndPlusJax(),
     OrPlusJax(),
     MaskJax(),
-    CmpJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
     ReduceDeltaSimpleRange(),
