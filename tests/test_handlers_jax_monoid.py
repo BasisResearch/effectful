@@ -1,5 +1,4 @@
 import functools
-import itertools
 
 import jax
 import jax.dlpack
@@ -18,7 +17,6 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    _einsum_expr,
     einsum,
 )
 from effectful.ops.monoid import (
@@ -30,7 +28,6 @@ from effectful.ops.monoid import (
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.types import Operation
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
