@@ -590,9 +590,9 @@ class ReduceSumProductContraction(ObjectInterpretation):
             return fwd()
 
         # create leading reduction dimensions
-        index = tuple(k for k in streams)
-        pos_lhs = Sum.reduce(bind_dims(lhs, *index), streams)
-        pos_rhs = Sum.reduce(bind_dims(rhs, *index), streams)
+        index = tuple(k() for k in streams)
+        pos_lhs = Sum.reduce(Sum.delta(index, lhs), streams)
+        pos_rhs = Sum.reduce(Sum.delta(index, rhs), streams)
 
         dims = "".join(get_symbol(i) for i in range(len(streams)))
         contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)

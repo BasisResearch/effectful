@@ -11,6 +11,7 @@ from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
+    Array,
     ObjectInterpretation,
     Scoped,
     _MappingTerm,
@@ -160,7 +161,7 @@ class Monoid[W]:
         raise NotHandled
 
     @Operation.define
-    def delta[K](self, index: K, weight: W) -> Mapping[K, W]:
+    def delta(self, index: tuple[int, ...], weight: W) -> Array:
         raise NotHandled
 
 

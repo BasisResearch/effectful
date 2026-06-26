@@ -1516,7 +1516,7 @@ class Array(ABC):
 @defdata.register(Array)
 class _ArrayTerm(_IterableTerm[Array]):
     @Operation.define
-    def __getitem__(self: Array, key: tuple) -> Array:
+    def __getitem__(self: Array, key: tuple[int, ...]) -> Array:
         if not isinstance(key, Term) and not key:
             return self
 
