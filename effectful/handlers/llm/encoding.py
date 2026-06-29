@@ -768,8 +768,27 @@ def _pydantic_callable(
         callable_type,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
+        # Distinct schemas per direction. Validation (the model *produces* a
+        # function -- tool arguments, response_format) carries the synthesis
+        # instructions. Serialization (the model *reads* an encoded function --
+        # e.g. a tool's output) shows only the shape `_serialize` emits, with no
+        # synthesis prose.
         pydantic.WithJsonSchema(
-            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            mode="validation",
+        ),
+        pydantic.WithJsonSchema(
+            {
+                "type": "object",
+                "required": ["module_code"],
+                "properties": {
+                    "module_code": {
+                        "type": "string",
+                        "description": "Python source defining the function.",
+                    }
+                },
+            },
+            mode="serialization",
         ),
     ]
 
@@ -797,7 +816,14 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
-    description = f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}\n\n{textwrap.dedent(value.__doc__ or '')}"
+    ret_schema = pydantic.TypeAdapter(
+        Encodable[value.__signature__.return_annotation]
+    ).json_schema(mode="serialization")
+    description = (
+        f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}"
+    )
+    description += f"\n\n{textwrap.dedent(value.__doc__ or '')}"
+    description += f"\n\nAnnotated JSON schema of return type: {json.dumps(ret_schema)}"
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
