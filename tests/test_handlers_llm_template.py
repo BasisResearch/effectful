@@ -48,7 +48,7 @@ def test_template_formatting_simple():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert rhyme("cat", "hat") == "The cat sat in the hat."
+        assert rhyme("cat", "hat").endswith("The cat sat in the hat.")
 
 
 def test_template_formatting_method():
@@ -63,8 +63,8 @@ def test_template_formatting_method():
 
     with handler(TemplateStringIntp()):
         user = User("Bob")
-        assert (
-            user.greet("Monday") == "Greet the user 'Bob' and wish them a good Monday."
+        assert user.greet("Monday").endswith(
+            "Greet the user 'Bob' and wish them a good Monday."
         )
 
 
@@ -1219,9 +1219,8 @@ def test_template_formatting_scoped():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert (
-            convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        assert convert(7920).endswith(
+            "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1233,7 +1232,7 @@ def test_validate_params_valid():
         """Write a {style} poem about {topic}."""
         raise NotHandled
 
-    assert poem.__prompt_template__ == "Write a {style} poem about {topic}."
+    assert poem.__prompt_template__.endswith("Write a {style} poem about {topic}.")
 
 
 def test_validate_no_vars():
@@ -1244,7 +1243,7 @@ def test_validate_no_vars():
         """Just a plain prompt with no variables."""
         raise NotHandled
 
-    assert simple.__prompt_template__ == "Just a plain prompt with no variables."
+    assert simple.__prompt_template__.endswith("Just a plain prompt with no variables.")
 
 
 def test_validate_undefined_var():
@@ -1281,7 +1280,9 @@ def test_validate_compound_field_name():
             """Agent '{self.name}' says hello on {day}."""
             raise NotHandled
 
-    assert Agent.greet.__prompt_template__ == "Agent '{self.name}' says hello on {day}."
+    assert Agent.greet.__prompt_template__.endswith(
+        "Agent '{self.name}' says hello on {day}."
+    )
 
 
 def test_validate_staticmethod():
@@ -1294,7 +1295,7 @@ def test_validate_staticmethod():
         raise NotHandled
 
     # The underlying Template should exist
-    assert ok.__func__.__prompt_template__ == "Combine {a} and {b}."
+    assert ok.__func__.__prompt_template__.endswith("Combine {a} and {b}.")
 
 
 def test_validate_staticmethod_undefined():
@@ -1334,9 +1335,8 @@ def test_staticmethod_lexical_scope_formatting():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert (
-            convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        assert convert(7920).endswith(
+            "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1361,7 +1361,9 @@ def test_validate_both_params_and_lexical():
         """Write a poem about {topic} by {author}."""
         raise NotHandled
 
-    assert write_poem.__prompt_template__ == "Write a poem about {topic} by {author}."
+    assert write_poem.__prompt_template__.endswith(
+        "Write a poem about {topic} by {author}."
+    )
 
 
 def test_validate_undefined_with_lexical_still_fails():

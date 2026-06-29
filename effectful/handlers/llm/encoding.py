@@ -797,13 +797,13 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
-    assert value.__default__.__doc__ is not None
+    description = f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}\n\n{textwrap.dedent(value.__doc__ or '')}"
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
             "function": {
                 "name": value.__name__,
-                "description": textwrap.dedent(value.__default__.__doc__),
+                "description": description,
                 "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
             },

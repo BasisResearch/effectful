@@ -293,7 +293,10 @@ class Template[**P, T](Tool[P, T]):
     @property
     def __prompt_template__(self) -> str:
         assert self.__default__.__doc__ is not None
-        return self.__default__.__doc__
+        header = f"{self.__name__}{self.__signature__}".replace("{", "{{").replace(
+            "}", "}}"
+        )
+        return f"{header}\n\n{self.__default__.__doc__}"
 
     @property
     def tools(self) -> Mapping[str, Tool]:

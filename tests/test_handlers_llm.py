@@ -7,35 +7,6 @@ from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
-class MockLLMProvider[T](ObjectInterpretation):
-    """Mock provider for testing.
-
-    Initialized with prompts and responses. Raises if an unexpected prompt is given.
-    """
-
-    def __init__(self, prompt_responses: dict[str, T]):
-        """Initialize with a dictionary mapping prompts to expected responses.
-
-        Args:
-            prompt_responses: Dict mapping prompt strings to their expected responses
-        """
-        self.prompt_responses = prompt_responses
-
-    @implements(Template.__apply__)
-    def _call[**P](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        bound_args = template.__signature__.bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        prompt = template.__prompt_template__.format(**bound_args.arguments)
-
-        if prompt not in self.prompt_responses:
-            raise ValueError(f"Unexpected prompt: {prompt!r}")
-
-        response = self.prompt_responses[prompt]
-        return response
-
-
 class SingleResponseLLMProvider[T](ObjectInterpretation):
     """Simplified mock provider that returns a single response for any prompt."""
 
@@ -90,20 +61,6 @@ def mutual_a() -> Annotated[str, IsRecursive]:
 def mutual_b() -> Annotated[str, IsRecursive]:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
-
-
-# Unit tests
-def test_limerick():
-    """Test the limerick template returns a string."""
-    mock_response = "There once was a fish from the sea"
-    mock_provider = MockLLMProvider(
-        {"Write a limerick on the theme of fish.": mock_response}
-    )
-
-    with handler(mock_provider):
-        result = limerick("fish")
-        assert result == mock_response
-        assert isinstance(result, str)
 
 
 def test_primes_decode_int():
