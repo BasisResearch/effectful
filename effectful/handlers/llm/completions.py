@@ -30,7 +30,7 @@ from effectful.handlers.llm.encoding import (
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
+from effectful.handlers.llm.evaluation import ReplSession, type_check_anchor
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -430,15 +430,18 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
-    for raw_tool_call in message.get("tool_calls") or []:
-        try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
-        except Exception as e:
-            raise ToolCallDecodingError(
-                raw_tool_call=raw_tool_call,
-                original_error=e,
-                raw_message=raw_message,
-            ) from e
+    # Tool-argument Callables have no source anchor (out of scope for the splice
+    # type check), so suppress the anchor while decoding them.
+    with handler({type_check_anchor: lambda: None}):
+        for raw_tool_call in message.get("tool_calls") or []:
+            try:
+                tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            except Exception as e:
+                raise ToolCallDecodingError(
+                    raw_tool_call=raw_tool_call,
+                    original_error=e,
+                    raw_message=raw_message,
+                ) from e
 
     result = None
     if not tool_calls:
@@ -672,7 +675,15 @@ class LiteLLMProvider(ObjectInterpretation):
         )  # type: ignore
         history_copy = history.copy()
 
-        with handler({_get_history: lambda: history_copy}):
+        # Bind the type-check anchor to this Template's underlying function for the
+        # duration of the call. Handler scope (not data context) means nested or
+        # recursive synthesis sees the right anchor -- innermost wins.
+        with handler(
+            {
+                _get_history: lambda: history_copy,
+                type_check_anchor: lambda: template.__default__,
+            }
+        ):
             if (
                 not _get_history()
                 or next(iter(_get_history().values()))["role"] != "system"

@@ -551,7 +551,13 @@ def _pydantic_callable(callable_type: Any) -> Any:
             )
 
         _validate_signature_ast(last_stmt, expected_params)
-        evaluation.type_check(module, ctx, expected_params, expected_return)
+
+        # `type_check_anchor` is the Template's underlying function, bound per call
+        # by Template.__apply__; it is None for tool-argument decoding, which
+        # therefore skips the source-anchored type check.
+        anchor = evaluation.type_check_anchor()
+        if anchor is not None:
+            evaluation.type_check(module, anchor)
 
         g: MutableMapping[str, Any] = {}
         g.update(ctx)
