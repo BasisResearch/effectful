@@ -1,4 +1,5 @@
 import abc
+import builtins
 import collections
 import collections.abc
 import dataclasses
@@ -66,10 +67,6 @@ class UserMessage(OpenAIChatCompletionUserMessage):
 
 
 Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
-
-DEFAULT_SYSTEM_PROMPT = (
-    "You are a helpful assistant, you need to follow user's instruction"
-)
 
 
 class _NoActiveHistoryException(Exception):
@@ -388,56 +385,149 @@ def call_user(
     return message
 
 
+def _get_qualname(cls) -> str:
+    """Module-qualified name of a type, dropping the ``builtins`` prefix."""
+    if not isinstance(cls, type):
+        return str(cls)
+    module = getattr(cls, "__module__", None)
+    name = (
+        getattr(cls, "__qualname__", None) or getattr(cls, "__name__", None) or str(cls)
+    )
+    return name if module in (None, "builtins") else f"{module}.{name}"
+
+
+def _render_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+    """Markdown table of the non-module bindings in scope (name -> type).
+
+    Excludes dunder names (``__main__`` etc.) and names already bound to their
+    standard builtin (which the model knows).
+    """
+    rows = {
+        name: _get_qualname(type(value))
+        for name, value in env.items()
+        if not (name.startswith("__") and name.endswith("__"))
+        and value not in vars(builtins).values()
+        and not isinstance(value, types.ModuleType)
+    }
+    if not rows:
+        return ""
+    body = "\n".join(f"| `{n}` | `{t}` |" for n, t in sorted(rows.items()))
+    return f"## Lexical scope\n\n| name | type |\n| --- | --- |\n{body}"
+
+
+def _render_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+    """Markdown table of the imported modules in scope (name -> module name).
+
+    Excludes dunder names and names already bound to their standard builtin.
+    """
+    rows = {
+        name: value.__name__
+        for name, value in env.items()
+        if not (name.startswith("__") and name.endswith("__"))
+        and value not in vars(builtins).values()
+        and isinstance(value, types.ModuleType)
+    }
+    if not rows:
+        return ""
+    body = "\n".join(f"| `{n}` | `{m}` |" for n, m in sorted(rows.items()))
+    return f"## Imported modules\n\n| name | module |\n| --- | --- |\n{body}"
+
+
+def _render_template_block(template: Template) -> str:
+    """Markdown spec for a single `Template`: header, prompt, arg schemas."""
+    parts = [f"### `{template.__name__}{template.__signature__}`"]
+    prompt = inspect.getdoc(template.__default__) or ""
+    if prompt:
+        parts.append(prompt)
+    args = [
+        f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
+        f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"
+        for name, p in template.__signature__.parameters.items()
+    ]
+    if args:
+        parts.append("**Arguments**\n\n" + "\n".join(args))
+    return "\n\n".join(parts)
+
+
+def _render_agent_block(template: Template) -> str:
+    """One lexical inventory plus the spec of every Template
+    sharing the current history (an Agent's methods, or just ``template``)."""
+    inst = (
+        template.__default__.__self__
+        if isinstance(template.__default__, types.MethodType)
+        else None
+    )
+    if isinstance(inst, Agent):
+        agent_doc = inspect.getdoc(type(inst)) or ""
+        templates = set()
+        for cls in type(inst).__mro__:
+            for attr in vars(cls):
+                try:
+                    value = getattr(inst, attr)
+                except Exception:
+                    continue
+                if isinstance(value, Template):
+                    templates.add(value)
+    else:
+        agent_doc = ""
+        templates = {template}
+
+    # Order by name so the prompt is stable across method reordering in source.
+    specs = "\n\n".join(
+        _render_template_block(t) for t in sorted(templates, key=lambda t: t.__name__)
+    )
+    sections = [
+        f"## Agent `{_get_qualname(type(inst))}`\n\n{agent_doc}" if agent_doc else "",
+        f"## Templates\n\n{specs}",
+    ]
+    return "\n\n".join(s for s in sections if s)
+
+
+def _render_module_block(mod: types.ModuleType | None) -> str:
+    """Markdown section with the source (or docstring fallback) of a module."""
+    if mod is None:
+        return ""
+    try:
+        src = inspect.getsource(mod)
+        return f"## Module `{mod.__name__}`\n\n```python\n{src}\n```"
+    except (OSError, TypeError):
+        doc = inspect.getdoc(mod)
+        return f"## Module `{mod.__name__}`\n\n{doc}" if doc else ""
+
+
+def _render_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
+    """Constant framework-concept prefix, sourced from real docstrings."""
+    import effectful.handlers.llm as _llm
+
+    assert all(issubclass(t, Tool) and t not in {Tool, Template} for t in tool_types)
+    parts = [inspect.getdoc(_llm) or ""]
+    for obj in [
+        Template,
+        Tool,
+        Agent,
+        Encodable,
+        *sorted(tool_types, key=_get_qualname),
+    ]:
+        parts += [f"## `{obj.__name__}`\n\n{inspect.getdoc(obj)}"]
+    return "\n\n".join(p for p in parts if p)
+
+
 @Operation.define
-def call_system(template: Template) -> Message:
-    """
-    Get system instruction message(s) to prepend to all LLM prompts.
-    """
-    system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
-    message = _make_message(dict(role="system", content=system_prompt))
+def call_system(
+    template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
+) -> Message:
+    """Assemble and install the system message (a Markdown document)."""
+    sections = [
+        _render_global_block(tool_types),
+        _render_module_block(inspect.getmodule(template)),
+        _render_agent_block(template),
+        _render_imports_block(template.__context__),
+        _render_vars_block(template.__context__),
+    ]
+    content = "\n\n".join(s for s in sections if s)
+    message = _make_message(dict(role="system", content=content))
     append_message(message, last=False)
     return message
-
-
-class _LexicalVariableTool[T](Tool[[], T]):
-    """A zero-arg `Tool` that returns the captured value of a variable
-    from a `Template`'s lexical context.
-
-    Tools are constructed fresh each `call_assistant` invocation, so
-    the reader closes over the snapshot `value` rather than the
-    surrounding `env` — in-place mutation of a mutable value is still
-    visible (same object reference), but rebinding the source name is
-    not.
-    """
-
-    @classmethod
-    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
-        """Construct a synthetic reader Tool that returns `value`.
-
-        Raises if `Encodable[nested_type(value)]` cannot be generated.
-        The caller is responsible for catching the failure and deciding
-        whether to skip the symbol.
-        """
-        assert not isinstance(value, Tool), (
-            "Tools are real tools and must not be re-wrapped as lexical readers."
-        )
-        typ: typing.Any = nested_type(value).value
-        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
-        pydantic.TypeAdapter(Encodable[typ]).json_schema()
-
-        def tool_fn():
-            return value
-
-        tool_fn.__name__ = name
-        tool_fn.__qualname__ = name
-        tool_fn.__module__ = type(value).__module__
-        tool_fn.__doc__ = (
-            f"Reads the value of lexical variable `{name}` from the "
-            f"enclosing scope where this Template was defined.  Takes "
-            f"no arguments; returns the current value."
-        )
-        tool_fn.__annotations__ = {"return": typ}
-        return super().define(tool_fn)
 
 
 class LexicalReaders(ObjectInterpretation):
@@ -448,6 +538,48 @@ class LexicalReaders(ObjectInterpretation):
     schema-generation failures cause the symbol to be skipped.
     """
 
+    @typing.final
+    class _LexicalVariableTool[T](Tool[[], T]):
+        """## Reading lexical variables
+
+        Some of the tools below take no arguments and simply return the current
+        value of a named variable from this Template's lexical scope (see the
+        *Lexical scope* table for the available names and their types). Call such a
+        reader when your answer depends on the concrete value of an in-scope
+        variable that has not already been spliced into the prompt — it lets you
+        fetch that value on demand instead of guessing it. Each reader's description
+        names the variable it reads.
+        """
+
+        @classmethod
+        def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
+            """Construct a synthetic reader Tool that returns `value`.
+
+            Raises if `Encodable[nested_type(value)]` cannot be generated.
+            The caller is responsible for catching the failure and deciding
+            whether to skip the symbol.
+            """
+            assert not isinstance(value, Tool), (
+                "Tools are real tools and must not be re-wrapped as lexical readers."
+            )
+            typ: typing.Any = nested_type(value).value
+            # Probe schema generation; raises if `Encodable[typ]` is not implemented.
+            pydantic.TypeAdapter(Encodable[typ]).json_schema()
+
+            def tool_fn():
+                return value
+
+            tool_fn.__name__ = name
+            tool_fn.__qualname__ = name
+            tool_fn.__module__ = type(value).__module__
+            tool_fn.__doc__ = "Reads lexical variable of the same name"
+            tool_fn.__annotations__ = {"return": typ}
+            return super().define(tool_fn)
+
+    @implements(call_system)
+    def _call_system(self, template, tool_types=frozenset()):
+        return fwd(template, tool_types=tool_types | {self._LexicalVariableTool})
+
     @implements(collect_tools)
     def _collect(
         self, env: collections.abc.Mapping[str, typing.Any]
@@ -457,7 +589,7 @@ class LexicalReaders(ObjectInterpretation):
             if name in result or not name.isidentifier() or isinstance(obj, Tool):
                 continue
             try:
-                result[name] = _LexicalVariableTool.define(obj, name=name)
+                result[name] = self._LexicalVariableTool.define(obj, name=name)
             except (
                 pydantic.errors.PydanticSchemaGenerationError,
                 pydantic.errors.PydanticInvalidForJsonSchema,
@@ -465,52 +597,6 @@ class LexicalReaders(ObjectInterpretation):
             ):
                 continue
         return result
-
-
-class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
-    """A :class:`FinalTool` that finalizes a Template by synthesizing a function.
-
-    The tool takes one argument -- a function with the Template's signature,
-    synthesized from the model's code by the existing ``Encodable[Callable[...]]``
-    machinery -- and applies it to the original inputs (recovered from ``env``),
-    returning the value.  Because it is a :class:`FinalTool`, calling it
-    terminates the completion loop and its return value is the Template's result.
-    """
-
-    @classmethod
-    def define(
-        cls,
-        template: Template[..., T],
-        bound_args: inspect.BoundArguments,
-        *,
-        name: str,
-    ) -> FinalTool[[collections.abc.Callable[..., T]], T]:
-        # Synthesize a drop-in syntactic replacement for the Template body, so the
-        # function carries the Template's full signature -- including `self` for
-        # Agent-method Templates (whose `__default__` is a bound method).
-        if isinstance(template.__default__, types.MethodType):
-            signature = inspect.signature(template.__default__.__func__)
-            args, kwargs = (
-                (template.__default__.__self__,) + bound_args.args,
-                bound_args.kwargs,
-            )
-        else:
-            signature = inspect.signature(template)
-            args, kwargs = bound_args.args, bound_args.kwargs
-
-        callable_type = _callable_type_from_signature(signature)
-        callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
-        return_type = signature.return_annotation
-
-        def submit_solution(implementation: callable_type) -> return_type:  # type: ignore
-            """
-            Submit your final answer as a Python function implementing the task.
-            The function must have the required signature; it is applied to the
-            original inputs and its return value is your final answer.
-            """
-            return implementation(*args, **kwargs)  # type: ignore
-
-        return super().define(submit_solution, name=name)
 
 
 class SynthesizeAndCall(ObjectInterpretation):
@@ -553,13 +639,68 @@ class SynthesizeAndCall(ObjectInterpretation):
     be compiled and executed.
     """
 
+    @typing.final
+    class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
+        """## Code synthesis
+
+        You may "answer" a Template by writing code instead of producing the value
+        directly. A final tool (typically `submit_solution`) accepts a single
+        argument: a Python function whose signature matches the Template's signature
+        (see its spec below). The harness applies that function to the original
+        inputs and its return value becomes the answer, so write the function body
+        as a drop-in implementation of the Template. The function may reference
+        names from the lexical scope (see the *Lexical scope* table). Calling this
+        tool terminates the completion.
+        """
+
+        __toolname__: typing.ClassVar[typing.Literal["submit_solution"]] = (
+            "submit_solution"
+        )
+
+        @classmethod
+        def define(
+            cls,
+            template: Template[..., T],
+            bound_args: inspect.BoundArguments,
+        ) -> FinalTool[[collections.abc.Callable[..., T]], T]:
+            # Synthesize a drop-in syntactic replacement for the Template body, so the
+            # function carries the Template's full signature -- including `self` for
+            # Agent-method Templates (whose `__default__` is a bound method).
+            if isinstance(template.__default__, types.MethodType):
+                signature = inspect.signature(template.__default__.__func__)
+                args, kwargs = (
+                    (template.__default__.__self__,) + bound_args.args,
+                    bound_args.kwargs,
+                )
+            else:
+                signature = inspect.signature(template)
+                args, kwargs = bound_args.args, bound_args.kwargs
+
+            callable_type = _callable_type_from_signature(signature)
+            callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
+            return_type = signature.return_annotation
+
+            def submit_solution(implementation: callable_type) -> return_type:  # type: ignore
+                """
+                Submit your final answer as a Python function implementing the task.
+                The function must have the required signature; it is applied to the
+                original inputs and its return value is your final answer.
+                """
+                return implementation(*args, **kwargs)  # type: ignore
+
+            return super().define(submit_solution, name=cls.__toolname__)
+
+    @implements(call_system)
+    def _call_system(self, template, tool_types=frozenset()):
+        return fwd(template, tool_types=tool_types | {self._SynthesisFinalTool})
+
     @implements(Template.__apply__)
     def _apply[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         bound_args = template.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
-        tool = _SynthesisFinalTool.define(template, bound_args, name="submit_solution")
+        tool = self._SynthesisFinalTool.define(template, bound_args)
         with handler({collect_tools: lambda _: {**fwd(), tool.__name__: tool}}):  # type: ignore
             return fwd()
 
@@ -584,17 +725,37 @@ class PythonRepl(ObjectInterpretation):
     installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
     """
 
-    @Tool.define
+    @typing.final
+    class _ReplInteractionTool[**P, T](Tool[P, T]):
+        """## Python REPL
+
+        You may run arbitrary Python code in a persistent session. The code is
+        executed in the context of this Template's lexical scope (see the *Lexical
+        scope* table for the available names and their types). The session persists
+        across turns, so you may define variables, functions, and classes that are
+        used in later turns. The return value of the code is returned to you as the
+        result of the tool call.
+        """
+
+    @typing.final
+    @_ReplInteractionTool.define
+    @classmethod
     @functools.wraps(ReplSession.exec_code)
-    def exec_code(self, code: types.CodeType) -> str:
+    def exec_code(cls, code: types.CodeType) -> str:
         raise NotImplementedError("No handler")
 
-    @Tool.define
-    def read_lexical_variable(self, name: str) -> typing.Any:
+    @typing.final
+    @_ReplInteractionTool.define
+    @classmethod
+    def read_lexical_variable(cls, name: str) -> typing.Any:
         """
         Read the value of lexical variable ``name`` into the LLM context.
         """
         raise NotImplementedError("No handler")
+
+    @implements(call_system)
+    def _call_system(self, template, tool_types=frozenset()):
+        return fwd(template, tool_types=tool_types | {self._ReplInteractionTool})
 
     @implements(Template.__apply__)
     def _apply[**P, T](
@@ -753,9 +914,9 @@ class LiteLLMProvider(ObjectInterpretation):
                 not _get_history()
                 or next(iter(_get_history().values()))["role"] != "system"
             ):
-                call_system(template)
+                message: Message = call_system(template)
 
-            message: Message = call_user(template.__prompt_template__, env)
+            message = call_user(template.__prompt_template__, env)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             result: T | None = None

@@ -11,8 +11,11 @@ from litellm import ModelResponse
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.completions import (
     DEFAULT_SYSTEM_PROMPT,
+    LexicalReaders,
     LiteLLMProvider,
     RetryLLMHandler,
+    _get_history,
+    call_system,
     call_user,
     completion,
 )
@@ -450,36 +453,49 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[0])
         assert_single_system_message_first(mock.received_messages[1])
 
-    def test_empty_system_prompt_uses_default_fallback(self):
+    def test_system_message_assembled_from_introspection(self):
         @Template.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
-
-        # Simulate notebook/empty-module-docstring fallback case.
-        standalone.__system_prompt__ = ""
 
         mock = MockCompletionHandler([make_text_response("ok")])
         with handler(LiteLLMProvider()), handler(mock):
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        assert mock.received_messages[0][0]["content"] == DEFAULT_SYSTEM_PROMPT
+        content = mock.received_messages[0][0]["content"]
+        # call_system is now the sole assembler: the content is a Markdown
+        # document introspected from the Template, not a stored attribute.
+        assert content != DEFAULT_SYSTEM_PROMPT
+        assert "### `standalone(topic: str) -> str`" in content
+        assert "Write about {topic}." in content
 
 
 class TestAgentDocstringFallback:
-    """Agent subclasses can fall back to inherited class docstrings."""
+    """Agent subclasses' class docstrings flow into the assembled system message."""
+
+    def _system_content(self, template):
+        od = collections.OrderedDict()
+        with handler({_get_history: lambda: od}):
+            call_system(template)
+        return next(iter(od.values()))["content"]
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):
-            pass
+            @Template.define
+            def act(self) -> str:
+                """Do something."""
+                raise NotHandled
 
         assert MissingDocAgent.__doc__ is None
-        prompt = MissingDocAgent().__system_prompt__
-        assert prompt
+        content = self._system_content(MissingDocAgent().act)
+        # No subclass docstring -> the Agent base-class docstring is used as the
+        # tier-3 "## Agent" section (inspect.getdoc walks the MRO).
         agent_doc = inspect.getdoc(Agent)
         assert agent_doc is not None
-        assert prompt == agent_doc
+        assert "## Agent `MissingDocAgent`" in content
+        assert agent_doc in content
 
     def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):
@@ -487,11 +503,14 @@ class TestAgentDocstringFallback:
             Your goal is to satisfy the explicit Agent docstring requirement.
             """
 
+            @Template.define
+            def act(self) -> str:
+                """Do something."""
+                raise NotHandled
+
         assert ValidDocAgent.__doc__ is not None
-        assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
-        assert (
-            "You are a valid-docstring test agent." in ValidDocAgent().__system_prompt__
-        )
+        content = self._system_content(ValidDocAgent().act)
+        assert "You are a valid-docstring test agent." in content
 
 
 class TestAgentCachedProperty:
@@ -1644,7 +1663,6 @@ from types import CodeType
 import pydantic
 
 from effectful.handlers.llm.completions import (
-    LexicalReaders,
     PythonRepl,
     _LexicalVariableTool,
     collect_tools,
