@@ -370,6 +370,7 @@ def _pydantic_type_tuple(ty):
         nt_model = pydantic.create_model(
             ty.__name__,
             __config__={"extra": "forbid"},
+            __doc__=ty.__doc__,
             **{f: (t, ...) for f, t in zip(nt_fields, nt_types)},
         )
 

@@ -14,6 +14,7 @@ and refine incorrect attempts given feedback from failures of ``submit_solution`
 import argparse
 import contextlib
 import os
+import pathlib
 from typing import Literal, NamedTuple
 
 import tenacity
@@ -26,6 +27,7 @@ from effectful.handlers.llm.completions import (
     PythonRepl,
     RetryLLMHandler,
     SynthesizeAndCall,
+    SystemPromptDumper,
     TerminalRenderer,
 )
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
@@ -275,10 +277,20 @@ if __name__ == "__main__":
         action="store_true",
         help="Live-render the streaming message history in the terminal",
     )
+    parser.add_argument(
+        "--dump-system-prompt",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Dump the assembled system prompt to this Markdown file",
+    )
     args = parser.parse_args()
     with (
         handler(LiteLLMProvider(model=args.model, tool_choice="required")),
         handler(TerminalRenderer()) if args.render else contextlib.nullcontext(),
+        handler(SystemPromptDumper(path=pathlib.Path(args.dump_system_prompt)))
+        if args.dump_system_prompt
+        else contextlib.nullcontext(),
         handler(UnsafeEvalProvider()),
         handler(PythonRepl()),
         handler(SynthesizeAndCall()),
