@@ -47,6 +47,7 @@ is an algebraic effect, behavior (model requests, tool dispatch, history) can be
 observed, logged, or overridden by installing additional handlers.
 """
 
+from .encoding import Encodable
 from .template import Agent, Template, Tool
 
-__all__ = ["Agent", "Template", "Tool"]
+__all__ = ["Agent", "Template", "Tool", "Encodable"]

@@ -224,16 +224,16 @@ class Template[**P, T](Tool[P, T]):
     ## Prompt assembly
 
     A call produces two messages. The **system message** is assembled once per
-    conversation, ordered most-constant-first so it caches well. Its sections, in
-    order:
+    conversation, ordered most-constant-first so it caches well. Each section is a
+    top-level `#` heading whose contents nest beneath it; in order:
 
     | # | Section heading | Content | Constant over |
     | - | --------------- | ------- | ------------- |
-    | 1 | `## Template` / `Tool` / `Agent` / `Encodable` (+ any handler blocks) | Framework concepts — sourced from these class docstrings | the process |
-    | 2 | `## Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
-    | 3 | `## Agent <cls>` + `## Templates` | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
-    | 4 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
-    | 5 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
+    | 1 | `# The effectful LLM framework` | Framework concepts — the package overview plus a `##` subsection per concept (`Template`, `Tool`, `Agent`, `Encodable`, and any handler tool blocks), sourced from these docstrings | the process |
+    | 2 | `# Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
+    | 3 | `# Agent <cls>` (or `# Template`) | Agent docstring, then a `## <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
+    | 4 | `# Imported modules` | Table of in-scope imports (name → module) | the scope |
+    | 5 | `# Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
 
     The **user message** is the per-call part — only its changing values are
     re-sent each turn; everything constant lives in the system message above. It

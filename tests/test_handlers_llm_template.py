@@ -489,10 +489,10 @@ class TestAgentDocstringFallback:
         assert MissingDocAgent.__doc__ is None
         content = self._system_content(MissingDocAgent().act)
         # No subclass docstring -> the Agent base-class docstring is used as the
-        # tier-3 "## Agent" section (inspect.getdoc walks the MRO).
+        # tier-3 "# Agent" section (inspect.getdoc walks the MRO).
         agent_doc = inspect.getdoc(Agent)
         assert agent_doc is not None
-        assert "## Agent `MissingDocAgent`" in content
+        assert "# Agent `MissingDocAgent`" in content
         assert agent_doc in content
 
     def test_non_empty_docstring_overrides_inherited_doc(self):
