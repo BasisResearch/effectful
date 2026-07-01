@@ -15,7 +15,9 @@ implemented by a large language model, and call them like ordinary code.
 - **`Tool`** — a normal Python callable exposed to the model. Its signature and
   docstring become the schema the model sees; the model calls it by name with
   JSON arguments and receives the encoded result. Tools in a template's lexical
-  scope are offered to the model automatically. Define one with `Tool.define`.
+  scope are offered to the model automatically; because scope is ordinary Python
+  scope, an `Agent` (or an enclosing function) naturally partitions tools and
+  templates into disjoint sets. Define one with `Tool.define`.
 
 - **`Agent`** — a class mixin giving each instance a persistent message history,
   so its `Template` methods accumulate conversation context across calls.

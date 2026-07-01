@@ -397,7 +397,7 @@ def _get_qualname(cls) -> str:
     return name if module in (None, "builtins") else f"{module}.{name}"
 
 
-def _render_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+def _system_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
     """Markdown table of the non-module bindings in scope (name -> type).
 
     Excludes dunder names (``__main__`` etc.) and names already bound to their
@@ -416,7 +416,7 @@ def _render_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
     return f"## Lexical scope\n\n| name | type |\n| --- | --- |\n{body}"
 
 
-def _render_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+def _system_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
     """Markdown table of the imported modules in scope (name -> module name).
 
     Excludes dunder names and names already bound to their standard builtin.
@@ -434,7 +434,7 @@ def _render_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
     return f"## Imported modules\n\n| name | module |\n| --- | --- |\n{body}"
 
 
-def _render_template_block(template: Template) -> str:
+def _system_template_block(template: Template) -> str:
     """Markdown spec for a single `Template`: header, prompt, arg schemas."""
     parts = [f"### `{template.__name__}{template.__signature__}`"]
     prompt = inspect.getdoc(template.__default__) or ""
@@ -450,7 +450,7 @@ def _render_template_block(template: Template) -> str:
     return "\n\n".join(parts)
 
 
-def _render_agent_block(template: Template) -> str:
+def _system_agent_block(template: Template) -> str:
     """One lexical inventory plus the spec of every Template
     sharing the current history (an Agent's methods, or just ``template``)."""
     inst = (
@@ -475,7 +475,7 @@ def _render_agent_block(template: Template) -> str:
 
     # Order by name so the prompt is stable across method reordering in source.
     specs = "\n\n".join(
-        _render_template_block(t) for t in sorted(templates, key=lambda t: t.__name__)
+        _system_template_block(t) for t in sorted(templates, key=lambda t: t.__name__)
     )
     sections = [
         f"## Agent `{_get_qualname(type(inst))}`\n\n{agent_doc}" if agent_doc else "",
@@ -484,7 +484,7 @@ def _render_agent_block(template: Template) -> str:
     return "\n\n".join(s for s in sections if s)
 
 
-def _render_module_block(mod: types.ModuleType | None) -> str:
+def _system_module_block(mod: types.ModuleType | None) -> str:
     """Markdown section with the source (or docstring fallback) of a module."""
     if mod is None:
         return ""
@@ -496,7 +496,7 @@ def _render_module_block(mod: types.ModuleType | None) -> str:
         return f"## Module `{mod.__name__}`\n\n{doc}" if doc else ""
 
 
-def _render_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
+def _system_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
     """Constant framework-concept prefix, sourced from real docstrings."""
     import effectful.handlers.llm as _llm
 
@@ -519,11 +519,11 @@ def call_system(
 ) -> Message:
     """Assemble and install the system message (a Markdown document)."""
     sections = [
-        _render_global_block(tool_types),
-        _render_module_block(inspect.getmodule(template)),
-        _render_agent_block(template),
-        _render_imports_block(template.__context__),
-        _render_vars_block(template.__context__),
+        _system_global_block(tool_types),
+        _system_module_block(inspect.getmodule(template)),
+        _system_agent_block(template),
+        _system_imports_block(template.__context__),
+        _system_vars_block(template.__context__),
     ]
     content = "\n\n".join(s for s in sections if s)
     message = _make_message(dict(role="system", content=content))
@@ -656,8 +656,13 @@ class SynthesizeAndCall(ObjectInterpretation):
         (see its spec below). The harness applies that function to the original
         inputs and its return value becomes the answer, so write the function body
         as a drop-in implementation of the Template. The function may reference
-        names from the lexical scope (see the *Lexical scope* table). Calling this
-        tool terminates the completion.
+        names from the lexical scope (see the *Lexical scope* table).
+
+        Give the function a docstring containing `>>>` doctests that demonstrate
+        its intended behavior on examples. On submission the harness runs those
+        doctests: a solution whose doctests fail (or that errors when applied) is
+        rejected and fed back to you to revise, so the answer only stands once the
+        function's own doctests pass. Calling this tool terminates the completion.
         """
 
         __toolname__: typing.ClassVar[typing.Literal["submit_solution"]] = (

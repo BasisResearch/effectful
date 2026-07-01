@@ -155,15 +155,24 @@ class Template[**P, T](Tool[P, T]):
 
     ## Constructing Templates
 
-    Templates are constructed by calling `Template.define`.
-    `Template.define` should be used as a decorator on a function or method.
-    The function must be fully type-annotated and have a docstring.
-    The body of the function must contain only `raise NotHandled`.
-    See `effectful.ops.types.Operation.define` for more information on the use of `Template.define`.
+    Apply `Template.define` as a decorator to a fully type-annotated function or
+    method whose body is `raise NotHandled`. The docstring is a
+    [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
+    prompt: its `{...}` fields are filled at call time (see *Prompt assembly*
+    below) and the LLM's response is decoded to the return type.
 
-    The template docstring is a [format string](https://docs.python.org/3/library/string.html#format-string-syntax),
-    which may refer to the template arguments.
-    When the template is called, the arguments and docstring are formatted into a prompt for the LLM and the LLM's response is returned.
+    `Template.define` validates the definition and raises if:
+
+    - the function has no docstring (every `Tool` needs one);
+    - a `{...}` field names something that is neither a parameter nor a name in
+      lexical scope — every field must resolve at call time;
+    - a doctest example (`>>>`) in the docstring contains an active `{...}` field:
+      doctests must be constant, since the whole docstring is formatted into the
+      prompt at call time; escape any literal braces as `{{` and `}}`;
+    - the `IsRecursive` annotation is applied to a parameter rather than the
+      return type.
+
+    See `effectful.ops.types.Operation.define` for more on `Template.define`.
 
     The following template writes limericks on a given theme:
 
@@ -204,9 +213,36 @@ class Template[**P, T](Tool[P, T]):
 
     ## Using tools
 
-    Instances of `Tool` that are in the lexical scope of a `Template` may be called by the LLM during template completion.
-    Templates are themselves tools which enables the construction of complex agent workflows.
-    When a method is defined as a template, other methods on the class that are decorated with `Tool.define` or `Template.define` are provided to the template as tools.
+    Instances of `Tool` in a `Template`'s lexical scope may be called by the LLM
+    during completion, and are offered automatically. Scope follows ordinary
+    Python rules: enclosing-function locals, module globals, and — for a method
+    template — sibling `Tool`/`Template` methods on the same class. A template
+    cannot call a tool it cannot lexically see, so it should use only tools that
+    are in scope and relevant to the task. Templates are themselves tools,
+    enabling composition into agent workflows.
+
+    ## Prompt assembly
+
+    A call produces two messages. The **system message** is assembled once per
+    conversation, ordered most-constant-first so it caches well. Its sections, in
+    order:
+
+    | # | Section heading | Content | Constant over |
+    | - | --------------- | ------- | ------------- |
+    | 1 | `## Template` / `Tool` / `Agent` / `Encodable` (+ any handler blocks) | Framework concepts — sourced from these class docstrings | the process |
+    | 2 | `## Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
+    | 3 | `## Agent <cls>` + `## Templates` | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
+    | 4 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
+    | 5 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
+
+    The **user message** is the per-call part — only its changing values are
+    re-sent each turn; everything constant lives in the system message above. It
+    has two parts:
+
+    | # | Part | Content |
+    | - | ---- | ------- |
+    | 1 | Header | `<name><signature>` — identifies which template this turn calls |
+    | 2 | Body | The docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
 
     """
 
@@ -427,6 +463,37 @@ class Agent(abc.ABC):
         chatbot.send("Hi! How are you? I am in France.")
         chatbot.send("Remind me again, where am I?")  # sees prior context
     ```
+
+    ## Encapsulation via lexical scope
+
+    Since scope is ordinary Python scope, defining agents inside a function
+    partitions their `Template`s and `Tool`s into disjoint sets:
+
+    ```python
+    class Chatbot(Agent):
+        @Template.define
+        def respond(self, user_query: str) -> str: ...
+
+    class TravelAdvisor(Agent):
+        @Template.define
+        def recommend(self, user_query: str) -> str: ...
+        @Tool.define
+        def search_weather(self, city: str) -> str: ...
+
+    def main():
+        chatbot, advisor = Chatbot(), TravelAdvisor()
+
+        @Template.define
+        def simulate(chatbot, advisor) -> str:
+            \"""Use {chatbot} and {advisor} to simulate a conversation.\"""
+            ...
+    ```
+
+    `chatbot.respond` sees only its own methods (plus module-level definitions),
+    not `advisor`'s; `simulate` sees `chatbot` and `advisor`, but they cannot see
+    `simulate`. Inlining these definitions into module scope instead would let
+    every template see every other. Agents that need overlapping toolsets should
+    share tools through a common base class or mixin rather than redefining them.
 
     """
 
