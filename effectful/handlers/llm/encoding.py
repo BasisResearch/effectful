@@ -552,11 +552,14 @@ def _pydantic_callable(callable_type: Any) -> Any:
 
         _validate_signature_ast(last_stmt, expected_params)
 
-        # `type_check_anchor` is the Template's underlying function, bound per call
-        # by Template.__apply__; it is None for tool-argument decoding, which
-        # therefore skips the source-anchored type check.
+        # `type_check_anchor` is the Template's underlying function (bound per call
+        # by Template.__apply__); None for tool-argument decoding, which has no source
+        # anchor and so skips the splice type check. When present, the code is spliced
+        # into the Template body, so first reject constructs illegal once nested (star
+        # / `__future__` imports), then type-check.
         anchor = evaluation.type_check_anchor()
         if anchor is not None:
+            evaluation.scan_non_nestable(module)
             evaluation.type_check(module, anchor)
 
         g: MutableMapping[str, Any] = {}

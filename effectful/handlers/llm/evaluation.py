@@ -115,7 +115,7 @@ def exec(
 logger = logging.getLogger(__name__)
 
 
-def _scan_non_nestable(generated: ast.Module) -> None:
+def scan_non_nestable(generated: ast.Module) -> None:
     """Reject constructs legal at module level but illegal once nested in a function.
 
     ``from ... import *`` and ``from __future__ import ...`` are both ``SyntaxError``s
@@ -236,8 +236,6 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
             f"got {type(last).__name__}"
         )
     target_name = last.name
-
-    _scan_non_nestable(generated)
 
     fn = _unwrap(anchor)
     module_source = _recover_module_source(fn)

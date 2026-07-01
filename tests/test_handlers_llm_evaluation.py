@@ -21,6 +21,7 @@ from effectful.handlers.llm.evaluation import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
     mypy_type_check,
+    scan_non_nestable,
     type_check_anchor,
 )
 from effectful.handlers.llm.evaluation import compile as compile_op
@@ -131,16 +132,20 @@ def test_unannotated_container_is_not_a_false_positive():
 
 
 def test_star_import_raises():
-    assert _raises(
-        "from os import *\ndef g(s: str) -> int:\n    return 0\n", _count_char
-    )
+    with pytest.raises(TypeError):
+        scan_non_nestable(
+            ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
+        )
 
 
 def test_future_import_raises():
-    assert _raises(
-        "from __future__ import annotations\ndef g(s: str) -> int:\n    return 0\n",
-        _count_char,
-    )
+    with pytest.raises(TypeError):
+        scan_non_nestable(
+            ast.parse(
+                "from __future__ import annotations\n"
+                "def g(s: str) -> int:\n    return 0\n"
+            )
+        )
 
 
 def test_annotation_collision_with_context_type_raises():
@@ -306,6 +311,38 @@ def test_decode_without_anchor_skips_typecheck():
         fn = ta.validate_python(
             SynthesizedFunction(
                 module_code="def count_a(s: str) -> str:\n    return s"
+            ),
+            context={},
+        )
+        assert callable(fn)
+
+
+def test_decode_with_anchor_rejects_non_nestable():
+    # The non-nestable scan is a decode-time precondition of the splice: with an
+    # anchor, a star import (illegal once nested in the Template body) is rejected
+    # before type checking.
+    with (
+        handler(UnsafeEvalProvider()),
+        handler({type_check_anchor: lambda: _count_char}),
+    ):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        with pytest.raises(Exception):
+            ta.validate_python(
+                SynthesizedFunction(
+                    module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+                ),
+                context={},
+            )
+
+
+def test_decode_without_anchor_allows_non_nestable():
+    # No anchor -> no splice -> the scan is skipped, and the star import is legal at
+    # the module level where the code is exec'd. So it decodes and runs fine.
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(
+                module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
             ),
             context={},
         )
