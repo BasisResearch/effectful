@@ -5,6 +5,7 @@ from effectful.handlers.llm import Template
 from effectful.handlers.llm.template import IsRecursive
 from effectful.ops.semantics import NotHandled, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
+from tests.conftest import template_tools
 
 
 class SingleResponseLLMProvider[T](ObjectInterpretation):
@@ -132,8 +133,8 @@ def test_template_captures_other_templates_in_lexical_context():
     assert write_story.__context__["story_funny"] is story_funny
 
     # Templates in lexical context are exposed as callable tools
-    assert story_with_moral in write_story.tools.values()
-    assert story_funny in write_story.tools.values()
+    assert story_with_moral in template_tools(write_story).values()
+    assert story_funny in template_tools(write_story).values()
 
 
 def test_template_composition_with_chained_calls():
@@ -178,11 +179,11 @@ def test_mutually_recursive_templates():
     assert "mutual_b" in mutual_b.__context__
 
     # They should also be in each other's tools
-    assert mutual_a in mutual_b.tools.values()
-    assert mutual_b in mutual_a.tools.values()
+    assert mutual_a in template_tools(mutual_b).values()
+    assert mutual_b in template_tools(mutual_a).values()
     # And themselves (self-recursion)
-    assert mutual_a in mutual_a.tools.values()
-    assert mutual_b in mutual_b.tools.values()
+    assert mutual_a in template_tools(mutual_a).values()
+    assert mutual_b in template_tools(mutual_b).values()
 
 
 # Module-level variable for shadowing test

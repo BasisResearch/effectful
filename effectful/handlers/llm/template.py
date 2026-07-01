@@ -307,23 +307,6 @@ class Template[**P, T](Tool[P, T]):
         )
         return f"{header}\n\n{self.__default__.__doc__}"
 
-    @property
-    def tools(self) -> Mapping[str, Tool]:
-        """Operations and Templates available as tools, plus synthetic
-        readers for other lexical symbols. Auto-captured from lexical context."""
-        from effectful.handlers.llm.completions import collect_tools
-
-        result = dict(collect_tools(self.__context__))
-
-        # We remove the template itself from the tool map unless it is explicitly
-        # marked as recursive (see test_template_method, test_template_method_nested_class).
-        if not _is_recursive_signature(self.__signature__):
-            for name, tool in tuple(result.items()):
-                if tool is self:
-                    del result[name]
-
-        return result
-
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
         if hasattr(self, "_name_on_instance") and hasattr(
             instance, self._name_on_instance

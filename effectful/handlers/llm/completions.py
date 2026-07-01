@@ -25,6 +25,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    _TOOLS_KEY,
     DecodedToolCall,
     Encodable,
     _callable_type_from_signature,
@@ -38,7 +39,6 @@ from effectful.handlers.llm.template import (
     FinalTool,
     Template,
     Tool,
-    _is_recursive_signature,
 )
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd, handler
@@ -175,38 +175,30 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
         )
 
 
-@Operation.define
-def collect_tools(
+def _tools_in_scope(
     env: collections.abc.Mapping[str, typing.Any],
-) -> collections.abc.Mapping[str, Tool]:
+) -> collections.abc.Set[Tool]:
     """Return the tools available to a Template given its lexical context.
 
     Default rule: real `Tool` and `Template` values bound directly in
     `env`, plus `Tool` methods discovered through the MRO of any
-    `Agent` instance in `env`.  Same-Tool-under-different-names is
-    deduped so each Tool appears exactly once.
+    `Agent` instance in `env`.
 
-    Handlers (see :class:`LexicalReaders`) may override this to add
-    synthetic readers, hide tools, etc.
+    Tools are identified by object, so the same `Tool` visible under
+    several bindings appears once.  Names are derived from each tool's
+    `__name__` by :func:`call_assistant`, not from the binding name.
     """
-    result: dict[str, Tool] = {}
+    result: set[Tool] = set()
 
-    for name, obj in env.items():
+    for obj in env.values():
         if isinstance(obj, Tool | Template):
-            result[name] = obj
+            result.add(obj)
         elif isinstance(obj, Agent):
             for cls in type(obj).__mro__:
                 for attr_name in vars(cls):
-                    if isinstance(getattr(obj, attr_name), Tool):
-                        result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-
-    # Same Tool can appear under multiple names when visible both in the
-    # enclosing scope and via an Agent instance's MRO.  Keep only the
-    # last name for each unique tool object.
-    tool2name = {tool: name for name, tool in sorted(result.items())}
-    for name, tool in tuple(result.items()):
-        if tool2name[tool] != name:
-            del result[name]
+                    attr = getattr(obj, attr_name)
+                    if isinstance(attr, Tool):
+                        result.add(attr)
 
     return result
 
@@ -234,13 +226,18 @@ type AssistantResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | N
 def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
-    model: str,
-    **kwargs,
+    tools: collections.abc.Set[Tool] = frozenset(),
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
     This effect is emitted for model request/response rounds so handlers can
     observe/log requests.
+
+    The available `tools` are passed explicitly as a set; handlers that expose
+    additional tools (synthetic readers, REPL access, synthesis) intercept this
+    operation and union them into `tools` before forwarding.  Each tool's
+    model-visible name is derived from its `__name__` (see :func:`_name_tools`),
+    so collection and decoding agree on a single naming scheme.
 
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
@@ -248,20 +245,16 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = collect_tools(env)
-    # Decode tool calls (and the code synthesized for them) against the lexical
-    # context, so they resolve names from the Template's scope.
-    env = collections.ChainMap(
-        typing.cast("collections.abc.MutableMapping[str, typing.Any]", env),
-        typing.cast("collections.abc.MutableMapping[str, typing.Any]", tools),
-    )
-    tool_specs = {
-        k: typing.cast(
+    name2tool = {t.__name__: t for t in tools}
+    assert len(name2tool) == len(tools)
+    env = {_TOOLS_KEY: name2tool, **env}
+    tool_specs = []
+    for name, t in sorted(name2tool.items()):
+        spec = typing.cast(
             pydantic.TypeAdapter[typing.Any],
             pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
-        ).dump_python(t, mode="json", context={k: t})
-        for k, t in tools.items()
-    }
+        ).dump_python(t, mode="json", context={name: t})
+        tool_specs.append(spec)
 
     # The OpenAI API requires a wrapper object for non-object structured output types,
     # so we create one on the fly here. Using a Pydantic model offloads JSON schema
@@ -273,11 +266,9 @@ def call_assistant[T](
     )
 
     response: litellm.types.utils.ModelResponse = completion(
-        model,
         messages=list(_get_history().values()),
         response_format=None if response_type is str else response_format,
-        tools=list(tool_specs.values()),
-        **kwargs,
+        tools=tool_specs,
     )
     choice = response.choices[0]
     assert isinstance(choice, litellm.types.utils.Choices)
@@ -441,7 +432,7 @@ def _render_template_block(template: Template) -> str:
         parts.append(prompt)
     args = [
         f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
-        f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"
+        f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"  # type: ignore[name-defined]
         for name, p in template.__signature__.parameters.items()
     ]
     if args:
@@ -508,7 +499,7 @@ def _render_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
         Encodable,
         *sorted(tool_types, key=_get_qualname),
     ]:
-        parts += [f"## `{obj.__name__}`\n\n{inspect.getdoc(obj)}"]
+        parts += [f"## `{obj.__name__}`\n\n{inspect.getdoc(obj)}"]  # type: ignore[attr-defined]
     return "\n\n".join(p for p in parts if p)
 
 
@@ -531,7 +522,7 @@ def call_system(
 
 
 class LexicalReaders(ObjectInterpretation):
-    """Override `collect_tools` to also expose plain values from the
+    """Intercept `call_assistant` to also expose plain values from the
     lexical context as zero-argument read-only Tools.  Each non-Tool,
     non-Template, non-Agent value bound to a valid identifier is
     wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
@@ -580,23 +571,29 @@ class LexicalReaders(ObjectInterpretation):
     def _call_system(self, template, tool_types=frozenset()):
         return fwd(template, tool_types=tool_types | {self._LexicalVariableTool})
 
-    @implements(collect_tools)
-    def _collect(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> collections.abc.Mapping[str, Tool]:
-        result = dict(fwd())
+    @implements(call_assistant)
+    def _call_assistant[T](
+        self,
+        env: collections.abc.Mapping[str, typing.Any],
+        response_type: type[T],
+        tools: collections.abc.Set[Tool] = frozenset(),
+    ) -> AssistantResult[T]:
+        readers: set[Tool] = set(tools)
+        taken = {t.__name__ for t in tools}
         for name, obj in env.items():
-            if name in result or not name.isidentifier() or isinstance(obj, Tool):
-                continue
-            try:
-                result[name] = self._LexicalVariableTool.define(obj, name=name)
-            except (
-                pydantic.errors.PydanticSchemaGenerationError,
-                pydantic.errors.PydanticInvalidForJsonSchema,
-                pydantic.errors.PydanticUserError,
+            if (
+                name in taken
+                or not name.isidentifier()
+                or isinstance(obj, Tool)
+                or (name.startswith("__") and name.endswith("__"))
             ):
                 continue
-        return result
+            try:
+                readers.add(self._LexicalVariableTool.define(obj, name=name))
+                taken.add(name)
+            except Exception:
+                continue
+        return fwd(env, response_type, readers)
 
 
 class SynthesizeAndCall(ObjectInterpretation):
@@ -701,7 +698,11 @@ class SynthesizeAndCall(ObjectInterpretation):
         bound_args = template.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
         tool = self._SynthesisFinalTool.define(template, bound_args)
-        with handler({collect_tools: lambda _: {**fwd(), tool.__name__: tool}}):  # type: ignore
+
+        def _add_synthesis_tool(env, response_type, tools=frozenset()):
+            return fwd(env, response_type, tools | {tool})
+
+        with handler({call_assistant: _add_synthesis_tool}):
             return fwd()
 
 
@@ -714,8 +715,8 @@ class PythonRepl(ObjectInterpretation):
 
     Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
     handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
-    the duration of the call, and handles `collect_tools` to inject an `exec_code`
-    Tool routed to that session.  The session is therefore introduced and
+    the duration of the call, and intercepts `call_assistant` to inject an
+    `exec_code` Tool routed to that session.  The session is therefore introduced and
     eliminated by its own handler, bounded to the Template call by construction --
     there is no global registry of sessions, and nested Template calls get their
     own isolated sessions.
@@ -773,14 +774,18 @@ class PythonRepl(ObjectInterpretation):
         ):
             return fwd()
 
-    @implements(collect_tools)
-    def _collect(
-        self, env: collections.abc.Mapping[str, typing.Any]
-    ) -> collections.abc.Mapping[str, Tool]:
-        tools = dict(fwd())
-        tools[self.exec_code.__name__] = self.exec_code
-        tools[self.read_lexical_variable.__name__] = self.read_lexical_variable
-        return tools
+    @implements(call_assistant)
+    def _call_assistant[T](
+        self,
+        env: collections.abc.Mapping[str, typing.Any],
+        response_type: type[T],
+        tools: collections.abc.Set[Tool] = frozenset(),
+    ) -> AssistantResult[T]:
+        return fwd(
+            env,
+            response_type,
+            tools | {self.exec_code, self.read_lexical_variable},
+        )
 
 
 class RetryLLMHandler(ObjectInterpretation):
@@ -847,8 +852,7 @@ class RetryLLMHandler(ObjectInterpretation):
         self,
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
-        model: str,
-        **kwargs,
+        tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
         _message_sequence = _get_history().copy()
 
@@ -892,6 +896,12 @@ class LiteLLMProvider(ObjectInterpretation):
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
 
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        """Inject the provider's configuration (model and bound litellm kwargs)
+        into the low-level request before delegating."""
+        return fwd(*args, **{**self.config, **kwargs})
+
     @implements(Template.__apply__)
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
@@ -900,9 +910,6 @@ class LiteLLMProvider(ObjectInterpretation):
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
-
-        if not _is_recursive_signature(template.__signature__):
-            env = env.new_child({k: None for k, v in env.items() if v is template})
 
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
@@ -923,7 +930,9 @@ class LiteLLMProvider(ObjectInterpretation):
             is_final: bool = False
             while not is_final:
                 message, tool_calls, result = call_assistant(
-                    env, template.__signature__.return_annotation, **self.config
+                    env,
+                    template.__signature__.return_annotation,
+                    _tools_in_scope(env) - {template},
                 )
                 if tool_calls:
                     for tool_call in tool_calls:
@@ -953,7 +962,7 @@ class LangfuseTracer(ObjectInterpretation):
     client: langfuse.Langfuse = dataclasses.field(default_factory=langfuse.get_client)
 
     @implements(completion)
-    def completion(self, model, *args, **kwargs):
+    def completion(self, *args, **kwargs):
         messages = kwargs.get("messages")
         if kwargs.get("tools") is not None:
             gen_input = {"tools": kwargs["tools"], "messages": messages}
@@ -977,12 +986,12 @@ class LangfuseTracer(ObjectInterpretation):
         with self.client.start_as_current_observation(
             as_type="generation",
             name="completion",
-            model=model,
             input=gen_input,
             model_parameters=model_parameters or None,
             metadata=metadata or None,
         ) as gen:
             response = fwd()
+            gen.update(model=response.model)
             usage = getattr(response, "usage", None)
             if usage is not None:
                 gen.update(

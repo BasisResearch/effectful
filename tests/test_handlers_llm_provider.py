@@ -40,11 +40,9 @@ from effectful.handlers.llm.completions import (
     ToolCallDecodingError,
     ToolCallExecutionError,
     _get_history,
-    _synthesis_final_tool,
-    _synthesis_template,
+    _tools_in_scope,
     call_assistant,
     call_tool,
-    collect_tools,
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
@@ -247,11 +245,11 @@ class TestLiteLLMProvider:
 def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
     template = agent.ask
-    tools = template.tools
-    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    tools = _tools_in_scope(template.__context__)
+    names = {t.__name__ for t in tools}
     assert tools
-    assert expected_helper_tool_name in tools
-    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+    assert agent.helper.__name__ in names
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in names)
 
     # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
@@ -433,7 +431,7 @@ class MockCompletionHandler(ObjectInterpretation):
         self.received_messages: list = []
 
     @implements(completion)
-    def _completion(self, model, messages=None, **kwargs):
+    def _completion(self, messages=None, **kwargs):
         self.received_messages.append(list(messages) if messages else [])
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
@@ -558,7 +556,6 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         assert mock_handler.call_count == 1
@@ -588,7 +585,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 2
@@ -620,7 +617,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 2
@@ -647,7 +644,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
         # Should have attempted 3 times (1 initial + 2 retries)
@@ -674,7 +671,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
     def test_retry_handler_valid_tool_call_passes_through(self):
@@ -697,7 +694,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 1
@@ -771,7 +768,6 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={},
                 response_type=int,
-                model="test-model",
             )
 
         assert mock_handler.call_count == 2
@@ -803,7 +799,6 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={},
                     response_type=int,
-                    model="test-model",
                 )
 
         # Should have attempted 3 times (1 initial + 2 retries)
@@ -830,7 +825,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
         error = exc_info.value
@@ -860,7 +855,6 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={},
                     response_type=int,
-                    model="test-model",
                 )
 
         error = exc_info.value
@@ -888,7 +882,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback in the second call mentions the tool name
@@ -918,7 +912,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback mentions the unknown tool
@@ -948,7 +942,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback includes traceback
@@ -979,7 +973,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback does not include traceback
@@ -1078,8 +1072,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, env, response_type, model, **kwargs):
-                return fwd(env, response_type, model, **kwargs)
+            def _call_assistant(self, env, response_type, tools=frozenset(), **kwargs):
+                return fwd(env, response_type, tools, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1090,7 +1084,7 @@ class TestToolExecutionErrorHandling:
             message, tool_calls, result = call_assistant(
                 env={"failing_tool": failing_tool},
                 response_type=str,
-                model="test-model",
+                tools={failing_tool},
             )
 
         # First call should succeed (tool call is valid)
@@ -1364,7 +1358,9 @@ class TestFinalToolInvariants:
             handler({_get_history: lambda: message_sequence}),
         ):
             return call_assistant(
-                env=env, response_type=response_type, model="test-model"
+                env=env,
+                response_type=response_type,
+                tools=_tools_in_scope(env),
             )
 
     def test_lone_matching_final_call_is_accepted(self):
@@ -1563,8 +1559,10 @@ class TestSynthesizeAndCall:
             """Sum the arguments."""
             raise NotHandled
 
-        with pytest.raises(TypeError, match="variadic"):
-            _synthesis_final_tool(variadic, {})
+        with pytest.raises(NotImplementedError, match="variadic"):
+            SynthesizeAndCall._SynthesisFinalTool.define(
+                variadic, variadic.__signature__.bind()
+            )
 
 
 class TestSynthesizeAndCallDoctests:
@@ -1660,44 +1658,6 @@ class TestSynthesizeAndCallDoctests:
 
         assert result == 6
         assert mock.call_count == 1
-
-    def test_run_doctests_not_globally_hijacked_during_synthesis(self):
-        """The name/docstring/doctest behavior is local to the synthesis argument
-        (carried by _SynthesisSpec on its type), not a global run_doctests
-        override. So a *separate* Encodable[Callable] decode validates against its
-        OWN docstring even while a doctest-bearing Template is the synthesis
-        target -- under the old override it would have had the Template's
-        docstring spliced in and failed."""
-
-        @Template.define
-        def triple_it(x: int) -> int:
-            """Return triple {x}.
-
-            >>> triple_it(2)
-            6
-            """
-            raise NotHandled
-
-        # A plain synthesized function whose OWN doctest passes but which doubles
-        # (so it would fail triple_it's spliced-in doctest under the old code).
-        module_code = (
-            "def double(x: int) -> int:\n"
-            '    """Double x.\n'
-            "\n"
-            "    >>> double(2)\n"
-            "    4\n"
-            '    """\n'
-            "    return x * 2\n"
-        )
-        with (
-            handler(UnsafeEvalProvider()),
-            handler({_synthesis_template: lambda: triple_it}),
-        ):
-            f = pydantic.TypeAdapter(Encodable[Callable[[int], int]]).validate_python(
-                {"module_code": module_code}, context={}
-            )
-
-        assert f(3) == 6
 
     def test_agent_method_doctests_route_to_synthesized_function(self):
         """An Agent-method Template's doctests build their own instances
@@ -1809,7 +1769,7 @@ class TestMessageSequence:
 
         class InnerAssistantHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self_, model, messages, *args, **kwargs):
+            def _completion(self_, messages=None, *args, **kwargs):
                 captured_messages.extend(list(messages))
                 response = {
                     "id": "response_1",
@@ -1828,7 +1788,6 @@ class TestMessageSequence:
             call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         # Forwarded messages should be [msg_a (prefix), msg_b (input)] — no duplicates
@@ -1848,7 +1807,7 @@ class TestMessageSequence:
             call_count = 0
 
             @implements(completion)
-            def _completion(self_, model, messages, *args, **kwargs):
+            def _completion(self_, messages=None, *args, **kwargs):
                 call_log.append([m["id"] for m in messages])
                 self_.call_count += 1
                 response = {
@@ -1870,13 +1829,11 @@ class TestMessageSequence:
             resp1, _, _ = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
             # Second call: input is the first response
             resp2, _, _ = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         # First call: prefix=[] + input=[msg_user]
@@ -1894,10 +1851,9 @@ class TestMessageSequence:
 
         class FailingAssistantHandler(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self_, messages, *args, **kwargs):
+            def _call_assistant(self_, *args, **kwargs):
                 raise RuntimeError("LLM call failed")
 
-        msg = {"id": "input_msg", "role": "user", "content": "hello"}
         frame_snapshot = dict(message_sequence)
 
         with pytest.raises(RuntimeError, match="LLM call failed"):
@@ -1906,10 +1862,8 @@ class TestMessageSequence:
                 handler({_get_history: lambda: message_sequence}),
             ):
                 call_assistant(
-                    messages=[msg],
                     env={},
                     response_type=str,
-                    model="test-model",
                 )
 
         # Frame should be unchanged — no response message was saved
@@ -2011,11 +1965,12 @@ def _drive_repl(body):
     `RetryLLMHandler`) around the call.  Returns `body`'s result.
     """
     box = []
+    repl = PythonRepl()
 
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
         def _call(self, *_a, **_k):
-            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            box.append(body(repl.exec_code))
             return None
 
     @Template.define
@@ -2023,7 +1978,7 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(repl):
         _t()
     return box[0]
 
@@ -2308,7 +2263,7 @@ class TestAgentCrossTemplateRecovery:
 
         class TwoPhaseCompletionHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
@@ -2425,7 +2380,7 @@ class TestAgentCrossTemplateRecovery:
 
         class MultiResponseHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"reply {call_count}")
@@ -2471,7 +2426,7 @@ class TestAgentCrossTemplateRecovery:
 
         class PhaseHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
@@ -2524,7 +2479,7 @@ class TestAgentSystemMessageDeduplication:
 
         class CountingHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"answer {call_count}")
@@ -2557,7 +2512,7 @@ class TestAgentSystemMessageDeduplication:
 
         class MultiHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"done {call_count}")
@@ -2592,7 +2547,7 @@ class TestAgentSystemMessageDeduplication:
 
         class MemoryHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 # Verify that previous messages are visible to later calls
@@ -2635,7 +2590,7 @@ class TestAgentSystemMessageDeduplication:
 
         class OrderHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"step {call_count}")
@@ -2719,36 +2674,6 @@ class TestSyntheticReaderIntegration:
         assert fn(0.9) is True
         assert fn(0.5) is False
         assert fn(threshold) is False
-
-    def test_template_exposes_lexical_classes(self):
-        """When `LexicalReaders` is installed, classes in the defining
-        scope are exposed as readers via the broad `Encodable[Callable]`
-        handler — the `Hand`/`Finger`/`generate_arm` motivating example
-        from #497.  Without the handler the readers are gated off; this
-        test pins both contracts.
-        """
-
-        class Finger:
-            def wiggle(self) -> str:
-                return "wiggle"
-
-        class Hand:
-            fingers: list[Finger]
-
-        @Template.define
-        def describe_hand_action() -> str:
-            """Doc."""
-            raise NotImplementedError
-
-        # Off by default.
-        assert "Finger" not in describe_hand_action.tools
-        assert "Hand" not in describe_hand_action.tools
-
-        # On under the handler.
-        with handler(LexicalReaders()):
-            tools = describe_hand_action.tools
-            assert "Finger" in tools
-            assert "Hand" in tools
 
 
 class TestPythonReplIntegration:

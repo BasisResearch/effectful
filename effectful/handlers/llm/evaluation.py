@@ -606,6 +606,13 @@ def mypy_type_check(
         )
     func_name = last.name
 
+    # Drop sentinel keys that are not referenceable identifiers (e.g. the
+    # `$TOOLS` tool-mapping stashed in the decoding context); they cannot appear
+    # in synthesized code and would produce invalid stub syntax.
+    ctx = {
+        k: v for k, v in ctx.items() if all(seg.isidentifier() for seg in k.split("."))
+    }
+
     imports = collect_imports(ctx)
     # Ensure annotations in the postlude can be resolved (e.g. collections.abc.Callable, typing)
     baseline_imports: list[ast.stmt] = [

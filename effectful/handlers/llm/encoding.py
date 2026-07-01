@@ -42,6 +42,11 @@ from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
 
+# Key under which the name->Tool mapping is stashed in the decoding context.
+# Deliberately not a valid Python identifier, so it can never collide with a
+# lexical variable name sharing the context (e.g. a reader named after its var).
+_TOOLS_KEY = "$TOOLS"
+
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
     for member in typing.get_args(OpenAIMessageContentListBlock)
@@ -706,7 +711,11 @@ def _pydantic_callable(
         evaluation.type_check(module, ctx, expected_params, expected_return)
 
         g: MutableMapping[str, Any] = {}
-        g.update(ctx)
+        # Only valid identifiers can be referenced as globals; skip sentinel keys
+        # such as `_TOOLS_KEY` that share the decoding context.
+        g.update(
+            {k: v for k, v in ctx.items() if isinstance(k, str) and k.isidentifier()}
+        )
         bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
@@ -824,7 +833,7 @@ def _validate_tool(
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     try:
-        return info.context[value["function"]["name"]]
+        return info.context[_TOOLS_KEY][value["function"]["name"]]
     except KeyError as e:
         raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
@@ -842,7 +851,7 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
     ret_schema = pydantic.TypeAdapter(
-        Encodable[value.__signature__.return_annotation]
+        Encodable[value.__signature__.return_annotation]  # type: ignore[name-defined]
     ).json_schema(mode="serialization")
     description = (
         f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}"
@@ -882,7 +891,7 @@ def _validate_tool_call(
         value = OpenAIChatCompletionMessageToolCall.model_validate(value)
     ctx = info.context or {}
     assert value.function.name is not None
-    tool = ctx[value.function.name]
+    tool = ctx[_TOOLS_KEY][value.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
     decoded_args = {}
@@ -918,7 +927,10 @@ def _serialize_tool_call(
             "type": "function",
             "id": value.id,
             "function": {
-                "name": value.tool.__name__,
+                # Use the name the tool was called by (possibly disambiguated by
+                # `call_assistant`), not the tool's `__name__`, so the call
+                # round-trips to the same identity the model and decoder share.
+                "name": value.name,
                 "arguments": json.dumps(encoded_args),
             },
         }
