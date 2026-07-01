@@ -47,6 +47,7 @@ numpyro = [
 llm = [
   "langfuse",
   "litellm",
+  "rich",
   "tenacity",
   "mypy",
   "autoflake",

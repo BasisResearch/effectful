@@ -26,6 +26,7 @@ from effectful.handlers.llm.completions import (
     PythonRepl,
     RetryLLMHandler,
     SynthesizeAndCall,
+    TerminalRenderer,
 )
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import handler
@@ -115,9 +116,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Whether to log LLM calls and metadata to Langfuse",
     )
+    parser.add_argument(
+        "--render",
+        action="store_true",
+        help="Live-render the streaming message history in the terminal",
+    )
     args = parser.parse_args()
     with (
         handler(LiteLLMProvider(model=args.model, tool_choice="required")),
+        handler(TerminalRenderer()) if args.render else contextlib.nullcontext(),
         handler(UnsafeEvalProvider()),
         handler(PythonRepl()),
         handler(SynthesizeAndCall()),
