@@ -1,4 +1,5 @@
 import abc
+import collections
 import doctest
 import functools
 import inspect
@@ -6,61 +7,9 @@ import re
 import string
 import types
 import typing
-from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
-from typing import Annotated, Any
 
-from effectful.ops.types import Annotation, Operation
-
-
-class _IsRecursiveAnnotation(Annotation):
-    """
-    A special type annotation for return types in the signature of a
-    :class:`Template` that indicates it may make recursive calls.
-
-    .. warning::
-
-        :class:`IsRecursive` annotations are only defined to ascribe
-        return annotations, and if used in a parameter will raise a
-        :class:`TypeError` at tool construction time.
-
-
-
-    **Example usage**:
-
-    We illustrate the use of :class:`IsRecursive` below:
-
-    >>> from typing import Annotated
-    >>> from effectful.handlers.llm import Template
-    >>> from effectful.handlers.llm.template import IsRecursive
-
-    >>>
-    @Template.define
-    def factorial(n: int) -> Annotated[int, IsRecursive]:
-       \"""Compute the n factorial for n={n}. Can call itself (`factorial`) recursively, but must be on smaller arguments.\"""
-       raise NotHandled
-    """
-
-    @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        for name, ty in sig.parameters.items():
-            if not ty or not typing.get_origin(ty) is Annotated:
-                continue
-            if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
-                raise TypeError(
-                    f"Illegal annotation {ty} for parameter {name}, IsRecursive must only be used to annotate return types."
-                )
-        return sig
-
-
-IsRecursive = _IsRecursiveAnnotation()
-
-
-def _is_recursive_signature(sig: inspect.Signature):
-    if typing.get_origin(sig.return_annotation) is not Annotated:
-        return False
-    annotations = typing.get_args(sig.return_annotation)
-    return any(annotation is IsRecursive for annotation in annotations)
+from effectful.ops.types import Operation
 
 
 class Tool[**P, T](Operation[P, T]):
@@ -103,10 +52,6 @@ class Tool[**P, T](Operation[P, T]):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
         super().__init__(default, name=name)
-
-    @property
-    def __signature__(self):
-        return IsRecursive.infer_annotations(super().__signature__)
 
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
@@ -168,9 +113,7 @@ class Template[**P, T](Tool[P, T]):
       lexical scope — every field must resolve at call time;
     - a doctest example (`>>>`) in the docstring contains an active `{...}` field:
       doctests must be constant, since the whole docstring is formatted into the
-      prompt at call time; escape any literal braces as `{{` and `}}`;
-    - the `IsRecursive` annotation is applied to a parameter rather than the
-      return type.
+      prompt at call time; escape any literal braces as `{{` and `}}`.
 
     See `effectful.ops.types.Operation.define` for more on `Template.define`.
 
@@ -246,7 +189,7 @@ class Template[**P, T](Tool[P, T]):
 
     """
 
-    __context__: ChainMap[str, Any]
+    __context__: collections.ChainMap[str, typing.Any]
 
     @classmethod
     def _validate_doctests_constant(cls, template: "Template", doc: str) -> None:
@@ -298,7 +241,7 @@ class Template[**P, T](Tool[P, T]):
     def _validate_prompt(
         cls,
         template: "Template",
-        context: ChainMap[str, Any],
+        context: collections.ChainMap[str, typing.Any],
     ) -> None:
         """Validate that all format string variables in the docstring
         refer to names resolvable at call time.
@@ -311,7 +254,8 @@ class Template[**P, T](Tool[P, T]):
         :raises TypeError: If any format string variable cannot be resolved, or
             a format field is spliced into a doctest example.
         """
-        doc = template.__prompt_template__
+        assert template.__doc__ is not None
+        doc = template.__doc__
         cls._validate_doctests_constant(template, doc)
         formatter = string.Formatter()
         param_names = set(template.__signature__.parameters.keys())
@@ -334,14 +278,6 @@ class Template[**P, T](Tool[P, T]):
                 f"variables {list(sorted(unresolved))} that are not in the signature "
                 f"{{{template.__signature__}}} or lexical scope."
             )
-
-    @property
-    def __prompt_template__(self) -> str:
-        assert self.__default__.__doc__ is not None
-        header = f"{self.__name__}{self.__signature__}".replace("{", "{{").replace(
-            "}", "}}"
-        )
-        return f"{header}\n\n{self.__default__.__doc__}"
 
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
         if hasattr(self, "_name_on_instance") and hasattr(
@@ -399,10 +335,10 @@ class Template[**P, T](Tool[P, T]):
         ]
         enclosing_fns.reverse()  # innermost first for frame walking
 
-        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+        globals_proxy: types.MappingProxyType[str, typing.Any] = types.MappingProxyType(
             frame.f_globals
         )
-        contexts: list[types.MappingProxyType[str, Any]] = []
+        contexts: list[types.MappingProxyType[str, typing.Any]] = []
         for fn_name in enclosing_fns:
             while frame is not None and frame.f_locals is not frame.f_globals:
                 if frame.f_code.co_name == fn_name:
@@ -411,8 +347,8 @@ class Template[**P, T](Tool[P, T]):
                     break
                 frame = frame.f_back
         contexts.append(globals_proxy)
-        context: ChainMap[str, Any] = ChainMap(
-            *typing.cast(list[MutableMapping[str, Any]], contexts)
+        context: collections.ChainMap[str, typing.Any] = collections.ChainMap(
+            *typing.cast(list[MutableMapping[str, typing.Any]], contexts)
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
@@ -498,5 +434,5 @@ class Agent(abc.ABC):
     """
 
     @functools.cached_property
-    def __history__(self) -> OrderedDict[str, Mapping[str, Any]]:
-        return OrderedDict()
+    def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
+        return collections.OrderedDict()

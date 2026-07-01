@@ -40,31 +40,35 @@ def pytest_runtest_call(item):
 
 
 def offered_tools(env, *handlers):
-    """Name -> Tool mapping the model would be offered for lexical scope `env`
+    """Set of Tools the model would be offered for lexical scope `env`
     under the given handlers.
 
     Replaces the old ``collect_tools`` operation: tool collection now happens as
     `call_assistant` seeds its `tools` set from :func:`_tools_in_scope` and the
     augmenting handlers (``LexicalReaders``, ``PythonRepl``, ...) union more in.
     This installs a capture handler that records the tools `call_assistant`
-    ultimately receives, named by :func:`_name_tools`.
+    ultimately receives.
+
+    Tools are kept by object identity, not by name: two distinct tools that
+    share a ``__name__`` (e.g. the same method bound to different instances)
+    are both preserved. Callers checking name presence should compare against
+    ``{t.__name__ for t in offered_tools(...)}``.
     """
     import contextlib
 
     from effectful.handlers.llm.completions import (
-        _name_tools,
         _tools_in_scope,
         call_assistant,
     )
     from effectful.ops.semantics import handler
     from effectful.ops.syntax import ObjectInterpretation, implements
 
-    captured: dict = {}
+    captured: set = set()
 
     class _Capture(ObjectInterpretation):
         @implements(call_assistant)
         def _ca(self, env_, response_type, tools=frozenset(), **kw):
-            captured.update(_name_tools(tools))
+            captured.update(tools)
             return ({}, [], None)
 
     with contextlib.ExitStack() as stack:
@@ -76,19 +80,13 @@ def offered_tools(env, *handlers):
 
 
 def template_tools(template, *handlers):
-    """Name -> Tool mapping a `Template` would offer under the given handlers.
+    """Set of Tools a `Template` would offer under the given handlers.
 
     Mirrors the behaviour of the removed ``Template.tools`` property: it applies
     the same handler augmentation as :func:`offered_tools` and drops the template
-    itself unless its signature is recursive.
+    itself, matching `LiteLLMProvider`'s ``_tools_in_scope(env) - {template}``.
+    Like :func:`offered_tools`, tools are kept by object identity.
     """
-    import collections
-
-    from effectful.handlers.llm.template import _is_recursive_signature
-
-    result = offered_tools(template.__context__, *handlers)
-    if not _is_recursive_signature(template.__signature__):
-        result = collections.OrderedDict(
-            (n, t) for n, t in result.items() if t is not template
-        )
-    return result
+    return {
+        t for t in offered_tools(template.__context__, *handlers) if t is not template
+    }

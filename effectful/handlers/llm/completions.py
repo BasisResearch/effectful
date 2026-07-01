@@ -248,8 +248,8 @@ def call_assistant[T](
     The available `tools` are passed explicitly as a set; handlers that expose
     additional tools (synthetic readers, REPL access, synthesis) intercept this
     operation and union them into `tools` before forwarding.  Each tool's
-    model-visible name is derived from its `__name__` (see :func:`_name_tools`),
-    so collection and decoding agree on a single naming scheme.
+    model-visible name is derived from its `__name__`, so collection and
+    decoding agree on a single naming scheme.
 
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
@@ -376,13 +376,22 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 
 @Operation.define
 def call_user(
-    template: str,
+    template: Template,
     env: collections.abc.Mapping[str, typing.Any],
 ) -> Message:
     """
-    Format a template applied to arguments into a user message.
+    Format a `Template`'s prompt applied to arguments into a user message.
+
+    The prompt is the template's header (``name(signature)``, with braces
+    escaped so it is not itself formatted) followed by its docstring; its
+    ``{...}`` fields are filled from `env`.
     """
-    parts = format_as_content_blocks(template, env)
+    assert template.__default__.__doc__ is not None
+    header = f"{template.__name__}{template.__signature__}".replace("{", "{{").replace(
+        "}", "}}"
+    )
+    prompt = f"{header}\n\n{template.__default__.__doc__}"
+    parts = format_as_content_blocks(prompt, env)
     message = _make_message(dict(role="user", content=parts))
     append_message(message)
     return message
@@ -589,7 +598,9 @@ def _system_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
 
     assert all(issubclass(t, Tool) and t not in {Tool, Template} for t in tool_types)
     parts = [_rebase_headings(inspect.getdoc(_llm) or "", 2)]
-    for typ in sorted(map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname):
+    for typ in sorted(
+        map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname
+    ):
         parts += [
             f"## `{_get_qualname(typ)}`\n\n{_rebase_headings(inspect.getdoc(typ) or '', 3)}"
         ]
@@ -1469,7 +1480,7 @@ class LiteLLMProvider(ObjectInterpretation):
             ):
                 message: Message = call_system(template)
 
-            message = call_user(template.__prompt_template__, env)
+            message = call_user(template, env)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             result: T | None = None
