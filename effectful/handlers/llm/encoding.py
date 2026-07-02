@@ -45,7 +45,7 @@ type ToolCallID = str
 # Key under which the name->Tool mapping is stashed in the decoding context.
 # Deliberately not a valid Python identifier, so it can never collide with a
 # lexical variable name sharing the context (e.g. a reader named after its var).
-_TOOLS_KEY = "$TOOLS"
+_TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
 
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
@@ -540,15 +540,75 @@ class _SynthesisSpec[T]:
 
 
 class SynthesizedFunction(pydantic.BaseModel):
-    """Structured output for function synthesis.
-
-    Pydantic model representing synthesized code with function name and module code.
+    """
+    Structured output for function synthesis.
     """
 
     module_code: str = pydantic.Field(
         ...,
-        description="Complete Python module code (no imports needed)",
+        description=textwrap.dedent("""
+        A string containing the complete Python source code for the function.
+        The code MUST satisfy the following constraints, or it will fail validation:
+
+        <constraints>
+        1. The code MUST be one complete syntactically valid Python module.
+        2. The code MUST NOT use star imports or ``__future__`` imports.
+        3. The function definition MUST be the LAST statement - do not add any code after it.
+        4. The function MUST have type annotations for all parameters and the return type.
+        5. You may include doctest examples (lines starting with >>>) inside the function's
+        docstring to demonstrate and verify its behavior; these examples are run as tests.
+        </constraints>
+        """),
     )
+
+    @pydantic.field_validator("module_code")
+    @classmethod
+    def _validate_module_code(cls, value: str) -> str:
+        module: ast.AST = ast.parse(value)
+
+        if not isinstance(module, ast.Module) or not module.body:
+            raise ValueError(
+                "decode() requires module code with at least one statement."
+            )
+
+        last_stmt = module.body[-1]
+        if not isinstance(last_stmt, ast.FunctionDef):
+            raise ValueError(
+                f"decode() requires the last statement to be a function definition, "
+                f"got {type(last_stmt).__name__}"
+            )
+
+        # Check that the function has type annotations for all parameters
+        for arg in last_stmt.args.args:
+            if arg.annotation is None:
+                raise ValueError(
+                    f"decode() requires all parameters to have type annotations, "
+                    f"parameter '{arg.arg}' is missing an annotation"
+                )
+
+        # Check that the function has a return type annotation
+        if last_stmt.returns is None:
+            raise ValueError(
+                "decode() requires the function to have a return type annotation"
+            )
+
+        # no __future__ imports are allowed
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+                raise ValueError(
+                    "decode() does not allow __future__ imports in the module code"
+                )
+
+        # no star imports are allowed
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.names:
+                for alias in stmt.names:
+                    if alias.name == "*":
+                        raise ValueError(
+                            "decode() does not allow star imports in the module code"
+                        )
+
+        return value
 
 
 def _create_typed_synthesized_function(
@@ -578,43 +638,11 @@ def _create_typed_synthesized_function(
     else:
         type_signature = str(callable_type)
 
-    description = f"""Given the specification above, generate a Python function satisfying the following specification and type signature.
-
-<signature>{type_signature}</signature>
-
-<instructions>
-1. Produce one block of Python code.
-2. The function MUST have type annotations for all parameters and the return type.
-3. The function definition must be the LAST statement - do not add any code after it.
-4. You may include doctest examples (lines starting with >>>) inside the function's
-   docstring to demonstrate and verify its behavior; these examples are run as tests.
-5. Do not add any executable code after the function definition (the doctest examples
-   in the docstring are the only usage examples allowed).
-</instructions>
-"""
-
-    # Use pydantic.create_model to create a proper model with the description
-    # The __doc__ becomes the model's description in the JSON schema
-    model = pydantic.create_model(
+    return pydantic.create_model(
         "TypedSynthesizedFunction",
         __base__=SynthesizedFunction,
-        __doc__=description,
+        __doc__=f"""Python function with signature <signature>{type_signature}</signature>""",
     )
-    return model
-
-
-def _validate_signature_ast(
-    func_ast: ast.FunctionDef | ast.AsyncFunctionDef,
-    expected_params: list[type] | None,
-) -> None:
-    """Validate the function signature from AST before execution."""
-    if expected_params is not None:
-        ast_params = func_ast.args.args + func_ast.args.posonlyargs
-        if len(ast_params) != len(expected_params):
-            raise ValueError(
-                f"decode() expected function with {len(expected_params)} parameters, "
-                f"got {len(ast_params)}"
-            )
 
 
 def _validate_signature_callable(
@@ -694,21 +722,7 @@ def _pydantic_callable(
 
         ctx = info.context or {}
         filename = f"<synthesis:{id(encoded)}>"
-        module: ast.AST = evaluation.parse(encoded.module_code, filename)
-
-        if not isinstance(module, ast.Module) or not module.body:
-            raise ValueError(
-                "decode() requires module code with at least one statement."
-            )
-
-        last_stmt = module.body[-1]
-        if not isinstance(last_stmt, ast.FunctionDef):
-            raise ValueError(
-                f"decode() requires the last statement to be a function definition, "
-                f"got {type(last_stmt).__name__}"
-            )
-
-        _validate_signature_ast(last_stmt, expected_params)
+        module: ast.Module = evaluation.parse(encoded.module_code, filename)
         evaluation.type_check(module, ctx, expected_params, expected_return)
 
         g: MutableMapping[str, Any] = {}
@@ -720,18 +734,7 @@ def _pydantic_callable(
         bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
-        func_name = last_stmt.name
-        if func_name not in g:
-            raise ValueError(
-                f"decode() expected function '{func_name}' to be defined in globals"
-            )
-
-        result = g[func_name]
-        if not callable(result):
-            raise ValueError(
-                f"decode() expected '{func_name}' to be callable, got {type(result)}"
-            )
-
+        result = g[module.body[-1].name]  # type: ignore
         _validate_signature_callable(result, expected_params, expected_return)
 
         if metadata is not None:
