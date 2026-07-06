@@ -5,6 +5,8 @@ import inspect
 import typing
 from typing import Literal
 
+import jax
+import jax.numpy as jnp
 import pytest
 
 from effectful.internals.unification import (
@@ -781,6 +783,9 @@ def test_infer_return_type_failure(
         # Other built-in types
         (range(5), type(range(5))),
         (slice(1, 10), type(slice(1, 10))),
+        # jax arrays
+        (jnp.array(0.0), jax.Array),
+        (jnp.array([1, 2, 3]), jax.Array),
     ],
 )
 def test_nested_type(value, expected):

@@ -1079,17 +1079,24 @@ def _(value: collections.abc.Mapping):
 
 @nested_type.register
 def _(value: collections.abc.Collection):
-    if len(value) == 0:
-        return Box(type(value))
-    elif len(value) == 1:
+    typ = canonicalize(type(value))
+    if not (
+        isinstance(typ, type) and hasattr(typ, "__class_getitem__")
+    ):  # not a parameterizable type
+        return Box(typ)
+
+    l = len(value)
+    if l == 0:
+        return Box(typ)
+    elif l == 1:
         vtyp = nested_type(next(iter(value))).value
-        return Box(canonicalize(type(value))[vtyp])  # type: ignore
+        return Box(typ[vtyp])  # type: ignore
     else:
         valtyp = functools.reduce(operator.or_, [nested_type(x).value for x in value])
         if isinstance(valtyp, UnionType):
-            return Box(type(value))
+            return Box(typ)
         else:
-            return Box(canonicalize(type(value))[valtyp])  # type: ignore
+            return Box(typ[valtyp])  # type: ignore
 
 
 @nested_type.register
