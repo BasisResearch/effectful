@@ -499,45 +499,35 @@ class PlusAssoc(ObjectInterpretation):
 
 
 class PlusDistr(ObjectInterpretation):
-    """x + (y * z) = x * y + x * z"""
+    """x * (y + z) = x * y + x * z"""
 
     @implements(Monoid.plus)
     def plus(self, monoid: Monoid, *args):
-        if any(
-            isinstance(x, Term)
-            and _is_monoid_plus(x.op)
-            and distributes_over(monoid, x.op.__self__)
-            for x in args
-        ):
-            non_terms = []
+        if len(args) < 2:
+            return fwd()
 
-            # group terms by their monoid
-            by_monoid: dict[Monoid, list[Term]] = defaultdict(list)
-            for t in args:
-                if isinstance(t, Term) and _is_monoid_plus(t.op):
-                    by_monoid[t.op.__self__].append(t)
-                else:
-                    non_terms.append(t)
-
-            # distribute over each group
-            progress = False
-            final_sum = []
-            for m, terms in by_monoid.items():
-                if (
-                    len(terms) > 1
-                    and distributes_over(monoid, m)
-                    and not distributes_over(m, monoid)
-                ):
-                    progress = True
-                    term_args = (t.args for t in terms)
-                    dist_terms = (
-                        monoid.plus(*args) for args in itertools.product(*term_args)
+        for i, a in enumerate(args):
+            if (
+                isinstance(a, Term)
+                and _is_monoid_plus(a.op)
+                and distributes_over(monoid, (inner_monoid := a.op.__self__))
+                and not distributes_over(inner_monoid, monoid)
+            ):
+                if i > 0:
+                    return monoid.plus(
+                        *args[: i - 1],
+                        inner_monoid.plus(
+                            *(monoid.plus(args[i - 1], x) for x in a.args)
+                        ),
+                        *args[i + 1 :],
                     )
-                    final_sum.append(m.plus(*dist_terms))
                 else:
-                    final_sum += terms
-            if progress:
-                return monoid.plus(*non_terms, *final_sum)
+                    return monoid.plus(
+                        inner_monoid.plus(
+                            *(monoid.plus(x, args[i + 1]) for x in a.args)
+                        ),
+                        *args[i + 2 :],
+                    )
         return fwd()
 
 

@@ -230,58 +230,83 @@ def test_plus_mapping(monoid, backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MonoidOverMapping())
 
 
-def test_plus_distributes(backend: Backend):
+def test_plus_distributes_1(backend: Backend):
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    lhs = Product.plus(c(), Sum.plus(a(), b()))
+    rhs = Sum.plus(Product.plus(c(), a()), Product.plus(c(), b()))
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
+    )
+
+
+def test_plus_distributes_2(backend: Backend):
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    lhs = Product.plus(Sum.plus(a(), b()), c())
+    rhs = Sum.plus(Product.plus(a(), c()), Product.plus(b(), c()))
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
+    )
+
+
+def test_plus_distributes_3(backend: Backend):
     a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
-    rhs = Product.plus(
-        Sum.plus(
-            Product.plus(a(), c()),
-            Product.plus(a(), d()),
-            Product.plus(b(), c()),
-            Product.plus(b(), d()),
-        )
+    rhs = Sum.plus(
+        Product.plus(a(), c()),
+        Product.plus(a(), d()),
+        Product.plus(b(), c()),
+        Product.plus(b(), d()),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
+    )
+
+
+def test_plus_distributes_4(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    lhs = Product.plus(Sum.plus(a(), b()), c(), d())
+    rhs = Sum.plus(Product.plus(a(), c(), d()), Product.plus(b(), c(), d()))
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
+    )
 
 
 def test_plus_distributes_constant(backend: Backend):
     a, b, c, d, e = backend.define_vars("a", "b", "c", "d", "e", ret="scalar")
     lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), e())
-    rhs = Product.plus(
-        e(),
-        Sum.plus(
-            Product.plus(a(), c()),
-            Product.plus(a(), d()),
-            Product.plus(b(), c()),
-            Product.plus(b(), d()),
-        ),
+    rhs = Sum.plus(
+        Product.plus(a(), c(), e()),
+        Product.plus(a(), d(), e()),
+        Product.plus(b(), c(), e()),
+        Product.plus(b(), d(), e()),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
+    )
 
 
 def test_plus_distributes_multiple(backend: Backend):
     a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
-    lhs = Sum.plus(
-        Min.plus(a(), b()),
-        Min.plus(c(), d()),
-        Max.plus(a(), b()),
-        Max.plus(c(), d()),
+    lhs = Sum.plus(Min.plus(a(), b()), Max.plus(c(), d()))
+    rhs = Min.plus(
+        Max.plus(Sum.plus(a(), c()), Sum.plus(a(), d())),
+        Max.plus(Sum.plus(b(), c()), Sum.plus(b(), d())),
     )
-    rhs = Sum.plus(
-        Min.plus(
-            Sum.plus(a(), c()),
-            Sum.plus(a(), d()),
-            Sum.plus(b(), c()),
-            Sum.plus(b(), d()),
-        ),
-        Max.plus(
-            Sum.plus(a(), c()),
-            Sum.plus(a(), d()),
-            Sum.plus(b(), c()),
-            Sum.plus(b(), d()),
-        ),
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(PlusDistr(), coproduct(PlusSingle(), PlusAssoc())),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
 
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)

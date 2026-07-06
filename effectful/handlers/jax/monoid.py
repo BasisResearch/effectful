@@ -104,7 +104,6 @@ class ProductPlusJax(ObjectInterpretation):
     @implements(Product.plus)
     def plus(self, *args):
         if not _jax_args(args):
-            breakpoint()
             return fwd()
         return functools.reduce(jnp.multiply, args)
 
@@ -619,45 +618,6 @@ class GetitemJaxGetitem(ObjectInterpretation):
         return fwd()
 
 
-class MaskApply(ObjectInterpretation):
-    @implements(JaxOperation.__apply__)
-    def _(self, op, *args, **kwargs):
-        masks = []
-        mask_monoid = None
-        unmask_args = []
-        unmask_kwargs = {}
-
-        for a in args:
-            if isinstance(a, Term) and _is_monoid_mask(a.op):
-                if mask_monoid is None:
-                    mask_monoid = a.op.__self__
-                elif mask_monoid != a.op.__self__:
-                    continue
-
-                unmask_args.append(a.args[0])
-                masks.append(a.args[1])
-            else:
-                unmask_args.append(a)
-
-        for k, v in kwargs.items():
-            if isinstance(v, Term) and _is_monoid_mask(v.op):
-                if mask_monoid is None:
-                    mask_monoid = v.op.__self__
-                elif mask_monoid != v.op.__self__:
-                    continue
-
-                unmask_kwargs[k] = v.args[0]
-                masks.append(v.args[1])
-            else:
-                unmask_kwargs[k] = v
-
-        if mask_monoid is None:
-            return fwd()
-
-        value = fwd(op, *unmask_args, **unmask_kwargs)
-        return mask_monoid.mask(value, And.plus(*masks))
-
-
 @dataclass
 class Node:
     ordinal: frozenset[str]
@@ -888,6 +848,7 @@ def einsum(
     expr, dims = _einsum_expr(subscripts, *operands, plates=plates)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
 
+    breakpoint()
     assert CartesianProduct.reduce not in fvsof(norm_expr), (
         "failed to eliminate cartesian products"
     )
@@ -927,5 +888,4 @@ NormalizeIntp.extend(
     ReduceArrayGather(),
     ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
-    # MaskApply(),
 )
