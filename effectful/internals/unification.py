@@ -911,11 +911,11 @@ def nested_type(value) -> Box[TypeExpression]:
 
         # Empty collections return their base type
         >>> nested_type([]).value
-        <class 'list'>
+        <class 'collections.abc.MutableSequence'>
         >>> nested_type({}).value
         <class 'dict'>
         >>> nested_type(set()).value
-        <class 'set'>
+        <class 'collections.abc.MutableSet'>
 
         # Sequences become Sequence[element_type]
         >>> nested_type([1, 2, 3]).value
