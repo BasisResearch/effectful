@@ -14,7 +14,7 @@ from effectful.ops.syntax import (
     Array,
     ObjectInterpretation,
     Scoped,
-    _MappingTerm,
+    _ArrayTerm,
     _NumberTerm,
     defdata,
     deffn,
@@ -281,7 +281,7 @@ class DeltaFusion(ObjectInterpretation):
 class GetitemDelta(ObjectInterpretation):
     """M.delta(i, v)[q] ≡ M.mask(i, v == q)"""
 
-    @implements(_MappingTerm.__getitem__)
+    @implements(_ArrayTerm.__getitem__)
     def _(self, value, index):
         if isinstance(value, Term) and _is_monoid_delta(value.op):
             return value.op.__self__.mask(value.args[1], value.args[0] == index)
@@ -919,7 +919,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                     return fwd(mapping, drop_elem(idx1, plate_index))
                 return fwd()
 
-            row_subst = {_MappingTerm.__getitem__: _getitem}
+            row_subst = {_ArrayTerm.__getitem__: _getitem}
             try:
                 subst_inner_body = handler(row_subst)(evaluate)(inner_body)
             except InvalidIndexError:

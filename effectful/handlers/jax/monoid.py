@@ -14,7 +14,7 @@ from opt_einsum import get_symbol
 import effectful.handlers.jax.lax as lax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
-from effectful.handlers.jax._handlers import is_eager_array
+from effectful.handlers.jax._handlers import JaxOperation, is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     And,
@@ -36,8 +36,9 @@ from effectful.ops.monoid import (
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
+    Array,
     ObjectInterpretation,
-    _MappingTerm,
+    _ArrayTerm,
     _NumberTerm,
     deffn,
     implements,
@@ -600,7 +601,7 @@ class ReduceSumProductContraction(ObjectInterpretation):
 
 
 class GetitemJaxGetitem(ObjectInterpretation):
-    @implements(_MappingTerm.__getitem__)
+    @implements(_ArrayTerm.__getitem__)
     def _(self, arr, index):
         if (
             isinstance(arr, jax.Array)
@@ -616,6 +617,45 @@ class GetitemJaxGetitem(ObjectInterpretation):
         ):
             return jax_getitem(arr, index)
         return fwd()
+
+
+class MaskApply(ObjectInterpretation):
+    @implements(JaxOperation.__apply__)
+    def _(self, op, *args, **kwargs):
+        masks = []
+        mask_monoid = None
+        unmask_args = []
+        unmask_kwargs = {}
+
+        for a in args:
+            if isinstance(a, Term) and _is_monoid_mask(a.op):
+                if mask_monoid is None:
+                    mask_monoid = a.op.__self__
+                elif mask_monoid != a.op.__self__:
+                    continue
+
+                unmask_args.append(a.args[0])
+                masks.append(a.args[1])
+            else:
+                unmask_args.append(a)
+
+        for k, v in kwargs.items():
+            if isinstance(v, Term) and _is_monoid_mask(v.op):
+                if mask_monoid is None:
+                    mask_monoid = v.op.__self__
+                elif mask_monoid != v.op.__self__:
+                    continue
+
+                unmask_kwargs[k] = v.args[0]
+                masks.append(v.args[1])
+            else:
+                unmask_kwargs[k] = v
+
+        if mask_monoid is None:
+            return fwd()
+
+        value = fwd(op, *unmask_args, **unmask_kwargs)
+        return mask_monoid.mask(value, And.plus(*masks))
 
 
 @dataclass
@@ -783,13 +823,7 @@ def _einsum_expr(
             )
 
     def dim_type(c):
-        return (
-            int
-            if c in plate_set
-            else Mapping[tuple[int, ...], int]
-            if ordinal[c]
-            else int
-        )
+        return int if c in plate_set else Array if ordinal[c] else int
 
     dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
     dim_index = {
@@ -893,4 +927,5 @@ NormalizeIntp.extend(
     ReduceArrayGather(),
     ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
+    # MaskApply(),
 )
