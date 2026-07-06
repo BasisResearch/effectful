@@ -637,9 +637,7 @@ def test_reduce_factorization_mask(backend: Backend):
     f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     cond = a() == k()  # depends on the outer stream `a`, not on `b`
-    lhs = Sum.reduce(
-        Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()}
-    )
+    lhs = Sum.reduce(Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()})
     rhs = Sum.reduce(
         Sum.mask(
             Product.plus(f(a()), Sum.reduce(Product.plus(g(b())), {b: B()})),
@@ -659,9 +657,7 @@ def test_reduce_factorization_mask_universal_noop(backend: Backend):
     f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     cond = And.plus(a() == k(), b() == k())
-    term = Sum.reduce(
-        Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()}
-    )
+    term = Sum.reduce(Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()})
     backend.check_rewrite(lhs=term, rhs=term, rule=ReduceFactorization())
 
 
