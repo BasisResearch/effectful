@@ -8,7 +8,15 @@ from typing import Annotated, Any, Literal, Union
 
 import pytest
 
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import (
+    Fwd,
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    typeof,
+)
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
@@ -851,3 +859,24 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+def test_fwd_return():
+    @Operation.define
+    def f(x):
+        return x
+
+    def f_call(x):
+        return fwd(x + 1)
+
+    call_intp = functools.reduce(coproduct, [{f: f_call} for _ in range(10000)])
+    with pytest.raises(RuntimeError):
+        with handler(call_intp):
+            f(0)
+
+    def f_ret(x):
+        return Fwd(x + 1)
+
+    ret_intp = functools.reduce(coproduct, [{f: f_ret} for _ in range(10000)])
+    with handler(ret_intp):
+        assert f(0) == 10000
