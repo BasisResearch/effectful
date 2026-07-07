@@ -50,7 +50,7 @@ class Fwd:
 
         intp = get_interpretation()
         assert fwd in intp
-        self.next = intp[fwd]
+        self.next = handler({_get_args: lambda: (self.args, self.kwargs)})(intp[fwd])
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
