@@ -874,6 +874,13 @@ def test_fwd_return():
         with handler(call_intp):
             f(0)
 
+    def f_restore(x):
+        return Fwd()
+
+    restore_intp = functools.reduce(coproduct, [{f: f_restore} for _ in range(10000)])
+    with handler(restore_intp):
+        assert f(999) == 999
+
     def f_ret(x):
         return Fwd(x + 1)
 

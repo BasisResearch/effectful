@@ -44,10 +44,9 @@ class Fwd:
     kwargs: collections.abc.Mapping = field(default_factory=dict)
 
     def __init__(self, *args, **kwargs):
-        from effectful.internals.runtime import get_interpretation
+        from effectful.internals.runtime import _get_args, get_interpretation
 
-        self.args = args
-        self.kwargs = kwargs
+        self.args, self.kwargs = (args, kwargs) if args or kwargs else _get_args()
 
         intp = get_interpretation()
         assert fwd in intp
