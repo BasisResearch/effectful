@@ -13,6 +13,7 @@ from effectful.ops.monoid import (
     CartesianProduct,
     CartesianProductPlus,
     EliminateSingletonStreams,
+    MaskPushPlus,
     Max,
     Min,
     Monoid,
@@ -537,6 +538,40 @@ def test_reduce_mask_hoist_dependent_noop(monoid):
 
     term = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: A()})
     backend.check_rewrite(lhs=term, rhs=term, rule=ReduceMaskHoist())
+
+
+@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
+def test_mask_push_plus(mask_monoid, plus_monoid):
+    """A mask on a product pushes down onto every factor:
+    ``M.mask(WM.plus(x, y), c) == WM.plus(M.mask(x, c), M.mask(y, c))`` when
+    ``distributes_over(WM, M)``.
+
+    Sound because ``M.identity`` is the annihilator of ``WM``: a false condition
+    collapses each factor to ``M.identity == WM.zero``, so the product is
+    ``WM.zero == M.identity`` -- the masked-away left side.
+    """
+    backend = IntBackend()
+    x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
+
+    cond = c() == d()
+    lhs = mask_monoid.mask(plus_monoid.plus(x(), y()), cond)
+    rhs = plus_monoid.plus(
+        mask_monoid.mask(x(), cond), mask_monoid.mask(y(), cond)
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+
+
+@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
+def test_mask_push_plus_nondistributing_noop(mask_monoid, plus_monoid):
+    """The mask does NOT push into a plus of the *same* (non-distributing)
+    monoid: ``distributes_over(M, M)`` is false, so ``M.mask(M.plus(x, y), c)``
+    is left untouched."""
+    backend = IntBackend()
+    x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
+
+    cond = c() == d()
+    term = mask_monoid.mask(mask_monoid.plus(x(), y()), cond)
+    backend.check_rewrite(lhs=term, rhs=term, rule=MaskPushPlus())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)

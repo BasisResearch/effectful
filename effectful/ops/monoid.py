@@ -435,29 +435,32 @@ class ReduceMaskHoist(ObjectInterpretation):
         return monoid.mask(monoid.reduce(value, streams), cond)
 
 
-class PlusMaskHoist(ObjectInterpretation):
-    @implements(Monoid.plus)
-    def _(self, monoid, *args):
-        outer_monoid = None
-        new_args = []
-        masks = []
-        for arg in args:
-            if (
-                isinstance(arg, Term)
-                and _is_monoid_mask(arg.op)
-                and distributes_over(monoid, arg.op.__self__)
-                and (outer_monoid is None or arg.op.__self__ == outer_monoid)
-            ):
-                outer_monoid = arg.op.__self__
-                new_args.append(arg.args[0])
-                masks.append(arg.args[1])
-            else:
-                new_args.append(arg)
+class MaskPushPlus(ObjectInterpretation):
+    """Push a mask down into a product, masking every factor.
 
-        if masks:
-            assert outer_monoid is not None
-            return outer_monoid.mask(monoid.plus(*new_args), Or.plus(*masks))
+    ``M.mask(WM.plus(f0, ..., fn), c) ≡ WM.plus(M.mask(f0, c), ..., M.mask(fn, c))``
 
+    whenever ``distributes_over(WM, M)``. For every registered distributing
+    pair the additive identity ``M.identity`` is exactly the annihilator (zero)
+    of the multiplicative monoid ``WM``: when ``c`` holds both sides are
+    ``WM.plus(f0, ..., fn)``, and when it fails each masked factor collapses to
+    ``M.identity == WM.zero``, so their product is ``WM.zero == M.identity`` --
+    matching the masked-away left side.
+
+    This is the inverse of hoisting a mask out of a plus: it drives masks *down*
+    onto individual product factors, where a mask adjacent to a single array
+    factor can fuse with a gather during stream elimination.
+    """
+
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        if (
+            isinstance(value, Term)
+            and _is_monoid_plus(value.op)
+            and distributes_over(value.op.__self__, monoid)
+        ):
+            plus_monoid = value.op.__self__
+            return plus_monoid.plus(*(monoid.mask(f, cond) for f in value.args))
         return fwd()
 
 
@@ -1503,7 +1506,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFactorization(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
-    PlusMaskHoist(),
+    MaskPushPlus(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),
     PlusEmpty(),
@@ -1535,11 +1538,12 @@ A fully normalized leaf expression matches the grammar (for additive ``R`` /
 multiplicative ``M``)::
 
     nf     ::= container[nf]                    # lambdas/dicts/sequences outermost
-             | M.mask(prod, cond)              # at most one mask layer
              | prod
     prod   ::= M.plus(factor, ...)             # flattened, n-ary
              | factor
-    factor ::= atom                            # array, getitem, delta(idx, w), ...
+    factor ::= M.mask(core, cond)             # mask sits on each product factor
+             | core
+    core   ::= atom                            # array, getitem, delta(idx, w), ...
              | R.reduce(prod, ranges)          # every factor in prod uses a range var
     cond   ::= And.plus(cmp, ...)              # comparison atoms, stream-var first
     ranges ::= { var: range(0, N, 1), ... }
@@ -1576,9 +1580,11 @@ C. ``plus``, ``mask``, and ``delta`` stay symbolic (not lowered).
      ``EvaluateIntp``, not here.
    - ``mask`` floats to a canonical position: fused to a single layer with a
      conjunctive (``And.plus``) condition (:class:`MaskFusion`), constant-bool
-     conditions discharged (:class:`MaskBool`), hoisted above ``plus`` combining
-     conditions with ``Or`` (:class:`PlusMaskHoist`) and out of a ``reduce`` when
-     the condition is stream-independent (:class:`ReduceMaskHoist`). A mask
+     conditions discharged (:class:`MaskBool`), pushed *down* onto each factor
+     of a ``plus`` (:class:`MaskPushPlus`) -- so a mask lands adjacent to a
+     single product factor where it can fuse with a gather -- and out of a
+     ``reduce`` when the condition is stream-independent
+     (:class:`ReduceMaskHoist`). A mask
      remaining inside a reduce body therefore depends on a reduced stream.
      Comparison atoms are oriented stream-variable-first
      (:class:`MaskOrderStreamOps`).
