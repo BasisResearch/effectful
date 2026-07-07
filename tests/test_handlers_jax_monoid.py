@@ -26,7 +26,7 @@ from effectful.ops.monoid import (
     EvaluateIntp,
     Max,
     NormalizeIntp,
-    PlusDups,
+    PlusOrder,
     Product,
     Sum,
 )
@@ -624,35 +624,3 @@ def test_plated_einsum(spec, plates, rng_key):
 
     actual = einsum(spec, *operands, plates=plates)
     assert torch.allclose(torch.tensor(actual), expected, atol=1e-4, rtol=1e-4)
-
-
-def test_plusdups_with_tracer(backend: JaxBackend):
-    """``PlusDups`` must dedup summands even when their term trees contain JAX
-    tracers as leaves.
-
-    Tracers are unhashable and their ``==`` returns an array rather than a
-    bool, so ``syntactic_hash`` / ``syntactic_eq`` blow up on them. We build the
-    duplicated summand inside a ``jax.make_jaxpr`` trace -- where ``t`` is a live
-    tracer -- and check that ``x() + t ⊕ y() ⊕ x() + t`` collapses to
-    ``x() + t ⊕ y()`` (idempotent + commutative ``Max``) without raising.
-    """
-    (x, y) = backend.define_vars("x", "y", ret="scalar")
-
-    def trace_body(t):
-        a = x() + t  # a Term whose arg tree holds the tracer ``t``
-        b = y()
-        with handler(PlusDups()):
-            result = Max.plus(a, b, a)
-
-        assert isinstance(result, Term)
-        assert result.op is Max.plus
-        # the duplicate ``a`` is gone: two summands remain, in order.
-        assert len(result.args) == 2
-        assert syntactic_eq(result.args[0], a)
-        assert syntactic_eq(result.args[1], b)
-        return t
-
-    # Run under a trace so ``t`` is a real DynamicJaxprTracer, not a concrete
-    # array. ``make_jaxpr`` discards the result; the assertions run as a side
-    # effect while the tracer is live.
-    jax.make_jaxpr(trace_body)(jnp.asarray(1.0))
