@@ -40,7 +40,7 @@ def fwd(*args, **kwargs) -> Any:
 @dataclass
 class Fwd:
     next: Callable
-    args: tuple | None = ()
+    args: tuple = ()
     kwargs: collections.abc.Mapping = field(default_factory=dict)
 
     def __init__(self, *args, **kwargs):
