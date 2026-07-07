@@ -136,7 +136,6 @@ class AndPlusJax(ObjectInterpretation):
     @implements(And.plus)
     def plus(self, *args):
         if not _jax_args(args):
-            breakpoint()
             return fwd()
         return functools.reduce(jnp.logical_and, args)
 
@@ -691,9 +690,16 @@ def _build_plate_reductions(
     for f, factor in zip(plate_tree.factors, indexed_factors, strict=True):
         spec = factor_specs[f]
         factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
-        factor_out_dims = set(ordinal) & set(out_op) & set(spec)
 
-        if factor_out_dims:
+        # Only plated output dims are delta'd per factor. Global output dims are
+        # delta'd once by the outer ``out_mask`` in ``_einsum_expr``; masking
+        # them here too would check the same equality (e.g. ``out_b == b``) in
+        # every factor that mentions the dim as well as the outer mask.
+        factor_out_dims = {
+            d for d in set(ordinal) & set(out_op) & set(spec) if ordinal[d]
+        }
+
+        if factor_out_plates or factor_out_dims:
             masked_factors.append(
                 Sum.plus(
                     Sum.mask(
@@ -848,13 +854,14 @@ def einsum(
     expr, dims = _einsum_expr(subscripts, *operands, plates=plates)
     norm_expr = handler(NormalizeIntp)(evaluate)(expr)
 
-    breakpoint()
     assert CartesianProduct.reduce not in fvsof(norm_expr), (
         "failed to eliminate cartesian products"
     )
 
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
+        breakpoint()
+
         result = evaluate(
             bind_dims(
                 norm_expr(
