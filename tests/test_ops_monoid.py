@@ -542,23 +542,74 @@ def test_reduce_mask_hoist_dependent_noop(monoid):
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
 def test_mask_push_plus(mask_monoid, plus_monoid):
-    """A mask on a product pushes down onto every factor:
-    ``M.mask(WM.plus(x, y), c) == WM.plus(M.mask(x, c), M.mask(y, c))`` when
-    ``distributes_over(WM, M)``.
+    """A conjunctive mask on a product pushes each conjunct down onto the
+    factors that mention its variables::
 
-    Sound because ``M.identity`` is the annihilator of ``WM``: a false condition
-    collapses each factor to ``M.identity == WM.zero``, so the product is
-    ``WM.zero == M.identity`` -- the masked-away left side.
+        M.mask(WM.plus(f(a), g(b)), And.plus(a == c, b == d))
+          == WM.plus(M.mask(f(a), a == c), M.mask(g(b), b == d))
+
+    when ``distributes_over(WM, M)``. Sound because ``M.identity`` is the
+    annihilator of ``WM``: a false conjunct collapses the factor it lands on to
+    ``M.identity == WM.zero``, so the whole product is ``WM.zero == M.identity``.
     """
+    backend = IntBackend()
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = mask_monoid.mask(
+        plus_monoid.plus(f(a()), g(b())),
+        And.plus(a() == c(), b() == d()),
+    )
+    rhs = plus_monoid.plus(
+        mask_monoid.mask(f(a()), a() == c()),
+        mask_monoid.mask(g(b()), b() == d()),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+
+
+@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
+def test_mask_push_plus_shared_conjunct(mask_monoid, plus_monoid):
+    """A conjunct mentioned by several factors lands on all of them."""
+    backend = IntBackend()
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    cond = a() == c()
+    lhs = mask_monoid.mask(plus_monoid.plus(f(a()), g(a())), cond)
+    rhs = plus_monoid.plus(
+        mask_monoid.mask(f(a()), cond), mask_monoid.mask(g(a()), cond)
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+
+
+@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
+def test_mask_push_plus_orphan_residual(mask_monoid, plus_monoid):
+    """A conjunct that no factor mentions stays as a residual outer mask while
+    the pushable conjuncts move down onto their factors."""
+    backend = IntBackend()
+    a, c, e, h, g = backend.define_vars("a", "c", "e", "h", "g", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = mask_monoid.mask(
+        plus_monoid.plus(f(a()), g()),
+        And.plus(a() == c(), e() == h()),  # e == h mentions no factor
+    )
+    rhs = mask_monoid.mask(
+        plus_monoid.plus(mask_monoid.mask(f(a()), a() == c()), g()),
+        e() == h(),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+
+
+@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
+def test_mask_push_plus_all_orphan_noop(mask_monoid, plus_monoid):
+    """A mask whose condition mentions no factor is left in place: there is
+    nowhere to fuse it, so nothing is pushed."""
     backend = IntBackend()
     x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
 
-    cond = c() == d()
-    lhs = mask_monoid.mask(plus_monoid.plus(x(), y()), cond)
-    rhs = plus_monoid.plus(
-        mask_monoid.mask(x(), cond), mask_monoid.mask(y(), cond)
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+    term = mask_monoid.mask(plus_monoid.plus(x(), y()), c() == d())
+    backend.check_rewrite(lhs=term, rhs=term, rule=MaskPushPlus())
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
@@ -567,10 +618,10 @@ def test_mask_push_plus_nondistributing_noop(mask_monoid, plus_monoid):
     monoid: ``distributes_over(M, M)`` is false, so ``M.mask(M.plus(x, y), c)``
     is left untouched."""
     backend = IntBackend()
-    x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    cond = c() == d()
-    term = mask_monoid.mask(mask_monoid.plus(x(), y()), cond)
+    term = mask_monoid.mask(mask_monoid.plus(f(a()), g(a())), a() == c())
     backend.check_rewrite(lhs=term, rhs=term, rule=MaskPushPlus())
 
 

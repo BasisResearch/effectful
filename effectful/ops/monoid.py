@@ -254,6 +254,37 @@ def _is_monoid_delta(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.delta
 
 
+def _leaf_vars(expr: Any) -> set[Operation]:
+    """The free variables that appear as nullary leaves (``var()``) in ``expr``.
+
+    Unlike :func:`fvsof`, this excludes operator/function symbols (``__eq__``,
+    getitem, a factor's callable head, ...) and keeps only the value-carrying
+    leaf variables -- every variable occurrence is a nullary call, so this is
+    exactly the set of variables the expression *mentions*. Used to decide which
+    factors a mask conjunct actually constrains.
+    """
+    result: set[Operation] = set()
+
+    def walk(e: Any) -> None:
+        if isinstance(e, Term):
+            if not e.args and not e.kwargs:
+                result.add(e.op)
+            else:
+                for a in e.args:
+                    walk(a)
+                for v in e.kwargs.values():
+                    walk(v)
+        elif isinstance(e, tuple | list):
+            for x in e:
+                walk(x)
+        elif isinstance(e, Mapping):
+            for x in e.values():
+                walk(x)
+
+    walk(expr)
+    return result
+
+
 class DeltaEmpty(ObjectInterpretation):
     """delta((), weight) ≡ weight"""
 
@@ -433,35 +464,6 @@ class ReduceMaskHoist(ObjectInterpretation):
         if fvsof(cond) & set(streams):
             return fwd()
         return monoid.mask(monoid.reduce(value, streams), cond)
-
-
-class MaskPushPlus(ObjectInterpretation):
-    """Push a mask down into a product, masking every factor.
-
-    ``M.mask(WM.plus(f0, ..., fn), c) ≡ WM.plus(M.mask(f0, c), ..., M.mask(fn, c))``
-
-    whenever ``distributes_over(WM, M)``. For every registered distributing
-    pair the additive identity ``M.identity`` is exactly the annihilator (zero)
-    of the multiplicative monoid ``WM``: when ``c`` holds both sides are
-    ``WM.plus(f0, ..., fn)``, and when it fails each masked factor collapses to
-    ``M.identity == WM.zero``, so their product is ``WM.zero == M.identity`` --
-    matching the masked-away left side.
-
-    This is the inverse of hoisting a mask out of a plus: it drives masks *down*
-    onto individual product factors, where a mask adjacent to a single array
-    factor can fuse with a gather during stream elimination.
-    """
-
-    @implements(Monoid.mask)
-    def _(self, monoid, value, cond):
-        if (
-            isinstance(value, Term)
-            and _is_monoid_plus(value.op)
-            and distributes_over(value.op.__self__, monoid)
-        ):
-            plus_monoid = value.op.__self__
-            return plus_monoid.plus(*(monoid.mask(f, cond) for f in value.args))
-        return fwd()
 
 
 class PlusEmpty(ObjectInterpretation):
@@ -699,29 +701,98 @@ def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
     assert False, "expected at least one subset-minimal stream"
 
 
-class ReduceFactorization(ObjectInterpretation):
-    """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
+class Factor(ObjectInterpretation):
+    @implements(Monoid.mask)
+    def _(self, monoid, value, cond):
+        """Scope a mask to the factors its condition constrains -- the ``mask``
+        analog of :class:`ReduceFactorization`.
 
-    where F_v = factors mentioning v, F_rest = the others. Fires only when
-    v has no dependents among the remaining streams (so it can be innermost)
-    and F_rest is nonempty (universal variables stay in the outer core).
+        Peel one conjunct ``c`` that *some but not all* factors mention, wrapping
+        just those factors::
 
-    A reduce-monoid mask wrapping the plus is handled too:
+            M.mask(WM.plus(F_c ∪ F_rest), And.plus(c, *rest))
+              = M.mask(WM.plus(F_rest, M.mask(WM.plus(F_c), c)), And.plus(*rest))
 
-        reduce(M.mask(⊗(F_v ∪ F_rest), c), {v} ∪ S)
-            = reduce(M.mask(⊗F_rest ⊗ reduce(⊗F_v, {v}), c), S)
+        where ``F_c`` are the factors mentioning a variable of ``c`` and ``F_rest``
+        the rest. Sound by the same annihilator argument as the old ``MaskPushPlus``:
+        for every registered distributing pair the additive identity ``M.identity``
+        is the zero of ``WM``, so when ``c`` fails the inner mask collapses to
+        ``M.identity == WM.zero`` and annihilates the product, matching the
+        masked-away left side.
 
-    Because the mask gates the whole product, every factor effectively depends
-    on the condition's variables; folding ``fvsof(c)`` into each factor's free
-    variables keeps those streams in the outer core (a stream the mask depends
-    on is treated as universal and never pulled into the inner reduce). The
-    mask therefore stays outside the inner reduce unchanged. Soundness relies
-    on ``M.identity`` annihilating the inner monoid's plus (the semiring zero),
-    so masking distributes over the inner product.
-    """
+        Like :class:`ReduceFactorization`, this peels one conjunct per firing and
+        re-enters; the outer conjunct set strictly shrinks, so it terminates. The
+        inner ``M.mask(WM.plus(F_c), c)`` has a single conjunct that all its factors
+        mention, so it is immediately ineligible -- terminal by construction.
+
+        A conjunct every factor mentions (``F_rest`` empty) or none mentions
+        (``F_c`` empty) is not eligible and stays put: a cross-factor equality is
+        left grouped on the whole product (the shape
+        :class:`ReduceEqualityMaskRange` discharges with a single gather), and an
+        orphan condition stays as an outer mask -- dropping it would be unsound. Two
+        conjuncts on the same factor land as nested masks that :class:`MaskFusion`
+        re-merges.
+
+        Landing a mask adjacent to a single array factor is what lets it fuse with a
+        gather during stream elimination. This is the inverse of hoisting a mask out
+        of a plus.
+        """
+        if not (
+            isinstance(value, Term)
+            and _is_monoid_plus(value.op)
+            and distributes_over(value.op.__self__, monoid)
+        ):
+            return fwd()
+
+        plus_monoid = value.op.__self__
+        factors = value.args
+        conds = cond.args if isinstance(cond, Term) and cond.op is And.plus else (cond,)
+        factor_fvs = [_leaf_vars(f) for f in factors]
+
+        for i, c in enumerate(conds):
+            c_fvs = _leaf_vars(c)
+            inside = {j for j, ffvs in enumerate(factor_fvs) if c_fvs & ffvs}
+            # eligible iff c constrains some but not all factors, so F_rest can
+            # be pulled out. all-factors (grouped equality) and no-factor
+            # (orphan) conjuncts stay put.
+            if not inside or len(inside) == len(factors):
+                continue
+
+            f_c = [f for j, f in enumerate(factors) if j in inside]
+            f_rest = [f for j, f in enumerate(factors) if j not in inside]
+            rest = tuple(d for k, d in enumerate(conds) if k != i)
+
+            inner = monoid.mask(plus_monoid.plus(*f_c) if len(f_c) > 1 else f_c[0], c)
+            outer_val = plus_monoid.plus(*f_rest, inner)
+            if not rest:
+                return outer_val
+            return monoid.mask(
+                outer_val, rest[0] if len(rest) == 1 else And.plus(*rest)
+            )
+
+        return fwd()
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
+
+        where F_v = factors mentioning v, F_rest = the others. Fires only when
+        v has no dependents among the remaining streams (so it can be innermost)
+        and F_rest is nonempty (universal variables stay in the outer core).
+
+        A reduce-monoid mask wrapping the plus is handled too:
+
+            reduce(M.mask(⊗(F_v ∪ F_rest), c), {v} ∪ S)
+                = reduce(M.mask(⊗F_rest ⊗ reduce(⊗F_v, {v}), c), S)
+
+        Because the mask gates the whole product, every factor effectively depends
+        on the condition's variables; folding ``fvsof(c)`` into each factor's free
+        variables keeps those streams in the outer core (a stream the mask depends
+        on is treated as universal and never pulled into the inner reduce). The
+        mask therefore stays outside the inner reduce unchanged. Soundness relies
+        on ``M.identity`` annihilating the inner monoid's plus (the semiring zero),
+        so masking distributes over the inner product.
+        """
         if not (is_commutative(monoid) and isinstance(body, Term)):
             return fwd()
 
@@ -1503,10 +1574,9 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceSplit(),
     SplitDisjointProduct(),
     ReduceDistributeCartesianProduct(),
-    ReduceFactorization(),
+    Factor(),
     ReduceWeightedStream(),
     ReduceCartesianWeightedStream(),
-    MaskPushPlus(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),
     PlusEmpty(),
@@ -1538,10 +1608,11 @@ A fully normalized leaf expression matches the grammar (for additive ``R`` /
 multiplicative ``M``)::
 
     nf     ::= container[nf]                    # lambdas/dicts/sequences outermost
+             | M.mask(prod, orphan_cond)       # only conjuncts no factor mentions
              | prod
     prod   ::= M.plus(factor, ...)             # flattened, n-ary
              | factor
-    factor ::= M.mask(core, cond)             # mask sits on each product factor
+    factor ::= M.mask(core, cond)             # conjuncts the factor mentions
              | core
     core   ::= atom                            # array, getitem, delta(idx, w), ...
              | R.reduce(prod, ranges)          # every factor in prod uses a range var
@@ -1580,11 +1651,12 @@ C. ``plus``, ``mask``, and ``delta`` stay symbolic (not lowered).
      ``EvaluateIntp``, not here.
    - ``mask`` floats to a canonical position: fused to a single layer with a
      conjunctive (``And.plus``) condition (:class:`MaskFusion`), constant-bool
-     conditions discharged (:class:`MaskBool`), pushed *down* onto each factor
-     of a ``plus`` (:class:`MaskPushPlus`) -- so a mask lands adjacent to a
-     single product factor where it can fuse with a gather -- and out of a
-     ``reduce`` when the condition is stream-independent
-     (:class:`ReduceMaskHoist`). A mask
+     conditions discharged (:class:`MaskBool`), pushed *down* onto the factors
+     of a ``plus`` (:class:`MaskPushPlus`) -- each conjunct landing on the
+     factors that mention its variables, so a mask sits adjacent to a single
+     product factor where it can fuse with a gather (a conjunct no factor
+     mentions stays as a residual outer mask) -- and out of a ``reduce`` when
+     the condition is stream-independent (:class:`ReduceMaskHoist`). A mask
      remaining inside a reduce body therefore depends on a reduced stream.
      Comparison atoms are oriented stream-variable-first
      (:class:`MaskOrderStreamOps`).
