@@ -531,51 +531,50 @@ class PlusDistr(ObjectInterpretation):
         return fwd()
 
 
+class PlusOrder(ObjectInterpretation):
+    """Normalize plus ordering for commutative monoids.
+
+    x ⊕ y ⊕ x = x ⊕ x ⊕ y
+
+    """
+
+    @staticmethod
+    def _term_sort_key(t: Term) -> tuple[int, int]:
+        return (syntactic_hash(t), id(t))
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not is_commutative(monoid):
+            return fwd()
+
+        sorted_args = tuple(
+            sorted(range(len(args)), key=lambda i: self._term_sort_key(args[i]))
+        )
+        if sorted_args == tuple(range(len(args))):
+            return fwd()
+        return monoid.plus(*(args[i] for i in sorted_args))
+
+
 class PlusConsecutiveDups(ObjectInterpretation):
-    """x ⊕ x ⊕ y = x ⊕ y"""
+    """Normalize duplicate arguments for idempotent monoids.
+
+    x ⊕ x ⊕ y = x ⊕ y
+
+    """
 
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         if not is_idempotent(monoid):
             return fwd()
 
-        dedup_args = (
-            args[i]
+        dedup_args = tuple(
+            i
             for i in range(len(args))
             if i == 0 or not syntactic_eq(args[i - 1], args[i])
         )
-        return fwd(monoid, *dedup_args)
-
-
-class PlusDups(ObjectInterpretation):
-    """x ⊕ y ⊕ x = x ⊕ y"""
-
-    @dataclass
-    class _HashableTerm:
-        term: Term
-
-        def __eq__(self, other):
-            return syntactic_eq(self, other)
-
-        def __hash__(self):
-            return syntactic_hash(self)
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if not (is_idempotent(monoid) and is_commutative(monoid)):
+        if dedup_args == tuple(range(len(args))):
             return fwd()
-
-        # elim dups
-        args_count = Counter(self._HashableTerm(t) for t in args)
-        if len(args_count) < len(args):
-            dedup_args = []
-            for t in args:
-                ht = self._HashableTerm(t)
-                if ht in args_count:
-                    dedup_args.append(t)
-                    del args_count[ht]
-            return fwd(monoid, *dedup_args)
-        return fwd()
+        return monoid.plus(*(args[i] for i in dedup_args))
 
 
 class ReducePartial(ObjectInterpretation):
@@ -1512,7 +1511,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusAssoc(),
     PlusDistr(),
     PlusConsecutiveDups(),
-    PlusDups(),
+    PlusOrder(),
     PlusCastFloat(),
     MaskFusion(),
     MaskBool(),

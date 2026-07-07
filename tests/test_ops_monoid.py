@@ -23,8 +23,8 @@ from effectful.ops.monoid import (
     PlusAssoc,
     PlusConsecutiveDups,
     PlusDistr,
-    PlusDups,
     PlusEmpty,
+    PlusOrder,
     PlusSingle,
     Product,
     ReduceCartesianWeightedStream,
@@ -321,21 +321,20 @@ def test_plus_idempotent_consecutive(monoid, backend: Backend):
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
 def test_plus_idempotent_non_consecutive(monoid, backend: Backend):
-    """``a, b, a`` — Semilattice (Min/Max) collapses via commutative
-    PlusDups."""
     a, b = backend.define_vars("a", "b", ret="scalar")
     lhs = monoid.plus(a(), b(), a())
-    rhs = monoid.plus(a(), b())
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups())
+    rhs = monoid.plus(a(), b(), a())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusConsecutiveDups())
 
 
 @pytest.mark.parametrize("monoid", [Min, Max])
 def test_plus_commutative_idempotent_long(monoid, backend: Backend):
     """Long alternation collapses via commutative dedup (Min/Max only)."""
-    a, b = backend.define_vars("a", "b", ret="scalar")
-    lhs = monoid.plus(a(), b(), a(), b(), b(), a(), a())
-    rhs = monoid.plus(a(), b())
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups())
+    lhs = monoid.plus(0, 1, 0, 1, 1, 0, 0)
+    rhs = monoid.plus(0, 1)
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(PlusOrder(), PlusConsecutiveDups())
+    )
 
 
 @pytest.mark.parametrize("monoid", WITH_ZERO)
