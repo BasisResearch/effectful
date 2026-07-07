@@ -13,7 +13,7 @@ from effectful.ops.monoid import (
     CartesianProduct,
     CartesianProductPlus,
     EliminateSingletonStreams,
-    MaskPushPlus,
+    Factor,
     Max,
     Min,
     Monoid,
@@ -31,7 +31,6 @@ from effectful.ops.monoid import (
     ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
     ReduceEqualityMaskRange,
-    ReduceFactorization,
     ReduceFusion,
     ReduceMaskHoist,
     ReducePartial,
@@ -564,7 +563,7 @@ def test_mask_push_plus(mask_monoid, plus_monoid):
         mask_monoid.mask(f(a()), a() == c()),
         mask_monoid.mask(g(b()), b() == d()),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
@@ -579,7 +578,7 @@ def test_mask_push_plus_shared_conjunct(mask_monoid, plus_monoid):
     rhs = plus_monoid.plus(
         mask_monoid.mask(f(a()), cond), mask_monoid.mask(g(a()), cond)
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
@@ -598,7 +597,7 @@ def test_mask_push_plus_orphan_residual(mask_monoid, plus_monoid):
         plus_monoid.plus(mask_monoid.mask(f(a()), a() == c()), g()),
         e() == h(),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MaskPushPlus())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
@@ -609,7 +608,7 @@ def test_mask_push_plus_all_orphan_noop(mask_monoid, plus_monoid):
     x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
 
     term = mask_monoid.mask(plus_monoid.plus(x(), y()), c() == d())
-    backend.check_rewrite(lhs=term, rhs=term, rule=MaskPushPlus())
+    backend.check_rewrite(lhs=term, rhs=term, rule=Factor())
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
@@ -626,12 +625,11 @@ def test_mask_push_plus_nondistributing_noop(mask_monoid, plus_monoid):
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_equality_mask_plus(monoid):
+def test_reduce_equality_mask_plus(backend: Backend, monoid):
     """ReduceEqualityMaskRange distributes over a plus body, discharging an
     equality on the reduced stream in one summand via a singleton-stream gather
     while leaving the other summand as an ordinary masked reduce.
     """
-    backend = IntBackend()
     a, c = backend.define_vars("a", "c", ret="scalar")
     f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 

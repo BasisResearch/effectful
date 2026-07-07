@@ -32,6 +32,7 @@ from effectful.ops.monoid import (
     _is_monoid_plus,
     choose_contraction,
     distributes_over,
+    is_equality,
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
@@ -53,6 +54,8 @@ LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 # ``Sum`` in log space is multiplication, which distributes over ``LogSumExp``:
 #   a + logsumexp(b, c) = logsumexp(a + b, a + c)
 distributes_over.register(Sum, LogSumExp)
+
+is_equality.register(jnp.equal)
 
 
 def _jax_args(args):
@@ -151,12 +154,7 @@ class OrPlusJax(ObjectInterpretation):
 class MaskJax(ObjectInterpretation):
     @implements(Monoid.mask)
     def mask(self, monoid, value, mask):
-        if not (
-            isinstance(value, jax.Array)
-            or issubclass(typeof(value), jax.Array | jax.core.Tracer)
-            or isinstance(mask, jax.Array)
-            or issubclass(typeof(mask), jax.Array | jax.core.Tracer)
-        ):
+        if not (is_eager_array(value) and is_eager_array(mask)):
             return fwd()
         return jnp.where(mask, value, monoid.identity)
 
@@ -884,7 +882,7 @@ EvaluateIntp.extend(
     OrPlusJax(),
     MaskJax(),
     ReduceSumProductContraction(),
-    ReduceArray(),
+    # ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
     ReduceArrayScan(),

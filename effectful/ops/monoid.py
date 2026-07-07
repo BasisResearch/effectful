@@ -341,6 +341,9 @@ class MaskFusion(ObjectInterpretation):
         return fwd()
 
 
+is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
+
+
 class ReduceEqualityMaskRange(ObjectInterpretation):
     """M.reduce(M.mask(v, And.plus(i = x, *m)), {i: range(N)} ∪ S) ≡
     M.mask(M.reduce(M.mask(v, *m), {i: [x]} ∪ S), And.plus(0 <= x, x < N))
@@ -370,9 +373,10 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
         is a ``range(0, N)`` stream and ``key`` is stream-independent, return
         ``(stream_op, key)``; otherwise ``None``."""
 
-        def test(stream_op, mask_key):
+        def test(op, stream_op, mask_key):
             return (
-                stream_op in streams
+                is_equality(op)
+                and stream_op in streams
                 and isinstance(stream := streams[stream_op], range)
                 and stream.start == 0
                 and stream.step == 1
@@ -380,12 +384,12 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             )
 
         match cond:
-            case Term(_NumberTerm.__eq__, (Term(stream_op, (), {}), mask_key), {}) if (
-                test(stream_op, mask_key)
+            case Term(op, (Term(stream_op, (), {}), mask_key), {}) if test(
+                op, stream_op, mask_key
             ):
                 return (stream_op, mask_key)
-            case Term(_NumberTerm.__eq__, (mask_key, Term(stream_op, (), {})), {}) if (
-                test(stream_op, mask_key)
+            case Term(op, (mask_key, Term(stream_op, (), {})), {}) if test(
+                op, stream_op, mask_key
             ):
                 return (stream_op, mask_key)
             case _:
@@ -1550,7 +1554,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    # ReducePartial(),
+    ReducePartial(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),
