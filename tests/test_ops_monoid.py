@@ -656,7 +656,7 @@ def test_reduce_independent_1(backend: Backend):
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_independent_2(backend: Backend):
@@ -674,7 +674,7 @@ def test_reduce_independent_2(backend: Backend):
             {b: B()},
         ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_independent_3_negative(backend: Backend):
@@ -687,7 +687,7 @@ def test_reduce_independent_3_negative(backend: Backend):
     )
     g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="stream")
 
-    with handler(ReduceFactorization()):  # ty:ignore[invalid-argument-type]
+    with handler(Factor()):  # ty:ignore[invalid-argument-type]
         lhs = Sum.reduce(
             Product.plus(a(), b(), f(b(), c())), {a: A(), b: g(a()), c: C()}
         )
@@ -715,7 +715,7 @@ def test_reduce_independent_4(backend: Backend):
             {b: B()},
         ),
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_chain(backend: Backend):
@@ -731,7 +731,7 @@ def test_reduce_chain(backend: Backend):
         Product.plus(h(y()), Sum.reduce(Product.plus(f(x()), g(x(), y())), {x: X()})),
         {y: Y()},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_factorization_mask(backend: Backend):
@@ -753,7 +753,7 @@ def test_reduce_factorization_mask(backend: Backend):
         ),
         {a: A()},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_factorization_mask_universal_noop(backend: Backend):
@@ -766,7 +766,7 @@ def test_reduce_factorization_mask_universal_noop(backend: Backend):
 
     cond = And.plus(a() == k(), b() == k())
     term = Sum.reduce(Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()})
-    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=term, rhs=term, rule=Factor())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -789,7 +789,7 @@ def test_reduce_lift_shared(outer, inner, backend: Backend):
         ),
         {c: C()},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -817,7 +817,7 @@ def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
         ),
         {c: C(), d: h(c())},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
 def test_reduce_cartesian_3():
@@ -952,7 +952,7 @@ def test_reduce_weighted_factorization(backend: Backend):
         Sum.reduce(f(a)*g(b), {a: Product.weighted(A, a, w_a), b: Product.weighted(B, b, w_b)})
           = (Sum.reduce(w_a(a)*f(a), {a: A})) * (Sum.reduce(w_b(b)*g(b), {b: B}))
 
-    Exercises chaining of ``ReduceWeightedStream`` with ``ReduceFactorization``
+    Exercises chaining of ``ReduceWeightedStream`` with ``Factor``
     inside ``NormalizeIntp``.
     """
     a, b = backend.define_vars("a", "b", ret="scalar")
@@ -970,7 +970,7 @@ def test_reduce_weighted_factorization(backend: Backend):
         Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
     )
 
 
