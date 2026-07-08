@@ -858,7 +858,6 @@ def einsum(
 
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
-        breakpoint()
 
         result = evaluate(
             bind_dims(

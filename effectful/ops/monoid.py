@@ -626,26 +626,6 @@ class ReduceFusion(ObjectInterpretation):
 
 
 class ReduceSplit(ObjectInterpretation):
-    """Confines a stream to the summands that use it, factorization-style.
-
-    For an innermost stream ``v`` used by a strict, non-empty subset of the
-    summands, this implements
-
-        reduce(R, ⊕(B_T, B_R), {v} ∪ S)
-            = reduce(R, ⊕(reduce(R, B_T, {v}), reduce(R, B_R, {v})), S)
-
-    where ``B_T`` are the summands that mention ``v`` and ``B_R`` the rest. Both
-    sides equal ``⊕_S ⊕_v (B_T ⊕ B_R)`` so this is correct for any commutative
-    monoid (no cardinality term is needed -- both groups stay under the
-    ``{v}``-reduce). The outer reduce sheds ``v`` and the ``v``-users are
-    isolated for further factorization.
-
-    The rule deliberately does *not* fire when ``v`` is used by every summand:
-    such reduces stay fused, which is what :class:`ReduceDistributeCartesianProduct`
-    expects. Repeated application confines each subset-used stream in turn and
-    terminates once every remaining stream is used by all (or no) summands.
-    """
-
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         if not is_commutative(monoid):
@@ -653,32 +633,7 @@ class ReduceSplit(ObjectInterpretation):
         if not (isinstance(body, Term) and body.op is monoid.plus):
             return fwd()
 
-        summand_fvs = [fvsof(arg) for arg in body.args]
-
-        for v in streams:
-            # innermost-eligible: no other stream depends on v
-            if any(v in fvsof(s) for k, s in streams.items() if k is not v):
-                continue
-            # used by a strict, non-empty subset of the summands
-            users = [v in fvs for fvs in summand_fvs]
-            if all(users) or not any(users):
-                continue
-
-            inner_streams = {v: streams[v]}
-            outer_streams = {k: s for k, s in streams.items() if k is not v}
-
-            def group(args):
-                return args[0] if len(args) == 1 else monoid.plus(*args)
-
-            using = [arg for arg, used in zip(body.args, users) if used]
-            rest = [arg for arg, used in zip(body.args, users) if not used]
-            body2 = monoid.plus(
-                monoid.reduce(group(using), inner_streams),
-                monoid.reduce(group(rest), inner_streams),
-            )
-            return monoid.reduce(body2, outer_streams) if outer_streams else body2
-
-        return fwd()
+        return monoid.plus(*(monoid.reduce(a, streams) for a in body.args))
 
 
 @Operation.define
@@ -894,6 +849,14 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         = reduce(⨁, reduce(⨂, reduce(⨁, body2, {vv: body1}), S1), S2)
     where × is the cartesian product and ⨂ distributes over ⨁.
 
+    The body may also be a ``⨂``-plus of such reduces -- the form left behind
+    when a ``⨂``-reduce has been pushed through a ``⨂``-plus. Each summand is
+    row-substituted independently (asserting that each summand's stream bundle
+    contains a stream folding over the full cartesian product row), their plate
+    variables are unified onto a single shared one, and the plus is placed under
+    the shared peeled reduce -- so the single-reduce case is exactly the "plus
+    with one argument" case.
+
     Note: This could be generalized to grouped inversion [2].
 
     [1] Braz, Rd, Eyal Amir, and Dan Roth. "Lifted first-order
@@ -907,13 +870,35 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         if not (isinstance(body, Term)):
             return fwd()
 
-        if not _is_monoid_reduce(body.op):
+        # The body is either a single inner reduce or a ⨂-plus of inner reduces
+        # (a reduce pushed through a plus). The single reduce is just the
+        # "plus with one argument" case.
+        if _is_monoid_reduce(body.op):
+            summands: tuple[Term, ...] = (body,)
+        elif _is_monoid_plus(body.op) and all(
+            isinstance(arg, Term) and _is_monoid_reduce(arg.op) for arg in body.args
+        ):
+            summands = body.args
+        else:
             return fwd()
 
-        inner_monoid = body.op.__self__
+        inner_monoid = summands[0].op.__self__
         if not distributes_over(inner_monoid, monoid):
             return fwd()
-        inner_body, inner_streams = body.args
+
+        # For a multi-argument plus, every summand must reduce the same monoid
+        # and the plus must be that monoid's plus, so that pulling the summands'
+        # inner reduces under a shared peeled reduce stays valid.
+        if len(summands) > 1 and (
+            body.op is not inner_monoid.plus
+            or not all(s.op.__self__ is inner_monoid for s in summands)
+        ):
+            return fwd()
+
+        class InvalidIndexError(Exception): ...
+
+        def drop_elem(ls, index):
+            return tuple(x for (i, x) in enumerate(ls) if i != index)
 
         for stream_key, stream_body in streams.items():
             # stream is cartesian
@@ -930,9 +915,6 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 isinstance(plate_stream, range)
                 for plate_stream in cprod_streams.values()
             ):
-                continue
-
-            if stream_key in fvsof(inner_streams):
                 continue
 
             # stream body is a sequence of mappings from plate index to domain value
@@ -955,42 +937,83 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 (j, i.op) for (j, i) in enumerate(idx) if i.op in cprod_streams
             )
             plate_range = cprod_streams[plate_op]
-            inner_plate_op = None
 
-            class InvalidIndexError(Exception): ...
+            def row_substitute(inner_body, inner_streams):
+                """Peel ``plate_index`` off every ``stream_key[...]`` in one
+                summand. Asserts the summand's bundle contains a stream that
+                folds over the full cartesian product row and returns that plate
+                variable alongside the substituted body."""
+                if stream_key in fvsof(inner_streams):
+                    raise InvalidIndexError()
 
-            def drop_elem(ls, index):
-                return tuple(x for (i, x) in enumerate(ls) if i != index)
+                inner_plate_op = None
 
-            # substitute all instances of row[i, *rest] -> row[*rest]
-            def _getitem(mapping, idx1):
-                nonlocal inner_plate_op
+                # substitute all instances of row[i, *rest] -> row[*rest]
+                def _getitem(mapping, idx1):
+                    nonlocal inner_plate_op
 
-                if isinstance(mapping, Term) and mapping.op == stream_key:
-                    if not (
-                        isinstance(idx1, Sequence)
-                        and len(idx1) > plate_index
-                        and isinstance(idx1[plate_index], Term)
-                        and idx1[plate_index].op in inner_streams
-                        and syntactic_eq(
-                            inner_streams[idx1[plate_index].op], plate_range
-                        )
-                    ):
-                        raise InvalidIndexError()
+                    if isinstance(mapping, Term) and mapping.op == stream_key:
+                        if not (
+                            isinstance(idx1, Sequence)
+                            and len(idx1) > plate_index
+                            and isinstance(idx1[plate_index], Term)
+                            and idx1[plate_index].op in inner_streams
+                            and syntactic_eq(
+                                inner_streams[idx1[plate_index].op], plate_range
+                            )
+                        ):
+                            raise InvalidIndexError()
 
-                    if inner_plate_op is None:
-                        inner_plate_op = idx1[plate_index].op
-                    elif inner_plate_op != idx1[plate_index].op:
-                        raise InvalidIndexError()
+                        if inner_plate_op is None:
+                            inner_plate_op = idx1[plate_index].op
+                        elif inner_plate_op != idx1[plate_index].op:
+                            raise InvalidIndexError()
 
-                    return fwd(mapping, drop_elem(idx1, plate_index))
-                return fwd()
+                        return fwd(mapping, drop_elem(idx1, plate_index))
+                    return fwd()
 
-            row_subst = {_ArrayTerm.__getitem__: _getitem}
+                subst = handler({_ArrayTerm.__getitem__: _getitem})(evaluate)(
+                    inner_body
+                )
+                if inner_plate_op is None:
+                    # this summand's bundle does not fold over the row
+                    raise InvalidIndexError()
+                return subst, inner_plate_op
+
+            # row-substitute each summand independently
             try:
-                subst_inner_body = handler(row_subst)(evaluate)(inner_body)
+                substituted = [row_substitute(*s.args) for s in summands]
             except InvalidIndexError:
                 continue
+
+            # unify each summand's plate variable onto a single shared one so
+            # that the peeled product folds all summands over the same row
+            shared_plate_op = substituted[0][1]
+            inner_reduces = []
+            for (subst_inner_body, inner_plate_op), summand in zip(
+                substituted, summands
+            ):
+                (_, inner_streams) = summand.args
+                if inner_plate_op is not shared_plate_op:
+                    subst_inner_body = handler({inner_plate_op: shared_plate_op})(
+                        evaluate
+                    )(subst_inner_body)
+
+                # include any extra inner product streams
+                inner_tail_streams = {
+                    k: v for (k, v) in inner_streams.items() if k != inner_plate_op
+                }
+                if inner_tail_streams:
+                    inner_reduces.append(
+                        inner_monoid.reduce(subst_inner_body, inner_tail_streams)
+                    )
+                else:
+                    inner_reduces.append(subst_inner_body)
+
+            if len(inner_reduces) == 1:
+                combined = inner_reduces[0]
+            else:
+                combined = inner_monoid.plus(*inner_reduces)
 
             peeled_body = Union.reduce(
                 [Union.delta(drop_elem(idx, plate_index), union_body)], union_streams
@@ -1005,21 +1028,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                     peeled_body, peeled_cprod_streams
                 )
 
-            # include any extra inner product streams
-            inner_tail_streams = {
-                k: v for (k, v) in inner_streams.items() if k != inner_plate_op
-            }
-            if inner_tail_streams:
-                inner_reduce = inner_monoid.reduce(
-                    subst_inner_body,
-                    inner_tail_streams,
-                )
-            else:
-                inner_reduce = subst_inner_body
-
             peeled_reduce = inner_monoid.reduce(
-                monoid.reduce(inner_reduce, {stream_key: peeled_cprod}),
-                {k: v for (k, v) in inner_streams.items() if k == inner_plate_op},
+                monoid.reduce(combined, {stream_key: peeled_cprod}),
+                {shared_plate_op: plate_range},
             )
 
             # include any extra sum streams outermost
