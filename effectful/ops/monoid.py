@@ -952,6 +952,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 def _getitem(mapping, idx1):
                     nonlocal inner_plate_op
 
+                    idx1 = idx1 if isinstance(idx1, Sequence) else (idx1,)
                     if isinstance(mapping, Term) and mapping.op == stream_key:
                         if not (
                             isinstance(idx1, Sequence)
@@ -1274,7 +1275,8 @@ class CartesianProductPlus(ObjectInterpretation):
 
     @implements(CartesianProduct.plus)
     def plus(self, *args):
-        assert args
+        if not args:
+            return fwd()
         if any(isinstance(x, Term) for x in args):
             return fwd()
         if not all(isinstance(x, Iterable) for x in args):
@@ -1285,7 +1287,8 @@ class CartesianProductPlus(ObjectInterpretation):
 class UnionPlus(ObjectInterpretation):
     @implements(Union.plus)
     def plus(self, *args):
-        assert args
+        if not args:
+            return fwd()
         if any(isinstance(x, Term) for x in args):
             return fwd()
         if not all(isinstance(x, Iterable) for x in args):

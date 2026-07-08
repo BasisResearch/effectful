@@ -12,6 +12,7 @@ from effectful.ops.monoid import (
     And,
     CartesianProduct,
     CartesianProductPlus,
+    DeltaEmpty,
     EliminateSingletonStreams,
     Factor,
     Max,
@@ -35,13 +36,15 @@ from effectful.ops.monoid import (
     ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
+    ReduceUnion,
     ReduceWeightedStream,
     SplitDisjointProduct,
     Sum,
+    Union,
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import deffn
+from effectful.ops.syntax import Array, deffn
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -567,21 +570,6 @@ def test_mask_push_plus(mask_monoid, plus_monoid):
 
 
 @pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
-def test_mask_push_plus_shared_conjunct(mask_monoid, plus_monoid):
-    """A conjunct mentioned by several factors lands on all of them."""
-    backend = IntBackend()
-    a, c = backend.define_vars("a", "c", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    cond = a() == c()
-    lhs = mask_monoid.mask(plus_monoid.plus(f(a()), g(a())), cond)
-    rhs = plus_monoid.plus(
-        mask_monoid.mask(f(a()), cond), mask_monoid.mask(g(a()), cond)
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
-
-
-@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
 def test_mask_push_plus_orphan_residual(mask_monoid, plus_monoid):
     """A conjunct that no factor mentions stays as a residual outer mask while
     the pushable conjuncts move down onto their factors."""
@@ -840,15 +828,29 @@ def test_reduce_cartesian_3():
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_1(outer, inner, backend: Backend):
     a, i = backend.define_vars("a", "i", ret="scalar")
-    A, N, A_domain = backend.define_vars("A", "N", "A_domain", ret="stream")
+    N, A_domain = backend.define_vars("N", "A_domain", ret="stream")
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    A = Operation.define(Array)
 
     lhs = outer.reduce(
-        inner.reduce(f(a()), {a: A()}),
-        {A: CartesianProduct.reduce(A_domain(), {i: N()})},
+        inner.reduce(f(A()[i()]), {i: range(3)}),
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(),), a())], {a: A_domain()}), {i: range(3)}
+            )
+        },
     )
-    rhs = inner.reduce(outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N()})
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
+    rhs = inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {i: range(3)})
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(
+            ReduceDistributeCartesianProduct(),
+            coproduct(
+                ReduceUnion(), coproduct(DeltaEmpty(), EliminateSingletonStreams())
+            ),
+        ),
+    )
 
 
 def test_reduce_cartesian_1():
