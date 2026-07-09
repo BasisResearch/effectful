@@ -1474,7 +1474,6 @@ class SplitDisjointProduct(ObjectInterpretation):
             )
 
         pat = match(lhs, rhs) or match(rhs, lhs)
-        breakpoint()
         if not pat:
             return fwd()
 

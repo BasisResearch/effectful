@@ -778,8 +778,12 @@ def _einsum_expr(
         return int if c in plate_set else Mapping[tuple, int] if ordinal[c] else int
 
     dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
+    out_vars = {c: Operation.define(jax.Array, name=f"out_{c}") for c in out_spec}
+    out_globals = global_enums & set(out_spec)
     dim_index = {
-        c: dim_op[c]()
+        c: out_vars[c]()
+        if c in out_globals
+        else dim_op[c]()
         if c in plate_set or not ordinal[c]
         else dim_op[c]()[tuple(dim_op[p]() for p in sorted(ordinal[c]))]
         for c in dim_op
@@ -788,7 +792,6 @@ def _einsum_expr(
         Operation.define(jax.Array, name=f"f{i}") for (i, _) in enumerate(operands)
     ]
     plate_tree = _build_plate_tree(in_specs, plate_set)
-    out_vars = {c: Operation.define(jax.Array, name=f"out_{c}") for c in out_spec}
     reductions = _build_plate_reductions(
         plate_tree, [a() for a in arrays], in_specs, dim_index, out_vars, sizes, ordinal
     )
@@ -805,17 +808,14 @@ def _einsum_expr(
             c_streams,
         )
 
-    streams: Streams = {dim_op[c]: range(sizes[c]) for c in global_enums} | {
-        dim_op[c]: r for c, r in rows.items()
-    }
+    streams: Streams = {
+        dim_op[c]: range(sizes[c]) for c in global_enums if c not in out_spec
+    } | {dim_op[c]: r for c, r in rows.items()}
 
-    out_globals = global_enums & set(out_spec)
-    out_mask = And.plus(*(out_vars[c]() == dim_index[c] for c in out_globals))
-    return deffn(
-        Sum.reduce(Sum.mask(reductions, out_mask), streams),
-        *arrays,
-        *(out_vars[c] for c in out_spec),
-    ), [(out_vars[c], sizes[c]) for c in out_spec]
+    reduction = Sum.reduce(reductions, streams) if streams else reductions
+    return deffn(reduction, *arrays, *(out_vars[c] for c in out_spec)), [
+        (out_vars[c], sizes[c]) for c in out_spec
+    ]
 
 
 @jax.jit(static_argnums=(0,), static_argnames=("plates",))
