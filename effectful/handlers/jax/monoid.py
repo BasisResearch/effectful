@@ -887,7 +887,7 @@ EvaluateIntp.extend(
     # ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
-    ReduceArrayScan(),
+    # ReduceArrayScan(),
     PlusCastArray(),
 )
 

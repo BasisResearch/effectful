@@ -1403,8 +1403,8 @@ class EliminateSingletonStreams(ObjectInterpretation):
 
 
 class SplitDisjointProduct(ObjectInterpretation):
-    def _is_var(self, term: Term) -> bool:
-        return not term.args and not term.kwargs
+    def _is_var(self, v) -> bool:
+        return isinstance(v, Term) and not v.args and not v.kwargs
 
     def _var_comps(
         self, terms: list[Term], op: Operation

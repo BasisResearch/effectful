@@ -722,7 +722,7 @@ def test_reduce_factorization_mask_universal_noop(backend: Backend):
     A, B = backend.define_vars("A", "B", ret="stream")
     f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    cond = And.plus(a() == k(), b() == k())
+    cond = a() == b()
     term = Sum.reduce(Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()})
     backend.check_rewrite(lhs=term, rhs=term, rule=Factor())
 
@@ -825,15 +825,22 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
     a, i, j = backend.define_vars("a", "i", "j", ret="scalar")
-    A, N, M, A_domain = backend.define_vars("A", "N", "M", "A_domain", ret="stream")
+    N, M, A_domain = backend.define_vars("N", "M", "A_domain", ret="stream")
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = outer.reduce(
-        inner.reduce(f(a()), {a: A()}),
-        {A: CartesianProduct.reduce(A_domain(), {i: N(), j: M()})},
+        inner.reduce(f(A()[(i(), j())]), {i: range(3), j: range(2)}),
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(), j()), a())], {a: A_domain()}),
+                {i: range(3), j: range(2)},
+            )
+        },
     )
     rhs = inner.reduce(
-        outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N(), j: M()}
+        inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {j: range(2)}),
+        {i: range(3)},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
 
@@ -1190,7 +1197,7 @@ def test_split_disjoint_product_simple():
     rhs = Product.reduce(
         Product.plus(
             Product.mask(
-                Sum.mask(f(i()), And.plus(j() == j_out())), And.plus(i() == i_out())
+                Sum.mask(f(i()), And.plus(j_out() == j())), And.plus(i() == i_out())
             ),
             Product.mask(Sum.mask(g(i()), True), Or.plus(i() != i_out())),
         ),

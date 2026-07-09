@@ -2,12 +2,12 @@ from typing import TYPE_CHECKING
 
 import jax.lax
 
-from effectful.handlers.jax._handlers import JaxOperation
+from effectful.handlers.jax._handlers import _register_jax_op
 
 for name, op in jax.lax.__dict__.items():
     wrapped_value = None
     if callable(op):
-        wrapped_value = JaxOperation.define(op)
+        wrapped_value = _register_jax_op(op)
     else:
         continue
 
