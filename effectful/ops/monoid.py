@@ -3,7 +3,7 @@ import functools
 import itertools
 import operator
 import typing
-from collections import Counter, UserDict, defaultdict
+from collections import UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
@@ -11,7 +11,6 @@ from typing import Annotated, Any
 
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
-    Array,
     ObjectInterpretation,
     Scoped,
     _ArrayTerm,

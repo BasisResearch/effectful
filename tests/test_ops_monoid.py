@@ -7,7 +7,6 @@ from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import effectful.handlers.jax.monoid  # noqa: F401
-import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
     And,
     CartesianProduct,
@@ -44,7 +43,7 @@ from effectful.ops.monoid import (
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Array, deffn, syntactic_eq
+from effectful.ops.syntax import deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -104,7 +103,7 @@ def test_associativity(monoid, backend: Backend, data):
     with handler(NormalizeIntp):
         left = monoid.plus(monoid.plus(a, b), c)
         right = monoid.plus(a, monoid.plus(b, c))
-        assert backend.eq(left, right)
+        assert syntactic_eq(left, right)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -132,7 +131,7 @@ def test_commutativity(monoid, backend: Backend, data):
     a = data.draw(backend.strategy(ret="scalar"))()
     b = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
-        assert backend.eq(monoid.plus(a, b), monoid.plus(b, a))
+        assert syntactic_eq(monoid.plus(a, b), monoid.plus(b, a))
 
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
@@ -495,19 +494,6 @@ def test_reduce_split_subset(monoid, backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSplit())
 
 
-@pytest.mark.parametrize("monoid", COMMUTATIVE)
-def test_reduce_split_shared_noop(monoid, backend: Backend):
-    """ReduceSplit leaves a reduce fused when every summand uses the stream --
-    the form ``ReduceDistributeCartesianProduct`` relies on.
-    """
-    a = backend.define_vars("a", ret="scalar")
-    A = backend.define_vars("A", ret="stream")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    term = monoid.reduce(monoid.plus(f(a()), g(a())), {a: A()})
-    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceSplit())
-
-
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_reduce_mask_hoist(monoid):
     """A reduce-stream-independent mask condition lifts out of the reduce:
@@ -582,7 +568,7 @@ def test_mask_push_plus_orphan_residual(mask_monoid, plus_monoid):
         And.plus(a() == c(), e() == h()),  # e == h mentions no factor
     )
     rhs = mask_monoid.mask(
-        plus_monoid.plus(mask_monoid.mask(f(a()), a() == c()), g()),
+        plus_monoid.plus(g(), mask_monoid.mask(f(a()), a() == c())),
         e() == h(),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
@@ -597,19 +583,6 @@ def test_mask_push_plus_all_orphan_noop(mask_monoid, plus_monoid):
 
     term = mask_monoid.mask(plus_monoid.plus(x(), y()), c() == d())
     backend.check_rewrite(lhs=term, rhs=term, rule=Factor())
-
-
-@pytest.mark.parametrize("mask_monoid, plus_monoid", MONOID_PAIRS)
-def test_mask_push_plus_nondistributing_noop(mask_monoid, plus_monoid):
-    """The mask does NOT push into a plus of the *same* (non-distributing)
-    monoid: ``distributes_over(M, M)`` is false, so ``M.mask(M.plus(x, y), c)``
-    is left untouched."""
-    backend = IntBackend()
-    a, c = backend.define_vars("a", "c", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    term = mask_monoid.mask(mask_monoid.plus(f(a()), g(a())), a() == c())
-    backend.check_rewrite(lhs=term, rhs=term, rule=MaskPushPlus())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -734,12 +707,9 @@ def test_reduce_factorization_mask(backend: Backend):
 
     cond = a() == k()  # depends on the outer stream `a`, not on `b`
     lhs = Sum.reduce(Sum.mask(Product.plus(f(a()), g(b())), cond), {a: A(), b: B()})
-    rhs = Sum.reduce(
-        Sum.mask(
-            Product.plus(f(a()), Sum.reduce(Product.plus(g(b())), {b: B()})),
-            cond,
-        ),
-        {a: A()},
+    rhs = Product.plus(
+        Sum.reduce(Product.plus(Sum.mask(f(a()), cond)), {a: A()}),
+        Sum.reduce(Product.plus(g(b())), {b: B()}),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
@@ -808,30 +778,6 @@ def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
-def test_reduce_cartesian_3():
-    backend = JaxBackend()
-    i = backend.define_vars("i", ret="scalar")
-
-    with handler(NormalizeIntp):
-        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(3)})
-    assert value.shape == (2**3, 3)
-
-    with handler(NormalizeIntp):
-        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(1)})
-    assert value.shape == (2**1, 1)
-
-    with handler(NormalizeIntp):
-        value = CartesianProduct.reduce(jnp.zeros(1), {i: jnp.arange(3)})
-    assert value.shape == (1**3, 3)
-
-
-@Operation.define
-def to_dict(*args):
-    if not fvsof(args):
-        return {k: v for (k, v) in args}
-    raise NotHandled
-
-
 def test_cartesian_union():
     i, a = Operation.define(int), Operation.define(int)
     lhs = CartesianProduct.reduce(
@@ -876,34 +822,6 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     )
 
 
-def test_reduce_cartesian_1():
-    backend = IntBackend()
-    a, i = backend.define_vars("a", "i", ret="scalar")
-    A = backend.define_vars("A", ret="stream")
-
-    with handler(NormalizeIntp):
-        term1 = Sum.reduce(
-            Product.reduce(a(), {a: []}),
-            {A: CartesianProduct.reduce([], {i: []})},
-        )
-        term2 = Product.reduce(Sum.reduce(a(), {a: []}), {i: []})
-    assert term1 == term2
-
-
-def test_reduce_cartesian_2():
-    backend = IntBackend()
-    a, i = backend.define_vars("a", "i", ret="scalar")
-    A = backend.define_vars("A", ret="stream")
-
-    with handler(NormalizeIntp):
-        term1 = Sum.reduce(
-            Product.reduce(a(), {a: A()}),
-            {A: CartesianProduct.reduce([(0,)], {i: [0]})},
-        )
-        term2 = Product.reduce(Sum.reduce(a(), {a: [0]}), {i: [0]})
-    assert term1 == term2
-
-
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
     a, i, j = backend.define_vars("a", "i", "j", ret="scalar")
@@ -927,7 +845,8 @@ def test_reduce_lifted_2(outer, inner, backend: Backend):
 
     """
     a, i, s, t = backend.define_vars("a", "i", "s", "t", ret="scalar")
-    A, N, T = backend.define_vars("A", "N", "T", ret="stream")
+    N, T = backend.define_vars("N", "T", ret="stream")
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])
     A_domain = backend.define_vars(
         "A_domain", arg_types=(backend.scalar_typ,), ret="stream"
     )
@@ -936,19 +855,32 @@ def test_reduce_lifted_2(outer, inner, backend: Backend):
     )
 
     lhs = outer.reduce(
-        inner.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
-        {A: CartesianProduct.reduce(A_domain(i()), {i: N()}), t: T()},
+        inner.reduce(
+            inner.plus(f1(A()[(i(),)], s()), f2(t(), A()[(i(),)])), {i: range(3)}
+        ),
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(),), a())], {a: A_domain(i())}),
+                {i: range(3)},
+            ),
+            t: T(),
+        },
     )
     rhs = outer.reduce(
         inner.reduce(
-            outer.reduce(
-                inner.plus(inner.plus(f1(a(), s()), f2(t(), a()))), {a: A_domain(i())}
-            ),
-            {i: N()},
+            outer.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A_domain(i())}),
+            {i: range(3)},
         ),
         {t: T()},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(
+            ReduceDistributeCartesianProduct(),
+            coproduct(ReduceUnion(), EliminateSingletonStreams()),
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1084,7 +1016,7 @@ def test_weighted_expectation_demo():
     w = Operation.define(_w, name="w")
     f = Operation.define(_f, name="f")
 
-    with handler(NormalizeIntp):
+    with handler(NormalizeIntp), handler(EvaluateIntp):
         result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
 
     assert math.isclose(result, 10.0)

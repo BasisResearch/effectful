@@ -21,18 +21,13 @@ from effectful.handlers.jax.monoid import (
     einsum,
 )
 from effectful.ops.monoid import (
-    DeltaEmpty,
     EliminateSingletonStreams,
     EvaluateIntp,
-    Max,
     NormalizeIntp,
-    PlusOrder,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import syntactic_eq
-from effectful.ops.types import Term
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
@@ -180,7 +175,6 @@ def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
                 EliminateSingletonStreams(),
                 ReduceArray(),
                 ReduceDeltaSimpleRange(),
-                DeltaEmpty(),
             ],
         ),
     )

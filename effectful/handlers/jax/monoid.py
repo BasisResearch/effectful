@@ -14,7 +14,7 @@ from opt_einsum import get_symbol
 import effectful.handlers.jax.lax as lax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
-from effectful.handlers.jax._handlers import JaxOperation, is_eager_array
+from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     And,
@@ -37,7 +37,6 @@ from effectful.ops.monoid import (
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
-    Array,
     ObjectInterpretation,
     _ArrayTerm,
     _NumberTerm,
@@ -154,7 +153,10 @@ class OrPlusJax(ObjectInterpretation):
 class MaskJax(ObjectInterpretation):
     @implements(Monoid.mask)
     def mask(self, monoid, value, mask):
-        if not (is_eager_array(value) and is_eager_array(mask)):
+        if not (
+            (is_eager_array(value) or not isinstance(value, Term))
+            and (is_eager_array(mask) or not isinstance(value, Term))
+        ):
             return fwd()
         return jnp.where(mask, value, monoid.identity)
 
@@ -859,6 +861,7 @@ def einsum(
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
 
+        breakpoint()
         result = evaluate(
             bind_dims(
                 norm_expr(
