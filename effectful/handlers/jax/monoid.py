@@ -59,17 +59,12 @@ is_equality.register(jnp.equal)
 
 def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
-    :class:`jax.typing.ArrayLike` or named tensor. At least one argument must be
-    a jax-related type.
+    :class:`jax.typing.ArrayLike` or named tensor.
 
     """
-    if not args:
-        return False
-
-    types = tuple(typeof(a) for a in args)
-    return all(
-        issubclass(t, jax.typing.ArrayLike | jax.core.Tracer) for t in types
-    ) and any(issubclass(t, jax.Array | jax.core.Tracer) for t in types)
+    return args and all(
+        isinstance(a, jax.typing.ArrayLike) or is_eager_array(a) for a in args
+    )
 
 
 class PlusCastArray(ObjectInterpretation):
@@ -227,24 +222,15 @@ class ReduceArray(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        if not is_eager_array(body):
+            return fwd()
+
         reductor = ARRAY_REDUCTORS.get(monoid, None)
         if reductor is None:
             return fwd()
 
-        if typeof(body) is not jax.Array:
-            return fwd()
-
-        pos_dims = (
-            {d.op for d in body.args[0] if isinstance(d, Term) and d.op in streams}
-            if isinstance(body, Term) and body.op == monoid.delta
-            else {}
-        )
         body_fvs = fvsof(body)
-        used = {
-            k
-            for k, v in streams.items()
-            if k in body_fvs and k not in pos_dims and isinstance(v, range)
-        }
+        used = {k for k, v in streams.items() if k in body_fvs and isinstance(v, range)}
         if not used:
             return fwd()
 
@@ -861,7 +847,6 @@ def einsum(
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
 
-        breakpoint()
         result = evaluate(
             bind_dims(
                 norm_expr(
@@ -884,7 +869,7 @@ EvaluateIntp.extend(
     OrPlusJax(),
     MaskJax(),
     ReduceSumProductContraction(),
-    # ReduceArray(),
+    ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
     # ReduceArrayScan(),

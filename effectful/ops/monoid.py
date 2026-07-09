@@ -1474,6 +1474,7 @@ class SplitDisjointProduct(ObjectInterpretation):
             )
 
         pat = match(lhs, rhs) or match(rhs, lhs)
+        breakpoint()
         if not pat:
             return fwd()
 
@@ -1574,7 +1575,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
+    # ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),
