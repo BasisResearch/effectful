@@ -15,6 +15,7 @@ from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
     _ArrayTerm,
+    _MappingTerm,
     _NumberTerm,
     defdata,
     deffn,
@@ -161,7 +162,7 @@ class Monoid[W]:
         raise NotHandled
 
     @Operation.define
-    def delta(self, index: tuple[int, ...], weight: W) -> Array:
+    def delta[K](self, index: K, weight: W) -> Mapping[K, W]:
         raise NotHandled
 
 
@@ -285,32 +286,8 @@ def _leaf_vars(expr: Any) -> set[Operation]:
     return result
 
 
-class DeltaEmpty(ObjectInterpretation):
-    """delta((), weight) ≡ weight"""
-
-    @implements(Monoid.delta)
-    def _(self, monoid, index, weight):
-        if not index:
-            return weight
-        return fwd()
-
-
-class DeltaFusion(ObjectInterpretation):
-    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
-
-    @implements(Monoid.delta)
-    def _(self, monoid, index, weight):
-        if (
-            isinstance(weight, Term)
-            and _is_monoid_delta(weight.op)
-            and weight.op.__self__ == monoid
-        ):
-            return monoid.delta(index + weight.args[0], weight.args[1])
-        return fwd()
-
-
 class GetitemDelta(ObjectInterpretation):
-    """M.delta(i, v)[q] ≡ M.mask(i, v == q)"""
+    """M.delta(i, v)[q] ≡ M.mask(v, i == q)"""
 
     @implements(_ArrayTerm.__getitem__)
     def _(self, value, index):
@@ -973,7 +950,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                         return fwd(mapping, drop_elem(idx1, plate_index))
                     return fwd()
 
-                subst = handler({_ArrayTerm.__getitem__: _getitem})(evaluate)(
+                subst = handler({_MappingTerm.__getitem__: _getitem})(evaluate)(
                     inner_body
                 )
                 if inner_plate_op is None:
@@ -1016,21 +993,43 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             else:
                 combined = inner_monoid.plus(*inner_reduces)
 
-            peeled_body = Union.reduce(
-                [Union.delta(drop_elem(idx, plate_index), union_body)], union_streams
-            )
+            peeled_idx = drop_elem(idx, plate_index)
             peeled_cprod_streams = {
                 k: v for (k, v) in cprod_streams.items() if k != plate_op
             }
-            if not peeled_cprod_streams:
-                peeled_cprod = peeled_body
+            if not peeled_cprod_streams and not peeled_idx:
+                # Base case: the plate was the only cartesian product stream and
+                # the row was fully peeled, so ``Union.delta((), union_body)``
+                # collapses to ``union_body``. Rather than emit a bare
+                # ``Union.reduce`` stream and defer to
+                # ``ReduceUnion``/``EliminateSingletonStreams`` (which would leave
+                # an empty-index ``Union.delta`` behind), substitute the union
+                # body directly for each empty ``stream_key[()]`` subscript --
+                # equivalently ``Union.delta((), union_body)[()]`` -- and reduce
+                # directly over ``union_streams``.
+                def _to_body(mapping, key):
+                    if isinstance(mapping, Term) and mapping.op == stream_key:
+                        return union_body
+                    return fwd()
+
+                subst_combined = handler({_MappingTerm.__getitem__: _to_body})(
+                    evaluate
+                )(combined)
+                inner_reduce_body = monoid.reduce(subst_combined, union_streams)
             else:
-                peeled_cprod = CartesianProduct.reduce(
-                    peeled_body, peeled_cprod_streams
+                peeled_body = Union.reduce(
+                    [Union.delta(peeled_idx, union_body)], union_streams
                 )
+                if not peeled_cprod_streams:
+                    peeled_cprod = peeled_body
+                else:
+                    peeled_cprod = CartesianProduct.reduce(
+                        peeled_body, peeled_cprod_streams
+                    )
+                inner_reduce_body = monoid.reduce(combined, {stream_key: peeled_cprod})
 
             peeled_reduce = inner_monoid.reduce(
-                monoid.reduce(combined, {stream_key: peeled_cprod}),
+                inner_reduce_body,
                 {shared_plate_op: plate_range},
             )
 
@@ -1188,6 +1187,14 @@ def _scalar_args(args):
         and not any(isinstance(x, Term) for x in args)
         and all(isinstance(x, int | float) for x in args)
     )
+
+
+class DeltaConcrete(ObjectInterpretation):
+    @implements(Monoid.delta)
+    def _(self, _, k, v):
+        if not fvsof((k, v)):
+            return {k: v}
+        return fwd()
 
 
 class SumPlus(ObjectInterpretation):
@@ -1569,6 +1576,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
+    DeltaConcrete(),
     SumPlus(),
     MinPlus(),
     MaxPlus(),
@@ -1581,8 +1589,6 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
 )
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
-    DeltaEmpty(),
-    DeltaFusion(),
     GetitemDelta(),
     MonoidOverSequence(),
     MonoidOverMapping(),

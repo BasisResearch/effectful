@@ -787,7 +787,7 @@ def _einsum_expr(
             )
 
     def dim_type(c):
-        return int if c in plate_set else Array if ordinal[c] else int
+        return int if c in plate_set else Mapping[tuple, int] if ordinal[c] else int
 
     dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
     dim_index = {

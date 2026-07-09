@@ -1,6 +1,6 @@
 import math
 import typing
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 import pytest
 from hypothesis import HealthCheck, given, settings
@@ -12,8 +12,8 @@ from effectful.ops.monoid import (
     And,
     CartesianProduct,
     CartesianProductPlus,
-    DeltaEmpty,
     EliminateSingletonStreams,
+    EvaluateIntp,
     Factor,
     Max,
     Min,
@@ -44,7 +44,7 @@ from effectful.ops.monoid import (
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import Array, deffn
+from effectful.ops.syntax import Array, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -825,15 +825,40 @@ def test_reduce_cartesian_3():
     assert value.shape == (1**3, 3)
 
 
+@Operation.define
+def to_dict(*args):
+    if not fvsof(args):
+        return {k: v for (k, v) in args}
+    raise NotHandled
+
+
+def test_cartesian_union():
+    i, a = Operation.define(int), Operation.define(int)
+    lhs = CartesianProduct.reduce(
+        Union.reduce([Union.delta((i(),), a())], {a: range(2)}), {i: range(2)}
+    )
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        rhs = evaluate(lhs)
+        assert syntactic_eq(
+            rhs,
+            [
+                {(0,): 0, (1,): 0},
+                {(0,): 0, (1,): 1},
+                {(0,): 1, (1,): 0},
+                {(0,): 1, (1,): 1},
+            ],
+        )
+
+
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_1(outer, inner, backend: Backend):
     a, i = backend.define_vars("a", "i", ret="scalar")
     N, A_domain = backend.define_vars("N", "A_domain", ret="stream")
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
-    A = Operation.define(Array)
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])
 
     lhs = outer.reduce(
-        inner.reduce(f(A()[i()]), {i: range(3)}),
+        inner.reduce(f(A()[(i(),)]), {i: range(3)}),
         {
             A: CartesianProduct.reduce(
                 Union.reduce([Union.delta((i(),), a())], {a: A_domain()}), {i: range(3)}
@@ -846,9 +871,7 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
         rhs=rhs,
         rule=coproduct(
             ReduceDistributeCartesianProduct(),
-            coproduct(
-                ReduceUnion(), coproduct(DeltaEmpty(), EliminateSingletonStreams())
-            ),
+            coproduct(ReduceUnion(), EliminateSingletonStreams()),
         ),
     )
 
