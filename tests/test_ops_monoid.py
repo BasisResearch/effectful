@@ -586,6 +586,56 @@ def test_mask_push_plus_all_orphan_noop(mask_monoid, plus_monoid):
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_equality_mask_range_simple(backend: Backend, monoid):
+    """Best case: a single equality on the reduced range stream becomes a
+    singleton-stream gather guarded by the corresponding bounds check.
+    """
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: range(3)})
+    rhs = monoid.mask(
+        monoid.reduce(monoid.mask(f(a()), And.plus()), {a: (c(),)}),
+        And.plus(0 <= c(), c() < 3),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_equality_mask_range_residual_conjuncts(backend: Backend, monoid):
+    """Non-equality conjuncts are preserved inside the gathered singleton
+    reduce; only the equality on the reduced range stream is discharged.
+    """
+    a, c, d, e = backend.define_vars("a", "c", "d", "e", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = monoid.reduce(
+        monoid.mask(f(a()), And.plus(d() < e(), a() == c(), c() < e())),
+        {a: range(4)},
+    )
+    rhs = monoid.mask(
+        monoid.reduce(
+            monoid.mask(f(a()), And.plus(d() < e(), c() < e())),
+            {a: (c(),)},
+        ),
+        And.plus(0 <= c(), c() < 4),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_equality_mask_range_noncanonical_range_noop(backend: Backend, monoid):
+    """The rule only handles ``range(0, N, 1)`` streams; for other ranges it
+    should leave the term unchanged.
+    """
+    a, c = backend.define_vars("a", "c", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    term = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: range(1, 4)})
+    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceEqualityMaskRange())
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_reduce_equality_mask_plus(backend: Backend, monoid):
     """ReduceEqualityMaskRange distributes over a plus body, discharging an
     equality on the reduced stream in one summand via a singleton-stream gather
