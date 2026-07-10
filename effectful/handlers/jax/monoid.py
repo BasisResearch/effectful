@@ -242,6 +242,65 @@ class ReduceArray(ObjectInterpretation):
         return reduced_body
 
 
+class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
+    """Partition a disjunctive disequality mask into disjoint reductions.
+
+    For example, the overlapping regions ``i != x`` and ``j != y`` are
+    rewritten as ``i != x`` and ``i == x and j != y``::
+
+        reduce(mask(v, (i != x) or (j != y)), streams)
+        == plus(
+            reduce(mask(v, i != x), streams),
+            reduce(mask(v, (i == x) and (j != y)), streams),
+        )
+
+    More generally, disjunct ``k`` is conjoined with the complements of all
+    preceding disjuncts.  The resulting masks are pairwise disjoint, so their
+    reductions can be combined with the reduction monoid.  In particular,
+    each result has a conjunctive mask that :class:`ReduceArrayScan` can
+    eliminate.
+    """
+
+    _complements = {
+        _NumberTerm.__ne__: _NumberTerm.__eq__,
+        jnp.not_equal: jnp.equal,
+    }
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, Term(Or.plus, disjuncts, {})), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+            case _:
+                return fwd()
+
+        if len(disjuncts) < 2 or not all(
+            isinstance(disjunct, Term)
+            and is_disequality(disjunct.op)
+            and disjunct.op in self._complements
+            for disjunct in disjuncts
+        ):
+            return fwd()
+
+        preceding_complements = []
+        reductions = []
+        for disjunct in disjuncts:
+            assert isinstance(disjunct, Term)
+            reductions.append(
+                monoid.reduce(
+                    monoid.mask(value, And.plus(*preceding_complements, disjunct)),
+                    streams,
+                )
+            )
+            preceding_complements.append(
+                self._complements[disjunct.op](*disjunct.args, **disjunct.kwargs)
+            )
+
+        return monoid.plus(*reductions)
+
+
 class ReduceArrayScan(ObjectInterpretation):
     _flip = {
         jnp.less: jnp.greater,
@@ -869,7 +928,25 @@ class _EinsumBuilder:
                     )
                 )
                 masked_factors.append(
-                    Sum.plus(Sum.mask(factor, and_mask), Sum.mask(factor, or_mask))
+                    jnp.where(
+                        And.plus(
+                            *(
+                                self.dim_index(p) == self.out_vars[p]()
+                                for p in factor_out_plates
+                            )
+                        ),
+                        Sum.mask(
+                            factor,
+                            And.plus(
+                                *(
+                                    self.dim_index(p) == self.out_vars[p]()
+                                    for p in factor_out_dims
+                                )
+                            ),
+                        ),
+                        factor,
+                    )
+                    # Sum.plus(Sum.mask(factor, and_mask), Sum.mask(factor, or_mask))
                 )
             else:
                 masked_factors.append(factor)
@@ -953,7 +1030,7 @@ def einsum(
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(sparse_expr)
 
-        # breakpoint()
+        breakpoint()
         out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
         result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
@@ -973,6 +1050,7 @@ EvaluateIntp.extend(
     ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
+    ReduceDisjunctiveDisequalityMask(),
     ReduceArrayScan(),
     PlusCastArray(),
 )

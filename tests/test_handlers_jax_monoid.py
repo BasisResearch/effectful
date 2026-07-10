@@ -17,18 +17,22 @@ from effectful.handlers.jax.monoid import (
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
+    ReduceDisjunctiveDisequalityMask,
     ReduceSumProductContraction,
     einsum,
 )
 from effectful.ops.monoid import (
+    And,
     EliminateSingletonStreams,
     EvaluateIntp,
     NormalizeIntp,
+    Or,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from tests._monoid_helpers import JaxBackend
+from effectful.ops.types import Operation
+from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
 
 MONOIDS = [
     pytest.param(monoid, reductor, id=monoid.__name__)
@@ -44,6 +48,31 @@ def rng_key():
 @pytest.fixture
 def backend() -> JaxBackend:
     return JaxBackend()
+
+
+def test_reduce_disjunctive_disequality_mask():
+    i = Operation.define(int, name="i")
+    j = Operation.define(int, name="j")
+    out_i = Operation.define(int, name="out_i")
+    out_j = Operation.define(int, name="out_j")
+    value = Operation.define(int, name="value")
+    streams = {i: range(3), j: range(4)}
+
+    lhs = Sum.reduce(
+        Sum.mask(value(), Or.plus(i() != out_i(), j() != out_j())), streams
+    )
+    rhs = Sum.plus(
+        Sum.reduce(Sum.mask(value(), And.plus(i() != out_i())), streams),
+        Sum.reduce(
+            Sum.mask(value(), And.plus(i() == out_i(), j() != out_j())),
+            streams,
+        ),
+    )
+
+    with handler(ReduceDisjunctiveDisequalityMask()):
+        actual = evaluate(lhs)
+
+    assert syntactic_eq_alpha(actual, rhs)
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)

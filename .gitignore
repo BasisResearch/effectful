@@ -90,3 +90,4 @@ out
 /docs/source/.ipynb_checkpoints/
 *.env
 *.envrc
+.worktrees
