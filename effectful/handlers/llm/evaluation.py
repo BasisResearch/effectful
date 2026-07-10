@@ -306,8 +306,7 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
         )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    # Check that mypy ran to completion *before* inspecting diagnostics: a type
-    # error (`TypeError`) may only be reported when mypy actually finished. Exit
+    # Exit
     # status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
     # tool failure, not a type error -- and it emits text rather than JSON, so
     # raise `RuntimeError` rather than parse or silently pass.
