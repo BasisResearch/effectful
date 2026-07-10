@@ -873,6 +873,45 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
+def test_reduce_lifted_3(outer, inner, backend: Backend):
+    a, b, i, j = backend.define_vars("a", "b", "i", "j", ret="scalar")
+    N, A_domain, B_domain = backend.define_vars(
+        "N", "A_domain", "B_domain", ret="stream"
+    )
+    f = backend.define_vars(
+        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+    A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
+    B = Operation.define(Mapping[tuple, backend.scalar_typ], name="B")
+
+    lhs = outer.reduce(
+        inner.reduce(f(A()[(i(), j())], B()[(i(), j())]), {i: range(3), j: range(4)}),
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(), j()), a())], {a: A_domain()}),
+                {i: range(3), j: range(4)},
+            ),
+            B: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(), j()), b())], {b: B_domain()}),
+                {i: range(3), j: range(4)},
+            ),
+        },
+    )
+    rhs = inner.reduce(
+        outer.reduce(f(a(), b()), {a: A_domain(), b: B_domain()}),
+        {i: range(3), j: range(3)},
+    )
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(
+            ReduceDistributeCartesianProduct(),
+            coproduct(ReduceUnion(), EliminateSingletonStreams()),
+        ),
+    )
+
+
+@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
     a, i, j = backend.define_vars("a", "i", "j", ret="scalar")
     N, M, A_domain = backend.define_vars("N", "M", "A_domain", ret="stream")

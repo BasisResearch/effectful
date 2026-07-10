@@ -43,7 +43,7 @@ from effectful.ops.syntax import (
     deffn,
     implements,
 )
-from effectful.ops.types import Expr, Interpretation, Operation, Term
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -610,212 +610,271 @@ class Node:
     factors: list[int]
 
 
-def _build_plate_tree(factor_specs: list[str], plates: frozenset[str]) -> Node:
-    # 1. ordinal (plate context) of each factor
-    factor_ordinal = {
-        k: frozenset(spec) & plates for k, spec in enumerate(factor_specs)
-    }
+class _EinsumBuilder:
+    in_specs: Sequence[str]
+    out_spec: str
+    plates: frozenset[str]
+    operands: Sequence[jax.Array]
 
-    # 2. node set: every factor ordinal, the global root ∅, and every pairwise
-    #    intersection. The intersection of two ordinals is the deepest context
-    #    that contains both, i.e. their common ancestor -- a shared plate MUST
-    #    have a node to live at, or containment can't be a tree. Closing under
-    #    ∩ materializes those frame nodes (finite lattice, so it terminates).
-    ordinals = set(factor_ordinal.values()) | {frozenset()}
-    changed = True
-    while changed:
-        changed = False
-        for A in list(ordinals):
-            for B in list(ordinals):
-                if (A & B) not in ordinals:
-                    ordinals.add(A & B)
-                    changed = True
+    def __init__(
+        self, subscripts: str, /, *operands: jax.Array, plates: str | None = None
+    ):
+        if not operands:
+            raise ValueError("einsum requires at least one operand")
 
-    nodes = {o: Node(ordinal=o, children=[], factors=[]) for o in ordinals}
+        in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
+            [subscripts, *(op.shape for op in operands)], shapes=True
+        )
+        in_specs = in_spec.split(",")
 
-    # 3. parent of o = the largest ordinal strictly inside o ("next context out").
-    #    Validity: that maximum must dominate EVERY other strict subset, i.e. the
-    #    strict subsets form a chain. Two incomparable maximal subsets means o is a
-    #    join over two separate branches -- not a tree -> raise.
-    for o in ordinals:
-        if not o:  # root ∅ has no parent
-            continue
-        subs = [p for p in ordinals if p < o]  # strict subsets, present as nodes
-        parent = max(subs, key=len)
-        offenders = [s for s in subs if not (s <= parent)]
-        if offenders:
-            raise ValueError(
-                f"factors do not form a plate tree: context {set(o)} sits above "
-                f"incomparable sub-plates {[set(s) for s in offenders]} (a join, not a nest)"
-            )
-        nodes[parent].children.append(nodes[o])
+        self.in_specs = in_specs
+        self.out_spec = out_spec
+        self.plates = frozenset(plates or "")
+        self.operands = operands
 
-    # 4. hang each factor on its ordinal's node
-    for k, o in factor_ordinal.items():
-        nodes[o].factors.append(k)
-
-    return nodes[frozenset()]  # the root
-
-
-def _build_plate_reductions(
-    plate_tree: Node,
-    factors: Sequence[Mapping[tuple[int, ...], float]],
-    factor_specs: Sequence[str],
-    dim_index: Mapping[str, Expr],
-    out_op: Mapping[str, Operation],
-    plate_sizes: Mapping[str, int],
-    ordinal: Mapping[str, frozenset[str]],
-    parent_plates: frozenset[str] = frozenset(),
-) -> Mapping[tuple[int, ...], float]:
-    indexed_factors = [
-        factors[f][tuple(dim_index[c] for c in factor_specs[f])]
-        for f in plate_tree.factors
-    ]
-
-    masked_factors = []
-    for f, factor in zip(plate_tree.factors, indexed_factors, strict=True):
-        spec = factor_specs[f]
-        factor_out_plates = plate_tree.ordinal & set(out_op) & set(spec)
-
-        # Only plated output dims are delta'd per factor. Global output dims are
-        # delta'd once by the outer ``out_mask`` in ``_einsum_expr``; masking
-        # them here too would check the same equality (e.g. ``out_b == b``) in
-        # every factor that mentions the dim as well as the outer mask.
-        factor_out_dims = {
-            d for d in set(ordinal) & set(out_op) & set(spec) if ordinal[d]
-        }
-
-        if factor_out_plates or factor_out_dims:
-            masked_factors.append(
-                Sum.plus(
-                    Sum.mask(
-                        factor,
-                        And.plus(
-                            *(dim_index[p] == out_op[p]() for p in factor_out_plates),
-                            *(dim_index[d] == out_op[d]() for d in factor_out_dims),
-                        ),
-                    ),
-                    Sum.mask(
-                        factor,
-                        Or.plus(
-                            *(dim_index[p] != out_op[p]() for p in factor_out_plates)
-                        ),
-                    ),
+        # check that the output spec preserves required plates
+        out_spec_set = frozenset(self.out_spec)
+        out_plates = out_spec_set & self.plates
+        for c in out_spec_set - self.plates:
+            missing_plates = self.ordinal[c] - out_plates
+            if missing_plates:
+                raise ValueError(
+                    "It is nonsensical to preserve a plated dim without preserving "
+                    f"all of that dim's plates, but found {c!r} without "
+                    f"{','.join(sorted(missing_plates))!r}"
                 )
-            )
-        else:
-            masked_factors.append(factor)
 
-    child_reductions = (
-        _build_plate_reductions(
-            n,
-            factors,
-            factor_specs,
-            dim_index,
-            out_op,
-            plate_sizes,
-            ordinal,
-            parent_plates | plate_tree.ordinal,
-        )
-        for n in plate_tree.children
-    )
-    product = Product.plus(*masked_factors, *child_reductions)
-    if plate_tree.ordinal:
-        plate_streams = {
-            dim_index[p].op: range(plate_sizes[p])
-            for p in sorted(plate_tree.ordinal - parent_plates)
+    @functools.cached_property
+    def sizes(self) -> Mapping[str, int]:
+        """`sizes[d]` is the length of a dimension `d`."""
+        sizes: dict[str, int] = {}
+        for spec, op in zip(self.in_specs, self.operands, strict=True):
+            for l, s in zip(spec, op.shape, strict=True):
+                if l in sizes and sizes[l] != s:
+                    raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
+                else:
+                    sizes[l] = s
+        for c in self.out_spec:
+            if c not in sizes:
+                raise ValueError(f"einsum: output index {c!r} not present in any input")
+        return sizes
+
+    @functools.cached_property
+    def ordinal(self) -> Mapping[str, frozenset[str]]:
+        """`ordinal[d]` is the plate context of a dimension `d`."""
+        ordinal = defaultdict(lambda: self.plates)
+        for spec in self.in_specs:
+            spec_set = frozenset(spec)
+            for c in spec_set - self.plates:
+                ordinal[c] &= spec_set
+        return ordinal
+
+    @functools.cached_property
+    def plate_tree(self) -> Node:
+        # 1. ordinal (plate context) of each factor
+        factor_ordinal = {
+            k: frozenset(spec) & self.plates for k, spec in enumerate(self.in_specs)
         }
-        return Product.reduce(product, plate_streams)
-    return product
 
+        # 2. node set: every factor ordinal, the global root ∅, and every pairwise
+        #    intersection. The intersection of two ordinals is the deepest context
+        #    that contains both, i.e. their common ancestor -- a shared plate MUST
+        #    have a node to live at, or containment can't be a tree. Closing under
+        #    ∩ materializes those frame nodes (finite lattice, so it terminates).
+        ordinals = set(factor_ordinal.values()) | {frozenset()}
+        changed = True
+        while changed:
+            changed = False
+            for A in list(ordinals):
+                for B in list(ordinals):
+                    if (A & B) not in ordinals:
+                        ordinals.add(A & B)
+                        changed = True
 
-def _einsum_expr(
-    subscripts: str, /, *operands: jax.Array, plates: str | None = None
-) -> Term:
-    if not operands:
-        raise ValueError("einsum requires at least one operand")
+        nodes = {o: Node(ordinal=o, children=[], factors=[]) for o in ordinals}
 
-    in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
-        [subscripts, *(op.shape for op in operands)], shapes=True
-    )
-    in_specs = in_spec.split(",")
+        # 3. parent of o = the largest ordinal strictly inside o ("next context out").
+        #    Validity: that maximum must dominate EVERY other strict subset, i.e. the
+        #    strict subsets form a chain. Two incomparable maximal subsets means o is a
+        #    join over two separate branches -- not a tree -> raise.
+        for o in ordinals:
+            if not o:  # root ∅ has no parent
+                continue
+            subs = [p for p in ordinals if p < o]  # strict subsets, present as nodes
+            parent = max(subs, key=len)
+            offenders = [s for s in subs if not (s <= parent)]
+            if offenders:
+                raise ValueError(
+                    f"factors do not form a plate tree: context {set(o)} sits above "
+                    f"incomparable sub-plates {[set(s) for s in offenders]} (a join, not a nest)"
+                )
+            nodes[parent].children.append(nodes[o])
 
-    sizes: dict[str, int] = {}
-    for spec, op in zip(in_specs, operands, strict=True):
-        for l, s in zip(spec, op.shape, strict=True):
-            if l in sizes and sizes[l] != s:
-                raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
-            else:
-                sizes[l] = s
-    for c in out_spec:
-        if c not in sizes:
-            raise ValueError(f"einsum: output index {c!r} not present in any input")
+        # 4. hang each factor on its ordinal's node
+        for k, o in factor_ordinal.items():
+            nodes[o].factors.append(k)
 
-    plate_set = frozenset(plates or "")
+        return nodes[frozenset()]  # the root
 
-    # the plate context of each sum dim: the intersection of the plate sets of
-    # the inputs that mention it (so a dim that ever appears unplated is global)
-    ordinal = defaultdict(lambda: plate_set)
-    for spec in in_specs:
-        spec_set = frozenset(spec)
-        for c in spec_set - plate_set:
-            ordinal[c] &= spec_set
-    global_enums = {c for c, o in ordinal.items() if not o}
-    plated_enums = {c: o for c, o in ordinal.items() if o}
-
-    out_spec_set = frozenset(out_spec)
-    out_plates = out_spec_set & plate_set
-    for c in out_spec_set - plate_set:
-        missing_plates = ordinal[c] - out_plates
-        if missing_plates:
-            raise ValueError(
-                "It is nonsensical to preserve a plated dim without preserving "
-                f"all of that dim's plates, but found {c!r} without "
-                f"{','.join(sorted(missing_plates))!r}"
-            )
-
-    def dim_type(c):
-        return int if c in plate_set else Mapping[tuple, int] if ordinal[c] else int
-
-    dim_op = {c: Operation.define(dim_type(c), name=c) for c in set("".join(in_specs))}
-    out_vars = {c: Operation.define(jax.Array, name=f"out_{c}") for c in out_spec}
-    out_globals = global_enums & set(out_spec)
-    dim_index = {
-        c: out_vars[c]()
-        if c in out_globals
-        else dim_op[c]()
-        if c in plate_set or not ordinal[c]
-        else dim_op[c]()[tuple(dim_op[p]() for p in sorted(ordinal[c]))]
-        for c in dim_op
-    }
-    arrays = [
-        Operation.define(jax.Array, name=f"f{i}") for (i, _) in enumerate(operands)
-    ]
-    plate_tree = _build_plate_tree(in_specs, plate_set)
-    reductions = _build_plate_reductions(
-        plate_tree, [a() for a in arrays], in_specs, dim_index, out_vars, sizes, ordinal
-    )
-
-    # one stream of per-plate-assignment rows for each plated sum dim
-    rows = {}
-    for c, o in plated_enums.items():
-        ps = [(p, dim_op[p]) for p in sorted(o)]
-        delta_idx = tuple(op() for (_, op) in ps)
-        c_streams = {op: range(sizes[p]) for (p, op) in ps}
-        v = Operation.define(int, name=f"{c}_v")
-        rows[c] = CartesianProduct.reduce(
-            UnionM.reduce([UnionM.delta(delta_idx, v())], {v: range(sizes[c])}),
-            c_streams,
+    def dim_type(self, dim: str) -> type:
+        return (
+            int
+            if dim in self.plates
+            else Mapping[tuple, int]
+            if self.ordinal[dim]
+            else int
         )
 
-    streams: Streams = {
-        dim_op[c]: range(sizes[c]) for c in global_enums if c not in out_spec
-    } | {dim_op[c]: r for c, r in rows.items()}
+    @functools.cached_property
+    def dim_op(self) -> Mapping[str, Operation]:
+        return {
+            dim: Operation.define(self.dim_type(dim), name=dim)
+            for dim in set("".join(self.in_specs))
+        }
 
-    reduction = Sum.reduce(reductions, streams) if streams else reductions
-    return deffn(reduction, *arrays, *(out_vars[c] for c in out_spec)), [
-        (out_vars[c], sizes[c]) for c in out_spec
-    ]
+    @functools.cached_property
+    def out_vars(self) -> Mapping[str, Operation]:
+        return {c: Operation.define(jax.Array, name=f"out_{c}") for c in self.out_spec}
+
+    @functools.cached_property
+    def global_enums(self) -> frozenset[str]:
+        return frozenset(c for c, o in self.ordinal.items() if not o)
+
+    def dim_index(self, dim: str) -> Expr:
+        out_globals = self.global_enums & set(self.out_spec)
+
+        return (
+            self.out_vars[dim]()
+            if dim in out_globals
+            else self.dim_op[dim]()
+            if dim in self.plates or not self.ordinal[dim]
+            else self.dim_op[dim]()[
+                tuple(self.dim_op[p]() for p in sorted(self.ordinal[dim]))
+            ]
+        )
+
+    @functools.cached_property
+    def full_factors(self) -> tuple[Sequence[Term], Interpretation]:
+        """Expanded factors that depend (syntactically) on every plated
+        dimension in their plate context. Also returns an interpretation that
+        maps the expanded factors back to their sparse form.
+
+        """
+        factors = [None] * len(self.operands)
+        sparse_factors = {}
+
+        nodes = [self.plate_tree]
+        while nodes:
+            node = nodes.pop()
+            nodes += node.children
+
+            for factor_idx in node.factors:
+
+                @Operation.define
+                def factor_symbol(*args, **kwargs) -> jax.Array:
+                    raise NotHandled
+
+                true_deps = tuple(self.dim_index(d) for d in self.in_specs[factor_idx])
+                expanded_deps = tuple(
+                    self.dim_index(d)
+                    for d in self.ordinal
+                    if d not in self.in_specs[factor_idx]
+                    and self.ordinal[d] <= node.ordinal
+                )
+                factors[factor_idx] = factor_symbol(*true_deps, *expanded_deps)
+                sparse_factors[factor_symbol] = functools.partial(
+                    lambda i, n, *args: jax_getitem(self.operands[i], args[:n]),
+                    factor_idx,
+                    len(true_deps),
+                )
+
+        assert all(f is not None for f in factors)
+        assert len(sparse_factors) == len(factors)
+        return typing.cast(Sequence[Term], factors), typing.cast(
+            Interpretation, sparse_factors
+        )
+
+    def _build_plate_reductions(
+        self, plate_tree: Node, parent_plates: frozenset[str] = frozenset()
+    ) -> Mapping[tuple[int, ...], float]:
+        masked_factors = []
+        for factor_idx in plate_tree.factors:
+            spec = self.in_specs[factor_idx]
+            factor = self.full_factors[0][factor_idx]
+            factor_out_plates = plate_tree.ordinal & set(self.out_vars) & set(spec)
+
+            # Only plated output dims are delta'd per factor. Global output dims are
+            # delta'd once by the outer ``out_mask`` in ``_einsum_expr``; masking
+            # them here too would check the same equality (e.g. ``out_b == b``) in
+            # every factor that mentions the dim as well as the outer mask.
+            factor_out_dims = frozenset(
+                d
+                for d in set(self.ordinal) & set(self.out_vars) & set(spec)
+                if self.ordinal[d]
+            )
+
+            if factor_out_plates or factor_out_dims:
+                and_mask = And.plus(
+                    *(
+                        self.dim_index(p) == self.out_vars[p]()
+                        for p in factor_out_plates | factor_out_dims
+                    )
+                )
+                or_mask = Or.plus(
+                    *(
+                        self.dim_index(p) != self.out_vars[p]()
+                        for p in factor_out_plates
+                    )
+                )
+                masked_factors.append(
+                    Sum.plus(Sum.mask(factor, and_mask), Sum.mask(factor, or_mask))
+                )
+            else:
+                masked_factors.append(factor)
+
+        child_reductions = (
+            self._build_plate_reductions(n, parent_plates | plate_tree.ordinal)
+            for n in plate_tree.children
+        )
+        product = Product.plus(*masked_factors, *child_reductions)
+        if plate_tree.ordinal:
+            plate_streams = {
+                self.dim_index(p).op: range(self.sizes[p])
+                for p in sorted(plate_tree.ordinal - parent_plates)
+            }
+            return Product.reduce(product, plate_streams)
+        return product
+
+    @functools.cached_property
+    def term(self):
+        # one stream of per-plate-assignment rows for each plated sum dim
+        rows = {}
+        plated_enums = {c: o for c, o in self.ordinal.items() if o}
+        for c, o in plated_enums.items():
+            ps = [(p, self.dim_op[p]) for p in sorted(o)]
+            delta_idx = tuple(op() for (_, op) in ps)
+            c_streams = {op: range(self.sizes[p]) for (p, op) in ps}
+            v = Operation.define(int, name=f"{c}_v")
+            rows[c] = CartesianProduct.reduce(
+                UnionM.reduce(
+                    [UnionM.delta(delta_idx, v())], {v: range(self.sizes[c])}
+                ),
+                c_streams,
+            )
+
+        streams: Streams = {
+            self.dim_op[c]: range(self.sizes[c])
+            for c in self.global_enums
+            if c not in self.out_spec
+        } | {self.dim_op[c]: r for c, r in rows.items()}
+
+        reductions = self._build_plate_reductions(self.plate_tree)
+        reduction = Sum.reduce(reductions, streams) if streams else reductions
+        return (
+            deffn(reduction, *(self.out_vars[c] for c in self.out_spec)),
+            [(self.out_vars[c], self.sizes[c]) for c in self.out_spec],
+            self.full_factors[1],
+        )
 
 
 @jax.jit(static_argnums=(0,), static_argnames=("plates",))
@@ -837,24 +896,23 @@ def einsum(
     over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
     each plated input is a :data:`Product` reduction over its plates.
     """
-    expr, dims = _einsum_expr(subscripts, *operands, plates=plates)
-    norm_expr = handler(NormalizeIntp)(evaluate)(expr)
+    expr, dims, sparse_intp = _EinsumBuilder(subscripts, *operands, plates=plates).term
+
+    with handler(NormalizeIntp):
+        norm_expr = evaluate(expr)
 
     assert CartesianProduct.reduce not in fvsof(norm_expr), (
         "failed to eliminate cartesian products"
     )
 
-    with handler(EvaluateIntp), handler(NormalizeIntp):
-        assert callable(norm_expr)
+    with handler(NormalizeIntp), handler(sparse_intp):
+        sparse_expr = evaluate(norm_expr)
 
-        result = evaluate(
-            bind_dims(
-                norm_expr(
-                    *operands, *(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
-                ),
-                *(v for (v, _) in dims),
-            )
-        )
+    with handler(EvaluateIntp), handler(NormalizeIntp):
+        assert callable(sparse_expr)
+
+        out_dims = (unbind_dims(jnp.arange(d), v) for (v, d) in dims)
+        result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
         return result
 
