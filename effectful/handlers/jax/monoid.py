@@ -158,36 +158,6 @@ class MaskJax(ObjectInterpretation):
         return jnp.where(mask, value, monoid.identity)
 
 
-class BindDimsWhere(ObjectInterpretation):
-    """Push ``bind_dims`` through ``where`` when its condition is unbound.
-
-    A condition that does not mention any of the dimensions being converted is
-    unchanged; only the two value branches need those named dimensions turned
-    into positional dimensions.
-    """
-
-    @implements(bind_dims)
-    def bind_dims(self, value, *names):
-        if not (
-            names
-            and isinstance(value, Term)
-            and value.op is jnp.where
-            and len(value.args) == 3
-            and not value.kwargs
-        ):
-            return fwd()
-
-        cond, when_true, when_false = value.args
-        if fvsof(cond) & set(names):
-            return fwd()
-
-        return jnp.where(
-            cond,
-            bind_dims(when_true, *names),
-            bind_dims(when_false, *names),
-        )
-
-
 class WhereHoist(ObjectInterpretation):
     """Hoist :func:`jax.numpy.where` out of monoid ``reduce`` and ``plus``.
 
@@ -1255,7 +1225,6 @@ EvaluateIntp.extend(
 )
 
 NormalizeIntp.extend(
-    BindDimsWhere(),
     WhereHoist(),
     ReduceWhereEqualityPeel(),
     ReduceArrayGather(),

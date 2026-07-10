@@ -13,7 +13,6 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import (
     ARRAY_REDUCTORS,
-    BindDimsWhere,
     ReduceArray,
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
