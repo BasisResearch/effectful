@@ -430,8 +430,11 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
-    # Tool-argument Callables have no source anchor (out of scope for the splice
-    # type check), so suppress the anchor while decoding them.
+    # A synthesized tool-argument Callable's contract is the tool parameter's
+    # type, not the enclosing Template's return type -- so the Template anchor
+    # (bound by __apply__) is the wrong splice target for it, and it has no def of
+    # its own to splice into. Suppress the anchor to skip the check while decoding
+    # tool arguments, rather than check them against the wrong type.
     with handler({type_check_anchor: lambda: None}):
         for raw_tool_call in message.get("tool_calls") or []:
             try:
