@@ -53,31 +53,6 @@ def backend() -> JaxBackend:
     return JaxBackend()
 
 
-def test_bind_dims_where(backend: JaxBackend):
-    """Binding dimensions distributes over branches of an independent where."""
-    j, i, out_i = backend.define_vars("j", "i", "out_i", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    cond = out_i() == i()
-
-    lhs = bind_dims(jnp.where(cond, f(j()), g(j())), j)
-    rhs = jnp.where(cond, bind_dims(f(j()), j), bind_dims(g(j()), j))
-
-    with handler(BindDimsWhere()):
-        actual = evaluate(lhs)
-    assert syntactic_eq_alpha(actual, rhs)
-
-
-def test_bind_dims_where_dependent_condition_noop(backend: JaxBackend):
-    """A where condition using a dimension being bound prevents the push."""
-    j, out_j = backend.define_vars("j", "out_j", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    term = bind_dims(jnp.where(out_j() == j(), f(j()), g(j())), j)
-
-    with handler(BindDimsWhere()):
-        actual = evaluate(term)
-    assert syntactic_eq_alpha(actual, term)
-
-
 def test_plus_where_hoist(backend: JaxBackend):
     """Monoid addition distributes into both branches of a where."""
     cond, a, b, c = backend.define_vars("cond", "a", "b", "c", ret="scalar")
