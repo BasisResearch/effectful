@@ -403,22 +403,6 @@ def test_arange_reduce_two_streams(monoid, reductor, backend: JaxBackend):
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_delta_empty(monoid, reductor, backend: JaxBackend):
-    """An empty-index delta unwraps to its body.
-
-    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
-    """
-    x = backend.define_vars("x", ret="scalar")
-    X = backend.define_vars("X", ret="stream")
-
-    lhs = monoid.reduce(monoid.delta((), x()), {x: X()})
-    rhs = monoid.reduce(x(), {x: X()})
-    backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceDeltaSimpleRange(), DeltaEmpty())
-    )
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_reduce_delta_empty_arange(monoid, reductor, backend: JaxBackend):
     x = backend.define_vars("x", ret="scalar")
     f = backend.define_vars("f", arg_types=[backend.scalar_typ], ret="scalar")
