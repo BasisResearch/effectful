@@ -271,11 +271,17 @@ class Operation[**Q, V]:
         cls, t: Callable[P, T], *, name: str | None = None
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
+            sig = inspect.signature(t)
 
             @functools.wraps(t)
             def func(*args, **kwargs):
                 raise NotHandled
 
+            # functools.wraps does not copy the signature. Instead it points to
+            # the wrapped function. inspect.signature will traverse this chain
+            # unless it is removed.
+            del func.__wrapped__
+            func.__signature__ = sig
             op = cls.define(func, name=name)
         else:
             op = cls(t, name=name)  # type: ignore[arg-type]
