@@ -306,11 +306,13 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
         )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
+    # Check that mypy ran to completion *before* inspecting diagnostics: a type
+    # error (`TypeError`) may only be reported when mypy actually finished. Exit
+    # status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
+    # tool failure, not a type error -- and it emits text rather than JSON, so
+    # raise `RuntimeError` rather than parse or silently pass.
     if status >= 2:
-        # Exit code >= 2 means mypy itself failed (fatal/usage/internal/syntax);
-        # it emits text rather than JSON, so surface it rather than parse or
-        # silently pass.
-        raise TypeError(
+        raise RuntimeError(
             f"mypy could not check the spliced module:\n{(stdout or '') + (stderr or '')}"
         )
     errors = _region_errors(stdout or "", lo, hi)
