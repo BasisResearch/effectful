@@ -13,12 +13,16 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import (
     ARRAY_REDUCTORS,
+    BindDimsWhere,
     ReduceArray,
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceDisjunctiveDisequalityMask,
     ReduceSumProductContraction,
+    ReduceWhereEqualityPeel,
+    ReduceWhereToMasks,
+    WhereHoist,
     einsum,
 )
 from effectful.ops.monoid import (
@@ -48,6 +52,154 @@ def rng_key():
 @pytest.fixture
 def backend() -> JaxBackend:
     return JaxBackend()
+
+
+def test_bind_dims_where(backend: JaxBackend):
+    """Binding dimensions distributes over branches of an independent where."""
+    j, i, out_i = backend.define_vars("j", "i", "out_i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    cond = out_i() == i()
+
+    lhs = bind_dims(jnp.where(cond, f(j()), g(j())), j)
+    rhs = jnp.where(cond, bind_dims(f(j()), j), bind_dims(g(j()), j))
+
+    with handler(BindDimsWhere()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_bind_dims_where_dependent_condition_noop(backend: JaxBackend):
+    """A where condition using a dimension being bound prevents the push."""
+    j, out_j = backend.define_vars("j", "out_j", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = bind_dims(jnp.where(out_j() == j(), f(j()), g(j())), j)
+
+    with handler(BindDimsWhere()):
+        actual = evaluate(term)
+    assert syntactic_eq_alpha(actual, term)
+
+
+def test_plus_where_hoist(backend: JaxBackend):
+    """Monoid addition distributes into both branches of a where."""
+    cond, a, b, c = backend.define_vars("cond", "a", "b", "c", ret="scalar")
+
+    lhs = Product.plus(jnp.where(cond(), a(), b()), c())
+    rhs = jnp.where(
+        cond(),
+        Product.plus(a(), c()),
+        Product.plus(b(), c()),
+    )
+
+    with handler(WhereHoist()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_hoist(backend: JaxBackend):
+    """A where whose condition is independent of the reduced stream hoists."""
+    i, out_i, out_j = backend.define_vars("i", "out_i", "out_j", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {i: range(3)}
+    cond = out_i() == out_j()
+
+    lhs = Sum.reduce(jnp.where(cond, f(i()), g(i())), streams)
+    rhs = jnp.where(
+        cond,
+        Sum.reduce(f(i()), streams),
+        Sum.reduce(g(i()), streams),
+    )
+
+    with handler(WhereHoist()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_hoist_dependent_noop(backend: JaxBackend):
+    """A where whose condition uses the reduced stream remains in place."""
+    i, out_i = backend.define_vars("i", "out_i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Sum.reduce(
+        jnp.where(i() == out_i(), f(i()), g(i())),
+        {i: range(3)},
+    )
+
+    with handler(WhereHoist()):
+        actual = evaluate(term)
+    assert syntactic_eq_alpha(actual, term)
+
+
+def test_reduce_where_to_masks(backend: JaxBackend):
+    """A conjunctive equality where partitions into complementary masks."""
+    i, j, out_i, out_j = backend.define_vars("i", "j", "out_i", "out_j", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {i: range(2), j: range(3)}
+    eq_i = i() == out_i()
+    eq_j = j() == out_j()
+    cond = And.plus(eq_i, eq_j)
+
+    lhs = Product.reduce(jnp.where(cond, f(i()), g(j())), streams)
+    rhs = Product.plus(
+        Product.reduce(Product.mask(f(i()), cond), streams),
+        Product.reduce(
+            Product.mask(g(j()), Or.plus(i() != out_i(), j() != out_j())),
+            streams,
+        ),
+    )
+
+    with handler(ReduceWhereToMasks()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_to_masks_requires_stream_equalities(backend: JaxBackend):
+    """Independent equality conjuncts are left for WhereEqualityPeel."""
+    i, out_i, x, y = backend.define_vars("i", "out_i", "x", "y", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Product.reduce(
+        jnp.where(And.plus(i() == out_i(), x() == y()), f(i()), g(i())),
+        {i: range(2)},
+    )
+
+    with handler(ReduceWhereToMasks()):
+        actual = evaluate(term)
+    assert syntactic_eq_alpha(actual, term)
+
+
+def test_reduce_where_equality_peel(backend: JaxBackend):
+    """An independent conjunct peels off a stream-selecting equality guard."""
+    j, out_j, i, out_i = backend.define_vars("j", "out_j", "i", "out_i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {j: range(3)}
+    outer = out_i() == i()
+    inner = out_j() == j()
+
+    lhs = Product.reduce(
+        jnp.where(And.plus(inner, outer), f(j()), g(j())),
+        streams,
+    )
+    rhs = jnp.where(
+        outer,
+        Product.reduce(jnp.where(inner, f(j()), g(j())), streams),
+        Product.reduce(g(j()), streams),
+    )
+
+    with handler(ReduceWhereEqualityPeel()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_equality_peel_requires_stream_equality(backend: JaxBackend):
+    """A mixed guard without a stream equality is left unchanged."""
+    j, out_i, i = backend.define_vars("j", "out_i", "i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Product.reduce(
+        jnp.where(And.plus(j() < 2, out_i() == i()), f(j()), g(j())),
+        {j: range(3)},
+    )
+
+    with handler(ReduceWhereEqualityPeel()):
+        actual = evaluate(term)
+    assert syntactic_eq_alpha(actual, term)
 
 
 def test_reduce_disjunctive_disequality_mask():

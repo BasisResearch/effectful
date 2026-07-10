@@ -158,6 +158,225 @@ class MaskJax(ObjectInterpretation):
         return jnp.where(mask, value, monoid.identity)
 
 
+class BindDimsWhere(ObjectInterpretation):
+    """Push ``bind_dims`` through ``where`` when its condition is unbound.
+
+    A condition that does not mention any of the dimensions being converted is
+    unchanged; only the two value branches need those named dimensions turned
+    into positional dimensions.
+    """
+
+    @implements(bind_dims)
+    def bind_dims(self, value, *names):
+        if not (
+            names
+            and isinstance(value, Term)
+            and value.op is jnp.where
+            and len(value.args) == 3
+            and not value.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = value.args
+        if fvsof(cond) & set(names):
+            return fwd()
+
+        return jnp.where(
+            cond,
+            bind_dims(when_true, *names),
+            bind_dims(when_false, *names),
+        )
+
+
+class WhereHoist(ObjectInterpretation):
+    """Hoist :func:`jax.numpy.where` out of monoid ``reduce`` and ``plus``.
+
+    A stream-independent selection commutes with reduction, while monoid
+    addition distributes pointwise over either selected branch.
+    """
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if len(args) < 2:
+            return fwd()
+
+        for i, arg in enumerate(args):
+            if not (
+                isinstance(arg, Term)
+                and arg.op is jnp.where
+                and len(arg.args) == 3
+                and not arg.kwargs
+            ):
+                continue
+
+            cond, when_true, when_false = arg.args
+            return jnp.where(
+                cond,
+                monoid.plus(*args[:i], when_true, *args[i + 1 :]),
+                monoid.plus(*args[:i], when_false, *args[i + 1 :]),
+            )
+
+        return fwd()
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is jnp.where
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        if fvsof(cond) & set(streams):
+            return fwd()
+
+        return jnp.where(
+            cond,
+            monoid.reduce(when_true, streams),
+            monoid.reduce(when_false, streams),
+        )
+
+
+class ReduceWhereToMasks(ObjectInterpretation):
+    """Split an equality-guarded ``where`` reduction into masked reductions.
+
+    For a conjunction of stream-dependent equalities ``eqs``::
+
+        M.reduce(where(eqs, a, b), S)
+          == M.plus(M.reduce(M.mask(a, eqs), S),
+                    M.reduce(M.mask(b, not(eqs)), S))
+
+    De Morgan's law represents ``not(eqs)`` as the disjunction of the
+    corresponding disequalities. The two masks are complementary and hence
+    partition the stream assignments without double counting.
+    """
+
+    _complements = {
+        _NumberTerm.__eq__: _NumberTerm.__ne__,
+        jnp.equal: jnp.not_equal,
+    }
+
+    @staticmethod
+    def _combine(op, terms):
+        return terms[0] if len(terms) == 1 else op(*terms)
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is jnp.where
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        equalities = (
+            cond.args if isinstance(cond, Term) and cond.op is And.plus else (cond,)
+        )
+        stream_ops = set(streams)
+        if not equalities or not all(
+            isinstance(eq, Term)
+            and is_equality(eq.op)
+            and eq.op in self._complements
+            and bool(fvsof(eq) & stream_ops)
+            for eq in equalities
+        ):
+            return fwd()
+
+        disequalities = tuple(
+            self._complements[eq.op](*eq.args, **eq.kwargs) for eq in equalities
+        )
+        return monoid.plus(
+            monoid.reduce(monoid.mask(when_true, cond), streams),
+            monoid.reduce(
+                monoid.mask(when_false, self._combine(Or.plus, disequalities)),
+                streams,
+            ),
+        )
+
+
+class ReduceWhereEqualityPeel(ObjectInterpretation):
+    """Peel stream-independent conjuncts off a ``where`` equality guard.
+
+    Given a condition ``outer & inner`` where ``outer`` is independent of the
+    reduced streams and ``inner`` contains an equality selecting one of them::
+
+        M.reduce(where(outer & inner, x, y), S)
+          == where(outer,
+                   M.reduce(where(inner, x, y), S),
+                   M.reduce(y, S))
+
+    This exposes the stream equality to gather/elimination rules while moving
+    the remaining output guard above the reduction.
+    """
+
+    @staticmethod
+    def _stream_equality(cond, streams):
+        def matches(op, stream_term, other):
+            return (
+                is_equality(op)
+                and isinstance(stream_term, Term)
+                and not stream_term.args
+                and not stream_term.kwargs
+                and stream_term.op in streams
+                and not (fvsof(other) & set(streams))
+            )
+
+        return (
+            isinstance(cond, Term)
+            and len(cond.args) == 2
+            and (
+                matches(cond.op, cond.args[0], cond.args[1])
+                or matches(cond.op, cond.args[1], cond.args[0])
+            )
+        )
+
+    @staticmethod
+    def _and(conds):
+        return conds[0] if len(conds) == 1 else And.plus(*conds)
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is jnp.where
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        if not (isinstance(cond, Term) and cond.op is And.plus):
+            return fwd()
+
+        stream_ops = set(streams)
+        dependent = [c for c in cond.args if fvsof(c) & stream_ops]
+        independent = [c for c in cond.args if not (fvsof(c) & stream_ops)]
+        if not independent or not any(
+            self._stream_equality(c, streams) for c in dependent
+        ):
+            return fwd()
+
+        return jnp.where(
+            self._and(independent),
+            monoid.reduce(
+                jnp.where(
+                    self._and(dependent),
+                    when_true,
+                    when_false,
+                ),
+                streams,
+            ),
+            monoid.reduce(when_false, streams),
+        )
+
+
 class ReduceArrayGather(ObjectInterpretation):
     """Split an array-valued stream into an index range and a length-1 stream:
 
@@ -895,58 +1114,38 @@ class _EinsumBuilder:
             Interpretation, sparse_factors
         )
 
+    def out_mask(self, vars):
+        eqs = tuple(self.dim_index(p) == self.out_vars[p]() for p in vars)
+        return And.plus(*eqs)
+
     def _build_plate_reductions(
         self, plate_tree: Node, parent_plates: frozenset[str] = frozenset()
     ) -> Mapping[tuple[int, ...], float]:
+
         masked_factors = []
         for factor_idx in plate_tree.factors:
             spec = self.in_specs[factor_idx]
             factor = self.full_factors[0][factor_idx]
-            factor_out_plates = plate_tree.ordinal & set(self.out_vars) & set(spec)
-
             # Only plated output dims are delta'd per factor. Global output dims are
             # delta'd once by the outer ``out_mask`` in ``_einsum_expr``; masking
             # them here too would check the same equality (e.g. ``out_b == b``) in
             # every factor that mentions the dim as well as the outer mask.
             factor_out_dims = frozenset(
                 d
-                for d in set(self.ordinal) & set(self.out_vars) & set(spec)
+                for d in set(spec) & set(self.out_vars) - self.plates
                 if self.ordinal[d]
             )
 
-            if factor_out_plates and factor_out_dims:
-                and_mask = And.plus(
-                    *(
-                        self.dim_index(p) == self.out_vars[p]()
-                        for p in factor_out_plates | factor_out_dims
-                    )
-                )
-                or_mask = Or.plus(
-                    *(
-                        self.dim_index(p) != self.out_vars[p]()
-                        for p in factor_out_plates
-                    )
-                )
+            if factor_out_dims:
+                # Preserving a plated output dim requires preserving all its plates,
+                # as checked in ``__init__``.
+                factor_out_plates = plate_tree.ordinal & set(self.out_vars)
                 masked_factors.append(
                     jnp.where(
-                        And.plus(
-                            *(
-                                self.dim_index(p) == self.out_vars[p]()
-                                for p in factor_out_plates
-                            )
-                        ),
-                        Sum.mask(
-                            factor,
-                            And.plus(
-                                *(
-                                    self.dim_index(p) == self.out_vars[p]()
-                                    for p in factor_out_dims
-                                )
-                            ),
-                        ),
+                        self.out_mask(factor_out_plates),
+                        Sum.mask(factor, self.out_mask(factor_out_dims)),
                         factor,
                     )
-                    # Sum.plus(Sum.mask(factor, and_mask), Sum.mask(factor, or_mask))
                 )
             else:
                 masked_factors.append(factor)
@@ -1030,7 +1229,6 @@ def einsum(
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(sparse_expr)
 
-        breakpoint()
         out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
         result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
@@ -1053,9 +1251,13 @@ EvaluateIntp.extend(
     ReduceDisjunctiveDisequalityMask(),
     ReduceArrayScan(),
     PlusCastArray(),
+    ReduceWhereToMasks(),
 )
 
 NormalizeIntp.extend(
+    BindDimsWhere(),
+    WhereHoist(),
+    ReduceWhereEqualityPeel(),
     ReduceArrayGather(),
     ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
