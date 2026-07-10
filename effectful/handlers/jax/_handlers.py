@@ -416,7 +416,7 @@ def _(x: jax.core.Tracer, other) -> bool:
 @syntactic_hash.register
 def _(x: jax.Array) -> int:
     # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
-    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
+    return hash(("jax.Array", x.shape, str(x.dtype), x.tobytes()))
 
 
 @syntactic_hash.register

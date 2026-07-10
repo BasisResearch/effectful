@@ -639,76 +639,6 @@ def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
 
 
 class Factor(ObjectInterpretation):
-    @implements(Monoid.mask)
-    def _(self, monoid, value, cond):
-        """Scope a mask to the factors its condition constrains -- the ``mask``
-        analog of :class:`ReduceFactorization`.
-
-        Peel one conjunct ``c`` that *some but not all* factors mention, wrapping
-        just those factors::
-
-            M.mask(WM.plus(F_c ∪ F_rest), And.plus(c, *rest))
-              = M.mask(WM.plus(F_rest, M.mask(WM.plus(F_c), c)), And.plus(*rest))
-
-        where ``F_c`` are the factors mentioning a variable of ``c`` and ``F_rest``
-        the rest. Sound by the same annihilator argument as the old ``MaskPushPlus``:
-        for every registered distributing pair the additive identity ``M.identity``
-        is the zero of ``WM``, so when ``c`` fails the inner mask collapses to
-        ``M.identity == WM.zero`` and annihilates the product, matching the
-        masked-away left side.
-
-        Like :class:`ReduceFactorization`, this peels one conjunct per firing and
-        re-enters; the outer conjunct set strictly shrinks, so it terminates. The
-        inner ``M.mask(WM.plus(F_c), c)`` has a single conjunct that all its factors
-        mention, so it is immediately ineligible -- terminal by construction.
-
-        A conjunct every factor mentions (``F_rest`` empty) or none mentions
-        (``F_c`` empty) is not eligible and stays put: a cross-factor equality is
-        left grouped on the whole product (the shape
-        :class:`ReduceEqualityMaskRange` discharges with a single gather), and an
-        orphan condition stays as an outer mask -- dropping it would be unsound. Two
-        conjuncts on the same factor land as nested masks that :class:`MaskFusion`
-        re-merges.
-
-        Landing a mask adjacent to a single array factor is what lets it fuse with a
-        gather during stream elimination. This is the inverse of hoisting a mask out
-        of a plus.
-        """
-        if not (
-            isinstance(value, Term)
-            and _is_monoid_plus(value.op)
-            and distributes_over(value.op.__self__, monoid)
-        ):
-            return fwd()
-
-        plus_monoid = value.op.__self__
-        factors = value.args
-        conds = cond.args if isinstance(cond, Term) and cond.op is And.plus else (cond,)
-        factor_fvs = [_leaf_vars(f) for f in factors]
-
-        for i, c in enumerate(conds):
-            c_fvs = _leaf_vars(c)
-            inside = {j for j, ffvs in enumerate(factor_fvs) if c_fvs & ffvs}
-            # eligible iff c constrains some but not all factors, so F_rest can
-            # be pulled out. all-factors (grouped equality) and no-factor
-            # (orphan) conjuncts stay put.
-            if not inside or len(inside) == len(factors):
-                continue
-
-            f_c = [f for j, f in enumerate(factors) if j in inside]
-            f_rest = [f for j, f in enumerate(factors) if j not in inside]
-            rest = tuple(d for k, d in enumerate(conds) if k != i)
-
-            inner = monoid.mask(plus_monoid.plus(*f_c) if len(f_c) > 1 else f_c[0], c)
-            outer_val = plus_monoid.plus(*f_rest, inner)
-            if not rest:
-                return outer_val
-            return monoid.mask(
-                outer_val, rest[0] if len(rest) == 1 else And.plus(*rest)
-            )
-
-        return fwd()
-
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
         """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
@@ -967,7 +897,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
             # unify each summand's plate variable onto a single shared one so
             # that the peeled product folds all summands over the same row
-            shared_plate_op = substituted[0][1]
+            shared_plate_op = plate_op
             inner_reduces = []
             for (subst_inner_body, inner_plate_op), summand in zip(
                 substituted, summands
@@ -1513,61 +1443,6 @@ class SplitDisjointProduct(ObjectInterpretation):
         return result
 
 
-class MaskOrderStreamOps(ObjectInterpretation):
-    """Rearrange mask terms so that stream operations appear as the first
-    argument to binary operations.
-
-    """
-
-    flipped_ops = {
-        _NumberTerm.__eq__: _NumberTerm.__eq__,
-        _NumberTerm.__ne__: _NumberTerm.__ne__,
-        _NumberTerm.__lt__: _NumberTerm.__gt__,
-        _NumberTerm.__gt__: _NumberTerm.__lt__,
-        _NumberTerm.__le__: _NumberTerm.__ge__,
-        _NumberTerm.__ge__: _NumberTerm.__le__,
-    }
-
-    @implements(Monoid.reduce)
-    def _(self, monoid, body, streams):
-        match body:
-            case Term(mask_op, (value, mask), {}) if (
-                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
-            ):
-                pass
-            case _:
-                return fwd()
-
-        match mask:
-            case Term(And.plus, mask_elems, {}):
-                pass
-            case _:
-                mask_elems = (mask,)
-
-        def is_stream_op(x):
-            return isinstance(x, Term) and x.op in streams
-
-        new_mask_elems = []
-        progress = False
-        for elem in mask_elems:
-            match elem:
-                case Term(op, (lhs, rhs), {}) if (
-                    op in self.flipped_ops
-                    and is_stream_op(rhs)
-                    and not is_stream_op(lhs)
-                ):
-                    new_mask_elems.append(self.flipped_ops[op](rhs, lhs))
-                    progress = True
-                case _:
-                    new_mask_elems.append(elem)
-
-        return (
-            monoid.reduce(monoid.mask(value, And.plus(*new_mask_elems)), streams)
-            if progress
-            else fwd()
-        )
-
-
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -1576,7 +1451,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    # ReducePartial(),
+    ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),
@@ -1613,7 +1488,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusCastFloat(),
     MaskFusion(),
     MaskBool(),
-    MaskOrderStreamOps(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

@@ -714,8 +714,11 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
         gathered_weight = handler(gather_subst)(evaluate)(sliced_weight)
         gathered_streams = handler(gather_subst)(evaluate)(sliced_streams)
 
+        gathered_body = (
+            monoid.delta(tail_index, gathered_weight) if tail_index else gathered_weight
+        )
         inner = (
-            monoid.reduce(monoid.delta(tail_index, gathered_weight), gathered_streams)
+            monoid.reduce(gathered_body, gathered_streams)
             if gathered_streams
             else gathered_weight
         )

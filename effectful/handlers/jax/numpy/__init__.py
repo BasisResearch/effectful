@@ -37,7 +37,7 @@ einsum = Operation.define(_einsum_named)
 
 
 @Operation.define
-def asarray(a, **kwargs):
+def asarray(a, **kwargs) -> jax.Array:
     import jax.core
 
     from effectful.ops.semantics import typeof
