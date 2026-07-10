@@ -235,7 +235,7 @@ def _einsum_named(subscripts, *operands, **kwargs) -> jax.Array:
         return jax.numpy.einsum(subscripts, *operands, **kwargs)
 
     # forward if any operand has a symbolic (Term) shape
-    if any(isinstance(arr.shape, Term) for arr in operands):
+    if any(isinstance(arr, Term) and not is_eager_array(arr) for arr in operands):
         raise NotHandled
 
     named = [_named_dims(op) for op in operands]
