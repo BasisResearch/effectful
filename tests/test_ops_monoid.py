@@ -29,7 +29,6 @@ from effectful.ops.monoid import (
     PlusOrder,
     PlusSingle,
     Product,
-    ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
     ReduceEqualityMaskRange,
     ReduceFusion,
@@ -940,68 +939,6 @@ def test_reduce_weighted_factorization(backend: Backend):
     )
     backend.check_rewrite(
         lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
-    )
-
-
-def test_reduce_cartesian_weighted_stream(backend: Backend):
-    """``CartesianProduct.reduce`` over a ``WeightedStream`` body whose weight
-    is independent of the plate var rewrites to a single joint
-    ``WeightedStream``:
-
-        CartesianProduct.reduce(M.weighted(s, e, w(e)), {p: P})
-          = M.weighted(CartesianProduct.reduce(s, {p: P}), row, M.reduce(w(e), {e: row()}))
-    """
-    p, e_var = backend.define_vars("p", "e_var", ret="scalar")
-    S, P = backend.define_vars("S", "P", ret="stream")
-    w = backend.define_vars("w", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    lhs = CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})
-    row_var = Operation.define(Iterable[backend.scalar_typ], name="row")  # type: ignore[name-defined]
-    rhs = Product.weighted(
-        CartesianProduct.reduce(S(), {p: P()}),
-        deffn(Product.reduce(w(e_var()), {e_var: row_var()}), row_var),
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceCartesianWeightedStream())
-
-
-def test_lift_weighted_cartesian(backend: Backend):
-    """Compose ``ReduceCartesianWeightedStream`` + ``ReduceWeightedStream`` +
-    ``ReduceDistributeCartesianProduct`` on a Sum-of-Product-of-weighted shape:
-
-        Sum.reduce(
-            Product.reduce(body(a()), {a: A()}),
-            {A: CartesianProduct.reduce(Product.weighted(S, e, w(e)), {p: P})},
-        )
-
-    The inner ``weighted`` becomes a joint ``weighted`` (rule 1), lifts its
-    per-element weight into the outer Sum body (rule 2), and the lifted form
-    matches the inversion pattern (rule 3), yielding::
-
-        Product.reduce(
-            Sum.reduce(Product.plus(w(a()), body(a())), {a: S}),
-            {p: P},
-        )
-    """
-    a, p = backend.define_vars("a", "p", ret="scalar")
-    A, S, P = backend.define_vars("A", "S", "P", ret="stream")
-    body, w = backend.define_vars(
-        "body", "w", arg_types=(backend.scalar_typ,), ret="scalar"
-    )
-
-    lhs = Sum.reduce(
-        Product.reduce(body(a()), {a: A()}),
-        {A: CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})},
-    )
-    rhs = Product.reduce(
-        Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}), {p: P()}
-    )
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(
-            coproduct(ReduceWeightedStream(), ReduceCartesianWeightedStream()),
-            ReduceDistributeCartesianProduct(),
-        ),
     )
 
 

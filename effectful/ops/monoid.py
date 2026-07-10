@@ -1012,54 +1012,6 @@ class ReduceWeightedStream(ObjectInterpretation):
         return fwd()
 
 
-class ReduceCartesianWeightedStream(ObjectInterpretation):
-    """``CartesianProduct.reduce`` over a :func:`weighted` body whose
-    ``weight`` is independent of the plate (product-index) streams::
-
-        CartesianProduct.reduce(M.weighted(s, w), plates)
-          = M.weighted(
-              CartesianProduct.reduce(s, plates),
-              deffn(M.reduce(w, {e: row()}), row),
-            )
-
-    Reuses ``body``'s element binder ``e`` (already typed by construction);
-    introduces a fresh ``row`` binder typed as ``Iterable[elem_type]``.
-
-    Only fires when ``w`` is independent of the plate vars.
-    """
-
-    @Operation.define
-    @staticmethod
-    def _iterable_elem[T](iter: Iterable[T]) -> T:
-        raise NotHandled
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        if monoid is not CartesianProduct:
-            return fwd()
-        if not (isinstance(body, Term) and _is_monoid_weighted(body.op)):
-            return fwd()
-
-        s, w = body.args
-        if not isinstance(s, Term) and len(s) == 0:
-            return CartesianProduct.reduce([], streams)
-
-        if set(streams.keys()) & fvsof(w):
-            return fwd()
-
-        elem_typ = typeof(self._iterable_elem(s))
-        elem_op = Operation.define(elem_typ, name="elem")
-        row_op = Operation.define(Iterable[elem_typ], name="row")
-
-        weight_monoid = body.op.__self__
-        joint_weight = deffn(
-            weight_monoid.reduce(w(elem_op()), {elem_op: row_op()}), row_op
-        )
-        joint_stream = CartesianProduct.reduce(s, streams)
-
-        return weight_monoid.weighted(joint_stream, joint_weight)
-
-
 class MonoidOverCallable(ObjectInterpretation):
     """``monoid.reduce(f, streams) = lambda *a: monoid.reduce(f(*a), streams)``."""
 
@@ -1478,7 +1430,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     Factor(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
-    ReduceCartesianWeightedStream(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),
     PlusEmpty(),
