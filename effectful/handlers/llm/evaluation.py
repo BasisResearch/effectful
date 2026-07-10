@@ -137,36 +137,6 @@ def scan_non_nestable(generated: ast.Module) -> None:
                 )
 
 
-def _unwrap(fn: Any) -> Any:
-    """Unwrap a ``staticmethod``/``classmethod`` to its underlying function."""
-    return fn.__func__ if isinstance(fn, staticmethod | classmethod) else fn
-
-
-def _recover_module_source(fn: Any) -> str | None:
-    """Recover the full source of the module that lexically contains ``fn``.
-
-    Resolves from the *function's own* filename: ``inspect.getsourcefile`` finds it
-    -- a real path, or a ``linecache``-registered synthetic name such as
-    ``<synthesis:...>`` for REPL/``exec``/notebook-defined templates -- and
-    ``linecache.getlines`` returns its lines, reading a real file from disk when it
-    isn't already cached (exactly as ``inspect`` does). Returns ``None`` when no
-    source is available, so the caller can skip rather than guess.
-
-    Resolving from the function rather than ``inspect.getsource(inspect.getmodule(
-    fn))`` is what makes the REPL/notebook cases work: those functions have no
-    resolvable module object (or no module-level source file), but their
-    ``co_filename`` is a valid linecache key.
-    """
-    try:
-        filename = inspect.getsourcefile(fn)
-    except TypeError:
-        return None
-    if not filename:
-        return None
-    lines = linecache.getlines(filename)
-    return "".join(lines) if lines else None
-
-
 def _def_nodes(
     module: ast.Module,
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -243,9 +213,16 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
         )
     target_name = last.name
 
-    fn = _unwrap(anchor)
-    module_source = _recover_module_source(fn)
-    if module_source is None:
+    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
+    # Recover the module source via fn's own filename -- a real path or a
+    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
+    # notebook templates; linecache.getlines reads real files from disk too.
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except TypeError:
+        source_file = None
+    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    if not module_source:
         logger.warning("skipping type check: cannot recover source for %r", fn)
         return None
     module_ast = ast.parse(module_source)
