@@ -45,9 +45,9 @@ def syntactic_eq_alpha(x, y) -> bool:
         if idx in _op_cache:
             return _op_cache[idx]
 
-        op = Operation.define(op, name=f"__cv_{idx}")
-        _op_cache[idx] = op
-        return op
+        canon_op = Operation.define(op, name=f"__cv_{idx}")
+        _op_cache[idx] = canon_op
+        return canon_op
 
     cx = _canonicalize(x, _canonical_op)
     cy = _canonicalize(y, _canonical_op)

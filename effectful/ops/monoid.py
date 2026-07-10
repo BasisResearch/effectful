@@ -895,8 +895,10 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             except InvalidIndexError:
                 continue
 
-            # unify each summand's plate variable onto a single shared one so
-            # that the peeled product folds all summands over the same row
+            # Unify each summand onto the cartesian product's plate variable.
+            # In particular, union_streams may depend on this variable and is
+            # moved beneath the peeled reduce below, so choosing an inner
+            # summand's variable instead would leave that dependency free.
             shared_plate_op = plate_op
             inner_reduces = []
             for (subst_inner_body, inner_plate_op), summand in zip(

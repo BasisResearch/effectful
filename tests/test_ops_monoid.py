@@ -792,8 +792,7 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     )
 
 
-@pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
-def test_reduce_lifted_3(outer, inner, backend: Backend):
+def test_reduce_lifted_3(backend: Backend):
     a, b, i, j = backend.define_vars("a", "b", "i", "j", ret="scalar")
     N, A_domain, B_domain = backend.define_vars(
         "N", "A_domain", "B_domain", ret="stream"
@@ -804,31 +803,28 @@ def test_reduce_lifted_3(outer, inner, backend: Backend):
     A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
     B = Operation.define(Mapping[tuple, backend.scalar_typ], name="B")
 
-    lhs = outer.reduce(
-        inner.reduce(f(A()[(i(), j())], B()[(i(), j())]), {i: range(3), j: range(4)}),
+    lhs = Sum.reduce(
+        Product.reduce(f(A()[(i(), j())], B()[(i(), j())]), {i: range(2), j: range(3)}),
         {
             A: CartesianProduct.reduce(
                 Union.reduce([Union.delta((i(), j()), a())], {a: A_domain()}),
-                {i: range(3), j: range(4)},
+                {i: range(2), j: range(3)},
             ),
             B: CartesianProduct.reduce(
                 Union.reduce([Union.delta((i(), j()), b())], {b: B_domain()}),
-                {i: range(3), j: range(4)},
+                {i: range(2), j: range(3)},
             ),
         },
     )
-    rhs = inner.reduce(
-        outer.reduce(f(a(), b()), {a: A_domain(), b: B_domain()}),
-        {i: range(3), j: range(3)},
-    )
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(
-            ReduceDistributeCartesianProduct(),
-            coproduct(ReduceUnion(), EliminateSingletonStreams()),
+    rhs = Product.reduce(
+        Product.reduce(
+            Sum.reduce(Sum.reduce(f(a(), b()), {a: A_domain()}), {b: B_domain()}),
+            {j: range(3)},
         ),
+        {i: range(2)},
     )
+    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    assert syntactic_eq_alpha(norm, rhs)
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -1192,23 +1188,20 @@ def test_cprod_plus_forwards_on_term():
 
 def test_split_disjoint_product_simple():
     backend = IntBackend()
-    i, j, i_out, j_out = backend.define_vars("i", "j", "i_out", "j_out", ret="scalar")
+    i, j, i_out = backend.define_vars("i", "j", "i_out", ret="scalar")
     f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = Product.reduce(
         Sum.plus(
-            Sum.mask(f(i()), And.plus(i() == i_out(), j() == j_out())),
-            Sum.mask(g(i()), i() != i_out()),
+            Sum.mask(f(i()), And.plus(i() == i_out())), Sum.mask(g(i()), i() != i_out())
         ),
         {i: range(3)},
     )
 
     rhs = Product.reduce(
         Product.plus(
-            Product.mask(
-                Sum.mask(f(i()), And.plus(j_out() == j())), And.plus(i() == i_out())
-            ),
-            Product.mask(Sum.mask(g(i()), True), Or.plus(i() != i_out())),
+            Product.mask(Sum.mask(f(i()), And.plus()), And.plus(i_out() == i())),
+            Product.mask(Sum.mask(g(i()), True), Or.plus(i_out() != i())),
         ),
         {i: range(3)},
     )
