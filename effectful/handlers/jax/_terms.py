@@ -1,5 +1,6 @@
 import functools
 import operator
+import typing
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -465,7 +466,7 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
     if not (t.op is jax_getitem and is_eager_array(t)):
         raise NotHandled
 
-    array = t.args[0]
+    array = typing.cast(jax.Array, t.args[0])
     dims = t.args[1]
     assert isinstance(dims, Sequence)
     ndim = len(array.shape)

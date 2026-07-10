@@ -1,4 +1,3 @@
-import functools
 import sys
 
 import jax
@@ -8,7 +7,6 @@ import pyro.ops.contract
 import pytest
 import torch
 from jax import random as random
-from sympy.physics.quantum.sho1d import a
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
@@ -501,6 +499,7 @@ def test_reduce_matmul(backend: JaxBackend):
     with handler(EvaluateIntp), handler(NormalizeIntp):
         actual = evaluate(norm)
 
+    assert isinstance(actual, jax.Array)
     expected = jnp.einsum("bij,bjk->bik", X, Y)
     assert jnp.allclose(actual, expected)
 

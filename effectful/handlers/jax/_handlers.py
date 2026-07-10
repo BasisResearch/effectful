@@ -330,7 +330,7 @@ def bind_dims[T, A, B](
     return jax.tree.map(lambda v: bind_dims(v, *names), value)
 
 
-@bind_dims.register(object)
+@bind_dims.register(object)  # type: ignore[attr-defined]
 def _(*args, **kwargs):
     raise NotHandled
 
@@ -350,7 +350,7 @@ def unbind_dims[T, A, B](
     return jax.tree.map(lambda v: unbind_dims(v, *names), value)
 
 
-@unbind_dims.register(object)
+@unbind_dims.register(object)  # type: ignore[attr-defined]
 def _(*args, **kwargs):
     raise NotHandled
 

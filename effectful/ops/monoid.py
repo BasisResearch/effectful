@@ -179,8 +179,10 @@ ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
-CartesianProduct = MonoidWithZero(name="CartesianProduct", identity=[{}], zero=[])
-Union = Monoid(name="Union", identity=[])
+CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
+    name="CartesianProduct", identity=[{}], zero=[]
+)
+Union: Monoid[Sequence[Mapping]] = Monoid(name="Union", identity=[])
 And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
 
@@ -782,7 +784,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         # (a reduce pushed through a plus). The single reduce is just the
         # "plus with one argument" case.
         if _is_monoid_reduce(body.op):
-            summands: tuple[Term, ...] = (body,)
+            summands: Sequence[Term] = (body,)
         elif _is_monoid_plus(body.op) and all(
             isinstance(arg, Term) and _is_monoid_reduce(arg.op) for arg in body.args
         ):
@@ -817,6 +819,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 continue
 
             (cprod_body, cprod_streams) = stream_body.args
+            assert isinstance(cprod_streams, dict)
 
             # plates are rectangular
             if not all(
@@ -831,9 +834,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                     Union.reduce,
                     ([Term(Union.delta, (idx, union_body), {})], union_streams),
                     {},
-                ) if set(i.op for i in idx if isinstance(i, Term)) >= set(
-                    cprod_streams
-                ):
+                ) if isinstance(idx, Sequence) and set(
+                    i.op for i in idx if isinstance(i, Term)
+                ) >= set(cprod_streams):
                     pass
                 case _:
                     continue
@@ -905,6 +908,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 substituted, summands
             ):
                 (_, inner_streams) = summand.args
+                assert isinstance(inner_streams, Mapping)
                 if inner_plate_op is not shared_plate_op:
                     subst_inner_body = handler({inner_plate_op: shared_plate_op})(
                         evaluate

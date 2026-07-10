@@ -473,7 +473,7 @@ class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
         ):
             return fwd()
 
-        preceding_complements = []
+        preceding_complements: list = []
         reductions = []
         for disjunct in disjuncts:
             assert isinstance(disjunct, Term)
@@ -793,8 +793,7 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                     # currently include
                     if isinstance(body, Term) and body.op == monoid.delta:
                         fresh_body = monoid.delta(
-                            body.args[0],
-                            monoid.mask(v() < u(), body.args[1]),  # type: ignore[arg-type]
+                            body.args[0], monoid.mask(v() < u(), body.args[1])
                         )
                     else:
                         fresh_body = monoid.mask(v() < u(), body)
@@ -955,7 +954,7 @@ class _EinsumBuilder:
     @functools.cached_property
     def ordinal(self) -> Mapping[str, frozenset[str]]:
         """`ordinal[d]` is the plate context of a dimension `d`."""
-        ordinal = defaultdict(lambda: self.plates)
+        ordinal: dict[str, frozenset[str]] = defaultdict(lambda: self.plates)
         for spec in self.in_specs:
             spec_set = frozenset(spec)
             for c in spec_set - self.plates:
@@ -974,7 +973,7 @@ class _EinsumBuilder:
         #    that contains both, i.e. their common ancestor -- a shared plate MUST
         #    have a node to live at, or containment can't be a tree. Closing under
         #    ∩ materializes those frame nodes (finite lattice, so it terminates).
-        ordinals = set(factor_ordinal.values()) | {frozenset()}
+        ordinals: set[frozenset[str]] = set(factor_ordinal.values()) | {frozenset()}
         changed = True
         while changed:
             changed = False
@@ -1114,7 +1113,7 @@ class _EinsumBuilder:
                 # as checked in ``__init__``.
                 factor_out_plates = plate_tree.ordinal & set(self.out_vars)
                 masked_factors.append(
-                    jnp.where(
+                    jnp.where(  # type: ignore[call-overload]
                         self.out_mask(factor_out_plates),
                         Sum.mask(factor, self.out_mask(factor_out_dims)),
                         factor,
@@ -1204,7 +1203,7 @@ def einsum(
 
         out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
         result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
-        assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
+        assert isinstance(result, jax.Array), "failed to fully evaluate"
         return result
 
 

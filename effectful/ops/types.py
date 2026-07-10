@@ -281,7 +281,7 @@ class Operation[**Q, V]:
             # the wrapped function. inspect.signature will traverse this chain
             # unless it is removed.
             del func.__wrapped__
-            func.__signature__ = sig
+            func.__signature__ = sig  # type: ignore[attr-defined]
             op = cls.define(func, name=name)
         else:
             op = cls(t, name=name)  # type: ignore[arg-type]

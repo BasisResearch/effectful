@@ -809,11 +809,13 @@ class _MappingTerm[K, V](_CollectionTerm[K]):
             raise NotHandled
 
     @defop
-    def get(self: collections.abc.Mapping[K, V], key: K, default: V | None = None) -> V:
+    def get(
+        self: collections.abc.Mapping[K, V], key: K, default: V | None = None
+    ) -> V | None:
         from effectful.ops.semantics import fvsof
 
         if not isinstance(self, Term) and not fvsof(key):
-            return self.get(key, default=default)
+            return self.get(key, default)
         else:
             raise NotHandled
 

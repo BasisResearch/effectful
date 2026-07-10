@@ -16,4 +16,4 @@ for name, op in jax.lax.__dict__.items():
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
-    from jax.lax import *  # type: ignore[assignment] # noqa: F403
+    from jax.lax import *  # noqa: F403

@@ -770,7 +770,7 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     a, i = backend.define_vars("a", "i", ret="scalar")
     N, A_domain = backend.define_vars("N", "A_domain", ret="stream")
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
-    A = Operation.define(Mapping[tuple, backend.scalar_typ])
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])  # type: ignore[name-defined]
 
     lhs = outer.reduce(
         inner.reduce(f(A()[(i(),)]), {i: range(3)}),
@@ -799,8 +799,8 @@ def test_reduce_lifted_3(backend: Backend):
     f = backend.define_vars(
         "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
     )
-    A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
-    B = Operation.define(Mapping[tuple, backend.scalar_typ], name="B")
+    A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")  # type: ignore[name-defined]
+    B = Operation.define(Mapping[tuple, backend.scalar_typ], name="B")  # type: ignore[name-defined]
 
     lhs = Sum.reduce(
         Product.reduce(f(A()[(i(), j())], B()[(i(), j())]), {i: range(2), j: range(3)}),
@@ -830,7 +830,7 @@ def test_reduce_lifted_3(backend: Backend):
 def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
     a, i, j = backend.define_vars("a", "i", "j", ret="scalar")
     N, M, A_domain = backend.define_vars("N", "M", "A_domain", ret="stream")
-    A = Operation.define(Mapping[tuple, backend.scalar_typ])
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])  # type: ignore[name-defined]
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = outer.reduce(
@@ -857,7 +857,7 @@ def test_reduce_lifted_2(outer, inner, backend: Backend):
     """
     a, i, s, t = backend.define_vars("a", "i", "s", "t", ret="scalar")
     N, T = backend.define_vars("N", "T", ret="stream")
-    A = Operation.define(Mapping[tuple, backend.scalar_typ])
+    A = Operation.define(Mapping[tuple, backend.scalar_typ])  # type: ignore[name-defined]
     A_domain = backend.define_vars(
         "A_domain", arg_types=(backend.scalar_typ,), ret="stream"
     )

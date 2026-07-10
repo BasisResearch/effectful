@@ -1,3 +1,4 @@
+import typing
 from types import NoneType
 from typing import TYPE_CHECKING
 
@@ -45,7 +46,7 @@ def asarray(a, **kwargs) -> jax.Array:
 
     if isinstance(a, Term):
         if issubclass(typeof(a), jax.Array | jax.core.Tracer) and not kwargs:
-            return a
+            return typing.cast(jax.Array, a)
         else:
             raise NotHandled
     return jax.numpy.asarray(a, **kwargs)
