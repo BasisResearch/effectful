@@ -32,6 +32,7 @@ from effectful.ops.monoid import (
     _is_monoid_plus,
     choose_contraction,
     distributes_over,
+    is_disequality,
     is_equality,
 )
 from effectful.ops.monoid import Union as UnionM
@@ -55,6 +56,7 @@ LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 distributes_over.register(Sum, LogSumExp)
 
 is_equality.register(jnp.equal)
+is_disequality.register(jnp.not_equal)
 
 
 def _jax_args(args):
@@ -241,6 +243,63 @@ class ReduceArray(ObjectInterpretation):
 
 
 class ReduceArrayScan(ObjectInterpretation):
+    _flip = {
+        jnp.less: jnp.greater,
+        jnp.greater: jnp.less,
+        jnp.less_equal: jnp.greater_equal,
+        jnp.greater_equal: jnp.less_equal,
+    }
+
+    @staticmethod
+    def _disequality_to_plus(monoid, streams, stream_op, value, index, tail_mask_elems):
+        return monoid.plus(
+            monoid.reduce(
+                monoid.mask(value, And.plus(stream_op() < index, *tail_mask_elems)),
+                streams,
+            ),
+            monoid.reduce(
+                monoid.mask(value, And.plus(stream_op() > index, *tail_mask_elems)),
+                streams,
+            ),
+        )
+
+    @staticmethod
+    def _inequality_to_scan(
+        monoid, streams, stream_op, value, index, tail_mask_elems, cmp_op
+    ):
+        stream = streams[stream_op]
+        reverse = cmp_op in (jnp.greater_equal, jnp.greater)
+        n = len(stream)
+        pos_value = monoid.reduce(
+            monoid.delta((stream_op(),), value), {stream_op: stream}
+        )
+        # inclusive prefix (or suffix, when reverse) scan over the stream
+        inclusive = lax.associative_scan(monoid.plus, pos_value, reverse=reverse)
+        # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
+        # an identity element on the appropriate side and shift the result
+        # so that scan_val[k] aggregates only the positions satisfying the
+        # comparison against k. The non-strict comparisons (`<=`, `>=`) use
+        # the inclusive scan directly.
+        match cmp_op:
+            case jnp.less:
+                scan_val = jnp.pad(
+                    inclusive, (1, 0), mode="constant", constant_values=monoid.identity
+                )[:n]
+            case jnp.greater:
+                scan_val = jnp.pad(
+                    inclusive, (0, 1), mode="constant", constant_values=monoid.identity
+                )[1:]
+            case _:
+                scan_val = inclusive
+
+        tail_body = monoid.mask(
+            jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
+        )
+        tail_streams = {k: v for (k, v) in streams.items() if k != stream_op}
+        if tail_streams:
+            return monoid.reduce(tail_body, tail_streams)
+        return tail_body
+
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams: Streams):
         match body:
@@ -259,81 +318,64 @@ class ReduceArrayScan(ObjectInterpretation):
                 mask_elems = (mask,)
 
         for i, elem in enumerate(mask_elems):
+            tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
             match elem:
-                case Term(_NumberTerm.__ne__, (Term(stream_op, (), {}), index)) if (
-                    stream_op in streams
-                    and isinstance(stream := streams[stream_op], range)
-                ):
-                    other_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
-                    return monoid.plus(
-                        monoid.reduce(
-                            monoid.mask(
-                                value, And.plus(stream_op() < index, *other_mask_elems)
-                            ),
-                            streams,
-                        ),
-                        monoid.reduce(
-                            monoid.mask(
-                                value, And.plus(stream_op() > index, *other_mask_elems)
-                            ),
-                            streams,
-                        ),
-                    )
+                case Term(jnp.not_equal, args, {}):
+                    match args:
+                        case (Term(stream_op, (), {}), index) if isinstance(
+                            streams.get(stream_op, None), range
+                        ):
+                            return self._disequality_to_plus(
+                                monoid,
+                                streams,
+                                stream_op,
+                                value,
+                                index,
+                                tail_mask_elems,
+                            )
+                        case (index, Term(stream_op, (), {})) if isinstance(
+                            streams.get(stream_op, None), range
+                        ):
+                            return self._disequality_to_plus(
+                                monoid,
+                                streams,
+                                stream_op,
+                                value,
+                                index,
+                                tail_mask_elems,
+                            )
                 case Term(
                     (
-                        _NumberTerm.__le__
-                        | _NumberTerm.__ge__
-                        | _NumberTerm.__lt__
-                        | _NumberTerm.__gt__
+                        jnp.less_equal | jnp.greater_equal | jnp.less | jnp.greater
                     ) as cmp_op,
-                    (Term(stream_op, (), {}), index),
-                ) if stream_op in streams and isinstance(
-                    stream := streams[stream_op], range
+                    args,
+                    {},
                 ):
-                    tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
-                    reverse = cmp_op in (_NumberTerm.__ge__, _NumberTerm.__gt__)
-                    n = len(stream)
-                    pos_value = monoid.reduce(
-                        monoid.delta((stream_op(),), value),
-                        {stream_op: stream},
-                    )
-                    # inclusive prefix (or suffix, when reverse) scan over the stream
-                    inclusive = lax.associative_scan(
-                        monoid.plus, pos_value, reverse=reverse
-                    )
-                    # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
-                    # an identity element on the appropriate side and shift the result
-                    # so that scan_val[k] aggregates only the positions satisfying the
-                    # comparison against k. The non-strict comparisons (`<=`, `>=`) use
-                    # the inclusive scan directly.
-                    match cmp_op:
-                        case _NumberTerm.__lt__:
-                            scan_val = jnp.pad(
-                                inclusive,
-                                (1, 0),
-                                mode="constant",
-                                constant_values=monoid.identity,
-                            )[:n]
-                        case _NumberTerm.__gt__:
-                            scan_val = jnp.pad(
-                                inclusive,
-                                (0, 1),
-                                mode="constant",
-                                constant_values=monoid.identity,
-                            )[1:]
-                        case _:
-                            scan_val = inclusive
-
-                    tail_body = monoid.mask(
-                        jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
-                    )
-
-                    tail_streams = {
-                        k: v for (k, v) in streams.items() if k != stream_op
-                    }
-                    if tail_streams:
-                        return monoid.reduce(tail_body, tail_streams)
-                    return tail_body
+                    match args:
+                        case (Term(stream_op, (), {}), index) if isinstance(
+                            streams.get(stream_op, None), range
+                        ):
+                            return self._inequality_to_scan(
+                                monoid,
+                                streams,
+                                stream_op,
+                                value,
+                                index,
+                                tail_mask_elems,
+                                cmp_op,
+                            )
+                        case (index, Term(stream_op, (), {})) if isinstance(
+                            streams.get(stream_op, None), range
+                        ):
+                            return self._inequality_to_scan(
+                                monoid,
+                                streams,
+                                stream_op,
+                                value,
+                                index,
+                                tail_mask_elems,
+                                self._flip[cmp_op],
+                            )
         return fwd()
 
 
@@ -813,7 +855,7 @@ class _EinsumBuilder:
                 if self.ordinal[d]
             )
 
-            if factor_out_plates or factor_out_dims:
+            if factor_out_plates and factor_out_dims:
                 and_mask = And.plus(
                     *(
                         self.dim_index(p) == self.out_vars[p]()
@@ -905,13 +947,14 @@ def einsum(
         "failed to eliminate cartesian products"
     )
 
-    with handler(NormalizeIntp), handler(sparse_intp):
+    with handler(NormalizeIntp), handler(EvaluateIntp), handler(sparse_intp):
         sparse_expr = evaluate(norm_expr)
 
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(sparse_expr)
 
-        out_dims = (unbind_dims(jnp.arange(d), v) for (v, d) in dims)
+        # breakpoint()
+        out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
         result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
         assert isinstance(result, jax.typing.ArrayLike), "failed to fully evaluate"
         return result
@@ -930,7 +973,7 @@ EvaluateIntp.extend(
     ReduceArray(),
     ReduceDeltaSimpleRange(),
     GetitemJaxGetitem(),
-    # ReduceArrayScan(),
+    ReduceArrayScan(),
     PlusCastArray(),
 )
 

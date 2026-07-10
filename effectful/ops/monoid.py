@@ -318,6 +318,7 @@ class MaskFusion(ObjectInterpretation):
 
 
 is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
+is_disequality = _ExtensiblePredicate({_NumberTerm.__ne__})
 
 
 class ReduceEqualityMaskRange(ObjectInterpretation):
@@ -381,15 +382,16 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
                 continue
             stream_op, mask_key = matched
             stream = streams[stream_op]
-            return monoid.mask(
-                monoid.reduce(
+            return monoid.reduce(
+                monoid.mask(
                     monoid.mask(
-                        value, And.plus(*(c for (j, c) in enumerate(conds) if i != j))
+                        value,
+                        And.plus(stream.start <= mask_key, mask_key < stream.stop),
                     ),
-                    {stream_op: (mask_key,)}
-                    | {k: v for (k, v) in streams.items() if k != stream_op},
+                    And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
                 ),
-                And.plus(stream.start <= mask_key, mask_key < stream.stop),
+                {stream_op: (mask_key,)}
+                | {k: v for (k, v) in streams.items() if k != stream_op},
             )
         return None
 
@@ -1407,14 +1409,14 @@ class SplitDisjointProduct(ObjectInterpretation):
         return isinstance(v, Term) and not v.args and not v.kwargs
 
     def _var_comps(
-        self, terms: list[Term], op: Operation
+        self, terms: list[Term], pred: Callable[[Operation], bool]
     ) -> tuple[set[tuple[Operation, Operation]], list[Term]]:
         comps = set()
         resid = []
         for t in terms:
             if (
                 isinstance(t, Term)
-                and t.op == op
+                and pred(t.op)
                 and all(self._is_var(a) for a in t.args)
             ):
                 comps.add(tuple(sorted(a.op for a in t.args)))
@@ -1446,7 +1448,7 @@ class SplitDisjointProduct(ObjectInterpretation):
                 if isinstance(lhs_mask, Term) and lhs_mask.op == And.plus
                 else [lhs_mask]
             )
-            (eqs, lhs_residual) = self._var_comps(lhs_mask_terms, _NumberTerm.__eq__)
+            (eqs, lhs_residual) = self._var_comps(lhs_mask_terms, is_equality)
 
             if not (
                 isinstance(rhs, Term)
@@ -1460,7 +1462,7 @@ class SplitDisjointProduct(ObjectInterpretation):
                 if isinstance(rhs_mask, Term) and rhs_mask.op == Or.plus
                 else [rhs_mask]
             )
-            (nes, rhs_residual) = self._var_comps(rhs_mask_terms, _NumberTerm.__ne__)
+            (nes, rhs_residual) = self._var_comps(rhs_mask_terms, is_disequality)
 
             return (
                 lhs_op,
