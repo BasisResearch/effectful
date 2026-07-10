@@ -188,27 +188,28 @@ def _region_errors(stdout: str, lo: int, hi: int) -> list[dict[str, Any]]:
     return errors
 
 
-def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
-    """Type-check LLM-generated code by splicing it into the real module source.
+def _splice_into_source(
+    generated: ast.Module, anchor: Any
+) -> tuple[str, int, int] | None:
+    """Splice `generated` into the anchor Template's own function body, in its real
+    module source.
 
-    The generated function — and any helpers it defines alongside — is spliced as
-    the body of the Template's own function, at its real (possibly nested) position
-    in the module, and the whole module is type-checked with mypy. Only diagnostics
-    that fall inside the spliced region are raised, so unrelated pre-existing errors
-    elsewhere in the module never block synthesis. The generated code is thereby
-    checked in its real lexical scope, with no synthesized type stubs.
+    Returns the modified module source and the ``[lo, hi]`` line span of the
+    spliced body within it, or ``None`` when the source or the def site can't be
+    recovered -- so the caller skips rather than guesses (never a silent pass on a
+    real error).
 
-    ``anchor`` is the Template's underlying function, whose module supplies the
-    lexical context. When its source can't be recovered, the check is skipped with
-    a logged reason (never a silent pass on a real error). Raises ``TypeError`` with
-    the mypy report on an in-region failure.
+    The generated function -- and any helpers it defines alongside -- becomes the
+    body of the Template's own function at its real (possibly nested) position, so
+    the generated code is checked in its real lexical scope with no synthesized
+    type stubs.
     """
     if not generated.body:
-        raise TypeError("mypy_type_check: generated module is empty")
+        raise TypeError("splice: generated module is empty")
     last = generated.body[-1]
     if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
         raise TypeError(
-            f"mypy_type_check: last statement must be a function definition, "
+            f"splice: last statement must be a function definition, "
             f"got {type(last).__name__}"
         )
     target_name = last.name
@@ -264,22 +265,25 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
     lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
     hi = spliced.end_lineno or lo
+    return checked_source, lo, hi
 
-    # Type-check the spliced module by writing it to a file and running mypy on
-    # it. Each call gets an isolated temp dir holding both the module and mypy's
-    # cache, for two reasons: (1) `--command`, which the previous implementation
-    # used on a tiny stub, passes the whole source as one argv string and hits an
-    # OS filename-length limit on large modules (`[Errno 36] File name too long`);
-    # (2) parallel decodes (pytest-xdist, concurrent synthesis) must not share
-    # mypy's SQLite cache, which otherwise deadlocks ("database is locked"). A
-    # persistent shared `--cache-dir`/incremental setup, and preserving the
-    # module's sibling-import resolution by writing alongside it, are perf
-    # follow-ups.
+
+def _mypy_check_region(source: str, lo: int, hi: int) -> None:
+    """Run mypy on `source` and raise ``TypeError`` if any error diagnostic falls
+    within ``[lo, hi]``; raise ``RuntimeError`` if mypy itself fails to run.
+
+    Applies mypy to whatever source it's given -- spliced or otherwise -- and
+    reports only the region's errors, so pre-existing errors elsewhere in `source`
+    never block synthesis.
+    """
+    # Run mypy on the source as a temp file (not --command: it hits an argv
+    # length limit on large modules). Each call gets an isolated temp dir + cache
+    # so parallel decodes don't share -- and deadlock on -- mypy's SQLite cache.
     tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
     try:
         tf_path = os.path.join(tmpdir, "_synthesized.py")
         with open(tf_path, "w", encoding="utf-8") as f:
-            f.write(checked_source)
+            f.write(source)
         stdout, stderr, status = mypy_api.run(
             [
                 tf_path,
@@ -298,14 +302,32 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
     # raise `RuntimeError` rather than parse or silently pass.
     if status >= 2:
         raise RuntimeError(
-            f"mypy could not check the spliced module:\n{(stdout or '') + (stderr or '')}"
+            f"mypy could not check the source:\n{(stdout or '') + (stderr or '')}"
         )
     errors = _region_errors(stdout or "", lo, hi)
     if errors:
         report = "\n".join(
             f"{e['line']}: {e['message']}  [{e['code']}]" for e in errors
         )
-        raise TypeError("mypy type check failed:\n" + report + "\n\n" + checked_source)
+        raise TypeError("mypy type check failed:\n" + report + "\n\n" + source)
+
+
+def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
+    """Type-check LLM-generated code by splicing it into the real module source.
+
+    Splices `generated` into the ``anchor`` Template's own function body (in its
+    real module source, via `_splice_into_source`) and checks that spliced source
+    with mypy (via `_mypy_check_region`), so the generated code is checked in its
+    real lexical scope with no synthesized type stubs. Only diagnostics inside the
+    spliced region are raised, so pre-existing errors elsewhere never block
+    synthesis. Skips (logged) when the anchor's source can't be recovered; raises
+    ``TypeError`` on an in-region failure and ``RuntimeError`` if mypy itself fails
+    to run.
+    """
+    spliced = _splice_into_source(generated, anchor)
+    if spliced is None:
+        return None
+    _mypy_check_region(*spliced)
     return None
 
 
