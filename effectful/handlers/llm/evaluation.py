@@ -270,13 +270,23 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
     ]
 
     # mypy reports line numbers in the coordinates of `checked_source`, so we need
-    # the spliced def's span there. ast.unparse reassigns line numbers but preserves
-    # def order, so the def keeps its index in walk order -- take the def at that
-    # same index in the re-parsed source.
+    # the spliced *body's* span there. ast.unparse reassigns line numbers but
+    # preserves def order, so the def keeps its index in walk order -- take the def
+    # at that same index in the re-parsed source.
+    #
+    # The region is the body (the generated code) only, NOT the def header: the
+    # signature and decorators are the Template author's own pre-existing source,
+    # which we must not attribute to synthesis. This matters for templates whose
+    # module source can't be fully recovered -- notably notebook/REPL cells, which
+    # share a runtime namespace but whose recovered source is a single cell missing
+    # the other cells' imports, so the signature's own annotations (e.g. `Literal`,
+    # `Callable`) look undefined to mypy. Flagging only the body keeps those
+    # spurious signature-line diagnostics out of the gate.
     def_index = _def_nodes(module_ast).index(template_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo, hi = spliced.lineno, (spliced.end_lineno or spliced.lineno)
+    lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
+    hi = spliced.end_lineno or lo
 
     # Type-check the spliced module by writing it to a file and running mypy on
     # it. Each call gets an isolated temp dir holding both the module and mypy's
@@ -306,8 +316,7 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
         )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    # Exit
-    # status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
+    # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
     # tool failure, not a type error -- and it emits text rather than JSON, so
     # raise `RuntimeError` rather than parse or silently pass.
     if status >= 2:
