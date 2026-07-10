@@ -145,11 +145,17 @@ def _unwrap(fn: Any) -> Any:
 def _recover_module_source(fn: Any) -> str | None:
     """Recover the full source of the module that lexically contains ``fn``.
 
-    Reads the real file when one exists, else the ``linecache``-registered source
-    (REPL/``exec``-defined templates, e.g. ``<synthesis:...>`` filenames). Returns
-    ``None`` when neither is available, so the caller can skip rather than guess.
-    ``inspect.getsourcefile`` and ``os.path.isfile`` are both given the *unwrapped*
-    function.
+    Resolves from the *function's own* filename: ``inspect.getsourcefile`` finds it
+    -- a real path, or a ``linecache``-registered synthetic name such as
+    ``<synthesis:...>`` for REPL/``exec``/notebook-defined templates -- and
+    ``linecache.getlines`` returns its lines, reading a real file from disk when it
+    isn't already cached (exactly as ``inspect`` does). Returns ``None`` when no
+    source is available, so the caller can skip rather than guess.
+
+    Resolving from the function rather than ``inspect.getsource(inspect.getmodule(
+    fn))`` is what makes the REPL/notebook cases work: those functions have no
+    resolvable module object (or no module-level source file), but their
+    ``co_filename`` is a valid linecache key.
     """
     try:
         filename = inspect.getsourcefile(fn)
@@ -157,12 +163,6 @@ def _recover_module_source(fn: Any) -> str | None:
         return None
     if not filename:
         return None
-    if os.path.isfile(filename):
-        try:
-            with open(filename, encoding="utf-8") as f:
-                return f.read()
-        except OSError:
-            return None
     lines = linecache.getlines(filename)
     return "".join(lines) if lines else None
 
