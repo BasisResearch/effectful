@@ -6,10 +6,10 @@ import collections.abc
 import contextlib
 import inspect
 import io
+import json
 import linecache
 import logging
 import os
-import re
 import shutil
 import sys
 import tempfile
@@ -198,18 +198,24 @@ def _find_def_at_lineno(
     return None
 
 
-# mypy diagnostics under --no-pretty: ``file:line: error: ...`` or ``file:line:col: ...``.
-_MYPY_LINE_RE = re.compile(r"^.+?:(\d+):(?:\d+:)?\s+(?:error|note):")
+def _region_errors(stdout: str, lo: int, hi: int) -> list[dict[str, Any]]:
+    """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
+    line falls within ``[lo, hi]`` -- the spliced region.
 
-
-def _region_diagnostics(report: str, lo: int, hi: int) -> list[str]:
-    """Diagnostic lines whose reported line number falls within ``[lo, hi]``."""
-    region: list[str] = []
-    for line in report.splitlines():
-        m = _MYPY_LINE_RE.match(line)
-        if m and lo <= int(m.group(1)) <= hi:
-            region.append(line)
-    return region
+    ``--output=json`` emits one JSON object per diagnostic carrying mypy's own
+    ``severity`` and ``line`` fields, so we filter on those directly rather than
+    parsing (and risking mis-parsing) its human-readable format.  Only reached
+    for exit status < 2; a fatal status emits text, not JSON, and is handled by
+    the caller before this runs.
+    """
+    errors: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        diag = json.loads(line)
+        if diag["severity"] == "error" and lo <= diag["line"] <= hi:
+            errors.append(diag)
+    return errors
 
 
 def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
@@ -293,23 +299,26 @@ def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
                 "--cache-dir",
                 os.path.join(tmpdir, "cache"),
                 "--no-error-summary",
-                "--no-pretty",
+                "--output=json",
                 "--ignore-missing-imports",
                 "--disable-error-code=import-untyped",
             ]
         )
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
-    report = (stdout or "") + (stderr or "")
-    region = _region_diagnostics(report, lo, hi)
-    if any(" error:" in line for line in region):
-        raise TypeError(
-            "mypy type check failed:\n" + "\n".join(region) + "\n\n" + checked_source
-        )
     if status >= 2:
-        # Exit code >= 2 means mypy itself failed (fatal/usage/internal error),
-        # not that it found type errors -- surface it rather than silently pass.
-        raise TypeError(f"mypy could not check the spliced module:\n{report}")
+        # Exit code >= 2 means mypy itself failed (fatal/usage/internal/syntax);
+        # it emits text rather than JSON, so surface it rather than parse or
+        # silently pass.
+        raise TypeError(
+            f"mypy could not check the spliced module:\n{(stdout or '') + (stderr or '')}"
+        )
+    errors = _region_errors(stdout or "", lo, hi)
+    if errors:
+        report = "\n".join(
+            f"{e['line']}: {e['message']}  [{e['code']}]" for e in errors
+        )
+        raise TypeError("mypy type check failed:\n" + report + "\n\n" + checked_source)
     return None
 
 
