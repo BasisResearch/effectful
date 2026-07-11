@@ -22,6 +22,7 @@ from PIL import Image
 
 from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
@@ -30,7 +31,6 @@ from effectful.handlers.llm.encoding import (
 from effectful.handlers.llm.evaluation import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
-    type_check_anchor,
 )
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
@@ -821,8 +821,10 @@ def test_callable_decode_rejects_invalid(
     ty, ctx, source, exc_type, anchor, eval_provider
 ):
     with pytest.raises(exc_type):
-        with handler(eval_provider), handler({type_check_anchor: lambda: anchor}):
-            pydantic.TypeAdapter(Encodable[ty]).validate_python(source, context=ctx)
+        with handler(eval_provider):
+            pydantic.TypeAdapter(Encodable[ty]).validate_python(
+                source, context={**ctx, TYPE_CHECK_ANCHOR_KEY: anchor}
+            )
 
 
 def test_callable_encode_non_callable():

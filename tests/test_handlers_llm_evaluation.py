@@ -15,14 +15,17 @@ import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import (
+    TYPE_CHECK_ANCHOR_KEY,
+    Encodable,
+    SynthesizedFunction,
+)
 from effectful.handlers.llm.evaluation import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
     mypy_type_check,
     scan_non_nestable,
-    type_check_anchor,
 )
 from effectful.handlers.llm.evaluation import compile as compile_op
 from effectful.handlers.llm.evaluation import exec as exec_op
@@ -274,32 +277,26 @@ def test_linecache_backed_template_is_checked():
 
 
 def test_decode_with_anchor_typechecks_and_runs():
-    with (
-        handler(UnsafeEvalProvider()),
-        handler({type_check_anchor: lambda: _count_char}),
-    ):
+    with handler(UnsafeEvalProvider()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
                 module_code="def count_a(s: str) -> int:\n    return s.count('a')"
             ),
-            context={},
+            context={TYPE_CHECK_ANCHOR_KEY: _count_char},
         )
         assert fn("banana") == 3
 
 
 def test_decode_with_anchor_rejects_bad_code():
-    with (
-        handler(UnsafeEvalProvider()),
-        handler({type_check_anchor: lambda: _count_char}),
-    ):
+    with handler(UnsafeEvalProvider()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
                 SynthesizedFunction(
                     module_code="def count_a(s: str) -> str:\n    return s"
                 ),
-                context={},
+                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
 
@@ -321,17 +318,14 @@ def test_decode_with_anchor_rejects_non_nestable():
     # The non-nestable scan is a decode-time precondition of the splice: with an
     # anchor, a star import (illegal once nested in the Template body) is rejected
     # before type checking.
-    with (
-        handler(UnsafeEvalProvider()),
-        handler({type_check_anchor: lambda: _count_char}),
-    ):
+    with handler(UnsafeEvalProvider()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
                 SynthesizedFunction(
                     module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
                 ),
-                context={},
+                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
 

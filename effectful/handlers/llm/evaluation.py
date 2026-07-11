@@ -48,20 +48,6 @@ def parse(source: str, filename: str) -> ast.Module:
 
 
 @defop
-def type_check_anchor() -> Any:
-    """The Template's underlying function, anchoring ``type_check`` to the module
-    the Template is defined in.
-
-    ``None`` (the default) means there is no Template in scope -- the case for
-    tool-argument decoding, which therefore skips the source-anchored type check.
-    ``Template.__apply__`` binds this per call via a handler, so nested/recursive
-    synthesis sees the right anchor (innermost wins); the tool-argument decode
-    rebinds it to ``None``.
-    """
-    return None
-
-
-@defop
 def type_check(generated: ast.Module, anchor: Any) -> None:
     """
     Type check generated code against the lexical context of a Template.

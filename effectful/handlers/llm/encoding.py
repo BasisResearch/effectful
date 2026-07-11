@@ -39,6 +39,14 @@ from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
 
+# Reserved key under which the type-check anchor (the enclosing Template's
+# underlying function) rides in the Pydantic decoding context, alongside the
+# lexical environment. `decode` reads it to type-check a synthesized function
+# against the Template's source; absent (tool-argument decoding) means skip.
+# Deliberately not a valid identifier so `LexicalReaders` skips it (no tool leak)
+# and it can never collide with a lexical name.
+TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
+
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
     for member in typing.get_args(OpenAIMessageContentListBlock)
@@ -552,19 +560,19 @@ def _pydantic_callable(callable_type: Any) -> Any:
 
         _validate_signature_ast(last_stmt, expected_params)
 
-        # `type_check_anchor` is the Template's underlying function (bound per call
-        # by Template.__apply__); None for tool-argument decoding, whose synthesized
-        # Callables are contracted by the tool param's type, not the Template's
-        # return type, so the Template anchor doesn't apply. When present, the code
-        # is spliced into the Template body, so first reject constructs illegal once
-        # nested (star / `__future__` imports), then type-check.
-        anchor = evaluation.type_check_anchor()
+        # The anchor (Template's underlying function) rides in the decoding context
+        # under TYPE_CHECK_ANCHOR_KEY; absent for tool-argument decoding, whose
+        # synthesized Callables are contracted by the tool param's type, not the
+        # Template's return type, so the Template anchor doesn't apply. When
+        # present, the code is spliced into the Template body, so first reject
+        # constructs illegal once nested (star / `__future__` imports), then check.
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
             evaluation.scan_non_nestable(module)
             evaluation.type_check(module, anchor)
 
         g: MutableMapping[str, Any] = {}
-        g.update(ctx)
+        g.update({k: v for k, v in ctx.items() if k != TYPE_CHECK_ANCHOR_KEY})
         bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
