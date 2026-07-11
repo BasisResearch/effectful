@@ -156,9 +156,7 @@ def _find_def_at_lineno(
     return None
 
 
-def _region_errors(
-    stdout: str, lo: int | None, hi: int | None
-) -> list[dict[str, Any]]:
+def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str, Any]]:
     """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
     line falls within ``[lo, hi]`` -- the spliced region. An open bound (``None``)
     is unbounded on that side, so ``lo=hi=None`` reports every error.
