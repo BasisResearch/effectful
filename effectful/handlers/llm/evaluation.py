@@ -48,16 +48,18 @@ def parse(source: str, filename: str) -> ast.Module:
 
 
 @defop
-def type_check(generated: ast.Module, anchor: Any) -> None:
+def type_check(source: str, lo: int | None = None, hi: int | None = None) -> None:
     """
-    Type check generated code against the lexical context of a Template.
+    Type check a module source, reporting only diagnostics inside a line region.
 
-    generated: The parsed module of LLM-generated code; its last top-level
-        function definition is the synthesized target, preceded by any helpers.
-    anchor: The Template's underlying function, whose module source supplies the
-        lexical context the generated code is checked against.
+    source: A complete module source to check (e.g. produced by
+        ``splice_into_source``, which splices generated code into a Template's real
+        module source).
+    lo, hi: Inclusive line range within ``source`` to report errors from; when
+        omitted, the whole source is in scope. Errors outside the region are
+        ignored so unrelated pre-existing code never blocks synthesis.
 
-    Returns None, raises TypeError on an in-region typechecking failure.
+    Returns None, raises TypeError on an in-region failure.
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to type check code."
@@ -154,9 +156,12 @@ def _find_def_at_lineno(
     return None
 
 
-def _region_errors(stdout: str, lo: int, hi: int) -> list[dict[str, Any]]:
+def _region_errors(
+    stdout: str, lo: int | None, hi: int | None
+) -> list[dict[str, Any]]:
     """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
-    line falls within ``[lo, hi]`` -- the spliced region.
+    line falls within ``[lo, hi]`` -- the spliced region. An open bound (``None``)
+    is unbounded on that side, so ``lo=hi=None`` reports every error.
 
     ``--output=json`` emits one JSON object per diagnostic carrying mypy's own
     ``severity`` and ``line`` fields, so we filter on those directly rather than
@@ -169,12 +174,14 @@ def _region_errors(stdout: str, lo: int, hi: int) -> list[dict[str, Any]]:
         if not line.strip():
             continue
         diag = json.loads(line)
-        if diag["severity"] == "error" and lo <= diag["line"] <= hi:
+        if diag["severity"] != "error":
+            continue
+        if (lo is None or lo <= diag["line"]) and (hi is None or diag["line"] <= hi):
             errors.append(diag)
     return errors
 
 
-def _splice_into_source(
+def splice_into_source(
     generated: ast.Module, anchor: Any
 ) -> tuple[str, int, int] | None:
     """Splice `generated` into the anchor Template's own function body, in its real
@@ -256,13 +263,15 @@ def _splice_into_source(
     return checked_source, lo, hi
 
 
-def _mypy_check_region(source: str, lo: int, hi: int) -> None:
+def _mypy_check_region(
+    source: str, lo: int | None = None, hi: int | None = None
+) -> None:
     """Run mypy on `source` and raise ``TypeError`` if any error diagnostic falls
     within ``[lo, hi]``; raise ``RuntimeError`` if mypy itself fails to run.
 
     Applies mypy to whatever source it's given -- spliced or otherwise -- and
-    reports only the region's errors, so pre-existing errors elsewhere in `source`
-    never block synthesis.
+    reports only the region's errors (the whole source when the region is
+    omitted), so pre-existing errors elsewhere in `source` never block synthesis.
     """
     # Run mypy on the source as a temp file (not --command: it hits an argv
     # length limit on large modules). Each call gets an isolated temp dir + cache
@@ -294,29 +303,9 @@ def _mypy_check_region(source: str, lo: int, hi: int) -> None:
         )
     errors = _region_errors(stdout or "", lo, hi)
     if errors:
-        report = "\n".join(
-            f"{e['line']}: {e['message']}  [{e['code']}]" for e in errors
-        )
-        raise TypeError("mypy type check failed:\n" + report + "\n\n" + source)
-
-
-def mypy_type_check(generated: ast.Module, anchor: Any) -> None:
-    """Type-check LLM-generated code by splicing it into the real module source.
-
-    Splices `generated` into the ``anchor`` Template's own function body (in its
-    real module source, via `_splice_into_source`) and checks that spliced source
-    with mypy (via `_mypy_check_region`), so the generated code is checked in its
-    real lexical scope with no synthesized type stubs. Only diagnostics inside the
-    spliced region are raised, so pre-existing errors elsewhere never block
-    synthesis. Skips (logged) when the anchor's source can't be recovered; raises
-    ``TypeError`` on an in-region failure and ``RuntimeError`` if mypy itself fails
-    to run.
-    """
-    spliced = _splice_into_source(generated, anchor)
-    if spliced is None:
-        return None
-    _mypy_check_region(*spliced)
-    return None
+        # Not the source: it's large and the model already has the generated code.
+        report = "\n".join(json.dumps(e) for e in errors)
+        raise TypeError("mypy type check failed:\n" + report)
 
 
 # Eval Providers
@@ -327,8 +316,10 @@ class UnsafeEvalProvider(ObjectInterpretation):
     by shelling out to python *without* any further checks. Only use for testing."""
 
     @implements(type_check)
-    def type_check(self, generated: ast.Module, anchor: Any) -> None:
-        mypy_type_check(generated, anchor)
+    def type_check(
+        self, source: str, lo: int | None = None, hi: int | None = None
+    ) -> None:
+        _mypy_check_region(source, lo, hi)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -391,8 +382,10 @@ class RestrictedEvalProvider(ObjectInterpretation):
         self.policy = policy
 
     @implements(type_check)
-    def type_check(self, generated: ast.Module, anchor: Any) -> None:
-        mypy_type_check(generated, anchor)
+    def type_check(
+        self, source: str, lo: int | None = None, hi: int | None = None
+    ) -> None:
+        _mypy_check_region(source, lo, hi)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:

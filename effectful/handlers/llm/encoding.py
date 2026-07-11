@@ -569,10 +569,18 @@ def _pydantic_callable(callable_type: Any) -> Any:
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
             evaluation.scan_non_nestable(module)
-            evaluation.type_check(module, anchor)
+            spliced = evaluation.splice_into_source(module, anchor)
+            if spliced is not None:
+                evaluation.type_check(*spliced)
 
         g: MutableMapping[str, Any] = {}
-        g.update({k: v for k, v in ctx.items() if k != TYPE_CHECK_ANCHOR_KEY})
+        g.update(
+            {
+                k: v
+                for k, v in ctx.items()
+                if k.isidentifier() and k != TYPE_CHECK_ANCHOR_KEY
+            }
+        )
         bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 

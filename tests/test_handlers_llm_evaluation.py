@@ -24,8 +24,9 @@ from effectful.handlers.llm.evaluation import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
-    mypy_type_check,
     scan_non_nestable,
+    splice_into_source,
+    type_check,
 )
 from effectful.handlers.llm.evaluation import compile as compile_op
 from effectful.handlers.llm.evaluation import exec as exec_op
@@ -33,7 +34,7 @@ from effectful.handlers.llm.evaluation import parse as parse_op
 from effectful.ops.semantics import handler
 
 # ============================================================================
-# Splice-based type checking (mypy_type_check)
+# Splice-based type checking (splice_into_source + type_check)
 #
 # The type checker splices LLM-generated code into the real source of the
 # Template's module -- at the template function's own (possibly nested)
@@ -73,8 +74,13 @@ def _make_counter(helper_const: int) -> Callable[[int], int]:
 
 
 def _raises(generated_src: str, anchor: Any) -> bool:
+    # Splice then type-check as separate steps (the decode path's shape), under a
+    # provider so the `type_check` op resolves.
     try:
-        mypy_type_check(ast.parse(generated_src), anchor)
+        with handler(UnsafeEvalProvider()):
+            spliced = splice_into_source(ast.parse(generated_src), anchor)
+            if spliced is not None:
+                type_check(*spliced)
         return False
     except TypeError:
         return True
