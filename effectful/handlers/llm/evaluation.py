@@ -218,7 +218,7 @@ def _splice_into_source(
     template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
     if template_def is None:
         # The source drifted from what fn was compiled from (e.g. the file was edited after
-        # import). 
+        # import).
         raise RuntimeError(
             f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
             f"source (source drifted since import?)"
