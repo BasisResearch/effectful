@@ -195,9 +195,10 @@ def _splice_into_source(
     module source.
 
     Returns the modified module source and the ``[lo, hi]`` line span of the
-    spliced body within it, or ``None`` when the source or the def site can't be
-    recovered -- so the caller skips rather than guesses (never a silent pass on a
-    real error).
+    spliced body within it, or ``None`` when the anchor's source can't be recovered
+    (the caller skips rather than guesses). Raises ``RuntimeError`` if the source is
+    recovered but the anchor's def can't be located in it (source drift) -- a real
+    error, not a silent pass.
 
     The generated function -- and any helpers it defines alongside -- becomes the
     body of the Template's own function at its real (possibly nested) position, so
@@ -230,11 +231,12 @@ def _splice_into_source(
 
     template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
     if template_def is None:
-        logger.warning(
-            "skipping type check: cannot locate %r in its module source",
-            getattr(fn, "__qualname__", fn),
+        # The source drifted from what fn was compiled from (e.g. the file was edited after
+        # import). 
+        raise RuntimeError(
+            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
+            f"source (source drifted since import?)"
         )
-        return None
 
     # Splice in place: replace the body with the generated body and bind the
     # target against the (source) return annotation via `return`. Decorators are
