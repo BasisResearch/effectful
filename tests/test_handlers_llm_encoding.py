@@ -23,6 +23,7 @@ from PIL import Image
 from effectful.handlers.llm.encoding import (
     _TOOLS_KEY,
     CONTENT_BLOCK_TYPES,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
@@ -778,13 +779,24 @@ def test_callable_full_pipeline_behavioral(
     assert decoded(*args) == expected
 
 
-# Callable error cases: (type, ctx, source, exc_type, match)
+# A Template-style anchor whose return type is the Callable being decoded.
+# Decoding only runs the (source-anchored) type check when an anchor is in scope
+# (bound by Template.__apply__); the result path has one, the argument path does
+# not. The return-type case needs the body checked against the expected signature,
+# so it provides an anchor; the structural cases (param count, missing/last-stmt)
+# are caught without one.
+def _int_pair_anchor() -> Callable[[int, int], int]:
+    raise NotImplementedError
+
+
+# Callable error cases: (type, ctx, source, exc_type, anchor)
 CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
         SynthesizedFunction(module_code="x = 42"),
         ValueError,
+        None,
         id="non-function-last-stmt",
     ),
     pytest.param(
@@ -792,6 +804,7 @@ CALLABLE_ERROR_CASES = [
         {},
         SynthesizedFunction(module_code="def add(a: int) -> int:\n    return a"),
         ValueError,
+        None,
         id="wrong-param-count",
     ),
     pytest.param(
@@ -801,6 +814,7 @@ CALLABLE_ERROR_CASES = [
             module_code="def add(a: int, b: int) -> str:\n    return str(a + b)"
         ),
         TypeError,
+        _int_pair_anchor,
         id="wrong-return-type",
     ),
     pytest.param(
@@ -808,17 +822,22 @@ CALLABLE_ERROR_CASES = [
         {},
         SynthesizedFunction(module_code="def add(a: int, b: int):\n    return a + b"),
         ValueError,
+        None,
         id="missing-return-annotation",
     ),
 ]
 
 
-@pytest.mark.parametrize("ty,ctx,source,exc_type", CALLABLE_ERROR_CASES)
+@pytest.mark.parametrize("ty,ctx,source,exc_type,anchor", CALLABLE_ERROR_CASES)
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provider):
+def test_callable_decode_rejects_invalid(
+    ty, ctx, source, exc_type, anchor, eval_provider
+):
     with pytest.raises(exc_type):
         with handler(eval_provider):
-            pydantic.TypeAdapter(Encodable[ty]).validate_python(source, context=ctx)
+            pydantic.TypeAdapter(Encodable[ty]).validate_python(
+                source, context={**ctx, TYPE_CHECK_ANCHOR_KEY: anchor}
+            )
 
 
 def test_callable_encode_non_callable():

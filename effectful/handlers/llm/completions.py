@@ -38,6 +38,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import (
     _TOOLS_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     _callable_type_from_signature,
@@ -239,6 +240,7 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     tools: collections.abc.Set[Tool] = frozenset(),
+    anchor: types.FunctionType | None = None,
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
@@ -331,8 +333,12 @@ def call_assistant[T](
             result = typing.cast(T, serialized_result)
         else:
             try:
+                # Add the type-check anchor to the decode context only (not `env`,
+                # which is exposed as tools), so a synthesized result is checked
+                # against the Template's source.
                 result = response_format.model_validate(
-                    json.loads(serialized_result), context=env
+                    json.loads(serialized_result),
+                    context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
                 ).value
             except Exception as e:
                 raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -1490,6 +1496,7 @@ class LiteLLMProvider(ObjectInterpretation):
                     env,
                     template.__signature__.return_annotation,
                     _tools_in_scope(env) - {template},
+                    anchor=template.__default__,
                 )
                 if tool_calls:
                     for tool_call in tool_calls:
