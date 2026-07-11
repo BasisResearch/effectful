@@ -26,6 +26,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     to_content_blocks,
@@ -392,6 +393,7 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    anchor = kwargs.pop("anchor", None)  # ride in kwargs; pop before the LLM call
     tools = dict(collect_tools(env))
     tool_specs = {
         k: typing.cast(
@@ -430,6 +432,10 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
+    # Tool arguments decode with `context=tools` (no anchor key), so a synthesized
+    # tool-argument Callable gets no type-check anchor -- correctly: its contract
+    # is the tool parameter's type, not the enclosing Template's return type, so
+    # the Template anchor would be the wrong splice target.
     for raw_tool_call in message.get("tool_calls") or []:
         try:
             tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
@@ -451,8 +457,12 @@ def call_assistant[T](
             result = typing.cast(T, serialized_result)
         else:
             try:
+                # Add the type-check anchor to the decode context only (not `env`,
+                # which is exposed as tools), so a synthesized result is checked
+                # against the Template's source.
                 result = response_format.model_validate(
-                    json.loads(serialized_result), context=env
+                    json.loads(serialized_result),
+                    context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
                 ).value
             except Exception as e:
                 raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -686,7 +696,10 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    env, template.__signature__.return_annotation, **self.config
+                    env,
+                    template.__signature__.return_annotation,
+                    anchor=template.__default__,
+                    **self.config,
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)
