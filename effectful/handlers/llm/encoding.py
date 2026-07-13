@@ -698,7 +698,13 @@ def _pydantic_callable(
                 f"Callable type signature incomplete: {callable_type}. "
                 "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
             )
-        param_types, expected_return = type_args[0], type_args[-1]
+        if type_args[1] is None:
+            raise pydantic.errors.PydanticSchemaGenerationError(
+                "Cannot decode/synthesize callable without a concrete type signature. "
+                "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
+                "with a concrete return type (not Any)."
+            )
+        param_types, expected_return = type_args[0], type_args[1]
         typed_enc = _create_typed_synthesized_function(callable_type)
         if param_types is not ... and isinstance(param_types, list | tuple):
             expected_params = list(param_types)
@@ -718,13 +724,6 @@ def _pydantic_callable(
             raise ValueError(
                 f"Expected callable, SynthesizedFunction dict, or JSON string, "
                 f"got {type(value)}"
-            )
-
-        if expected_return is None:
-            raise TypeError(
-                "Cannot decode/synthesize callable without a concrete type signature. "
-                "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
-                "with a concrete return type (not Any)."
             )
 
         ctx = info.context or {}
