@@ -16,9 +16,6 @@ import sys
 import tempfile
 import types
 import typing
-from collections.abc import MutableMapping
-from types import CodeType
-from typing import Any
 
 from mypy import api as mypy_api
 from RestrictedPython import (
@@ -70,7 +67,7 @@ def type_check(source: str, lo: int | None = None, hi: int | None = None) -> Non
 @defop
 def run_doctests(
     obj: collections.abc.Callable | type | types.ModuleType,
-    globs: typing.Mapping[str, Any],
+    globs: collections.abc.Mapping[str, typing.Any],
 ) -> None:
     """Run the doctests found in a synthesized object's docstring.
 
@@ -88,7 +85,7 @@ def run_doctests(
 
 
 @defop
-def compile(module: ast.Module, filename: str) -> CodeType:
+def compile(module: ast.Module, filename: str) -> types.CodeType:
     """
     Compile an AST into a Python code object.
 
@@ -104,8 +101,8 @@ def compile(module: ast.Module, filename: str) -> CodeType:
 
 @defop
 def exec(
-    bytecode: CodeType,
-    env: dict[str, Any],
+    bytecode: types.CodeType,
+    env: dict[str, typing.Any],
 ) -> None:
     """
     Execute a compiled code object.
@@ -177,7 +174,9 @@ def _find_def_at_lineno(
     return None
 
 
-def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str, Any]]:
+def _region_errors(
+    stdout: str, lo: int | None, hi: int | None
+) -> list[dict[str, typing.Any]]:
     """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
     line falls within ``[lo, hi]`` -- the spliced region. An open bound (``None``)
     is unbounded on that side, so ``lo=hi=None`` reports every error.
@@ -188,7 +187,7 @@ def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str
     for exit status < 2; a fatal status emits text, not JSON, and is handled by
     the caller before this runs.
     """
-    errors: list[dict[str, Any]] = []
+    errors: list[dict[str, typing.Any]] = []
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -201,7 +200,7 @@ def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str
 
 
 def splice_into_source(
-    generated: ast.Module, anchor: Any
+    generated: ast.Module, anchor: typing.Any
 ) -> tuple[str, int, int] | None:
     """Splice `generated` into the anchor Template's own function body, in its real
     module source.
@@ -351,14 +350,14 @@ class UnsafeEvalProvider(ObjectInterpretation):
         return ast.parse(source, filename=filename, mode="exec")
 
     @implements(compile)
-    def compile(self, module: ast.AST, filename: str) -> CodeType:
+    def compile(self, module: ast.AST, filename: str) -> types.CodeType:
         return builtins.compile(typing.cast(typing.Any, module), filename, "exec")
 
     @implements(exec)
     def exec(
         self,
-        bytecode: CodeType,
-        env: dict[str, Any],
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
     ) -> None:
         # Ensure builtins exist in the execution environment.
         env.setdefault("__builtins__", __builtins__)
@@ -370,7 +369,7 @@ class UnsafeEvalProvider(ObjectInterpretation):
     def run_doctests(
         self,
         obj: collections.abc.Callable | type | types.ModuleType,
-        globs: typing.Mapping[str, Any],
+        globs: collections.abc.Mapping[str, typing.Any],
     ) -> None:
         assert hasattr(obj, "__name__")
         name = obj.__name__
@@ -410,7 +409,7 @@ class RestrictedEvalProvider(ObjectInterpretation):
     RestrictedPython is not a complete sandbox, but it enforces a restricted
     language subset and expects you to provide a constrained exec environment.
 
-    policy : dict[str, Any], optional
+    policy : dict[str, typing.Any], optional
         RestrictedPython compile_restricted policy for compilation
     """
 
@@ -441,7 +440,7 @@ class RestrictedEvalProvider(ObjectInterpretation):
         return ast.parse(source, filename=filename, mode="exec")
 
     @implements(compile)
-    def compile(self, module: ast.Module, filename: str) -> CodeType:
+    def compile(self, module: ast.Module, filename: str) -> types.CodeType:
         # RestrictedPython can compile from an AST directly.
         return compile_restricted(
             module,
@@ -453,11 +452,11 @@ class RestrictedEvalProvider(ObjectInterpretation):
     @implements(exec)
     def exec(
         self,
-        bytecode: CodeType,
-        env: dict[str, Any],
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
     ) -> None:
         # Build restricted globals from RestrictedPython's defaults
-        rglobals: dict[str, Any] = safe_globals.copy()
+        rglobals: dict[str, typing.Any] = safe_globals.copy()
 
         # Enable class definitions (required for Python 3)
         rglobals["__metaclass__"] = type
@@ -504,7 +503,7 @@ class _OpCommandCompiler(codeop.CommandCompiler):
 
     def __call__(
         self, source: str, filename: str = "<input>", symbol: str = "single"
-    ) -> CodeType:
+    ) -> types.CodeType:
         # `runsource` passes symbol="single"; we ignore it and compile in the
         # exec mode the ops produce, so a complete multi-statement block runs in
         # one shot.  Incomplete/invalid input raises SyntaxError, which
@@ -537,14 +536,14 @@ class ReplSession(code.InteractiveInterpreter):
     stdout: io.StringIO
     stderr: io.StringIO
 
-    def __init__(self, env: MutableMapping[str, Any]):
+    def __init__(self, env: collections.abc.MutableMapping[str, typing.Any]):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
         # rejected), and a REPL needs a single persistent namespace so a function
         # defined in one snippet sees a name a later snippet binds.  Seeding a flat
         # copy also leaves the lexical seed untouched, so REPL assignments never
         # leak into the surrounding scope.
-        scope: dict[str, Any] = dict(env)
+        scope: dict[str, typing.Any] = dict(env)
         # When `env` is the per-call `ChainMap` (its outer layers are read-only
         # frame proxies), splice this dict in as an extra shadowing first layer so
         # the bindings are *also* visible to the rest of the Template call
@@ -561,7 +560,7 @@ class ReplSession(code.InteractiveInterpreter):
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
 
-    def runcode(self, code: CodeType) -> None:
+    def runcode(self, code: types.CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
         # is that `exec` here is the effect operation, so execution routes
         # through the installed eval provider.  `showtraceback` reports failures
@@ -573,7 +572,7 @@ class ReplSession(code.InteractiveInterpreter):
         except:
             self.showtraceback()
 
-    def exec_code(self, code: CodeType) -> str:
+    def exec_code(self, code: types.CodeType) -> str:
         """Run Python in a persistent, stateful session and return its output.
 
         This is a long-lived REPL, not a one-shot sandbox: every call runs in the
