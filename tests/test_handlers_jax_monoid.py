@@ -15,7 +15,6 @@ from effectful.handlers.jax.monoid import (
     ReduceArray,
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
-    ReduceDependentRangeMask,
     ReduceSumProductContraction,
     einsum,
 )
@@ -246,52 +245,6 @@ def test_reduce_delta_simple_dep(monoid, reductor, backend: JaxBackend):
         x,
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
-    """A dependent range stream gets rewritten to the referent's bbox stream,
-    with the original constraint folded into the body as a where-guard.
-
-    reduce(M, {u: range(0, N, 1), v: range(0, u(), 1)}, body)
-    ≡ reduce(M, {u: range(0, N, 1), v: range(0, N, 1)}, where(v() < u(), body, M.identity))
-    """
-    (u, v) = backend.define_vars("u", "v", ret="scalar")
-    N = 5
-    f = backend.define_vars(
-        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
-    )
-
-    body = f(u(), v())
-
-    lhs = monoid.reduce(body, {u: range(N), v: jnp.arange(u())})
-    rhs = monoid.reduce(monoid.mask(v() < u(), body), {u: range(N), v: range(N)})
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBackend):
-    """When the body is a delta term, R4 folds the constraint into the delta's
-    weight while leaving its index tuple untouched.
-
-    reduce(M, {u: range(N), v: range(u())}, delta((u(), v()), w))
-    ≡ reduce(M, {u: range(N), v: range(N)},
-             delta((u(), v()), where(v() < u(), w, M.identity)))
-    """
-    (u, v) = backend.define_vars("u", "v", ret="scalar")
-    N = 5
-    f = backend.define_vars(
-        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
-    )
-
-    weight = f(u(), v())
-    idx = (u(), v())
-
-    lhs = monoid.reduce(monoid.delta(idx, weight), {u: range(N), v: jnp.arange(u())})
-    rhs = monoid.reduce(
-        monoid.delta(idx, monoid.mask(v() < u(), weight)), {u: range(N), v: range(N)}
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
 
 def test_reduce_contraction_single(backend: JaxBackend):

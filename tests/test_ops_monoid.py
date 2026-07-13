@@ -29,6 +29,7 @@ from effectful.ops.monoid import (
     PlusOrder,
     PlusSingle,
     Product,
+    ReduceDependentRangeMask,
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
     ReduceEqualityMaskRange,
@@ -46,7 +47,7 @@ from effectful.ops.monoid import (
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import ite, syntactic_eq
+from effectful.ops.syntax import ite, range_, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -1247,3 +1248,24 @@ def test_cprod_plus_forwards_on_term():
         result = CartesianProduct.plus(x(), [{"a": 1}])
     assert isinstance(result, Term)
     assert result.op is CartesianProduct.plus
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_dependent_range_mask(monoid, backend: Backend):
+    """A dependent range stream gets rewritten to the referent's bbox stream,
+    with the original constraint folded into the body as a where-guard.
+
+    reduce(M, {u: range(0, N, 1), v: range(0, u(), 1)}, body)
+    ≡ reduce(M, {u: range(0, N, 1), v: range(0, N, 1)}, where(v() < u(), body, M.identity))
+    """
+    (u, v) = backend.define_vars("u", "v", ret="scalar")
+    N = 5
+    f = backend.define_vars(
+        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
+    )
+
+    body = f(u(), v())
+
+    lhs = monoid.reduce(body, {u: range_(N), v: range_(u())})
+    rhs = monoid.reduce(monoid.mask(v() < u(), body), {u: range_(N), v: range_(N)})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())

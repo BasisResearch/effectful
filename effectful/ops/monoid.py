@@ -19,6 +19,7 @@ from effectful.ops.syntax import (
     deffn,
     implements,
     ite,
+    range_,
     syntactic_eq,
     syntactic_hash,
 )
@@ -1540,6 +1541,77 @@ class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
         return monoid.plus(*reductions)
 
 
+class ReduceDependentRangeMask(ObjectInterpretation):
+    """Eliminate a dependent range by masking.
+
+    reduce(M, streams ∪ {u: range(N), v: range(u())}, body)
+    ═══════════════════════════════════════════════════════════════════════════
+    reduce(M, streams ∪ {u: range(N), v: range(N)}, where(v() < u(), body, M.identity))
+
+    Currently recognises only the lower-triangular form ``v: range(u())``:
+    constant start of 0, dependent stop equal to a bare call of another
+    stream var.
+
+    Not yet supported:
+
+    - **Upper-triangular** (``v: range(u(), N)`` — constant stop, dependent
+      start): bbox becomes ``range(0, N)`` (or ``range(0, bbox_N)``), guard
+      becomes ``v() >= u()``. Same shape of rewrite as lower-tri; differs
+      only in which side of the range carries the stream-var reference and
+      in the predicate direction.
+    - **Banded** (``v: range(u() - k, u() + k + 1)`` — two-sided dependent
+      bounds with constant width): bbox is ``range(0, N + k)`` (or similar
+      bounded by both endpoints' extents), guard is
+      ``(v() >= u() - k) & (v() < u() + k + 1)``. Needs both-sides
+      affine-bound recognition.
+    - **Strided dependent** (``v: range(0, u(), k)`` for ``k != 1``): bbox
+      stays ``range(0, N)`` and guard becomes
+      ``(v() < u()) & (v() % k == 0)`` (or equivalent), or alternatively
+      embed in a smaller bbox ``range(0, ceil(N/k))`` and remap the index.
+    - **Affine bounds** (``v: range(a*u() + b, c*u() + d)`` for affine
+      coefficients): bbox computed from ``ub(c*u() + d)`` over ``u``'s
+      range; guard is the conjunction of the two affine constraints. This
+      subsumes the upper/banded/strided cases under one affine recogniser.
+    - **Multi-stream-var dependent** (``v: range(u() + w())`` referencing
+      more than one outer stream var): bbox is the affine combination over
+      both referents' ranges; guard threads through all dependencies.
+    - **Reverse-order dependent ranges**: e.g. ``v: range(u(), 0, -1)``;
+      needs to handle negative step and the corresponding reverse
+      enumeration.
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid: Monoid, body, streams: Streams):
+        stream_vars = set(streams.keys())
+
+        for u, u_stream in streams.items():
+            # streams of the form k: range(X)
+            if not (
+                isinstance(u_stream, range)
+                and isinstance(u_stream.start, int)
+                and u_stream.start == 0
+                and isinstance(u_stream.step, int)
+                and u_stream.step == 1
+                and not fvsof(u_stream) & stream_vars
+            ):
+                continue
+
+            for v, v_stream in streams.items():
+                if (
+                    isinstance(v_stream, Term)
+                    and v_stream.op == range_
+                    and isinstance(v_stream.stop, Term)
+                    and v_stream.stop.op == u
+                ):
+                    fresh_streams = {
+                        a: (u_stream if a == v else b) for (a, b) in streams.items()
+                    }
+                    fresh_body = monoid.mask(v() < u(), body)
+                    return monoid.reduce(fresh_body, fresh_streams)
+
+        return fwd()
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -1548,7 +1620,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    # ReducePartial(),
+    ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),
@@ -1587,6 +1659,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     WhereHoist(),
     ReduceWhereEqualityPeel(),
     ReduceDisjunctiveDisequalityMask(),
+    ReduceDependentRangeMask(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

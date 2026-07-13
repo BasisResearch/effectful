@@ -796,6 +796,42 @@ class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
             raise NotHandled
 
 
+@defdata.register(collections.abc.Sequence)
+class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
+    @Operation.define
+    def __getitem__(self: collections.abc.Sequence[T], key: int) -> T:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self[key]
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def __reversed__(self: collections.abc.Sequence[T]) -> collections.abc.Sequence[T]:
+        if not isinstance(self, Term):
+            return reversed(self)
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def index(
+        self: collections.abc.Sequence[T],
+        value: T,
+        start: int = 0,
+        stop: int | None = None,
+    ) -> int:
+        if not any(isinstance(x, Term) for x in (self, value, start, stop)):
+            return self.index(value, start, stop)
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def count(self: collections.abc.Sequence[T], value: T) -> int:
+        if not any(isinstance(x, Term) for x in (self, value)):
+            return self.count(value)
+        else:
+            raise NotHandled
+
+
 @defdata.register(collections.abc.Mapping)
 class _MappingTerm[K, V](_CollectionTerm[K]):
     @defop
@@ -1513,3 +1549,40 @@ def ite[T](cond, then: T, else_: T) -> T:
     if not isinstance(cond, Term):
         return then if cond else else_
     raise NotHandled
+
+
+@Operation.define
+def range_(stop: int, *args: int) -> range:
+    if any(isinstance(x, Term) for x in (stop, *args)):
+        raise NotHandled
+    return range(stop, *args)
+
+
+@defdata.register(range)
+class _RangeTerm(_SequenceTerm[int]):
+    @property
+    @Operation.define
+    def start(self) -> int:
+        if not isinstance(self, Term):
+            return self.start
+        if self.op == range_:
+            return 0 if len(self.args) < 2 else self.args[0]
+        raise NotHandled
+
+    @property
+    @Operation.define
+    def stop(self) -> int:
+        if not isinstance(self, Term):
+            return self.stop
+        if self.op == range_:
+            return self.args[0] if len(self.args) < 2 else self.args[1]
+        raise NotHandled
+
+    @property
+    @Operation.define
+    def step(self) -> int:
+        if not isinstance(self, Term):
+            return self.step
+        if self.op == range_:
+            return 1 if len(self.args) < 3 else self.args[2]
+        raise NotHandled

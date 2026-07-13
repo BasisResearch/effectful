@@ -379,15 +379,6 @@ class ReduceArrayScan(ObjectInterpretation):
         return fwd()
 
 
-def _range_stop(term: Term):
-    assert term.op == jnp.arange
-    if "stop" in term.kwargs:
-        return term.kwargs["stop"]
-    if len(term.args) < 2:
-        return term.args[0]
-    return term.args[1]
-
-
 class ReduceDeltaSimpleRange(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
 
@@ -475,84 +466,6 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
             else gathered_weight
         )
         return bind_dims(inner, fresh_op)
-
-
-class ReduceDependentRangeMask(ObjectInterpretation):
-    """Eliminate a dependent range by masking.
-
-    reduce(M, streams ∪ {u: range(N), v: range(u())}, body)
-    ═══════════════════════════════════════════════════════════════════════════
-    reduce(M, streams ∪ {u: range(N), v: range(N)}, where(v() < u(), body, M.identity))
-
-    Currently recognises only the lower-triangular form ``v: range(u())``:
-    constant start of 0, dependent stop equal to a bare call of another
-    stream var.
-
-    Not yet supported:
-
-    - **Upper-triangular** (``v: range(u(), N)`` — constant stop, dependent
-      start): bbox becomes ``range(0, N)`` (or ``range(0, bbox_N)``), guard
-      becomes ``v() >= u()``. Same shape of rewrite as lower-tri; differs
-      only in which side of the range carries the stream-var reference and
-      in the predicate direction.
-    - **Banded** (``v: range(u() - k, u() + k + 1)`` — two-sided dependent
-      bounds with constant width): bbox is ``range(0, N + k)`` (or similar
-      bounded by both endpoints' extents), guard is
-      ``(v() >= u() - k) & (v() < u() + k + 1)``. Needs both-sides
-      affine-bound recognition.
-    - **Strided dependent** (``v: range(0, u(), k)`` for ``k != 1``): bbox
-      stays ``range(0, N)`` and guard becomes
-      ``(v() < u()) & (v() % k == 0)`` (or equivalent), or alternatively
-      embed in a smaller bbox ``range(0, ceil(N/k))`` and remap the index.
-    - **Affine bounds** (``v: range(a*u() + b, c*u() + d)`` for affine
-      coefficients): bbox computed from ``ub(c*u() + d)`` over ``u``'s
-      range; guard is the conjunction of the two affine constraints. This
-      subsumes the upper/banded/strided cases under one affine recogniser.
-    - **Multi-stream-var dependent** (``v: range(u() + w())`` referencing
-      more than one outer stream var): bbox is the affine combination over
-      both referents' ranges; guard threads through all dependencies.
-    - **Reverse-order dependent ranges**: e.g. ``v: range(u(), 0, -1)``;
-      needs to handle negative step and the corresponding reverse
-      enumeration.
-    """
-
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        stream_vars = set(streams.keys())
-
-        # streams of the form k: range(X)
-        simple_ranges = {
-            k: v
-            for (k, v) in streams.items()
-            if isinstance(v, range) and v.start == 0 and v.step == 1
-        }
-        for u, u_stream in simple_ranges.items():
-            if fvsof(u_stream) & stream_vars:
-                continue
-
-            for v, v_stream in streams.items():
-                if (
-                    isinstance(v_stream, Term)
-                    and v_stream.op == jnp.arange
-                    and isinstance(_range_stop(v_stream), Term)
-                    and _range_stop(v_stream).op == u
-                ):
-                    fresh_streams = {
-                        a: (u_stream if a == v else b) for (a, b) in streams.items()
-                    }
-
-                    # there are other commuting rules for delta that we do not
-                    # currently include
-                    if isinstance(body, Term) and body.op == monoid.delta:
-                        fresh_body = monoid.delta(
-                            body.args[0], monoid.mask(v() < u(), body.args[1])
-                        )
-                    else:
-                        fresh_body = monoid.mask(v() < u(), body)
-
-                    return monoid.reduce(fresh_body, fresh_streams)
-
-        return fwd()
 
 
 # Cross-cutting delta rules not yet implemented:
@@ -959,6 +872,5 @@ EvaluateIntp.extend(
 
 NormalizeIntp.extend(
     ReduceArrayGather(),
-    ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
 )
