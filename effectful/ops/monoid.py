@@ -1544,6 +1544,61 @@ complement = _ExtensiblePartialInvolution(
 )
 
 
+class ReduceWhereToMasks(ObjectInterpretation):
+    """Split an equality-guarded ``where`` reduction into masked reductions.
+
+    For a conjunction of stream-dependent equalities ``eqs``::
+
+        M.reduce(where(eqs, a, b), S)
+          == M.plus(M.reduce(M.mask(a, eqs), S),
+                    M.reduce(M.mask(b, not(eqs)), S))
+
+    De Morgan's law represents ``not(eqs)`` as the disjunction of the
+    corresponding disequalities. The two masks are complementary and hence
+    partition the stream assignments without double counting.
+    """
+
+    @staticmethod
+    def _combine(op, terms):
+        return terms[0] if len(terms) == 1 else op(*terms)
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is ite
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        equalities = (
+            cond.args if isinstance(cond, Term) and cond.op is And.plus else (cond,)
+        )
+        stream_ops = set(streams)
+        if not equalities or not all(
+            isinstance(eq, Term)
+            and is_equality(eq.op)
+            and complement.of(eq.op) is not None
+            and bool(fvsof(eq) & stream_ops)
+            for eq in equalities
+        ):
+            return fwd()
+
+        disequalities = tuple(
+            complement.of(eq.op)(*eq.args, **eq.kwargs) for eq in equalities
+        )
+        return monoid.plus(
+            monoid.reduce(monoid.mask(when_true, cond), streams),
+            monoid.reduce(
+                monoid.mask(when_false, self._combine(Or.plus, disequalities)),
+                streams,
+            ),
+        )
+
+
 class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
     """Partition a disjunctive disequality mask into disjoint reductions.
 
@@ -1604,7 +1659,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
+    # ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),
@@ -1616,6 +1671,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     UnionPlus(),
     ReduceEqualityMaskRange(),
     ReduceDisjunctiveDisequalityMask(),
+    ReduceWhereToMasks(),
 )
 
 NormalizeIntp = _ExtensibleInterpretation().extend(

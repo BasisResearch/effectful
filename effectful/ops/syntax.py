@@ -5,7 +5,6 @@ import inspect
 import numbers
 import operator
 import typing
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Iterable, KeysView, Mapping, ValuesView
 from typing import Annotated, Any
 

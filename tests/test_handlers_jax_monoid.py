@@ -17,20 +17,17 @@ from effectful.handlers.jax.monoid import (
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    ReduceWhereToMasks,
     einsum,
 )
 from effectful.ops.monoid import (
-    And,
     EliminateSingletonStreams,
     EvaluateIntp,
     NormalizeIntp,
-    Or,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
+from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
     pytest.param(monoid, reductor, id=monoid.__name__)
@@ -46,43 +43,6 @@ def rng_key():
 @pytest.fixture
 def backend() -> JaxBackend:
     return JaxBackend()
-
-
-def test_reduce_where_to_masks(backend: JaxBackend):
-    """A conjunctive equality where partitions into complementary masks."""
-    i, j, out_i, out_j = backend.define_vars("i", "j", "out_i", "out_j", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    streams = {i: range(2), j: range(3)}
-    eq_i = i() == out_i()
-    eq_j = j() == out_j()
-    cond = And.plus(eq_i, eq_j)
-
-    lhs = Product.reduce(jnp.where(cond, f(i()), g(j())), streams)
-    rhs = Product.plus(
-        Product.reduce(Product.mask(f(i()), cond), streams),
-        Product.reduce(
-            Product.mask(g(j()), Or.plus(i() != out_i(), j() != out_j())),
-            streams,
-        ),
-    )
-
-    with handler(ReduceWhereToMasks()):
-        actual = evaluate(lhs)
-    assert syntactic_eq_alpha(actual, rhs)
-
-
-def test_reduce_where_to_masks_requires_stream_equalities(backend: JaxBackend):
-    """Independent equality conjuncts are left for WhereEqualityPeel."""
-    i, out_i, x, y = backend.define_vars("i", "out_i", "x", "y", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    term = Product.reduce(
-        jnp.where(And.plus(i() == out_i(), x() == y()), f(i()), g(i())),
-        {i: range(2)},
-    )
-
-    with handler(ReduceWhereToMasks()):
-        actual = evaluate(term)
-    assert syntactic_eq_alpha(actual, term)
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)

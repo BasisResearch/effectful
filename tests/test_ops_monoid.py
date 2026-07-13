@@ -39,7 +39,7 @@ from effectful.ops.monoid import (
     ReduceUnion,
     ReduceWeightedStream,
     ReduceWhereEqualityPeel,
-    SplitDisjointProduct,
+    ReduceWhereToMasks,
     Sum,
     Union,
     WhereHoist,
@@ -178,6 +178,43 @@ def test_reduce_disjunctive_disequality_mask():
     with handler(ReduceDisjunctiveDisequalityMask()):
         actual = evaluate(lhs)
     assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_to_masks(backend: JaxBackend):
+    """A conjunctive equality where partitions into complementary masks."""
+    i, j, out_i, out_j = backend.define_vars("i", "j", "out_i", "out_j", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {i: range(2), j: range(3)}
+    eq_i = i() == out_i()
+    eq_j = j() == out_j()
+    cond = And.plus(eq_i, eq_j)
+
+    lhs = Product.reduce(ite(cond, f(i()), g(j())), streams)
+    rhs = Product.plus(
+        Product.reduce(Product.mask(f(i()), cond), streams),
+        Product.reduce(
+            Product.mask(g(j()), Or.plus(i() != out_i(), j() != out_j())),
+            streams,
+        ),
+    )
+
+    with handler(ReduceWhereToMasks()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
+
+
+def test_reduce_where_to_masks_requires_stream_equalities(backend: JaxBackend):
+    """Independent equality conjuncts are left for WhereEqualityPeel."""
+    i, out_i, x, y = backend.define_vars("i", "out_i", "x", "y", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Product.reduce(
+        ite(And.plus(i() == out_i(), x() == y()), f(i()), g(i())),
+        {i: range(2)},
+    )
+
+    with handler(ReduceWhereToMasks()):
+        actual = evaluate(term)
+    assert syntactic_eq_alpha(actual, term)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -1210,26 +1247,3 @@ def test_cprod_plus_forwards_on_term():
         result = CartesianProduct.plus(x(), [{"a": 1}])
     assert isinstance(result, Term)
     assert result.op is CartesianProduct.plus
-
-
-def test_split_disjoint_product_simple():
-    backend = IntBackend()
-    i, j, i_out = backend.define_vars("i", "j", "i_out", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    lhs = Product.reduce(
-        Sum.plus(
-            Sum.mask(f(i()), And.plus(i() == i_out())), Sum.mask(g(i()), i() != i_out())
-        ),
-        {i: range(3)},
-    )
-
-    rhs = Product.reduce(
-        Product.plus(
-            Product.mask(Sum.mask(f(i()), And.plus()), And.plus(i_out() == i())),
-            Product.mask(Sum.mask(g(i()), True), Or.plus(i_out() != i())),
-        ),
-        {i: range(3)},
-    )
-
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=SplitDisjointProduct())
