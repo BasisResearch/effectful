@@ -4,7 +4,7 @@ import itertools
 import operator
 import typing
 from collections import UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
@@ -1612,6 +1612,19 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         return fwd()
 
 
+class ContractLongestStream(ObjectInterpretation):
+    @implements(choose_contraction)
+    def _(self, factors, streams):
+        lengths = {
+            k: len(v) if isinstance(v, Sized) else 0 for (k, v) in streams.items()
+        }
+        longest = max(lengths.values())
+        longest_streams = {k: v for (k, v) in streams.items() if lengths[k] == longest}
+        if len(longest_streams) == len(streams):
+            return fwd()
+        return choose_contraction(factors, longest_streams)
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -1660,6 +1673,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWhereEqualityPeel(),
     ReduceDisjunctiveDisequalityMask(),
     ReduceDependentRangeMask(),
+    ChooseLongestArrayStream(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

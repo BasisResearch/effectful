@@ -489,19 +489,6 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 #   outer-product broadcast.
 
 
-class ContractLongestArrayStream(ObjectInterpretation):
-    @implements(choose_contraction)
-    def _(self, factors, streams):
-        lengths = {
-            k: v.shape[0] if isinstance(v, jax.Array) and v.shape else 0
-            for (k, v) in streams.items()
-        }
-        longest = max(lengths.values())
-        return fwd(
-            factors, {k: v for (k, v) in streams.items() if lengths[k] == longest}
-        )
-
-
 class ReduceSumProductContraction(ObjectInterpretation):
     """Fast-path a sum-of-products contraction."""
 
@@ -870,7 +857,4 @@ EvaluateIntp.extend(
     PlusCastArray(),
 )
 
-NormalizeIntp.extend(
-    ReduceArrayGather(),
-    ContractLongestArrayStream(),
-)
+NormalizeIntp.extend(ReduceArrayGather())
