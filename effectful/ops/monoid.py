@@ -1308,117 +1308,6 @@ class EliminateSingletonStreams(ObjectInterpretation):
         return monoid.reduce(new_body, new_streams) if new_streams else new_body
 
 
-class SplitDisjointProduct(ObjectInterpretation):
-    def _is_var(self, v) -> bool:
-        return isinstance(v, Term) and not v.args and not v.kwargs
-
-    def _var_comps(
-        self, terms: list[Term], pred: Callable[[Operation], bool]
-    ) -> tuple[set[tuple[Operation, Operation]], list[Term]]:
-        comps = set()
-        resid = []
-        for t in terms:
-            if (
-                isinstance(t, Term)
-                and pred(t.op)
-                and all(self._is_var(a) for a in t.args)
-            ):
-                comps.add(tuple(sorted(a.op for a in t.args)))
-            else:
-                resid.append(t)
-        return comps, resid
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        match body:
-            case Term(body_op, (lhs, rhs), {}) if _is_monoid_plus(
-                body_op
-            ) and distributes_over(monoid, body.op.__self__):
-                pass
-
-            case _:
-                return fwd()
-
-        def match(lhs, rhs):
-            if not (
-                isinstance(lhs, Term)
-                and _is_monoid_mask(lhs.op)
-                and lhs.op.__self__ == body.op.__self__
-            ):
-                return None
-            lhs_op, (lhs_value, lhs_mask) = lhs.op, lhs.args
-            lhs_mask_terms = (
-                lhs_mask.args
-                if isinstance(lhs_mask, Term) and lhs_mask.op == And.plus
-                else [lhs_mask]
-            )
-            (eqs, lhs_residual) = self._var_comps(lhs_mask_terms, is_equality)
-
-            if not (
-                isinstance(rhs, Term)
-                and _is_monoid_mask(rhs.op)
-                and rhs.op.__self__ == body.op.__self__
-            ):
-                return None
-            rhs_op, (rhs_value, rhs_mask) = rhs.op, rhs.args
-            rhs_mask_terms = (
-                rhs_mask.args
-                if isinstance(rhs_mask, Term) and rhs_mask.op == Or.plus
-                else [rhs_mask]
-            )
-            (nes, rhs_residual) = self._var_comps(
-                rhs_mask_terms, lambda op: is_equality(complement.of(op))
-            )
-
-            return (
-                lhs_op,
-                lhs_value,
-                eqs,
-                lhs_residual,
-                rhs_op,
-                rhs_value,
-                nes,
-                rhs_residual,
-            )
-
-        pat = match(lhs, rhs) or match(rhs, lhs)
-        if not pat:
-            return fwd()
-
-        lhs_op, lhs_value, eqs, lhs_residual, rhs_op, rhs_value, nes, rhs_residual = pat
-        shared = eqs & nes
-
-        if not shared or (
-            (fvsof(lhs_residual) | fvsof(rhs_residual))
-            & set().union(*(set(x) for x in shared))
-        ):
-            return fwd()
-
-        rhs_inner = [*rhs_residual, *(x() != y() for (x, y) in nes - shared)]
-        result = monoid.reduce(
-            monoid.plus(
-                monoid.mask(
-                    lhs_op.__self__.mask(
-                        lhs_value,
-                        And.plus(
-                            *lhs_residual, *(x() == y() for (x, y) in eqs - shared)
-                        ),
-                    ),
-                    And.plus(*(x() == y() for (x, y) in shared)),
-                ),
-                monoid.mask(
-                    rhs_op.__self__.mask(
-                        rhs_value,
-                        Or.plus(*rhs_inner) if rhs_inner else True,
-                    ),
-                    Or.plus(*(x() != y() for (x, y) in shared)),
-                ),
-            ),
-            streams,
-        )
-        return result
-
-
 class WhereHoist(ObjectInterpretation):
     """Hoist :func:`ite` out of monoid ``reduce`` and ``plus``.
 
@@ -1670,7 +1559,6 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     CartesianProductPlus(),
     UnionPlus(),
     ReduceEqualityMaskRange(),
-    ReduceDisjunctiveDisequalityMask(),
     ReduceWhereToMasks(),
 )
 
@@ -1682,7 +1570,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFusion(),
     ReduceUnion(),
     ReduceSplit(),
-    SplitDisjointProduct(),
     Factor(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
@@ -1699,6 +1586,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MaskBool(),
     WhereHoist(),
     ReduceWhereEqualityPeel(),
+    ReduceDisjunctiveDisequalityMask(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce
