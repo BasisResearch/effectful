@@ -16,11 +16,8 @@ from effectful.handlers.jax.monoid import (
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
     ReduceDependentRangeMask,
-    ReduceDisjunctiveDisequalityMask,
     ReduceSumProductContraction,
-    ReduceWhereEqualityPeel,
     ReduceWhereToMasks,
-    WhereHoist,
     einsum,
 )
 from effectful.ops.monoid import (
@@ -33,7 +30,6 @@ from effectful.ops.monoid import (
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.types import Operation
 from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
 
 MONOIDS = [
@@ -50,55 +46,6 @@ def rng_key():
 @pytest.fixture
 def backend() -> JaxBackend:
     return JaxBackend()
-
-
-def test_plus_where_hoist(backend: JaxBackend):
-    """Monoid addition distributes into both branches of a where."""
-    cond, a, b, c = backend.define_vars("cond", "a", "b", "c", ret="scalar")
-
-    lhs = Product.plus(jnp.where(cond(), a(), b()), c())
-    rhs = jnp.where(
-        cond(),
-        Product.plus(a(), c()),
-        Product.plus(b(), c()),
-    )
-
-    with handler(WhereHoist()):
-        actual = evaluate(lhs)
-    assert syntactic_eq_alpha(actual, rhs)
-
-
-def test_reduce_where_hoist(backend: JaxBackend):
-    """A where whose condition is independent of the reduced stream hoists."""
-    i, out_i, out_j = backend.define_vars("i", "out_i", "out_j", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    streams = {i: range(3)}
-    cond = out_i() == out_j()
-
-    lhs = Sum.reduce(jnp.where(cond, f(i()), g(i())), streams)
-    rhs = jnp.where(
-        cond,
-        Sum.reduce(f(i()), streams),
-        Sum.reduce(g(i()), streams),
-    )
-
-    with handler(WhereHoist()):
-        actual = evaluate(lhs)
-    assert syntactic_eq_alpha(actual, rhs)
-
-
-def test_reduce_where_hoist_dependent_noop(backend: JaxBackend):
-    """A where whose condition uses the reduced stream remains in place."""
-    i, out_i = backend.define_vars("i", "out_i", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    term = Sum.reduce(
-        jnp.where(i() == out_i(), f(i()), g(i())),
-        {i: range(3)},
-    )
-
-    with handler(WhereHoist()):
-        actual = evaluate(term)
-    assert syntactic_eq_alpha(actual, term)
 
 
 def test_reduce_where_to_masks(backend: JaxBackend):
@@ -136,68 +83,6 @@ def test_reduce_where_to_masks_requires_stream_equalities(backend: JaxBackend):
     with handler(ReduceWhereToMasks()):
         actual = evaluate(term)
     assert syntactic_eq_alpha(actual, term)
-
-
-def test_reduce_where_equality_peel(backend: JaxBackend):
-    """An independent conjunct peels off a stream-selecting equality guard."""
-    j, out_j, i, out_i = backend.define_vars("j", "out_j", "i", "out_i", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    streams = {j: range(3)}
-    outer = out_i() == i()
-    inner = out_j() == j()
-
-    lhs = Product.reduce(
-        jnp.where(And.plus(inner, outer), f(j()), g(j())),
-        streams,
-    )
-    rhs = jnp.where(
-        outer,
-        Product.reduce(jnp.where(inner, f(j()), g(j())), streams),
-        Product.reduce(g(j()), streams),
-    )
-
-    with handler(ReduceWhereEqualityPeel()):
-        actual = evaluate(lhs)
-    assert syntactic_eq_alpha(actual, rhs)
-
-
-def test_reduce_where_equality_peel_requires_stream_equality(backend: JaxBackend):
-    """A mixed guard without a stream equality is left unchanged."""
-    j, out_i, i = backend.define_vars("j", "out_i", "i", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-    term = Product.reduce(
-        jnp.where(And.plus(j() < 2, out_i() == i()), f(j()), g(j())),
-        {j: range(3)},
-    )
-
-    with handler(ReduceWhereEqualityPeel()):
-        actual = evaluate(term)
-    assert syntactic_eq_alpha(actual, term)
-
-
-def test_reduce_disjunctive_disequality_mask():
-    i = Operation.define(int, name="i")
-    j = Operation.define(int, name="j")
-    out_i = Operation.define(int, name="out_i")
-    out_j = Operation.define(int, name="out_j")
-    value = Operation.define(int, name="value")
-    streams = {i: range(3), j: range(4)}
-
-    lhs = Sum.reduce(
-        Sum.mask(value(), Or.plus(i() != out_i(), j() != out_j())), streams
-    )
-    rhs = Sum.plus(
-        Sum.reduce(Sum.mask(value(), And.plus(i() != out_i())), streams),
-        Sum.reduce(
-            Sum.mask(value(), And.plus(i() == out_i(), j() != out_j())),
-            streams,
-        ),
-    )
-
-    with handler(ReduceDisjunctiveDisequalityMask()):
-        actual = evaluate(lhs)
-
-    assert syntactic_eq_alpha(actual, rhs)
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)

@@ -29,6 +29,7 @@ from effectful.ops.monoid import (
     PlusOrder,
     PlusSingle,
     Product,
+    ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
     ReduceEqualityMaskRange,
     ReduceFusion,
@@ -37,13 +38,15 @@ from effectful.ops.monoid import (
     ReduceSplit,
     ReduceUnion,
     ReduceWeightedStream,
+    ReduceWhereEqualityPeel,
     SplitDisjointProduct,
     Sum,
     Union,
+    WhereHoist,
     distributes_over,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import syntactic_eq
+from effectful.ops.syntax import ite, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -89,6 +92,92 @@ MONOID_PAIRS = [
         typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
     )
 ]
+
+
+def test_plus_ite_hoist(backend: Backend):
+    """Monoid addition distributes into both branches of an ``ite``."""
+    cond_lhs, cond_rhs, a, b, c = backend.define_vars(
+        "cond_lhs", "cond_rhs", "a", "b", "c", ret="scalar"
+    )
+    cond = cond_lhs() == cond_rhs()
+    lhs = Product.plus(ite(cond, a(), b()), c())
+    rhs = ite(cond, Product.plus(a(), c()), Product.plus(b(), c()))
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
+
+
+def test_reduce_ite_hoist(backend: Backend):
+    """An ``ite`` with a stream-independent condition hoists."""
+    i, out_i, out_j = backend.define_vars("i", "out_i", "out_j", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {i: range(3)}
+    cond = out_i() == out_j()
+
+    lhs = Sum.reduce(ite(cond, f(i()), g(i())), streams)
+    rhs = ite(cond, Sum.reduce(f(i()), streams), Sum.reduce(g(i()), streams))
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
+
+
+def test_reduce_ite_hoist_dependent_noop(backend: Backend):
+    """An ``ite`` whose condition uses the reduced stream remains in place."""
+    i, out_i = backend.define_vars("i", "out_i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Sum.reduce(ite(i() == out_i(), f(i()), g(i())), {i: range(3)})
+
+    backend.check_rewrite(lhs=term, rhs=term, rule=WhereHoist())
+
+
+def test_reduce_ite_equality_peel(backend: Backend):
+    """An independent conjunct peels off a stream-selecting equality guard."""
+    j, out_j, i, out_i = backend.define_vars("j", "out_j", "i", "out_i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    streams = {j: range(3)}
+    outer = out_i() == i()
+    inner = out_j() == j()
+
+    lhs = Product.reduce(ite(And.plus(inner, outer), f(j()), g(j())), streams)
+    rhs = ite(
+        And.plus(outer),
+        Product.reduce(ite(And.plus(inner), f(j()), g(j())), streams),
+        Product.reduce(g(j()), streams),
+    )
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceWhereEqualityPeel())
+
+
+def test_reduce_ite_equality_peel_requires_stream_equality(backend: Backend):
+    """A mixed guard without a stream equality is left unchanged."""
+    j, out_i, i = backend.define_vars("j", "out_i", "i", ret="scalar")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    term = Product.reduce(
+        ite(And.plus(j() < 2, out_i() == i()), f(j()), g(j())),
+        {j: range(3)},
+    )
+
+    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceWhereEqualityPeel())
+
+
+def test_reduce_disjunctive_disequality_mask():
+    backend = IntBackend()
+    i, j, out_i, out_j, value = backend.define_vars(
+        "i", "j", "out_i", "out_j", "value", ret="scalar"
+    )
+    streams = {i: range(3), j: range(4)}
+
+    lhs = Sum.reduce(
+        Sum.mask(value(), Or.plus(i() != out_i(), j() != out_j())), streams
+    )
+    rhs = Sum.plus(
+        Sum.reduce(Sum.mask(value(), And.plus(i() != out_i())), streams),
+        Sum.reduce(
+            Sum.mask(value(), And.plus(i() == out_i(), j() != out_j())), streams
+        ),
+    )
+
+    with handler(ReduceDisjunctiveDisequalityMask()):
+        actual = evaluate(lhs)
+    assert syntactic_eq_alpha(actual, rhs)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)

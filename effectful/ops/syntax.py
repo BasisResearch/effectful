@@ -1504,3 +1504,13 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+@Operation.define
+def ite[T](cond, then: T, else_: T) -> T:
+    """If-then-else operation."""
+    # Note: cond is specifically not annotated to allow this operation to take
+    # non-bool arguments (like boolean arrays).
+    if not isinstance(cond, Term):
+        return then if cond else else_
+    raise NotHandled

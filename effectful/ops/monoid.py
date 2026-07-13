@@ -18,6 +18,7 @@ from effectful.ops.syntax import (
     defdata,
     deffn,
     implements,
+    ite,
     syntactic_eq,
     syntactic_hash,
 )
@@ -212,6 +213,23 @@ class _ExtensibleBinaryRelation[S, T]:
         return (s, t) in self.tuples
 
 
+class _ExtensiblePartialInvolution[S](_ExtensibleBinaryRelation[S, S]):
+    def register(self, s: S, t: S) -> None:
+        for existing, image in self.tuples:
+            if existing == s and image != t:
+                raise ValueError(f"{s!r} already matched to {image!r}")
+            if existing == t and image != s:
+                raise ValueError(f"{t!r} already matched to {image!r}")
+        super().register(s, t)
+        super().register(t, s)
+
+    def of(self, t: S) -> S | None:
+        for a, b in self.tuples:
+            if a == t:
+                return b
+        return None
+
+
 distributes_over = _ExtensibleBinaryRelation(
     {
         (Max, Min),
@@ -319,7 +337,6 @@ class MaskFusion(ObjectInterpretation):
 
 
 is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
-is_disequality = _ExtensiblePredicate({_NumberTerm.__ne__})
 
 
 class ReduceEqualityMaskRange(ObjectInterpretation):
@@ -1349,7 +1366,9 @@ class SplitDisjointProduct(ObjectInterpretation):
                 if isinstance(rhs_mask, Term) and rhs_mask.op == Or.plus
                 else [rhs_mask]
             )
-            (nes, rhs_residual) = self._var_comps(rhs_mask_terms, is_disequality)
+            (nes, rhs_residual) = self._var_comps(
+                rhs_mask_terms, lambda op: is_equality(complement.of(op))
+            )
 
             return (
                 lhs_op,
@@ -1400,6 +1419,183 @@ class SplitDisjointProduct(ObjectInterpretation):
         return result
 
 
+class WhereHoist(ObjectInterpretation):
+    """Hoist :func:`ite` out of monoid ``reduce`` and ``plus``.
+
+    A stream-independent selection commutes with reduction, while monoid
+    addition distributes pointwise over either selected branch.
+    """
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if len(args) < 2:
+            return fwd()
+
+        for i, arg in enumerate(args):
+            if not (
+                isinstance(arg, Term)
+                and arg.op is ite
+                and len(arg.args) == 3
+                and not arg.kwargs
+            ):
+                continue
+
+            cond, when_true, when_false = arg.args
+            return ite(
+                cond,
+                monoid.plus(*args[:i], when_true, *args[i + 1 :]),
+                monoid.plus(*args[:i], when_false, *args[i + 1 :]),
+            )
+
+        return fwd()
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is ite
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        if fvsof(cond) & set(streams):
+            return fwd()
+
+        return ite(
+            cond,
+            monoid.reduce(when_true, streams),
+            monoid.reduce(when_false, streams),
+        )
+
+
+class ReduceWhereEqualityPeel(ObjectInterpretation):
+    """Peel stream-independent conjuncts off a ``where`` equality guard.
+
+    Given a condition ``outer & inner`` where ``outer`` is independent of the
+    reduced streams and ``inner`` contains an equality selecting one of them::
+
+        M.reduce(ite(outer & inner, x, y), S)
+          == ite(outer,
+                 M.reduce(ite(inner, x, y), S),
+                 M.reduce(y, S))
+
+    This exposes the stream equality to gather/elimination rules while moving
+    the remaining output guard above the reduction.
+    """
+
+    @staticmethod
+    def _stream_equality(cond, streams):
+        def matches(op, stream_term, other):
+            return (
+                is_equality(op)
+                and isinstance(stream_term, Term)
+                and not stream_term.args
+                and not stream_term.kwargs
+                and stream_term.op in streams
+                and not (fvsof(other) & set(streams))
+            )
+
+        return (
+            isinstance(cond, Term)
+            and len(cond.args) == 2
+            and (
+                matches(cond.op, cond.args[0], cond.args[1])
+                or matches(cond.op, cond.args[1], cond.args[0])
+            )
+        )
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if not (
+            streams
+            and isinstance(body, Term)
+            and body.op is ite
+            and len(body.args) == 3
+            and not body.kwargs
+        ):
+            return fwd()
+
+        cond, when_true, when_false = body.args
+        if not (isinstance(cond, Term) and cond.op is And.plus):
+            return fwd()
+
+        stream_ops = set(streams)
+        dependent = [c for c in cond.args if fvsof(c) & stream_ops]
+        independent = [c for c in cond.args if not (fvsof(c) & stream_ops)]
+        if not independent or not any(
+            self._stream_equality(c, streams) for c in dependent
+        ):
+            return fwd()
+
+        return ite(
+            And.plus(*independent),
+            monoid.reduce(ite(And.plus(*dependent), when_true, when_false), streams),
+            monoid.reduce(when_false, streams),
+        )
+
+
+complement = _ExtensiblePartialInvolution(
+    {
+        (_NumberTerm.__ne__, _NumberTerm.__eq__),
+    }
+)
+
+
+class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
+    """Partition a disjunctive disequality mask into disjoint reductions.
+
+    For example, the overlapping regions ``i != x`` and ``j != y`` are
+    rewritten as ``i != x`` and ``i == x and j != y``::
+
+        reduce(mask(v, (i != x) or (j != y)), streams)
+        == plus(
+            reduce(mask(v, i != x), streams),
+            reduce(mask(v, (i == x) and (j != y)), streams),
+        )
+
+    More generally, disjunct ``k`` is conjoined with the complements of all
+    preceding disjuncts.  The resulting masks are pairwise disjoint, so their
+    reductions can be combined with the reduction monoid.  In particular,
+    each result has a conjunctive mask that :class:`ReduceArrayScan` can
+    eliminate.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, Term(Or.plus, disjuncts, {})), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+            case _:
+                return fwd()
+
+        if len(disjuncts) < 2 or not all(
+            isinstance(disjunct, Term) and is_equality(complement.of(disjunct.op))
+            for disjunct in disjuncts
+        ):
+            return fwd()
+
+        preceding_complements: list = []
+        reductions = []
+        for disjunct in disjuncts:
+            assert isinstance(disjunct, Term)
+            reductions.append(
+                monoid.reduce(
+                    monoid.mask(value, And.plus(*preceding_complements, disjunct)),
+                    streams,
+                )
+            )
+            comp = complement.of(disjunct.op)
+            assert comp is not None
+            preceding_complements.append(comp(*disjunct.args, **disjunct.kwargs))
+
+        return monoid.plus(*reductions)
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -1419,6 +1615,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     CartesianProductPlus(),
     UnionPlus(),
     ReduceEqualityMaskRange(),
+    ReduceDisjunctiveDisequalityMask(),
 )
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
@@ -1444,6 +1641,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusCastFloat(),
     MaskFusion(),
     MaskBool(),
+    WhereHoist(),
+    ReduceWhereEqualityPeel(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

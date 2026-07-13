@@ -31,13 +31,13 @@ from effectful.ops.monoid import (
     _is_monoid_mask,
     _is_monoid_plus,
     choose_contraction,
+    complement,
     distributes_over,
-    is_disequality,
     is_equality,
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, _NumberTerm, deffn, implements
+from effectful.ops.syntax import ObjectInterpretation, deffn, implements, ite
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,12 @@ LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 distributes_over.register(Sum, LogSumExp)
 
 is_equality.register(jnp.equal)
-is_disequality.register(jnp.not_equal)
+for a, b in {
+    (jnp.less, jnp.greater),
+    (jnp.less_equal, jnp.greater_equal),
+    (jnp.equal, jnp.not_equal),
+}:
+    complement.register(a, b)
 
 
 def _jax_args(args):
@@ -141,6 +146,14 @@ class OrPlusJax(ObjectInterpretation):
         return functools.reduce(jnp.logical_or, args)
 
 
+class IteJax(ObjectInterpretation):
+    @implements(ite)
+    def ite(self, cond, then, else_):
+        if not _jax_args((cond,)):
+            return fwd()
+        return jnp.where(cond, then, else_)
+
+
 class MaskJax(ObjectInterpretation):
     @implements(Monoid.mask)
     def mask(self, monoid, value, mask):
@@ -150,58 +163,6 @@ class MaskJax(ObjectInterpretation):
         ):
             return fwd()
         return jnp.where(mask, value, monoid.identity)
-
-
-class WhereHoist(ObjectInterpretation):
-    """Hoist :func:`jax.numpy.where` out of monoid ``reduce`` and ``plus``.
-
-    A stream-independent selection commutes with reduction, while monoid
-    addition distributes pointwise over either selected branch.
-    """
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if len(args) < 2:
-            return fwd()
-
-        for i, arg in enumerate(args):
-            if not (
-                isinstance(arg, Term)
-                and arg.op is jnp.where
-                and len(arg.args) == 3
-                and not arg.kwargs
-            ):
-                continue
-
-            cond, when_true, when_false = arg.args
-            return jnp.where(
-                cond,
-                monoid.plus(*args[:i], when_true, *args[i + 1 :]),
-                monoid.plus(*args[:i], when_false, *args[i + 1 :]),
-            )
-
-        return fwd()
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        if not (
-            streams
-            and isinstance(body, Term)
-            and body.op is jnp.where
-            and len(body.args) == 3
-            and not body.kwargs
-        ):
-            return fwd()
-
-        cond, when_true, when_false = body.args
-        if fvsof(cond) & set(streams):
-            return fwd()
-
-        return jnp.where(
-            cond,
-            monoid.reduce(when_true, streams),
-            monoid.reduce(when_false, streams),
-        )
 
 
 class ReduceWhereToMasks(ObjectInterpretation):
@@ -217,11 +178,6 @@ class ReduceWhereToMasks(ObjectInterpretation):
     corresponding disequalities. The two masks are complementary and hence
     partition the stream assignments without double counting.
     """
-
-    _complements = {
-        _NumberTerm.__eq__: _NumberTerm.__ne__,
-        jnp.equal: jnp.not_equal,
-    }
 
     @staticmethod
     def _combine(op, terms):
@@ -246,14 +202,14 @@ class ReduceWhereToMasks(ObjectInterpretation):
         if not equalities or not all(
             isinstance(eq, Term)
             and is_equality(eq.op)
-            and eq.op in self._complements
+            and complement.of(eq.op) is not None
             and bool(fvsof(eq) & stream_ops)
             for eq in equalities
         ):
             return fwd()
 
         disequalities = tuple(
-            self._complements[eq.op](*eq.args, **eq.kwargs) for eq in equalities
+            complement.of(eq.op)(*eq.args, **eq.kwargs) for eq in equalities
         )
         return monoid.plus(
             monoid.reduce(monoid.mask(when_true, cond), streams),
@@ -261,83 +217,6 @@ class ReduceWhereToMasks(ObjectInterpretation):
                 monoid.mask(when_false, self._combine(Or.plus, disequalities)),
                 streams,
             ),
-        )
-
-
-class ReduceWhereEqualityPeel(ObjectInterpretation):
-    """Peel stream-independent conjuncts off a ``where`` equality guard.
-
-    Given a condition ``outer & inner`` where ``outer`` is independent of the
-    reduced streams and ``inner`` contains an equality selecting one of them::
-
-        M.reduce(where(outer & inner, x, y), S)
-          == where(outer,
-                   M.reduce(where(inner, x, y), S),
-                   M.reduce(y, S))
-
-    This exposes the stream equality to gather/elimination rules while moving
-    the remaining output guard above the reduction.
-    """
-
-    @staticmethod
-    def _stream_equality(cond, streams):
-        def matches(op, stream_term, other):
-            return (
-                is_equality(op)
-                and isinstance(stream_term, Term)
-                and not stream_term.args
-                and not stream_term.kwargs
-                and stream_term.op in streams
-                and not (fvsof(other) & set(streams))
-            )
-
-        return (
-            isinstance(cond, Term)
-            and len(cond.args) == 2
-            and (
-                matches(cond.op, cond.args[0], cond.args[1])
-                or matches(cond.op, cond.args[1], cond.args[0])
-            )
-        )
-
-    @staticmethod
-    def _and(conds):
-        return conds[0] if len(conds) == 1 else And.plus(*conds)
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
-        if not (
-            streams
-            and isinstance(body, Term)
-            and body.op is jnp.where
-            and len(body.args) == 3
-            and not body.kwargs
-        ):
-            return fwd()
-
-        cond, when_true, when_false = body.args
-        if not (isinstance(cond, Term) and cond.op is And.plus):
-            return fwd()
-
-        stream_ops = set(streams)
-        dependent = [c for c in cond.args if fvsof(c) & stream_ops]
-        independent = [c for c in cond.args if not (fvsof(c) & stream_ops)]
-        if not independent or not any(
-            self._stream_equality(c, streams) for c in dependent
-        ):
-            return fwd()
-
-        return jnp.where(
-            self._and(independent),
-            monoid.reduce(
-                jnp.where(
-                    self._and(dependent),
-                    when_true,
-                    when_false,
-                ),
-                streams,
-            ),
-            monoid.reduce(when_false, streams),
         )
 
 
@@ -423,65 +302,6 @@ class ReduceArray(ObjectInterpretation):
         arr = monoid.reduce(monoid.delta(index, body), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
-
-
-class ReduceDisjunctiveDisequalityMask(ObjectInterpretation):
-    """Partition a disjunctive disequality mask into disjoint reductions.
-
-    For example, the overlapping regions ``i != x`` and ``j != y`` are
-    rewritten as ``i != x`` and ``i == x and j != y``::
-
-        reduce(mask(v, (i != x) or (j != y)), streams)
-        == plus(
-            reduce(mask(v, i != x), streams),
-            reduce(mask(v, (i == x) and (j != y)), streams),
-        )
-
-    More generally, disjunct ``k`` is conjoined with the complements of all
-    preceding disjuncts.  The resulting masks are pairwise disjoint, so their
-    reductions can be combined with the reduction monoid.  In particular,
-    each result has a conjunctive mask that :class:`ReduceArrayScan` can
-    eliminate.
-    """
-
-    _complements = {
-        _NumberTerm.__ne__: _NumberTerm.__eq__,
-        jnp.not_equal: jnp.equal,
-    }
-
-    @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams: Streams):
-        match body:
-            case Term(mask_op, (value, Term(Or.plus, disjuncts, {})), {}) if (
-                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
-            ):
-                pass
-            case _:
-                return fwd()
-
-        if len(disjuncts) < 2 or not all(
-            isinstance(disjunct, Term)
-            and is_disequality(disjunct.op)
-            and disjunct.op in self._complements
-            for disjunct in disjuncts
-        ):
-            return fwd()
-
-        preceding_complements: list = []
-        reductions = []
-        for disjunct in disjuncts:
-            assert isinstance(disjunct, Term)
-            reductions.append(
-                monoid.reduce(
-                    monoid.mask(value, And.plus(*preceding_complements, disjunct)),
-                    streams,
-                )
-            )
-            preceding_complements.append(
-                self._complements[disjunct.op](*disjunct.args, **disjunct.kwargs)
-            )
-
-        return monoid.plus(*reductions)
 
 
 class ReduceArrayScan(ObjectInterpretation):
@@ -1190,19 +1010,17 @@ EvaluateIntp.extend(
     LogSumExpPlusJax(),
     AndPlusJax(),
     OrPlusJax(),
+    IteJax(),
     MaskJax(),
     ReduceSumProductContraction(),
     ReduceArray(),
     ReduceDeltaSimpleRange(),
-    ReduceDisjunctiveDisequalityMask(),
     ReduceArrayScan(),
     PlusCastArray(),
     ReduceWhereToMasks(),
 )
 
 NormalizeIntp.extend(
-    WhereHoist(),
-    ReduceWhereEqualityPeel(),
     ReduceArrayGather(),
     ReduceDependentRangeMask(),
     ContractLongestArrayStream(),
