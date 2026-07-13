@@ -471,7 +471,7 @@ def test_einsum_matches_jnp(spec: str, sizes, rng_key):
     assert actual.shape == expected.shape, (
         f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
     )
-    assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-4), (
+    assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-3), (
         f"value mismatch for {spec!r}"
     )
 

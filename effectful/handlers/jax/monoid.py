@@ -250,13 +250,6 @@ class ReduceArray(ObjectInterpretation):
 
 
 class ReduceArrayScan(ObjectInterpretation):
-    _flip = {
-        jnp.less: jnp.greater,
-        jnp.greater: jnp.less,
-        jnp.less_equal: jnp.greater_equal,
-        jnp.greater_equal: jnp.less_equal,
-    }
-
     @staticmethod
     def _disequality_to_plus(monoid, streams, stream_op, value, index, tail_mask_elems):
         return monoid.plus(
@@ -381,7 +374,7 @@ class ReduceArrayScan(ObjectInterpretation):
                                 value,
                                 index,
                                 tail_mask_elems,
-                                self._flip[cmp_op],
+                                complement.of(cmp_op),
                             )
         return fwd()
 
