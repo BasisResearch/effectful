@@ -48,14 +48,14 @@ numpyro = [
   "jax<0.10"
 ]
 llm = [
-  "litellm",
+  "litellm<1.92",
   "tenacity",
   "mypy",
   "autoflake",
   "pillow",
   "pydantic",
   "typing_extensions",
-  "restrictedpython>=8.1"
+  "restrictedpython>=8.1",
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
