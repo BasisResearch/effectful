@@ -13,7 +13,6 @@ from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, ty
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
-    _ArrayTerm,
     _MappingTerm,
     _NumberTerm,
     defdata,
@@ -290,7 +289,7 @@ def _leaf_vars(expr: Any) -> set[Operation]:
 class GetitemDelta(ObjectInterpretation):
     """M.delta(i, v)[q] ≡ M.mask(v, i == q)"""
 
-    @implements(_ArrayTerm.__getitem__)
+    @implements(_MappingTerm.__getitem__)
     def _(self, value, index):
         if isinstance(value, Term) and _is_monoid_delta(value.op):
             return value.op.__self__.mask(value.args[1], value.args[0] == index)

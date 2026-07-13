@@ -37,13 +37,7 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import (
-    ObjectInterpretation,
-    _ArrayTerm,
-    _NumberTerm,
-    deffn,
-    implements,
-)
+from effectful.ops.syntax import ObjectInterpretation, _NumberTerm, deffn, implements
 from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -876,25 +870,6 @@ class ReduceSumProductContraction(ObjectInterpretation):
         return contraction
 
 
-class GetitemJaxGetitem(ObjectInterpretation):
-    @implements(_ArrayTerm.__getitem__)
-    def _(self, arr, index):
-        if (
-            isinstance(arr, jax.Array)
-            or issubclass(typeof(arr), jax.Array | jax.core.Tracer)
-            or (
-                isinstance(index, Sequence)
-                and any(
-                    isinstance(i, jax.Array)
-                    or issubclass(typeof(i), jax.Array | jax.core.Tracer)
-                    for i in index
-                )
-            )
-        ):
-            return jax_getitem(arr, index)
-        return fwd()
-
-
 @dataclass
 class Node:
     ordinal: frozenset[str]
@@ -1219,7 +1194,6 @@ EvaluateIntp.extend(
     ReduceSumProductContraction(),
     ReduceArray(),
     ReduceDeltaSimpleRange(),
-    GetitemJaxGetitem(),
     ReduceDisjunctiveDisequalityMask(),
     ReduceArrayScan(),
     PlusCastArray(),
