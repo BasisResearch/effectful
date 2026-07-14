@@ -539,83 +539,56 @@ class PlusDistr(ObjectInterpretation):
 
 
 class ProductReduceFusion(ObjectInterpretation):
-    """Fuse product reductions over shared range-valued streams.
+    """Fuse one matching pair of product streams.
 
-    Side-specific streams remain in nested reductions before the shared folds
-    are fused. For example, ``Product[ij](f) * Product[ijk](g)`` becomes
-    ``Product[ij](f * Product[k](g))`` rather than the unsound
-    ``Product[ijk](f * g)``, which would repeat ``f`` over ``k``.
+    ``Product[i](f) * Product[j](g)`` becomes ``Product[i](f * g[j := i])``
+    when ``i`` and ``j`` range over the same concrete range.  Any other streams
+    remain in nested reductions, so applying this rule to a fixpoint fuses all
+    compatible reductions without repeating side-specific factors.
     """
 
     @implements(Product.plus)
     def plus(self, *args):
-        reductions = [
+        reductions = (
             (i, arg)
             for i, arg in enumerate(args)
             if isinstance(arg, Term) and arg.op is Product.reduce
-        ]
+        )
         for (left_i, left), (right_i, right) in itertools.combinations(reductions, 2):
             left_body, left_streams = left.args
             right_body, right_streams = right.args
-            if not (
-                all(isinstance(stream, range) for stream in left_streams.values())
-                and all(isinstance(stream, range) for stream in right_streams.values())
-            ):
-                continue
-
-            # Preserve shared representatives where possible, then alpha-match
-            # remaining binders by equal range values.
-            renaming = {}
-            unmatched_left = set(left_streams)
-            for right_var, right_stream in right_streams.items():
-                left_var = (
-                    right_var
-                    if right_var in unmatched_left
-                    and left_streams[right_var] == right_stream
-                    else next(
-                        (
-                            var
-                            for var in unmatched_left
-                            if left_streams[var] == right_stream
-                        ),
-                        None,
-                    )
-                )
-                if left_var is not None:
-                    renaming[right_var] = left_var
-                    unmatched_left.remove(left_var)
-
-            if not renaming:
-                continue
-
-            left_common = set(renaming.values())
-            right_common = set(renaming)
-            common_streams = {
-                var: stream
-                for var, stream in left_streams.items()
-                if var in left_common
-            }
-            left_extra = {
-                var: stream
-                for var, stream in left_streams.items()
-                if var not in left_common
-            }
-            right_extra = {
-                var: stream
-                for var, stream in right_streams.items()
-                if var not in right_common
-            }
-
-            with interpreter(renaming):
-                right_body = evaluate(right_body)
-            left_factor = (
-                Product.reduce(left_body, left_extra) if left_extra else left_body
+            match = next(
+                (
+                    (left_var, right_var, left_stream)
+                    for left_var, left_stream in left_streams.items()
+                    for right_var, right_stream in right_streams.items()
+                    if isinstance(left_stream, range)
+                    and isinstance(right_stream, range)
+                    and left_stream == right_stream
+                ),
+                None,
             )
-            right_factor = (
-                Product.reduce(right_body, right_extra) if right_extra else right_body
+            if match is None:
+                continue
+
+            left_var, right_var, stream = match
+            left_streams = {k: v for k, v in left_streams.items() if k is not left_var}
+            right_streams = {
+                k: v for k, v in right_streams.items() if k is not right_var
+            }
+            with interpreter({right_var: left_var}):
+                right_body = evaluate(right_body)
+
+            left_body = (
+                Product.reduce(left_body, left_streams) if left_streams else left_body
+            )
+            right_body = (
+                Product.reduce(right_body, right_streams)
+                if right_streams
+                else right_body
             )
             fused = Product.reduce(
-                Product.plus(left_factor, right_factor), common_streams
+                Product.plus(left_body, right_body), {left_var: stream}
             )
             return Product.plus(
                 *args[:left_i],
@@ -1804,12 +1777,18 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReduceWhereToMasks(),
 )
 
-CartesianProductNormalizeIntp = _ExtensibleInterpretation().extend(
-    PlusEmpty(),
-    PlusSingle(),
-    PlusAssoc(),
-    ReduceUnfactor(),
-    ProductReduceFusion(),
+CartesianProductNormalizeIntp = functools.reduce(
+    coproduct,
+    typing.cast(
+        tuple[Interpretation, ...],
+        (
+            PlusEmpty(),
+            PlusSingle(),
+            PlusAssoc(),
+            ReduceUnfactor(),
+            ProductReduceFusion(),
+        ),
+    ),
 )
 """Structural preprocessing used exclusively for cartesian-product inversion.
 
