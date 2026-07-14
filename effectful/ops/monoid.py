@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
@@ -537,6 +538,29 @@ class PlusDistr(ObjectInterpretation):
         return fwd()
 
 
+class ProductOverSumReduce(ObjectInterpretation):
+    """Distribute :data:`Product` over a :data:`Sum` reduction.
+
+    ``Product.plus(xs..., Sum.reduce(body, streams), ys...)`` is rewritten as
+    ``Sum.reduce(Product.plus(xs..., body, ys...), streams)``.  Repeated
+    applications, followed by :class:`ReduceFusion`, combine products of
+    multiple reductions into one reduction.
+
+    This is deliberately the inverse direction of :class:`Factor`; the two
+    rules must not be installed in the same normalizing interpretation.
+    """
+
+    @implements(Product.plus)
+    def plus(self, *args):
+        for i, arg in enumerate(args):
+            if isinstance(arg, Term) and arg.op is Sum.reduce:
+                body, streams = arg.args
+                return Sum.reduce(
+                    Product.plus(*args[:i], body, *args[i + 1 :]), streams
+                )
+        return fwd()
+
+
 class PlusOrder(ObjectInterpretation):
     """Normalize plus ordering for commutative monoids.
 
@@ -794,32 +818,42 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid: Monoid, body, streams):
-        if not (isinstance(body, Term)):
+        if not isinstance(body, Term):
             return fwd()
 
-        # The body is either a single inner reduce or a ⨂-plus of inner reduces
-        # (a reduce pushed through a plus). The single reduce is just the
-        # "plus with one argument" case.
+        # Expose an inner product reduction even when it is multiplied by a
+        # sum-reduction factor.  ProductOverSumReduce places that factor's
+        # streams under a new Sum.reduce; fuse those streams into this outer
+        # sum before searching for the product reduction over the cartesian
+        # product stream.
+        with interpreter(SumOfProductsIntp):
+            body = evaluate(body)
+        if isinstance(body, Term) and body.op is Sum.reduce and monoid is Sum:
+            sum_body, sum_streams = body.args
+            body = sum_body
+            streams = streams | sum_streams
+
+        # The body is either a single inner reduce or an inner-monoid product
+        # containing such reductions.  Sum-of-products expansion can leave
+        # ordinary factors alongside the reductions; regard those as reduces
+        # over no streams so they stay in the reconstructed product.
         if _is_monoid_reduce(body.op):
             summands: Sequence[Term] = (body,)
-        elif _is_monoid_plus(body.op) and all(
-            isinstance(arg, Term) and _is_monoid_reduce(arg.op) for arg in body.args
-        ):
-            summands = body.args
+            inner_monoid = body.op.__self__
+        elif _is_monoid_plus(body.op):
+            inner_monoid = body.op.__self__
+            summands = tuple(
+                arg
+                if isinstance(arg, Term)
+                and _is_monoid_reduce(arg.op)
+                and arg.op.__self__ is inner_monoid
+                else inner_monoid.reduce(arg, {})
+                for arg in body.args
+            )
         else:
             return fwd()
 
-        inner_monoid = summands[0].op.__self__
         if not distributes_over(inner_monoid, monoid):
-            return fwd()
-
-        # For a multi-argument plus, every summand must reduce the same monoid
-        # and the plus must be that monoid's plus, so that pulling the summands'
-        # inner reduces under a shared peeled reduce stays valid.
-        if len(summands) > 1 and (
-            body.op is not inner_monoid.plus
-            or not all(s.op.__self__ is inner_monoid for s in summands)
-        ):
             return fwd()
 
         class InvalidIndexError(Exception): ...
@@ -904,8 +938,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 subst = handler({_MappingTerm.__getitem__: _getitem})(evaluate)(
                     inner_body
                 )
-                if inner_plate_op is None:
-                    # this summand's bundle does not fold over the row
+                if inner_plate_op is None and inner_streams:
+                    # A nontrivial reduction that does not fold over the row
+                    # cannot be unified with the peeled plate.  Streamless
+                    # reductions are ordinary product factors introduced by
+                    # sum-of-products expansion and are retained unchanged.
                     raise InvalidIndexError()
                 return subst, inner_plate_op
 
@@ -926,7 +963,10 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             ):
                 (_, inner_streams) = summand.args
                 assert isinstance(inner_streams, Mapping)
-                if inner_plate_op is not shared_plate_op:
+                if (
+                    inner_plate_op is not None
+                    and inner_plate_op is not shared_plate_op
+                ):
                     subst_inner_body = handler({inner_plate_op: shared_plate_op})(
                         evaluate
                     )(subst_inner_body)
@@ -1616,7 +1656,8 @@ class ContractLongestStream(ObjectInterpretation):
     @implements(choose_contraction)
     def _(self, factors, streams):
         lengths = {
-            k: len(v) if isinstance(v, Sized) else 0 for (k, v) in streams.items()
+            k: len(v) if not isinstance(v, Term) and isinstance(v, Sized) else 0
+            for (k, v) in streams.items()
         }
         longest = max(lengths.values())
         longest_streams = {k: v for (k, v) in streams.items() if lengths[k] == longest}
@@ -1633,7 +1674,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    ReducePartial(),
+    # ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),
@@ -1646,6 +1687,26 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReduceEqualityMaskRange(),
     ReduceWhereToMasks(),
 )
+
+SumOfProductsIntp = _ExtensibleInterpretation().extend(
+    # Structural normalization of additive and multiplicative spines.
+    PlusEmpty(),
+    PlusSingle(),
+    PlusAssoc(),
+    # Expand products through both materialized and stream-quantified sums.
+    PlusDistr(),
+    ProductOverSumReduce(),
+    # Keep the resulting summations flat and their bodies multiplicative.
+    ReduceFusion(),
+    ReduceSplit(),
+)
+"""``SumOfProductsIntp`` expands expressions into sum-of-products form.
+
+Unlike :data:`NormalizeIntp`, this interpretation pushes products *into* sums.
+It intentionally excludes :class:`Factor`, which performs the inverse rewrite
+and would otherwise create a rewrite cycle with :class:`ProductOverSumReduce`.
+"""
+
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
     GetitemDelta(),
@@ -1673,7 +1734,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWhereEqualityPeel(),
     ReduceDisjunctiveDisequalityMask(),
     ReduceDependentRangeMask(),
-    ChooseLongestArrayStream(),
+    ContractLongestStream(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

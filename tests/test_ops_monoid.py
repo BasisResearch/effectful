@@ -918,6 +918,50 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     )
 
 
+def test_reduce_lifted_sum_of_products_cartesian_body():
+    """A cartesian-product reduction remains visible after SOP expansion."""
+    backend = JaxBackend()
+    a, b, c_v, d_v, e_v, i, j = backend.define_vars(
+        "a", "b", "c_v", "d_v", "e_v", "i", "j", ret="scalar"
+    )
+    d = Operation.define(Mapping[tuple, backend.scalar_typ], name="d")
+    f, f0, f1, f2 = backend.define_vars("f", "f0", "f1", "f2", ret="scalar")
+
+    lhs = Sum.reduce(
+        Product.plus(
+            Product.reduce(
+                Sum.reduce(
+                    f2()[(d()[(i(),)], e_v(), f()[(i(), j())], i(), j())],
+                    {e_v: range(6)},
+                ),
+                {i: range(2), j: range(3)},
+            ),
+            Sum.reduce(
+                Product.plus(
+                    Product.reduce(
+                        Sum.reduce(
+                            f1()[(b(), c_v(), d()[(i(),)], i())],
+                            {c_v: range(4)},
+                        ),
+                        {i: range(2)},
+                    ),
+                    Sum.reduce(f0()[(a(), b())], {a: range(2)}),
+                ),
+                {b: range(3)},
+            ),
+        ),
+        {
+            d: CartesianProduct.reduce(
+                Union.reduce([Union.delta((i(),), d_v())], {d_v: range(5)}),
+                {i: range(2)},
+            )
+        },
+    )
+
+    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    assert CartesianProduct.reduce not in fvsof(norm)
+
+
 def test_reduce_lifted_3(backend: Backend):
     a, b, i, j = backend.define_vars("a", "b", "i", "j", ret="scalar")
     N, A_domain, B_domain = backend.define_vars(

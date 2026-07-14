@@ -2,7 +2,7 @@ import functools
 import logging
 import typing
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -665,6 +665,10 @@ class _EinsumBuilder:
     def global_enums(self) -> frozenset[str]:
         return frozenset(c for c, o in self.ordinal.items() if not o)
 
+    @functools.cached_property
+    def arrays(self) -> list[Term]:
+        return [Operation.define(jax.Array)() for _ in self.operands]
+
     def dim_index(self, dim: str) -> Expr:
         out_globals = self.global_enums & set(self.out_spec)
 
@@ -708,7 +712,7 @@ class _EinsumBuilder:
                 )
                 factors[factor_idx] = factor_symbol(*true_deps, *expanded_deps)
                 sparse_factors[factor_symbol] = functools.partial(
-                    lambda i, n, *args: jax_getitem(self.operands[i], args[:n]),
+                    lambda i, n, *args: jax_getitem(self.arrays[i], args[:n]),
                     factor_idx,
                     len(true_deps),
                 )
@@ -716,6 +720,102 @@ class _EinsumBuilder:
         assert all(f is not None for f in factors)
         assert len(sparse_factors) == len(factors)
         return typing.cast(Sequence[Term], factors), typing.cast(
+            Interpretation, sparse_factors
+        )
+
+    @functools.cached_property
+    def full_factors(self) -> tuple[Sequence[Term], Interpretation]:
+        """Expanded factors implementing edge-based fattening: a factor that
+        consumes a plated latent homed at a strictly shallower plate context
+        inherits the (already-fattened) dimension set of every strict-ancestor
+        factor that mentions that latent, closed transitively, downward only.
+        Factors that consume nothing from a shallower plated context are left
+        sparse — in particular, plateless einsum produces no phantom
+        dependencies and factorizes freely.
+
+        Also returns an interpretation mapping each expanded factor symbol
+        back to its sparse form.
+
+        Contract: each expanded factor's arguments are its true dimensions
+        (in ``in_specs`` order) followed by its phantom dimensions (in
+        ``ordinal`` iteration order); the sparse interpretation truncates the
+        argument list positionally, so this ordering is load-bearing.
+        """
+
+        def make_symbol(factor_idx: int, arity: int) -> Operation:
+            def stub(*args, **kwargs) -> jax.Array:
+                raise NotHandled
+
+            stub.__name__ = stub.__qualname__ = f"factor{factor_idx}_full{arity}"
+            return Operation.define(stub)
+
+        def make_sparse_handler(
+            factor_idx: int, n_true: int
+        ) -> Callable[..., jax.Array]:
+            def handler(*args, **kwargs) -> jax.Array:
+                return jax_getitem(self.arrays[factor_idx], args[:n_true])
+
+            return handler
+
+        factors: dict[int, Term] = {}
+        sparse_factors: dict[Operation, Callable[..., jax.Array]] = {}
+
+        # Fattened dim-set and plate context per already-processed factor.
+        # DFS visits ancestors before descendants, and inheritance sources are
+        # filtered to strict ancestors, so every source is complete when read.
+        # Because a source's fattened set already contains its own inheritance,
+        # single-step absorption here is transitively closed.
+        fattened: dict[int, frozenset] = {}
+        contexts: dict[int, typing.Any] = {}
+
+        stack = [self.plate_tree]
+        while stack:
+            node = stack.pop()
+            stack.extend(node.children)
+            for factor_idx in node.factors:
+                assert factor_idx not in factors, (
+                    f"factor {factor_idx} appears at multiple plate tree nodes"
+                )
+                true_dims = tuple(self.in_specs[factor_idx])
+                true_dim_set = frozenset(true_dims)
+
+                # Edge detection: a true dim homed at a nonempty context
+                # strictly below this node is a plated latent consumed across
+                # a plate boundary. Dims homed at this node's own context and
+                # root scalars (empty context) create no edge.
+                inherited: set = set()
+                for d in true_dims:
+                    d_ctx = self.ordinal[d]
+                    if d_ctx and d_ctx < node.ordinal:
+                        # Absorb every strict-ancestor factor mentioning d
+                        # (truly or as a phantom). The partial-order filter
+                        # excludes factors at sibling/incomparable contexts,
+                        # whose dims would be out of scope here; cross-sibling
+                        # coupling is priced through the shared ancestor.
+                        for g_idx, g_dims in fattened.items():
+                            if d in g_dims and contexts[g_idx] < node.ordinal:
+                                inherited |= g_dims
+
+                fattened[factor_idx] = true_dim_set | inherited
+                contexts[factor_idx] = node.ordinal
+
+                phantom_dims = tuple(
+                    d for d in self.ordinal if d in inherited and d not in true_dim_set
+                )
+                # Soundness of the ancestor filter: every phantom lies within
+                # this factor's plate context.
+                assert all(self.ordinal[d] <= node.ordinal for d in phantom_dims)
+
+                symbol = make_symbol(factor_idx, len(true_dims) + len(phantom_dims))
+                factors[factor_idx] = symbol(
+                    *(self.dim_index(d) for d in (*true_dims, *phantom_dims))
+                )
+                sparse_factors[symbol] = make_sparse_handler(factor_idx, len(true_dims))
+
+        missing = set(range(len(self.operands))) - factors.keys()
+        assert not missing, f"factors {sorted(missing)} not reachable from plate_tree"
+
+        return tuple(factors[i] for i in range(len(self.operands))), typing.cast(
             Interpretation, sparse_factors
         )
 
@@ -794,7 +894,11 @@ class _EinsumBuilder:
         reductions = self._build_plate_reductions(self.plate_tree)
         reduction = Sum.reduce(reductions, streams) if streams else reductions
         return (
-            deffn(reduction, *(self.out_vars[c] for c in self.out_spec)),
+            deffn(
+                reduction,
+                *(a.op for a in self.arrays),
+                *(self.out_vars[c] for c in self.out_spec),
+            ),
             [(self.out_vars[c], self.sizes[c]) for c in self.out_spec],
             self.full_factors[1],
         )
@@ -824,6 +928,7 @@ def einsum(
     with handler(NormalizeIntp):
         norm_expr = evaluate(expr)
 
+    breakpoint()
     assert CartesianProduct.reduce not in fvsof(norm_expr), (
         "failed to eliminate cartesian products"
     )
@@ -835,7 +940,9 @@ def einsum(
         assert callable(sparse_expr)
 
         out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
-        result = evaluate(bind_dims(sparse_expr(*out_dims), *(v for (v, _) in dims)))
+        result = evaluate(
+            bind_dims(sparse_expr(*operands, *out_dims), *(v for (v, _) in dims))
+        )
         assert isinstance(result, jax.Array), "failed to fully evaluate"
         return result
 
