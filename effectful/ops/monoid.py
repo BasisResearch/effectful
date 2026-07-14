@@ -973,10 +973,8 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         # reductions.  This isolated interpretation cannot cycle with Factor.
         # Build the candidate outside the active handler; otherwise invoking
         # ``monoid.reduce`` here would recursively redispatch this rule.
-        with interpreter({}):
-            candidate = monoid.reduce(body, streams)
         with interpreter(CartesianProductNormalizeIntp):
-            candidate = evaluate(candidate)
+            candidate = monoid.reduce(body, streams)
         body, streams = candidate.args
 
         # ProductReduceFusion leaves at most one product reduction.  Ordinary

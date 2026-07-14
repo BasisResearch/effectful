@@ -764,7 +764,6 @@ class _EinsumBuilder:
                 *(self.out_vars[c] for c in self.out_spec),
             ),
             [(self.out_vars[c], self.sizes[c]) for c in self.out_spec],
-            {},
         )
 
 
@@ -787,7 +786,7 @@ def einsum(
     over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
     each plated input is a :data:`Product` reduction over its plates.
     """
-    expr, dims, sparse_intp = _EinsumBuilder(subscripts, *operands, plates=plates).term
+    expr, dims = _EinsumBuilder(subscripts, *operands, plates=plates).term
 
     with handler(NormalizeIntp):
         norm_expr = evaluate(expr)
@@ -796,15 +795,12 @@ def einsum(
         "failed to eliminate cartesian products"
     )
 
-    with handler(NormalizeIntp), handler(EvaluateIntp), handler(sparse_intp):
-        sparse_expr = evaluate(norm_expr)
-
     with handler(EvaluateIntp), handler(NormalizeIntp):
-        assert callable(sparse_expr)
+        assert callable(norm_expr)
 
         out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
         result = evaluate(
-            bind_dims(sparse_expr(*operands, *out_dims), *(v for (v, _) in dims))
+            bind_dims(norm_expr(*operands, *out_dims), *(v for (v, _) in dims))
         )
         assert isinstance(result, jax.Array), "failed to fully evaluate"
         return result
