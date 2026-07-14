@@ -6,7 +6,7 @@ import typing
 from collections import UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
-from graphlib import TopologicalSorter
+from graphlib import CycleError, TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.runtime import interpreter
@@ -561,6 +561,94 @@ class ProductOverSumReduce(ObjectInterpretation):
         return fwd()
 
 
+class ProductReduceFusion(ObjectInterpretation):
+    """Fuse product reductions over shared range-valued streams.
+
+    Side-specific streams remain in nested reductions before the shared folds
+    are fused. For example, ``Product[ij](f) * Product[ijk](g)`` becomes
+    ``Product[ij](f * Product[k](g))`` rather than the unsound
+    ``Product[ijk](f * g)``, which would repeat ``f`` over ``k``.
+    """
+
+    @implements(Product.plus)
+    def plus(self, *args):
+        reductions = [
+            (i, arg)
+            for i, arg in enumerate(args)
+            if isinstance(arg, Term) and arg.op is Product.reduce
+        ]
+        for (left_i, left), (right_i, right) in itertools.combinations(reductions, 2):
+            left_body, left_streams = left.args
+            right_body, right_streams = right.args
+            if not (
+                all(isinstance(stream, range) for stream in left_streams.values())
+                and all(isinstance(stream, range) for stream in right_streams.values())
+            ):
+                continue
+
+            # Preserve shared representatives where possible, then alpha-match
+            # remaining binders by equal range values.
+            renaming = {}
+            unmatched_left = set(left_streams)
+            for right_var, right_stream in right_streams.items():
+                left_var = (
+                    right_var
+                    if right_var in unmatched_left
+                    and left_streams[right_var] == right_stream
+                    else next(
+                        (
+                            var
+                            for var in unmatched_left
+                            if left_streams[var] == right_stream
+                        ),
+                        None,
+                    )
+                )
+                if left_var is not None:
+                    renaming[right_var] = left_var
+                    unmatched_left.remove(left_var)
+
+            if not renaming:
+                continue
+
+            left_common = set(renaming.values())
+            right_common = set(renaming)
+            common_streams = {
+                var: stream
+                for var, stream in left_streams.items()
+                if var in left_common
+            }
+            left_extra = {
+                var: stream
+                for var, stream in left_streams.items()
+                if var not in left_common
+            }
+            right_extra = {
+                var: stream
+                for var, stream in right_streams.items()
+                if var not in right_common
+            }
+
+            with interpreter(renaming):
+                right_body = evaluate(right_body)
+            left_factor = (
+                Product.reduce(left_body, left_extra) if left_extra else left_body
+            )
+            right_factor = (
+                Product.reduce(right_body, right_extra) if right_extra else right_body
+            )
+            fused = Product.reduce(
+                Product.plus(left_factor, right_factor), common_streams
+            )
+            return Product.plus(
+                *args[:left_i],
+                fused,
+                *args[left_i + 1 : right_i],
+                *args[right_i + 1 :],
+            )
+        return fwd()
+
+
 class PlusOrder(ObjectInterpretation):
     """Normalize plus ordering for commutative monoids.
 
@@ -789,6 +877,62 @@ class Factor(ObjectInterpretation):
         return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
 
 
+class ReduceUnfactor(ObjectInterpretation):
+    """Undo one :class:`Factor` layer beneath a compatible product.
+
+    This rule is deliberately kept out of ``NormalizeIntp``: together with
+    ``Factor`` it would form a rewrite cycle.  It is used only while preparing
+    a candidate for cartesian-product inversion.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid: Monoid, body, streams):
+        if not is_commutative(monoid):
+            return fwd()
+        if not (isinstance(body, Term) and _is_monoid_plus(body.op)):
+            return fwd()
+
+        product_monoid = body.op.__self__
+        if not distributes_over(product_monoid, monoid):
+            return fwd()
+
+        for i, factor in enumerate(body.args):
+            if not (
+                isinstance(factor, Term)
+                and factor.op is monoid.reduce
+                and isinstance(factor.args[0], Term)
+                and factor.args[0].op is product_monoid.plus
+            ):
+                continue
+
+            inner_body, inner_streams = factor.args
+            if not isinstance(inner_streams, Mapping):
+                continue
+            inner_keys = set(inner_streams)
+            if set(streams) & inner_keys:
+                continue
+            merged_streams = dict(streams) | dict(inner_streams)
+
+            # A reduction's stream bindings must still form an acyclic
+            # dependency graph after they are brought into the same scope.
+            dependencies = {
+                key: fvsof(stream) & set(merged_streams)
+                for key, stream in merged_streams.items()
+            }
+            try:
+                tuple(TopologicalSorter(dependencies).static_order())
+            except CycleError:
+                continue
+
+            return monoid.reduce(
+                product_monoid.plus(
+                    *body.args[:i], *inner_body.args, *body.args[i + 1 :]
+                ),
+                merged_streams,
+            )
+        return fwd()
+
+
 class ReduceDistributeCartesianProduct(ObjectInterpretation):
     """Eliminates a reduce over a cartesian product.
         ∑_x₁ ∑_x₂ ... ∑_xₙ ∏_i f(xᵢ) = ∏_i ∑_xᵢ f(xᵢ)
@@ -800,13 +944,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         = reduce(⨁, reduce(⨂, reduce(⨁, body2, {vv: body1}), S1), S2)
     where × is the cartesian product and ⨂ distributes over ⨁.
 
-    The body may also be a ``⨂``-plus of such reduces -- the form left behind
-    when a ``⨂``-reduce has been pushed through a ``⨂``-plus. Each summand is
-    row-substituted independently (asserting that each summand's stream bundle
-    contains a stream folding over the full cartesian product row), their plate
-    variables are unified onto a single shared one, and the plus is placed under
-    the shared peeled reduce -- so the single-reduce case is exactly the "plus
-    with one argument" case.
+    The body must be a single fused ``⨂`` reduction.  In particular,
+    :class:`ProductReduceFusion` combines compatible product reductions before
+    this rule runs.
 
     Note: This could be generalized to grouped inversion [2].
 
@@ -821,38 +961,47 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         if not isinstance(body, Term):
             return fwd()
 
-        # Expose an inner product reduction even when it is multiplied by a
-        # sum-reduction factor.  ProductOverSumReduce places that factor's
-        # streams under a new Sum.reduce; fuse those streams into this outer
-        # sum before searching for the product reduction over the cartesian
-        # product stream.
-        with interpreter(SumOfProductsIntp):
-            body = evaluate(body)
-        if isinstance(body, Term) and body.op is Sum.reduce and monoid is Sum:
-            sum_body, sum_streams = body.args
-            body = sum_body
-            streams = streams | sum_streams
+        if not any(
+            isinstance(v, Term) and v.op == CartesianProduct.reduce
+            for v in streams.values()
+        ):
+            return fwd()
 
-        # The body is either a single inner reduce or an inner-monoid product
-        # containing such reductions.  Sum-of-products expansion can leave
-        # ordinary factors alongside the reductions; regard those as reduces
-        # over no streams so they stay in the reconstructed product.
-        if _is_monoid_reduce(body.op):
-            summands: Sequence[Term] = (body,)
-            inner_monoid = body.op.__self__
-        elif _is_monoid_plus(body.op):
-            inner_monoid = body.op.__self__
-            summands = tuple(
+        # ``Factor`` may have moved product factors into nested additive
+        # reductions.  Normalize the *whole* candidate so ReduceUnfactor can
+        # see and merge both stream bundles, then fuse the restored product
+        # reductions.  This isolated interpretation cannot cycle with Factor.
+        # Build the candidate outside the active handler; otherwise invoking
+        # ``monoid.reduce`` here would recursively redispatch this rule.
+        with interpreter({}):
+            candidate = monoid.reduce(body, streams)
+        with interpreter(CartesianProductNormalizeIntp):
+            candidate = evaluate(candidate)
+        body, streams = candidate.args
+
+        # ProductReduceFusion leaves at most one product reduction.  Ordinary
+        # product factors are not part of that reduction: pulling them beneath
+        # its product fold would repeat them once per plate assignment.
+        if isinstance(body, Term) and _is_monoid_reduce(body.op):
+            inner_reduce = body
+            outer_factors: tuple = ()
+        elif isinstance(body, Term) and _is_monoid_plus(body.op):
+            product_monoid = body.op.__self__
+            reductions = [
                 arg
-                if isinstance(arg, Term)
-                and _is_monoid_reduce(arg.op)
-                and arg.op.__self__ is inner_monoid
-                else inner_monoid.reduce(arg, {})
                 for arg in body.args
-            )
+                if isinstance(arg, Term) and arg.op is product_monoid.reduce
+            ]
+            if len(reductions) != 1:
+                return fwd()
+            inner_reduce = reductions[0]
+            outer_factors = tuple(arg for arg in body.args if arg is not inner_reduce)
+            if body.op is not inner_reduce.op.__self__.plus:
+                return fwd()
         else:
             return fwd()
 
+        inner_monoid = inner_reduce.op.__self__
         if not distributes_over(inner_monoid, monoid):
             return fwd()
 
@@ -867,6 +1016,11 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 isinstance(stream_body, Term)
                 and stream_body.op is CartesianProduct.reduce
             ):
+                continue
+
+            # Every factor indexed by the cartesian row must be inside the
+            # plate reduction.  Retained factors may be independent only.
+            if stream_key in fvsof(outer_factors):
                 continue
 
             (cprod_body, cprod_streams) = stream_body.args
@@ -946,46 +1100,26 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                     raise InvalidIndexError()
                 return subst, inner_plate_op
 
-            # row-substitute each summand independently
             try:
-                substituted = [row_substitute(*s.args) for s in summands]
+                combined, inner_plate_op = row_substitute(*inner_reduce.args)
             except InvalidIndexError:
                 continue
 
-            # Unify each summand onto the cartesian product's plate variable.
-            # In particular, union_streams may depend on this variable and is
-            # moved beneath the peeled reduce below, so choosing an inner
-            # summand's variable instead would leave that dependency free.
+            # The cartesian-product plate variable is the shared representative
+            # selected by ProductReduceFusion.
             shared_plate_op = plate_op
-            inner_reduces = []
-            for (subst_inner_body, inner_plate_op), summand in zip(
-                substituted, summands
-            ):
-                (_, inner_streams) = summand.args
-                assert isinstance(inner_streams, Mapping)
-                if (
-                    inner_plate_op is not None
-                    and inner_plate_op is not shared_plate_op
-                ):
-                    subst_inner_body = handler({inner_plate_op: shared_plate_op})(
-                        evaluate
-                    )(subst_inner_body)
+            _, inner_streams = inner_reduce.args
+            assert isinstance(inner_streams, Mapping)
+            if inner_plate_op is not shared_plate_op:
+                combined = handler({inner_plate_op: shared_plate_op})(evaluate)(
+                    combined
+                )
 
-                # include any extra inner product streams
-                inner_tail_streams = {
-                    k: v for (k, v) in inner_streams.items() if k != inner_plate_op
-                }
-                if inner_tail_streams:
-                    inner_reduces.append(
-                        inner_monoid.reduce(subst_inner_body, inner_tail_streams)
-                    )
-                else:
-                    inner_reduces.append(subst_inner_body)
-
-            if len(inner_reduces) == 1:
-                combined = inner_reduces[0]
-            else:
-                combined = inner_monoid.plus(*inner_reduces)
+            inner_tail_streams = {
+                k: v for (k, v) in inner_streams.items() if k != inner_plate_op
+            }
+            if inner_tail_streams:
+                combined = inner_monoid.reduce(combined, inner_tail_streams)
 
             peeled_idx = drop_elem(idx, plate_index)
             peeled_cprod_streams = {
@@ -1027,12 +1161,19 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 {shared_plate_op: plate_range},
             )
 
-            # include any extra sum streams outermost
+            result_body = (
+                inner_monoid.plus(peeled_reduce, *outer_factors)
+                if outer_factors
+                else peeled_reduce
+            )
+
+            # Include any extra sum streams outermost.  In particular, the
+            # non-reduce product factors above remain outside the plate fold.
             tail_streams = {k: v for (k, v) in streams.items() if k != stream_key}
             if tail_streams:
-                result = monoid.reduce(peeled_reduce, tail_streams)
+                result = monoid.reduce(result_body, tail_streams)
             else:
-                result = peeled_reduce
+                result = result_body
 
             return result
 
@@ -1688,6 +1829,21 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReduceWhereToMasks(),
 )
 
+CartesianProductNormalizeIntp = _ExtensibleInterpretation().extend(
+    PlusEmpty(),
+    PlusSingle(),
+    PlusAssoc(),
+    ReduceUnfactor(),
+    ProductReduceFusion(),
+)
+"""Structural preprocessing used exclusively for cartesian-product inversion.
+
+It intentionally excludes ``Factor`` and sum-of-products rewrites, which
+would either cycle with ``ReduceUnfactor`` or move factors across a product
+fold.
+"""
+
+
 SumOfProductsIntp = _ExtensibleInterpretation().extend(
     # Structural normalization of additive and multiplicative spines.
     PlusEmpty(),
@@ -1696,9 +1852,9 @@ SumOfProductsIntp = _ExtensibleInterpretation().extend(
     # Expand products through both materialized and stream-quantified sums.
     PlusDistr(),
     ProductOverSumReduce(),
+    ProductReduceFusion(),
     # Keep the resulting summations flat and their bodies multiplicative.
     ReduceFusion(),
-    ReduceSplit(),
 )
 """``SumOfProductsIntp`` expands expressions into sum-of-products form.
 

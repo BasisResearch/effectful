@@ -42,6 +42,7 @@ from effectful.ops.monoid import (
     ReduceWhereEqualityPeel,
     ReduceWhereToMasks,
     Sum,
+    SumOfProductsIntp,
     Union,
     WhereHoist,
     distributes_over,
@@ -918,6 +919,63 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     )
 
 
+def test_sum_of_products_fuses_compatible_product_reductions():
+    backend = JaxBackend()
+    a, b, c_v, e_v, i, j = backend.define_vars(
+        "a", "b", "c_v", "e_v", "i", "j", ret="scalar"
+    )
+    d = Operation.define(Mapping[tuple, backend.scalar_typ], name="d")
+    f = Operation.define(Mapping[tuple, backend.scalar_typ], name="f")
+    array0, array1, array2 = backend.define_vars(
+        "Array", "Array!1", "Array!2", ret="scalar"
+    )
+
+    term = Sum.reduce(
+        Product.plus(
+            Product.reduce(array0()[(a(), b())], {i: range(2)}),
+            Product.reduce(
+                Sum.reduce(array1()[(b(), c_v(), d()[(i(),)], i())], {c_v: range(4)}),
+                {i: range(2)},
+            ),
+            Product.reduce(
+                Sum.reduce(
+                    array2()[(d()[(i(),)], e_v(), f()[(i(), j())], i(), j())],
+                    {e_v: range(6)},
+                ),
+                {i: range(2), j: range(3)},
+            ),
+        ),
+        {b: range(3), a: range(2)},
+    )
+
+    with handler(SumOfProductsIntp):
+        norm = evaluate(term)
+
+    assert isinstance(norm, Term) and norm.op is Sum.reduce
+    fused = norm.args[0]
+    assert isinstance(fused, Term) and fused.op is Product.reduce
+    # The shared i plate is fused, while the j-only tail remains nested. Moving
+    # j into the outer bundle would repeat the first two factors over j.
+    assert tuple(fused.args[1].values()) == (range(2),)
+    nested_streams = []
+
+    def collect_product_streams(expr):
+        if isinstance(expr, Term):
+            if expr.op is Product.reduce:
+                nested_streams.append(expr.args[1])
+            for arg in expr.args:
+                collect_product_streams(arg)
+        elif isinstance(expr, tuple | list):
+            for item in expr:
+                collect_product_streams(item)
+        elif isinstance(expr, Mapping):
+            for item in expr.values():
+                collect_product_streams(item)
+
+    collect_product_streams(fused.args[0])
+    assert [tuple(streams.values()) for streams in nested_streams] == [(range(3),)]
+
+
 def test_reduce_lifted_sum_of_products_cartesian_body():
     """A cartesian-product reduction remains visible after SOP expansion."""
     backend = JaxBackend()
@@ -960,6 +1018,29 @@ def test_reduce_lifted_sum_of_products_cartesian_body():
 
     norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
     assert CartesianProduct.reduce not in fvsof(norm)
+
+    product_streams = []
+
+    def walk(expr):
+        if isinstance(expr, Term):
+            if expr.op is Product.reduce:
+                product_streams.append(expr.args[1])
+            for arg in expr.args:
+                walk(arg)
+            for arg in expr.kwargs.values():
+                walk(arg)
+        elif isinstance(expr, tuple | list):
+            for item in expr:
+                walk(item)
+        elif isinstance(expr, Mapping):
+            for item in expr.values():
+                walk(item)
+
+    walk(norm)
+    assert [stream for streams in product_streams for stream in streams.values()] == [
+        range(2),
+        range(3),
+    ]
 
 
 def test_reduce_lifted_3(backend: Backend):
