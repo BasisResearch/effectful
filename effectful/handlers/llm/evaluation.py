@@ -11,6 +11,7 @@ import linecache
 import logging
 import os
 import shutil
+import symtable
 import sys
 import tempfile
 import typing
@@ -259,6 +260,265 @@ def splice_into_source(
     lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
     hi = spliced.end_lineno or lo
     return checked_source, lo, hi
+
+
+# Builtin names mypy resolves at module scope. dir(builtins) also contains module
+# dunders (__loader__/__spec__/__package__) that mypy does NOT resolve -- including
+# them would let a read of __loader__ pass the gate and get a spurious name-defined.
+# Non-dunder builtins are a clean subset of mypy's builtin scope; over-declining the
+# rare dunder read is cheap under report-not-gate, a spurious error is not.
+_BUILTIN_NAMES = frozenset(n for n in dir(builtins) if not n.startswith("_"))
+
+
+class _ModuleBinds(ast.NodeVisitor):
+    """Names freshly bound at MODULE scope: recurse control-flow (if/for/while/with/
+    try/match) but HALT at nested scopes (def/class/lambda/comprehensions), so nested
+    locals aren't counted. Collects the names that would `no-redef` a prior module bind;
+    used only for the rebind check, so the AugAssign exclusion (a `+=` target is not a
+    fresh bind) has to be per-*node* (a name both `+=`-ed and plainly assigned is still a
+    fresh bind) -- which symtable's scope-level ``is_assigned`` cannot express. So this
+    stays hand-rolled over the AST while the read side (``_external_reads``) delegates
+    scope resolution to symtable. `del`/`global`/`nonlocal` targets need no override:
+    their targets aren't `Store` ``Name``s, so ``visit_Name`` already skips them.
+
+    walrus (``:=``) and match captures leak past a comprehension / into the enclosing
+    scope, so they ARE module binds even though the comprehension halts normal
+    recursion. A def/class also *evaluates* its decorators, default arguments and
+    annotations in THIS scope (only its body is the nested scope), so a walrus there
+    binds at module scope too -- collected from every field but the body."""
+
+    def __init__(self) -> None:
+        self.names: set[str] = set()
+
+    def visit_FunctionDef(self, n):  # bind the name; body is a nested scope, skip it
+        self.names.add(n.name)
+        self._walrus_outside_body(n)
+
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def visit_ClassDef(self, n):
+        self.names.add(n.name)
+        self._walrus_outside_body(n)
+
+    def visit_Lambda(
+        self, n
+    ):  # own scope; a walrus in its default binds here, not there
+        self._collect_walrus_in(*n.args.defaults, *(d for d in n.args.kw_defaults if d))
+
+    def visit_ListComp(self, n):
+        # A comprehension is its own scope (its `for` targets don't leak), but a walrus
+        # inside it binds in THIS scope.
+        self._collect_walrus(n)
+
+    visit_SetComp = visit_DictComp = visit_GeneratorExp = visit_ListComp
+
+    def _walrus_outside_body(self, n) -> None:
+        # A def/class evaluates its decorators, defaults and annotations in the enclosing
+        # (here module) scope, so walruses there bind at module scope; the body is the
+        # nested scope and is skipped.
+        self._collect_walrus_in(*(v for f, v in ast.iter_fields(n) if f != "body"))
+
+    def _collect_walrus_in(self, *nodes) -> None:
+        for node in nodes:
+            for item in node if isinstance(node, list) else [node]:
+                if isinstance(item, ast.AST):
+                    self._collect_walrus(item)
+
+    def _collect_walrus(self, node) -> None:
+        # Node-inclusive: a walrus may be the node itself (`x=(w := 5)` -> the default IS
+        # the NamedExpr). Descend through everything but nested function scopes, through
+        # which a walrus does NOT leak.
+        if isinstance(
+            node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
+        ):
+            return
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            self.names.add(node.target.id)
+        for child in ast.iter_child_nodes(node):
+            self._collect_walrus(child)
+
+    def visit_NamedExpr(self, n):  # `(y := ...)` outside a comprehension binds here
+        if isinstance(n.target, ast.Name):
+            self.names.add(n.target.id)
+        self.visit(n.value)
+
+    def visit_MatchAs(self, n):  # `case ... as name` / bare `case name` capture
+        if n.name:
+            self.names.add(n.name)
+        self.generic_visit(n)
+
+    def visit_MatchStar(self, n):  # `case [*rest]`
+        if n.name:
+            self.names.add(n.name)
+
+    def visit_MatchMapping(self, n):  # `case {**rest}`
+        if n.rest:
+            self.names.add(n.rest)
+        self.generic_visit(n)
+
+    def visit_AugAssign(self, n):  # target is read-modify-write, not a fresh bind
+        self.visit(n.value)
+
+    def visit_ExceptHandler(self, n):  # `except X as e` binds `e`; recurse the body
+        if n.name:
+            self.names.add(n.name)
+        self.generic_visit(n)
+
+    def visit_Import(self, n):
+        for a in n.names:
+            self.names.add(a.asname or a.name.split(".")[0])
+
+    def visit_ImportFrom(self, n):
+        for a in n.names:
+            self.names.add(a.asname or a.name)
+
+    def visit_Name(self, n):  # only module-level Names reach here (no nested recursion)
+        if isinstance(n.ctx, ast.Store):
+            self.names.add(n.id)
+
+
+def _module_binds(tree: ast.AST) -> set[str]:
+    v = _ModuleBinds()
+    v.visit(tree)
+    return v.names
+
+
+def _external_reads(source: str) -> set[str]:
+    """Names ``source`` looks up in the module/global namespace at runtime -- module-
+    level reads AND nested free reads that escape their local scope chain (a closure's
+    read of an enclosing local does NOT escape; a nested read of an unbound name does),
+    plus read-modify-write (``+=``) and ``del`` targets.
+
+    Delegates the lexical scope resolution to ``symtable.Symbol.is_global`` -- which
+    walks the real scope chain the compiler uses -- rather than re-deriving it over the
+    AST, so a nested-scope local or parameter can never spuriously satisfy a module-
+    level read (the false positive a flat all-scopes bind set would allow). ``source``
+    is always compilable here (it already decoded through ``Encodable[CodeType]``)."""
+    reads: set[str] = set()
+    stack = [symtable.symtable(source, "<repl>", "exec")]
+    while stack:
+        table = stack.pop()
+        reads |= {s.get_name() for s in table.get_symbols() if s.is_global()}
+        stack.extend(table.get_children())
+    return reads
+
+
+def _annotation_exprs(tree: ast.AST) -> "list[ast.expr]":
+    """Every annotation expression in the snippet: function parameter and return
+    annotations, and variable (``AnnAssign``) annotations."""
+    out: list[ast.expr] = []
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef):
+            a = n.args
+            out += [
+                arg.annotation
+                for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg)
+                if arg and arg.annotation
+            ]
+            if n.returns:
+                out.append(n.returns)
+        elif isinstance(n, ast.AnnAssign):
+            out.append(n.annotation)
+    return out
+
+
+def _is_subscript_of(node: ast.Subscript, name: str) -> bool:
+    v = node.value
+    return (isinstance(v, ast.Name) and v.id == name) or (
+        isinstance(v, ast.Attribute) and v.attr == name
+    )
+
+
+def _has_string_forward_ref(node: ast.expr) -> bool:
+    """A string used in *type* position within an annotation (a forward ref mypy resolves
+    but the interpreter never evaluates). String *values* inside ``Literal[...]`` and the
+    metadata of ``Annotated[T, ...]`` are not forward refs and are skipped, so common
+    ``Literal["a", "b"]`` / ``Annotated[int, "doc"]`` annotations aren't over-declined."""
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.Subscript):
+        if _is_subscript_of(node, "Literal"):
+            return False  # every Literal arg is a value, never a type
+        if _is_subscript_of(node, "Annotated"):
+            elts = (
+                node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
+            )
+            return bool(elts) and _has_string_forward_ref(elts[0])  # only T is a type
+        return _has_string_forward_ref(node.value) or _has_string_forward_ref(
+            node.slice
+        )
+    return any(
+        _has_string_forward_ref(c)
+        for c in ast.iter_child_nodes(node)
+        if isinstance(c, ast.expr)
+    )
+
+
+def _has_deferred_annotation(tree: ast.AST, future_annotations: bool) -> bool:
+    """True if the snippet carries an annotation mypy resolves but the interpreter never
+    evaluates -- a *string* forward-ref (``x: "Foo"``), or *any* annotation once ``from
+    __future__ import annotations`` is active in the module. mypy raises ``name-defined``
+    on an unresolved name in such an annotation while the code runs fine, and
+    ``_external_reads`` can't see those names (``symtable`` doesn't evaluate string or
+    deferred annotations), so decline rather than risk that spurious diagnostic. Bare,
+    eager annotations need no special case: the interpreter evaluates them too, so an
+    unresolved one is a real ``NameError`` that ``_external_reads`` already declines."""
+    return any(
+        future_annotations or _has_string_forward_ref(ann)
+        for ann in _annotation_exprs(tree)
+    )
+
+
+def _imports_future_annotations(tree: ast.AST) -> bool:
+    return any(
+        isinstance(n, ast.ImportFrom)
+        and n.module == "__future__"
+        and any(a.name == "annotations" for a in n.names)
+        for n in ast.walk(tree)
+    )
+
+
+def repl_check_source(prior: list[str], snippet: str) -> tuple[str, int, int] | None:
+    """Assemble `prior + snippet` and the [lo, hi] line span of `snippet` for
+    ``type_check``, or ``None`` when checking it would spuriously fail: it freshly
+    rebinds a name a prior snippet bound (no-redef), or reads a name not resolvable
+    from prior / its own binds / builtins (name-defined). Both are normal in a REPL,
+    neither a real type error.
+
+    The REPL is a module built incrementally, so earlier snippets' source is the
+    type-check context. This static decision runs first; the source is assembled and
+    checked only when it holds.
+    """
+    tree = ast.parse(snippet)
+    # Newline-terminate each prior snippet before concatenating: snippets recovered
+    # from linecache need not end in "\n", and joining them raw would fuse two lines
+    # into a syntax error (`a = 1` + `b = 2` -> `a = 1b = 2`).
+    body = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
+    prior_tree = ast.parse(body)
+    prior_binds = _module_binds(prior_tree)
+    snippet_binds = _module_binds(tree)
+    if snippet_binds & prior_binds:  # cross-snippet rebind -> no-redef
+        return None
+    # A read is resolvable iff it is bound at module scope (in the snippet or a prior
+    # one) or is a builtin; anything else needs the seed env. The seed env (the session's
+    # lexical context, e.g. `readings`) is deliberately NOT threaded in: declaring it is
+    # #578/#577 runtime-type territory, so a read of a seed name declines (safe: never a
+    # spurious name-defined) rather than being checked. This means the first snippet of a
+    # session -- which typically reads seeded context -- is usually skipped, by design.
+    if _external_reads(snippet) - snippet_binds - prior_binds - _BUILTIN_NAMES:
+        return None
+    # Deferred annotations (string forward-refs, or any annotation under a module-active
+    # `from __future__ import annotations`) hold names mypy resolves but the runtime never
+    # evaluates and `_external_reads` can't see -> an unresolved one would spuriously raise.
+    future = _imports_future_annotations(prior_tree) or _imports_future_annotations(
+        tree
+    )
+    if _has_deferred_annotation(tree, future):
+        return None
+    n_lines = snippet.count("\n") + (0 if snippet.endswith("\n") else 1)
+    lo = body.count("\n") + 1
+    hi = lo + n_lines - 1
+    return body + snippet, lo, hi
 
 
 def _mypy_check_region(
@@ -516,6 +776,11 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
+        # Ordered prior-snippet sources, the type-check context for repl_check_source.
+        # linecache keys snippets by random per-call <exec_code-{uuid}> filenames and
+        # retains no ordered key list, so the accumulated module can't be rebuilt from
+        # it. Single-session state -- not the multi-session self._buffers smell of #687.
+        self._prior_snippets: list[str] = []
 
     def runcode(self, code: CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
@@ -554,6 +819,21 @@ class ReplSession(code.InteractiveInterpreter):
         """
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
+        # Type-check the snippet against the accumulated module when feasible, and
+        # report any error as text (the snippet still runs -- a type error is not a
+        # runtime error, and the session's contract is that errors are text it reads).
+        snippet = "".join(linecache.getlines(code.co_filename))
+        checked = repl_check_source(self._prior_snippets, snippet)
+        if checked is not None:
+            try:
+                type_check(*checked)
+            except TypeError as e:
+                self.stderr.write(f"{e}\n")  # in-region type error: a mypy diagnostic
+            except NotImplementedError:
+                pass  # provider implements exec but not type_check -> unavailable, skip
+            except RuntimeError as e:
+                logger.warning("REPL type-check skipped: mypy failed to run: %s", e)
+        self._prior_snippets.append(snippet)
         with (
             contextlib.redirect_stdout(self.stdout),
             contextlib.redirect_stderr(self.stderr),
