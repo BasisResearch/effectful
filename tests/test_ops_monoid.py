@@ -925,9 +925,7 @@ def test_reduce_lifted_aligns_equal_ranges_by_row_position():
         "a", "p", "q", "i", "j", "k", "l", ret="scalar"
     )
     A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
-    f, g = backend.define_vars(
-        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
-    )
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
     plate = range(2)
 
     lhs = Sum.reduce(

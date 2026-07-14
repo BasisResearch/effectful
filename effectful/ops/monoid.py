@@ -810,8 +810,7 @@ class ReduceUnfactor(ObjectInterpretation):
 
             inner_factors = (
                 inner_body.args
-                if isinstance(inner_body, Term)
-                and inner_body.op is product_monoid.plus
+                if isinstance(inner_body, Term) and inner_body.op is product_monoid.plus
                 else (inner_body,)
             )
             return monoid.reduce(
@@ -1689,8 +1688,8 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                 if (
                     isinstance(v_stream, Term)
                     and v_stream.op == range_
-                    and isinstance(v_stream.stop, Term)
-                    and v_stream.stop.op == u
+                    and isinstance(v_stream.stop, Term)  # type: ignore[attr-defined]
+                    and v_stream.stop.op == u  # type: ignore[attr-defined]
                 ):
                     fresh_streams = {
                         a: (u_stream if a == v else b) for (a, b) in streams.items()

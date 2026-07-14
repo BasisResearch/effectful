@@ -806,7 +806,7 @@ class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
             raise NotHandled
 
     @Operation.define
-    def __reversed__(self: collections.abc.Sequence[T]) -> collections.abc.Sequence[T]:
+    def __reversed__(self: collections.abc.Sequence[T]) -> collections.abc.Iterator[T]:
         if not isinstance(self, Term):
             return reversed(self)
         else:
@@ -820,7 +820,11 @@ class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
         stop: int | None = None,
     ) -> int:
         if not any(isinstance(x, Term) for x in (self, value, start, stop)):
-            return self.index(value, start, stop)
+            return (
+                self.index(value, start)
+                if stop is None
+                else self.index(value, start, stop)
+            )
         else:
             raise NotHandled
 
