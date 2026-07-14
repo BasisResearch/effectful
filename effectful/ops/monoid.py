@@ -538,29 +538,6 @@ class PlusDistr(ObjectInterpretation):
         return fwd()
 
 
-class ProductOverSumReduce(ObjectInterpretation):
-    """Distribute :data:`Product` over a :data:`Sum` reduction.
-
-    ``Product.plus(xs..., Sum.reduce(body, streams), ys...)`` is rewritten as
-    ``Sum.reduce(Product.plus(xs..., body, ys...), streams)``.  Repeated
-    applications, followed by :class:`ReduceFusion`, combine products of
-    multiple reductions into one reduction.
-
-    This is deliberately the inverse direction of :class:`Factor`; the two
-    rules must not be installed in the same normalizing interpretation.
-    """
-
-    @implements(Product.plus)
-    def plus(self, *args):
-        for i, arg in enumerate(args):
-            if isinstance(arg, Term) and arg.op is Sum.reduce:
-                body, streams = arg.args
-                return Sum.reduce(
-                    Product.plus(*args[:i], body, *args[i + 1 :]), streams
-                )
-        return fwd()
-
-
 class ProductReduceFusion(ObjectInterpretation):
     """Fuse product reductions over shared range-valued streams.
 
