@@ -42,7 +42,6 @@ from effectful.ops.monoid import (
     ReduceWhereEqualityPeel,
     ReduceWhereToMasks,
     Sum,
-    SumOfProductsIntp,
     Union,
     WhereHoist,
     distributes_over,
@@ -919,61 +918,82 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
     )
 
 
-def test_sum_of_products_fuses_compatible_product_reductions():
+def test_reduce_lifted_aligns_equal_ranges_by_row_position():
+    """Equal-sized axes are aligned by row position, not stream order."""
     backend = JaxBackend()
-    a, b, c_v, e_v, i, j = backend.define_vars(
-        "a", "b", "c_v", "e_v", "i", "j", ret="scalar"
+    a, p, q, i, j, k, l = backend.define_vars(
+        "a", "p", "q", "i", "j", "k", "l", ret="scalar"
     )
-    d = Operation.define(Mapping[tuple, backend.scalar_typ], name="d")
-    f = Operation.define(Mapping[tuple, backend.scalar_typ], name="f")
-    array0, array1, array2 = backend.define_vars(
-        "Array", "Array!1", "Array!2", ret="scalar"
+    A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
+    f, g = backend.define_vars(
+        "f", "g", arg_types=(backend.scalar_typ,), ret="scalar"
     )
+    plate = range(2)
 
-    term = Sum.reduce(
+    lhs = Sum.reduce(
         Product.plus(
-            Product.reduce(array0()[(a(), b())], {i: range(2)}),
-            Product.reduce(
-                Sum.reduce(array1()[(b(), c_v(), d()[(i(),)], i())], {c_v: range(4)}),
-                {i: range(2)},
-            ),
-            Product.reduce(
-                Sum.reduce(
-                    array2()[(d()[(i(),)], e_v(), f()[(i(), j())], i(), j())],
-                    {e_v: range(6)},
-                ),
-                {i: range(2), j: range(3)},
-            ),
+            Product.reduce(f(A()[(i(), j())]), {j: plate, i: plate}),
+            Product.reduce(g(A()[(k(), l())]), {k: plate, l: plate}),
         ),
-        {b: range(3), a: range(2)},
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((p(), q()), a())], {a: range(3)}),
+                {p: plate, q: plate},
+            )
+        },
+    )
+    rhs = Product.reduce(
+        Product.reduce(
+            Sum.reduce(Product.plus(f(a()), g(a())), {a: range(3)}),
+            {q: plate},
+        ),
+        {p: plate},
     )
 
-    with handler(SumOfProductsIntp):
-        norm = evaluate(term)
+    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    assert syntactic_eq_alpha(norm, rhs)
 
-    assert isinstance(norm, Term) and norm.op is Sum.reduce
-    fused = norm.args[0]
-    assert isinstance(fused, Term) and fused.op is Product.reduce
-    # The shared i plate is fused, while the j-only tail remains nested. Moving
-    # j into the outer bundle would repeat the first two factors over j.
-    assert tuple(fused.args[1].values()) == (range(2),)
-    nested_streams = []
 
-    def collect_product_streams(expr):
-        if isinstance(expr, Term):
-            if expr.op is Product.reduce:
-                nested_streams.append(expr.args[1])
-            for arg in expr.args:
-                collect_product_streams(arg)
-        elif isinstance(expr, tuple | list):
-            for item in expr:
-                collect_product_streams(item)
-        elif isinstance(expr, Mapping):
-            for item in expr.values():
-                collect_product_streams(item)
+def test_reduce_lifted_unfactors_single_product_factor():
+    """A unary product body can be exposed without an explicit Product.plus."""
+    backend = JaxBackend()
+    a, b, i, p, h = backend.define_vars("a", "b", "i", "p", "h", ret="scalar")
+    A = Operation.define(Mapping[tuple, backend.scalar_typ], name="A")
+    f = backend.define_vars(
+        "f",
+        arg_types=(backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+    plate = range(2)
 
-    collect_product_streams(fused.args[0])
-    assert [tuple(streams.values()) for streams in nested_streams] == [(range(3),)]
+    lhs = Sum.reduce(
+        Product.plus(
+            Sum.reduce(
+                Product.reduce(f(A()[(i(),)], b()), {i: plate}),
+                {b: range(4)},
+            ),
+            h(),
+        ),
+        {
+            A: CartesianProduct.reduce(
+                Union.reduce([Union.delta((p(),), a())], {a: range(3)}),
+                {p: plate},
+            )
+        },
+    )
+    rhs = Sum.reduce(
+        Product.plus(
+            Product.reduce(
+                Sum.reduce(f(a(), b()), {a: range(3)}),
+                {p: plate},
+            ),
+            h(),
+        ),
+        {b: range(4)},
+    )
+
+    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    assert syntactic_eq_alpha(norm, rhs)
 
 
 def test_reduce_lifted_sum_of_products_cartesian_body():
