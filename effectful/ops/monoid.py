@@ -1844,26 +1844,6 @@ fold.
 """
 
 
-SumOfProductsIntp = _ExtensibleInterpretation().extend(
-    # Structural normalization of additive and multiplicative spines.
-    PlusEmpty(),
-    PlusSingle(),
-    PlusAssoc(),
-    # Expand products through both materialized and stream-quantified sums.
-    PlusDistr(),
-    ProductOverSumReduce(),
-    ProductReduceFusion(),
-    # Keep the resulting summations flat and their bodies multiplicative.
-    ReduceFusion(),
-)
-"""``SumOfProductsIntp`` expands expressions into sum-of-products form.
-
-Unlike :data:`NormalizeIntp`, this interpretation pushes products *into* sums.
-It intentionally excludes :class:`Factor`, which performs the inverse rewrite
-and would otherwise create a rewrite cycle with :class:`ProductOverSumReduce`.
-"""
-
-
 NormalizeIntp = _ExtensibleInterpretation().extend(
     GetitemDelta(),
     MonoidOverSequence(),
