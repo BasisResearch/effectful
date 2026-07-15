@@ -795,17 +795,6 @@ class ReduceUnfactor(ObjectInterpretation):
             inner_keys = set(inner_streams)
             merged_streams = dict(streams) | dict(inner_streams)
 
-            # A reduction's stream bindings must still form an acyclic
-            # dependency graph after they are brought into the same scope.
-            dependencies = {
-                key: fvsof(stream) & set(merged_streams)
-                for key, stream in merged_streams.items()
-            }
-            try:
-                tuple(TopologicalSorter(dependencies).static_order())
-            except CycleError:
-                continue
-
             inner_factors = (
                 inner_body.args
                 if isinstance(inner_body, Term) and inner_body.op is product_monoid.plus
