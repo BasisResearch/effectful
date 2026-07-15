@@ -16,6 +16,7 @@ import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     Encodable,
     SynthesizedFunction,
@@ -770,7 +771,7 @@ def _decode(source: str, *, anchor: bool) -> types.CodeType:
     """Decode `source` to a code object the way the `exec_code` tool argument does -- with
     the Template type-check anchor in the decode context (``anchor=True``, as a managed
     Template call supplies) or without it."""
-    ctx = {TYPE_CHECK_ANCHOR_KEY: _repl_anchor} if anchor else None
+    ctx = {REPL_ANCHOR_KEY: _repl_anchor} if anchor else None
     return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
         source, context=ctx
     )

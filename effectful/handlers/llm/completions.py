@@ -26,6 +26,7 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
@@ -422,9 +423,12 @@ def call_assistant[T](
     # Include the type-check anchor when decoding tool arguments, so a `code` argument (the
     # REPL `exec_code` tool) is type-checked against the Template body at decode -- exactly
     # as a synthesized result is (see below). The `Encodable[CodeType]` decoder reads the
-    # anchor from the context and splices the accumulated REPL session into it.
+    # anchor from the context and splices the accumulated REPL session into it. This rides
+    # under REPL_ANCHOR_KEY, not TYPE_CHECK_ANCHOR_KEY: a synthesized `Callable` tool argument
+    # is contracted by its param type, not the Template's return type, so the Callable decoder
+    # must not see the anchor here (it reads TYPE_CHECK_ANCHOR_KEY, which stays absent).
     tool_context = (
-        {**tools, TYPE_CHECK_ANCHOR_KEY: anchor} if anchor is not None else tools
+        {**tools, REPL_ANCHOR_KEY: anchor} if anchor is not None else tools
     )
     for raw_tool_call in message.get("tool_calls") or []:
         try:

@@ -670,6 +670,49 @@ class TestRetryLLMHandler:
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
 
+    def test_callable_tool_arg_not_checked_against_template_anchor(self):
+        """A synthesized `Callable` *tool argument* is contracted by its parameter type, not
+        the enclosing Template's return type. The REPL type-check anchor rides under a
+        REPL-only context key, so the Callable decoder never splices a tool-argument callback
+        into the Template body and checks it against the Template's return type. Regression:
+        sharing the anchor key made a valid callback fail against an `int`-returning anchor."""
+
+        @Tool.define
+        def register(cb: Callable[[str], str]) -> str:
+            """Register a string-transforming callback."""
+            return cb("hello")
+
+        def anchor_returning_int() -> int:  # Template anchor: return type is int, not Callable
+            raise NotImplementedError
+
+        tool_args = json.dumps(
+            {"cb": {"module_code": "def g(s: str) -> str:\n    return s.upper()"}}
+        )
+        mock_handler = MockCompletionHandler(
+            [make_tool_call_response("register", tool_args)]
+        )
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "test"},
+        )
+
+        with (
+            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(1))),
+            handler(mock_handler),
+            handler({_get_history: lambda: message_sequence}),
+            handler(UnsafeEvalProvider()),
+        ):
+            _message, tool_calls, _result = call_assistant(
+                env={"register": register},
+                response_type=int,
+                model="test-model",
+                anchor=anchor_returning_int,
+            )
+
+        assert len(tool_calls) == 1
+        assert tool_calls[0].tool == register
+        cb = tool_calls[0].bound_args.arguments["cb"]
+        assert cb("hi") == "HI"
+
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 

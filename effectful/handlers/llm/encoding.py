@@ -47,6 +47,12 @@ type ToolCallID = str
 # and it can never collide with a lexical name.
 TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
 
+# REPL `exec_code` snippets ride under their own key so the Callable decoder (which
+# reads TYPE_CHECK_ANCHOR_KEY) never sees a REPL anchor in the shared tool-argument
+# context — preserving the "anchor absent for tool-args" invariant that contracts a
+# synthesized Callable tool argument by its param type, not the Template's return type.
+REPL_ANCHOR_KEY = "<repl_anchor>"
+
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
     for member in typing.get_args(OpenAIMessageContentListBlock)
@@ -241,7 +247,7 @@ def _pydantic_type_code(ty):
         # the Template body and check it. A type error raises here -> the tool-call decode
         # fails -> `RetryLLMHandler` retries, so ill-typed code never reaches `runcode`.
         ctx = info.context or {}
-        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
+        anchor = ctx.get(REPL_ANCHOR_KEY)
         if anchor is not None:
             # Pass an empty env (not `ctx`): the managed session ignores it, and a fresh
             # fallback session must not be seeded from the decode context (which holds tool
