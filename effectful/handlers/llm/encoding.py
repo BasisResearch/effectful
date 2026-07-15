@@ -47,10 +47,10 @@ type ToolCallID = str
 # and it can never collide with a lexical name.
 TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
 
-# REPL `exec_code` snippets ride under their own key so the Callable decoder (which
-# reads TYPE_CHECK_ANCHOR_KEY) never sees a REPL anchor in the shared tool-argument
-# context — preserving the "anchor absent for tool-args" invariant that contracts a
-# synthesized Callable tool argument by its param type, not the Template's return type.
+# Type-check anchor for REPL `exec_code` snippets, separate from the Callable/result
+# synthesis anchor (TYPE_CHECK_ANCHOR_KEY): the two decoders check against different
+# contracts -- a REPL snippet against the Template body, a synthesized Callable tool
+# argument against its own parameter type.
 REPL_ANCHOR_KEY = "<repl_anchor>"
 
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
@@ -256,7 +256,12 @@ def _pydantic_type_code(ty):
             checked = evaluation._splice_repl(prior, value, anchor)
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)
-        return evaluation.compile(module, filename)
+        try:
+            # `parse` accepts more than `compile` does (e.g. `return` outside a
+            # function), so a compile-only error is rejected here, at decode.
+            return evaluation.compile(module, filename)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"source does not compile: {exc}") from exc
 
     return typing.Annotated[
         ty,
