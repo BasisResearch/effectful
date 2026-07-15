@@ -400,14 +400,22 @@ def _external_reads(source: str) -> set[str]:
     walks the real scope chain the compiler uses -- rather than re-deriving it over the
     AST, so a nested-scope local or parameter can never spuriously satisfy a module-
     level read (the false positive a flat all-scopes bind set would allow). ``source``
-    is always compilable here (it already decoded through ``Encodable[CodeType]``)."""
+    is always compilable here (it already decoded through ``Encodable[CodeType]``).
+
+    Intersected with the identifiers that actually appear in the source: symtable also
+    reports compiler-synthesized globals absent from the user's code (Python 3.14's
+    ``__conditional_annotations__`` from PEP 649, injected for any annotated statement),
+    which mypy never sees and so must not count as an unresolved read."""
+    names_in_source = {
+        n.id for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)
+    }
     reads: set[str] = set()
     stack = [symtable.symtable(source, "<repl>", "exec")]
     while stack:
         table = stack.pop()
         reads |= {s.get_name() for s in table.get_symbols() if s.is_global()}
         stack.extend(table.get_children())
-    return reads
+    return reads & names_in_source
 
 
 def _annotation_exprs(tree: ast.AST) -> "list[ast.expr]":
