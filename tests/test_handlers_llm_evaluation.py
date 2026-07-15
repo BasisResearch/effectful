@@ -837,6 +837,26 @@ def test_repl_check_except_handler_binds_its_name():
     assert _feasible([], snippet)
 
 
+def test_repl_check_read_of_cross_cell_rebound_name_declined():
+    """A name bound in more than one prior snippet was rebound across cells. mypy pins
+    it to its first-seen type in the concatenated module and rejects the later
+    reassignment, so its type there is stale w.r.t. the runtime's latest value -- a
+    later snippet that reads it (e.g. as the rebound type) would spuriously fail, so it
+    is declined. A name bound in only ONE prior snippet is unaffected."""
+    # x: int in cell 1, rebound to str in cell 2 (mypy keeps int); reading it declines.
+    assert repl_check_source(["x = 2", 'x = "s"'], "print(x.upper())") is None
+    # the rebind counts with multiplicity, so it also fires when both binds are in ONE
+    # prior cell (not just across cells).
+    assert repl_check_source(['x = 1\nx = "s"'], "print(x.upper())") is None
+    # a name bound once and then read is still checked (no over-broad decline).
+    assert _feasible(["x = 2"], "print(x + 1)")
+    # the counter pattern is not a rebind (`+=` isn't a fresh bind), so it stays feasible.
+    assert _feasible(["x = 0", "x += 1"], "print(x + 1)")
+    # an intra-snippet rebind in the CURRENT snippet is standard mypy (checked, not a
+    # prior-poisoning case), so it stays feasible.
+    assert _feasible([], 'x = 1\nx = "s"')
+
+
 def test_repl_check_rebind_is_conservatively_declined():
     """The rebind rule is deliberately conservative: it declines ANY reassignment
     of a prior module name -- for-loop, tuple-unpack, bare-annotation and plain

@@ -288,16 +288,19 @@ class _ModuleBinds(ast.NodeVisitor):
     binds at module scope too -- collected from every field but the body."""
 
     def __init__(self) -> None:
-        self.names: set[str] = set()
+        # A list, not a set: a name bound twice at module scope (`x = 1; x = "s"`) must
+        # count twice so the rebind tally in `repl_check_source` sees the retype. Extra
+        # counts only ever over-decline, so an inexact tally stays sound.
+        self.names: list[str] = []
 
     def visit_FunctionDef(self, n):  # bind the name; body is a nested scope, skip it
-        self.names.add(n.name)
+        self.names.append(n.name)
         self._walrus_outside_body(n)
 
     visit_AsyncFunctionDef = visit_FunctionDef
 
     def visit_ClassDef(self, n):
-        self.names.add(n.name)
+        self.names.append(n.name)
         self._walrus_outside_body(n)
 
     def visit_Lambda(
@@ -333,27 +336,27 @@ class _ModuleBinds(ast.NodeVisitor):
         ):
             return
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-            self.names.add(node.target.id)
+            self.names.append(node.target.id)
         for child in ast.iter_child_nodes(node):
             self._collect_walrus(child)
 
     def visit_NamedExpr(self, n):  # `(y := ...)` outside a comprehension binds here
         if isinstance(n.target, ast.Name):
-            self.names.add(n.target.id)
+            self.names.append(n.target.id)
         self.visit(n.value)
 
     def visit_MatchAs(self, n):  # `case ... as name` / bare `case name` capture
         if n.name:
-            self.names.add(n.name)
+            self.names.append(n.name)
         self.generic_visit(n)
 
     def visit_MatchStar(self, n):  # `case [*rest]`
         if n.name:
-            self.names.add(n.name)
+            self.names.append(n.name)
 
     def visit_MatchMapping(self, n):  # `case {**rest}`
         if n.rest:
-            self.names.add(n.rest)
+            self.names.append(n.rest)
         self.generic_visit(n)
 
     def visit_AugAssign(self, n):  # target is read-modify-write, not a fresh bind
@@ -361,26 +364,30 @@ class _ModuleBinds(ast.NodeVisitor):
 
     def visit_ExceptHandler(self, n):  # `except X as e` binds `e`; recurse the body
         if n.name:
-            self.names.add(n.name)
+            self.names.append(n.name)
         self.generic_visit(n)
 
     def visit_Import(self, n):
         for a in n.names:
-            self.names.add(a.asname or a.name.split(".")[0])
+            self.names.append(a.asname or a.name.split(".")[0])
 
     def visit_ImportFrom(self, n):
         for a in n.names:
-            self.names.add(a.asname or a.name)
+            self.names.append(a.asname or a.name)
 
     def visit_Name(self, n):  # only module-level Names reach here (no nested recursion)
         if isinstance(n.ctx, ast.Store):
-            self.names.add(n.id)
+            self.names.append(n.id)
 
 
 def _module_binds(tree: ast.AST) -> set[str]:
+    return set(_module_bind_counts(tree))
+
+
+def _module_bind_counts(tree: ast.AST) -> "collections.Counter[str]":
     v = _ModuleBinds()
     v.visit(tree)
-    return v.names
+    return collections.Counter(v.names)
 
 
 def _external_reads(source: str) -> set[str]:
@@ -494,8 +501,18 @@ def repl_check_source(prior: list[str], snippet: str) -> tuple[str, int, int] | 
     # from linecache need not end in "\n", and joining them raw would fuse two lines
     # into a syntax error (`a = 1` + `b = 2` -> `a = 1b = 2`).
     body = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
-    prior_tree = ast.parse(body)
-    prior_binds = _module_binds(prior_tree)
+    # Tally prior module binds WITH multiplicity: a name bound more than once across the
+    # prior -- whether in two cells or twice in one -- was rebound, and mypy pins it to its
+    # first-seen type in the concatenation, refusing the later reassignment, so its type
+    # there is stale w.r.t. the runtime's latest value.
+    prior_bind_counts: collections.Counter[str] = collections.Counter()
+    future = _imports_future_annotations(tree)
+    for p in prior:
+        p_tree = ast.parse(p)
+        prior_bind_counts += _module_bind_counts(p_tree)
+        future = future or _imports_future_annotations(p_tree)
+    prior_binds = set(prior_bind_counts)
+    rebound = {name for name, count in prior_bind_counts.items() if count > 1}
     snippet_binds = _module_binds(tree)
     if snippet_binds & prior_binds:  # cross-snippet rebind -> no-redef
         return None
@@ -505,14 +522,17 @@ def repl_check_source(prior: list[str], snippet: str) -> tuple[str, int, int] | 
     # #578/#577 runtime-type territory, so a read of a seed name declines (safe: never a
     # spurious name-defined) rather than being checked. This means the first snippet of a
     # session -- which typically reads seeded context -- is usually skipped, by design.
-    if _external_reads(snippet) - snippet_binds - prior_binds - _BUILTIN_NAMES:
+    reads = _external_reads(snippet)
+    if reads - snippet_binds - prior_binds - _BUILTIN_NAMES:
+        return None
+    # A read of a name already rebound across prior cells is also declined: mypy's stale
+    # type for it (above) would spuriously reject a use valid for its latest runtime value.
+    if reads & rebound:
         return None
     # Deferred annotations (string forward-refs, or any annotation under a module-active
-    # `from __future__ import annotations`) hold names mypy resolves but the runtime never
-    # evaluates and `_external_reads` can't see -> an unresolved one would spuriously raise.
-    future = _imports_future_annotations(prior_tree) or _imports_future_annotations(
-        tree
-    )
+    # `from __future__ import annotations` -- `future`, computed above across prior + this
+    # snippet) hold names mypy resolves but the runtime never evaluates and `_external_reads`
+    # can't see -> an unresolved one would spuriously raise.
     if _has_deferred_annotation(tree, future):
         return None
     n_lines = snippet.count("\n") + (0 if snippet.endswith("\n") else 1)
