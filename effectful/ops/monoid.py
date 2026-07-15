@@ -278,37 +278,6 @@ def _is_monoid_delta(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.delta
 
 
-def _leaf_vars(expr: Any) -> set[Operation]:
-    """The free variables that appear as nullary leaves (``var()``) in ``expr``.
-
-    Unlike :func:`fvsof`, this excludes operator/function symbols (``__eq__``,
-    getitem, a factor's callable head, ...) and keeps only the value-carrying
-    leaf variables -- every variable occurrence is a nullary call, so this is
-    exactly the set of variables the expression *mentions*. Used to decide which
-    factors a mask conjunct actually constrains.
-    """
-    result: set[Operation] = set()
-
-    def walk(e: Any) -> None:
-        if isinstance(e, Term):
-            if not e.args and not e.kwargs:
-                result.add(e.op)
-            else:
-                for a in e.args:
-                    walk(a)
-                for v in e.kwargs.values():
-                    walk(v)
-        elif isinstance(e, tuple | list):
-            for x in e:
-                walk(x)
-        elif isinstance(e, Mapping):
-            for x in e.values():
-                walk(x)
-
-    walk(expr)
-    return result
-
-
 class GetitemDelta(ObjectInterpretation):
     """M.delta(i, v)[q] ≡ M.mask(v, i == q)"""
 
