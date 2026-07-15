@@ -621,16 +621,13 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
-        # Ordered sources of the snippets that have run, in order -- the accumulated module
-        # a later snippet's decode-time type check splices into the Template body (linecache
-        # keys snippets by random <exec_code-{uuid}> filenames and retains no ordered key
-        # list, so the module can't be rebuilt from it). Single-session state -- not the
-        # multi-session self._buffers smell of #687.
+        # Sources of the actual error-free executed snippets, in order -- the accumulated
+        # module a later snippet's decode-time type check splices into the Template body.
         self._prior_snippets: list[str] = []
 
     @property
     def prior_snippets(self) -> list[str]:
-        """Sources of the snippets that have run so far, in order -- the type-check
+        """Sources of the actual error-free executed snippets, in order -- the type-check
         context the `Encodable[CodeType]` decoder splices before the current snippet."""
         return self._prior_snippets
 
