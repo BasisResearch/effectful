@@ -289,45 +289,51 @@ def _splice_repl(
     prior: list[str], snippet: str, anchor: Any
 ) -> tuple[str, int, int] | None:
     """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
-    ``snippet`` -- into the anchor Template's body, in its real module source, and
-    return the modified source with the ``[lo, hi]`` line span of the current snippet.
+    ``snippet`` -- into the anchor Template's body, in its real module source, and return
+    the modified source with the ``[lo, hi]`` line span of the whole spliced body.
 
     The REPL code becomes the Template function's body at its real (possibly nested)
-    position, so the Template's parameters and enclosing scope -- i.e. the session's
-    seed env -- are in scope, and each snippet sees the ones before it (they are
-    function locals). No ``return`` is appended: the REPL code doesn't produce the
-    Template's declared type, and that contract is waived by ``lenient`` type checking.
+    position, so the Template's parameters and enclosing scope -- i.e. the session's seed
+    env -- are in scope, and each snippet sees the ones before it (they are function
+    locals). No ``return`` is appended; the REPL code doesn't produce the Template's
+    declared type, and that contract is waived by ``lenient`` type checking. The region is
+    the whole accumulated body (as ``splice_into_source`` does for a synthesized def), so
+    an error in an earlier cell is re-reported until the session fixes it.
 
-    Returns ``None`` when the source can't be recovered or the current snippet has no
-    statements to check.
+    Returns ``None`` only when the accumulated code is empty (nothing to check). Raises
+    ``RuntimeError`` if the Template's source can't be recovered or has drifted -- a
+    Template always has recoverable source, so that is a broken type-check context, not a
+    benign skip (contrast ``splice_into_source``, whose Callable anchor may be sourceless).
     """
-    n_current = len(ast.parse(snippet).body)
-    if n_current == 0:
+    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
+    body = ast.parse(cumulative).body
+    if not body:  # all snippets empty/comment-only: nothing to check, no valid body
         return None
+    # A Template always has recoverable source, so -- unlike the Callable path, where a
+    # sourceless anchor is a benign skip -- an unrecoverable anchor here means the
+    # type-check context is broken. `_recover_template_def` returns None only for a
+    # sourceless function (REPL/exec/notebook-defined, not a Template) and raises on source
+    # drift; both are real problems, so fail loudly rather than silently run code unchecked.
     recovered = _recover_template_def(anchor)
     if recovered is None:
-        return None
+        raise RuntimeError(
+            f"cannot recover source for the REPL Template anchor {anchor!r}"
+        )
     module_ast, template_def = recovered
+    template_def.body = body
 
-    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
-    template_def.body = ast.parse(cumulative).body
-
-    # mypy reports line numbers in the coordinates of the unparsed source; the current
-    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps
-    # def order, so the template def is at the same walk index after the round-trip.
+    # mypy reports line numbers in the coordinates of the unparsed source; take the spliced
+    # body's span there. ast.unparse keeps def order, so the template def is at the same
+    # walk index after the round-trip. Region is the body only, not the def header (mirrors
+    # `splice_into_source`).
     def_index = _def_nodes(module_ast).index(template_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo = spliced.body[-n_current].lineno
-    hi = spliced.body[-1].end_lineno or lo
+    lo = spliced.body[0].lineno
+    hi = spliced.end_lineno or lo
     return checked_source, lo, hi
 
 
-# Builtin names mypy resolves at module scope. dir(builtins) also contains module
-# dunders (__loader__/__spec__/__package__) that mypy does NOT resolve -- including
-# them would let a read of __loader__ pass the gate and get a spurious name-defined.
-# Non-dunder builtins are a clean subset of mypy's builtin scope; over-declining the
-# rare dunder read is cheap under report-not-gate, a spurious error is not.
 def _mypy_check_region(
     source: str,
     lo: int | None = None,
@@ -341,11 +347,10 @@ def _mypy_check_region(
     reports only the region's errors (the whole source when the region is
     omitted), so pre-existing errors elsewhere in `source` never block synthesis.
 
-    When ``lenient`` (for REPL code spliced into a Template body): allow a variable
-    to be redefined with a new type across cells (``--allow-redefinition``), allow a
-    def/class/import to be redefined (``no-redef``), and don't require the body to
-    return the Template's declared type (``return``/``empty-body``). These are normal
-    for an incrementally-built REPL, not real errors.
+    When ``lenient`` (for REPL code spliced into a Template body): allow a variable to be
+    redefined with a new type across cells (``--allow-redefinition``), a def/class/import
+    to be redefined (``no-redef``), and the body not to return the Template's declared type
+    (``return``/``empty-body``). All normal for an incrementally-built REPL, not real errors.
     """
     lenient_flags = (
         [
@@ -669,11 +674,10 @@ class ReplSession(code.InteractiveInterpreter):
         # cell may rebind/redefine names and need not return the Template's type.
         snippet = "".join(linecache.getlines(code.co_filename))
         if self._anchor is not None:
-            try:
-                checked = _splice_repl(self._prior_snippets, snippet, self._anchor)
-            except RuntimeError as e:  # source drifted since import; skip, don't abort
-                checked = None
-                logger.warning("REPL type-check skipped: %s", e)
+            # `_splice_repl` raises on a broken type-check context (source drift, or an
+            # unrecoverable Template anchor) -- let it propagate rather than silently run
+            # unchecked. It returns None only for an empty snippet (nothing to check).
+            checked = _splice_repl(self._prior_snippets, snippet, self._anchor)
             if checked is not None:
                 try:
                     type_check(*checked, lenient=True)

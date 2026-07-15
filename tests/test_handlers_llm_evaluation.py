@@ -719,8 +719,24 @@ def test_repl_rebind_across_cells_is_lenient():
 
 def test_repl_body_need_not_return_template_type():
     """REPL code isn't a function returning the Template's declared type; the return
-    contract is waived, so a body with no matching return is clean."""
+    contract is waived (``--disable-error-code=return``), so a body with no matching
+    return is clean."""
     assert not _repl_raises([], "y = sum(readings)\nprint(y)")
+
+
+def test_repl_global_and_nonlocal_are_not_false_positives():
+    """`global`/`nonlocal` are legal REPL code; spliced into the Template body they do
+    not produce a spurious diagnostic."""
+    assert not _repl_raises(
+        ["counter = 0"], "def bump():\n    global counter\n    counter += 1\nbump()"
+    )
+
+
+def test_repl_read_of_cross_cell_rebound_name_is_lenient():
+    """A name rebound to a new type across cells, then read, is clean -- mypy narrows to
+    the latest binding under `--allow-redefinition`, so no spurious error on the read.
+    (The old module-scope gate had to decline this explicitly.)"""
+    assert not _repl_raises(['x = "s"', "x = 5"], "print(x + 1)")
 
 
 def test_repl_illtyped_but_runnable_snippet_is_caught():
@@ -729,28 +745,34 @@ def test_repl_illtyped_but_runnable_snippet_is_caught():
     assert _repl_raises([], "n: int = 'oops'\nprint(n)")
 
 
-def test_repl_check_region_is_the_current_snippet():
-    """Only the current snippet's lines are reported: an error confined to a prior
-    snippet is out of region (not raised); the same error in the current snippet is
-    in region (raised)."""
-    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")
-    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")
+def test_repl_check_reports_across_the_whole_cumulative_body():
+    """The region is the whole accumulated session body (like ``splice_into_source``), so
+    an error is reported whether it is in the current cell or an earlier one -- the model
+    keeps seeing it until a later cell fixes it. (Errors in the Template's own module,
+    outside its body, stay out of region.)"""
+    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell
+    assert _repl_raises(
+        ["bad: int = 'x'"], "ok = 1\nprint(ok)"
+    )  # earlier cell, re-reported
 
 
 # --- exec_code behavior with an anchor: report-not-gate ---
 
 
-def test_repl_exec_code_reports_illtyped_but_runs_and_survives():
-    """With an anchor, an ill-typed-but-runnable snippet writes a diagnostic to
-    stderr yet still runs, and the session survives -- a later valid snippet
-    reading the seed still produces its value."""
+def test_repl_exec_code_illtyped_snippet_runs_and_session_survives():
+    """report-not-gate: an ill-typed-but-runnable snippet surfaces a diagnostic in its
+    output yet still runs (its binding takes effect), and the session survives -- a
+    later valid snippet reading the seed still produces its value. (That the check
+    itself raises is pinned by ``_repl_raises``; here the point is it never blocks
+    execution.)"""
     with handler(UnsafeEvalProvider()):
         session = ReplSession({"readings": [1, 2, 3]}, anchor=_repl_anchor)
-        before = len(session.stderr.getvalue())
-        session.exec_code(_code("bad: int = 'x'"))
-        assert len(session.stderr.getvalue()) > before  # a type error was reported
+        out = session.exec_code(_code("bad: int = 'x'"))  # ill-typed, no print
+        assert out != ""  # the diagnostic was surfaced to the caller, not swallowed
         assert session.locals["bad"] == "x"  # ... and the snippet still ran
-        assert session.exec_code(_code("print(sum(readings))")) == "6\n"
+        assert (
+            session.exec_code(_code("print(sum(readings))")) == "6\n"
+        )  # session alive
 
 
 def test_repl_exec_code_valid_snippet_is_not_reported():
