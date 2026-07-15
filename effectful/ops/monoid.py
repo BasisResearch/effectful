@@ -1816,12 +1816,11 @@ multiplicative ``M``)::
 The invariants, grouped by the rules that establish them:
 
 A. Sums are factored over products (the einsum shape).
-   - Stream-quantified sums are factored, not expanded: under any
-     ``R.reduce(M.plus(...), streams)`` every remaining factor mentions a
-     reduced stream variable. :class:`ReduceFactorization` pulls stream-invariant
-     factors out as outer product factors; :class:`ReduceSplit` confines a stream
-     to just the summands that use it. So no factor sits under a reduce whose
-     streams it does not use.
+   - :class:`Factor` pulls stream-invariant product factors into outer product
+     factors. :class:`ReduceSplit` distributes a commutative reduction over a
+     same-monoid ``plus``; each resulting reduction initially retains the full
+     stream mapping, after which factorization and stream-elimination rules may
+     simplify streams unused by an individual summand.
    - Explicit (materialized) products-of-sums are expanded to sums-of-products
      by :class:`PlusDistr`. (This is the opposite direction from factorization,
      but it acts on explicit ``plus`` terms, never on ``reduce`` nodes, so the
@@ -1876,23 +1875,25 @@ The rules run as a deterministic, priority-ordered, innermost normalization
 re-enters the interpretation to a fixpoint). For a fixed *syntactic* input the
 result is therefore unique.
 
-The normal form is **not canonical**, however: semantically equal but
+The normal form is **not fully canonical**, however: semantically equal but
 differently-presented inputs can reach distinct (still semantically equal)
-forms. There is no AC-normalization (commutative ``plus`` arguments are never
-sorted and duplicate-elimination is disabled -- see the commented-out
-:class:`PlusDups`/:class:`PlusConsecutiveDups`), and the variable-elimination
-order depends on ``streams`` insertion order via
-:func:`choose_contraction`/:func:`outer_stream`. So summand order, stream
-insertion order, and factor order all survive normalization. Downstream code
-relies only on the *semantic* normal form (the result is ultimately evaluated to
-a concrete array), not on syntactic canonicity.
+forms. Commutative ``plus`` arguments are sorted by :class:`PlusOrder`, and
+consecutive syntactically equal arguments are removed for idempotent monoids by
+:class:`PlusConsecutiveDups`. This provides limited AC normalization, but the
+sort key uses object identity to break syntactic-hash ties, and duplicates are
+preserved for non-idempotent monoids. Moreover, variable-elimination order
+depends on ``streams`` insertion order via
+:func:`choose_contraction`/:func:`outer_stream`, while argument order remains
+significant for noncommutative monoids. Downstream code therefore relies only
+on the *semantic* normal form (the result is ultimately evaluated to a concrete
+array), not on full syntactic canonicity.
 
 Termination rests on per-family progress (each "lowering" rule strictly
 consumes a resource -- a cartesian/weighted/union/array/singleton stream, a
 nested reduce/mask/delta, or a liftable factor) plus redex-shape disjointness
-that keeps the families from cycling (e.g. :class:`ReduceSplit` deliberately
-does not fire when a stream is used by *every* summand, leaving those for
-:class:`ReduceDistributeCartesianProduct`/:class:`ReduceFactorization`). There
+that keeps the families from cycling (e.g. :class:`ReduceUnfactor` is kept out
+of ``NormalizeIntp`` because it would form a rewrite cycle with
+:class:`Factor`). There
 is no single global measure and no confluence theorem: the system is
 normalizing by construction, so a new rule that overlaps an existing redex shape
 can introduce a loop or shift which normal form is reached. Note also that
