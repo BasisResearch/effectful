@@ -237,7 +237,7 @@ class _ExtensiblePartialInvolution[S](_ExtensibleBinaryRelation[S, S]):
         return None
 
 
-distributes_over = _ExtensibleBinaryRelation(
+distributes_over: _ExtensibleBinaryRelation[Monoid, Monoid] = _ExtensibleBinaryRelation(
     (Max, Min),
     (Min, Max),
     (Sum, Min),
@@ -1504,7 +1504,7 @@ class ReduceWhereEqualityPeel(ObjectInterpretation):
         )
 
 
-complement = _ExtensiblePartialInvolution(
+complement: _ExtensiblePartialInvolution[Operation] = _ExtensiblePartialInvolution(
     (_NumberTerm.__ne__, _NumberTerm.__eq__),
 )
 

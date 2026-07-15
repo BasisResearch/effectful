@@ -54,6 +54,8 @@ for a, b in {
     (jnp.less_equal, jnp.greater_equal),
     (jnp.equal, jnp.not_equal),
 }:
+    assert isinstance(a, Operation)
+    assert isinstance(b, Operation)
     complement.register(a, b)
 
 
