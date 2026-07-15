@@ -225,9 +225,15 @@ def _pydantic_type_code(ty):
             )
         filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
         try:
-            return evaluation.compile(evaluation.parse(value, filename), filename)
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"source does not compile: {exc}") from exc
+            module = evaluation.parse(value, filename)
+            # Reject `from __future__ import ...` and star imports here, at decode: they
+            # are `SyntaxError` once nested in a function body, so code containing them
+            # can't be spliced into the Template body for type checking. Rejecting at the
+            # decode/compile gate keeps such code from ever becoming a runnable snippet.
+            evaluation.scan_non_nestable(module)
+            return evaluation.compile(module, filename)
+        except (SyntaxError, ValueError, TypeError) as exc:
+            raise ValueError(f"source is not valid REPL code: {exc}") from exc
 
     return typing.Annotated[
         ty,

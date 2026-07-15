@@ -11,7 +11,6 @@ import linecache
 import logging
 import os
 import shutil
-import symtable
 import sys
 import tempfile
 import typing
@@ -49,7 +48,13 @@ def parse(source: str, filename: str) -> ast.Module:
 
 
 @defop
-def type_check(source: str, lo: int | None = None, hi: int | None = None) -> None:
+def type_check(
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    *,
+    lenient: bool = False,
+) -> None:
     """
     Type check a module source, reporting only diagnostics inside a line region.
 
@@ -59,6 +64,10 @@ def type_check(source: str, lo: int | None = None, hi: int | None = None) -> Non
     lo, hi: Inclusive line range within ``source`` to report errors from; when
         omitted, the whole source is in scope. Errors outside the region are
         ignored so unrelated pre-existing code never blocks synthesis.
+    lenient: when True, relax mypy for incrementally-built REPL code spliced into a
+        Template body -- allow redefinition (a cell may rebind or redefine a name)
+        and don't require the body to satisfy the Template's return type. Off (strict)
+        for synthesized ``Callable`` bodies, which must honor their signature.
 
     Returns None, raises TypeError on an in-region failure.
     """
@@ -207,28 +216,10 @@ def splice_into_source(
         )
     target_name = last.name
 
-    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
-    # Recover the module source via fn's own filename -- a real path or a
-    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
-    # notebook templates; linecache.getlines reads real files from disk too.
-    try:
-        source_file = inspect.getsourcefile(fn)
-    except TypeError:
-        source_file = None
-    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
-    if not module_source:
-        logger.warning("skipping type check: cannot recover source for %r", fn)
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
         return None
-    module_ast = ast.parse(module_source)
-
-    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
-    if template_def is None:
-        # The source drifted from what fn was compiled from (e.g. the file was edited after
-        # import).
-        raise RuntimeError(
-            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
-            f"source (source drifted since import?)"
-        )
+    module_ast, template_def = recovered
 
     # Splice in place: replace the body with the generated body and bind the
     # target against the (source) return annotation via `return`. Decorators are
@@ -262,295 +253,86 @@ def splice_into_source(
     return checked_source, lo, hi
 
 
+def _recover_template_def(
+    anchor: Any,
+) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """Locate the anchor Template's own ``def`` in its real module source.
+
+    Returns the parsed module AST and the def node, or ``None`` when the source can't
+    be recovered (REPL/exec/notebook Template with no linecache entry -- the caller
+    skips rather than guesses). Raises ``RuntimeError`` on source drift (source
+    recovered but the def no longer sits where ``fn`` was compiled from).
+    """
+    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
+    # Recover the module source via fn's own filename -- a real path or a
+    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
+    # notebook templates; linecache.getlines reads real files from disk too.
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except TypeError:
+        source_file = None
+    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    if not module_source:
+        logger.warning("skipping type check: cannot recover source for %r", fn)
+        return None
+    module_ast = ast.parse(module_source)
+    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
+    if template_def is None:
+        raise RuntimeError(
+            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
+            f"source (source drifted since import?)"
+        )
+    return module_ast, template_def
+
+
+def _splice_repl(
+    prior: list[str], snippet: str, anchor: Any
+) -> tuple[str, int, int] | None:
+    """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
+    ``snippet`` -- into the anchor Template's body, in its real module source, and
+    return the modified source with the ``[lo, hi]`` line span of the current snippet.
+
+    The REPL code becomes the Template function's body at its real (possibly nested)
+    position, so the Template's parameters and enclosing scope -- i.e. the session's
+    seed env -- are in scope, and each snippet sees the ones before it (they are
+    function locals). No ``return`` is appended: the REPL code doesn't produce the
+    Template's declared type, and that contract is waived by ``lenient`` type checking.
+
+    Returns ``None`` when the source can't be recovered or the current snippet has no
+    statements to check.
+    """
+    n_current = len(ast.parse(snippet).body)
+    if n_current == 0:
+        return None
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+
+    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
+    template_def.body = ast.parse(cumulative).body
+
+    # mypy reports line numbers in the coordinates of the unparsed source; the current
+    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps
+    # def order, so the template def is at the same walk index after the round-trip.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.body[-n_current].lineno
+    hi = spliced.body[-1].end_lineno or lo
+    return checked_source, lo, hi
+
+
 # Builtin names mypy resolves at module scope. dir(builtins) also contains module
 # dunders (__loader__/__spec__/__package__) that mypy does NOT resolve -- including
 # them would let a read of __loader__ pass the gate and get a spurious name-defined.
 # Non-dunder builtins are a clean subset of mypy's builtin scope; over-declining the
 # rare dunder read is cheap under report-not-gate, a spurious error is not.
-_BUILTIN_NAMES = frozenset(n for n in dir(builtins) if not n.startswith("_"))
-
-
-class _ModuleBinds(ast.NodeVisitor):
-    """Names freshly bound at MODULE scope: recurse control-flow (if/for/while/with/
-    try/match) but HALT at nested scopes (def/class/lambda/comprehensions), so nested
-    locals aren't counted. Collects the names that would `no-redef` a prior module bind;
-    used only for the rebind check, so the AugAssign exclusion (a `+=` target is not a
-    fresh bind) has to be per-*node* (a name both `+=`-ed and plainly assigned is still a
-    fresh bind) -- which symtable's scope-level ``is_assigned`` cannot express. So this
-    stays hand-rolled over the AST while the read side (``_external_reads``) delegates
-    scope resolution to symtable. `del`/`global`/`nonlocal` targets need no override:
-    their targets aren't `Store` ``Name``s, so ``visit_Name`` already skips them.
-
-    walrus (``:=``) and match captures leak past a comprehension / into the enclosing
-    scope, so they ARE module binds even though the comprehension halts normal
-    recursion. A def/class also *evaluates* its decorators, default arguments and
-    annotations in THIS scope (only its body is the nested scope), so a walrus there
-    binds at module scope too -- collected from every field but the body."""
-
-    def __init__(self) -> None:
-        # A list, not a set: a name bound twice at module scope (`x = 1; x = "s"`) must
-        # count twice so the rebind tally in `repl_check_source` sees the retype. Extra
-        # counts only ever over-decline, so an inexact tally stays sound.
-        self.names: list[str] = []
-
-    def visit_FunctionDef(self, n):  # bind the name; body is a nested scope, skip it
-        self.names.append(n.name)
-        self._walrus_outside_body(n)
-
-    visit_AsyncFunctionDef = visit_FunctionDef
-
-    def visit_ClassDef(self, n):
-        self.names.append(n.name)
-        self._walrus_outside_body(n)
-
-    def visit_Lambda(
-        self, n
-    ):  # own scope; a walrus in its default binds here, not there
-        self._collect_walrus_in(*n.args.defaults, *(d for d in n.args.kw_defaults if d))
-
-    def visit_ListComp(self, n):
-        # A comprehension is its own scope (its `for` targets don't leak), but a walrus
-        # inside it binds in THIS scope.
-        self._collect_walrus(n)
-
-    visit_SetComp = visit_DictComp = visit_GeneratorExp = visit_ListComp
-
-    def _walrus_outside_body(self, n) -> None:
-        # A def/class evaluates its decorators, defaults and annotations in the enclosing
-        # (here module) scope, so walruses there bind at module scope; the body is the
-        # nested scope and is skipped.
-        self._collect_walrus_in(*(v for f, v in ast.iter_fields(n) if f != "body"))
-
-    def _collect_walrus_in(self, *nodes) -> None:
-        for node in nodes:
-            for item in node if isinstance(node, list) else [node]:
-                if isinstance(item, ast.AST):
-                    self._collect_walrus(item)
-
-    def _collect_walrus(self, node) -> None:
-        # Node-inclusive: a walrus may be the node itself (`x=(w := 5)` -> the default IS
-        # the NamedExpr). Descend through everything but nested function scopes, through
-        # which a walrus does NOT leak.
-        if isinstance(
-            node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef | ast.Lambda
-        ):
-            return
-        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
-            self.names.append(node.target.id)
-        for child in ast.iter_child_nodes(node):
-            self._collect_walrus(child)
-
-    def visit_NamedExpr(self, n):  # `(y := ...)` outside a comprehension binds here
-        if isinstance(n.target, ast.Name):
-            self.names.append(n.target.id)
-        self.visit(n.value)
-
-    def visit_MatchAs(self, n):  # `case ... as name` / bare `case name` capture
-        if n.name:
-            self.names.append(n.name)
-        self.generic_visit(n)
-
-    def visit_MatchStar(self, n):  # `case [*rest]`
-        if n.name:
-            self.names.append(n.name)
-
-    def visit_MatchMapping(self, n):  # `case {**rest}`
-        if n.rest:
-            self.names.append(n.rest)
-        self.generic_visit(n)
-
-    def visit_AugAssign(self, n):  # target is read-modify-write, not a fresh bind
-        self.visit(n.value)
-
-    def visit_ExceptHandler(self, n):  # `except X as e` binds `e`; recurse the body
-        if n.name:
-            self.names.append(n.name)
-        self.generic_visit(n)
-
-    def visit_Import(self, n):
-        for a in n.names:
-            self.names.append(a.asname or a.name.split(".")[0])
-
-    def visit_ImportFrom(self, n):
-        for a in n.names:
-            self.names.append(a.asname or a.name)
-
-    def visit_Name(self, n):  # only module-level Names reach here (no nested recursion)
-        if isinstance(n.ctx, ast.Store):
-            self.names.append(n.id)
-
-
-def _module_binds(tree: ast.AST) -> set[str]:
-    return set(_module_bind_counts(tree))
-
-
-def _module_bind_counts(tree: ast.AST) -> "collections.Counter[str]":
-    v = _ModuleBinds()
-    v.visit(tree)
-    return collections.Counter(v.names)
-
-
-def _external_reads(source: str) -> set[str]:
-    """Names ``source`` looks up in the module/global namespace at runtime -- module-
-    level reads AND nested free reads that escape their local scope chain (a closure's
-    read of an enclosing local does NOT escape; a nested read of an unbound name does),
-    plus read-modify-write (``+=``) and ``del`` targets.
-
-    Delegates the lexical scope resolution to ``symtable.Symbol.is_global`` -- which
-    walks the real scope chain the compiler uses -- rather than re-deriving it over the
-    AST, so a nested-scope local or parameter can never spuriously satisfy a module-
-    level read (the false positive a flat all-scopes bind set would allow). ``source``
-    is always compilable here (it already decoded through ``Encodable[CodeType]``).
-
-    Intersected with the identifiers that actually appear in the source: symtable also
-    reports compiler-synthesized globals absent from the user's code (Python 3.14's
-    ``__conditional_annotations__`` from PEP 649, injected for any annotated statement),
-    which mypy never sees and so must not count as an unresolved read."""
-    names_in_source = {
-        n.id for n in ast.walk(ast.parse(source)) if isinstance(n, ast.Name)
-    }
-    reads: set[str] = set()
-    stack = [symtable.symtable(source, "<repl>", "exec")]
-    while stack:
-        table = stack.pop()
-        reads |= {s.get_name() for s in table.get_symbols() if s.is_global()}
-        stack.extend(table.get_children())
-    return reads & names_in_source
-
-
-def _annotation_exprs(tree: ast.AST) -> "list[ast.expr]":
-    """Every annotation expression in the snippet: function parameter and return
-    annotations, and variable (``AnnAssign``) annotations."""
-    out: list[ast.expr] = []
-    for n in ast.walk(tree):
-        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef):
-            a = n.args
-            out += [
-                arg.annotation
-                for arg in (*a.posonlyargs, *a.args, *a.kwonlyargs, a.vararg, a.kwarg)
-                if arg and arg.annotation
-            ]
-            if n.returns:
-                out.append(n.returns)
-        elif isinstance(n, ast.AnnAssign):
-            out.append(n.annotation)
-    return out
-
-
-def _is_subscript_of(node: ast.Subscript, name: str) -> bool:
-    v = node.value
-    return (isinstance(v, ast.Name) and v.id == name) or (
-        isinstance(v, ast.Attribute) and v.attr == name
-    )
-
-
-def _has_string_forward_ref(node: ast.expr) -> bool:
-    """A string used in *type* position within an annotation (a forward ref mypy resolves
-    but the interpreter never evaluates). String *values* inside ``Literal[...]`` and the
-    metadata of ``Annotated[T, ...]`` are not forward refs and are skipped, so common
-    ``Literal["a", "b"]`` / ``Annotated[int, "doc"]`` annotations aren't over-declined."""
-    if isinstance(node, ast.Constant):
-        return isinstance(node.value, str)
-    if isinstance(node, ast.Subscript):
-        if _is_subscript_of(node, "Literal"):
-            return False  # every Literal arg is a value, never a type
-        if _is_subscript_of(node, "Annotated"):
-            elts = (
-                node.slice.elts if isinstance(node.slice, ast.Tuple) else [node.slice]
-            )
-            return bool(elts) and _has_string_forward_ref(elts[0])  # only T is a type
-        return _has_string_forward_ref(node.value) or _has_string_forward_ref(
-            node.slice
-        )
-    return any(
-        _has_string_forward_ref(c)
-        for c in ast.iter_child_nodes(node)
-        if isinstance(c, ast.expr)
-    )
-
-
-def _has_deferred_annotation(tree: ast.AST, future_annotations: bool) -> bool:
-    """True if the snippet carries an annotation mypy resolves but the interpreter never
-    evaluates -- a *string* forward-ref (``x: "Foo"``), or *any* annotation once ``from
-    __future__ import annotations`` is active in the module. mypy raises ``name-defined``
-    on an unresolved name in such an annotation while the code runs fine, and
-    ``_external_reads`` can't see those names (``symtable`` doesn't evaluate string or
-    deferred annotations), so decline rather than risk that spurious diagnostic. Bare,
-    eager annotations need no special case: the interpreter evaluates them too, so an
-    unresolved one is a real ``NameError`` that ``_external_reads`` already declines."""
-    return any(
-        future_annotations or _has_string_forward_ref(ann)
-        for ann in _annotation_exprs(tree)
-    )
-
-
-def _imports_future_annotations(tree: ast.AST) -> bool:
-    return any(
-        isinstance(n, ast.ImportFrom)
-        and n.module == "__future__"
-        and any(a.name == "annotations" for a in n.names)
-        for n in ast.walk(tree)
-    )
-
-
-def repl_check_source(prior: list[str], snippet: str) -> tuple[str, int, int] | None:
-    """Assemble `prior + snippet` and the [lo, hi] line span of `snippet` for
-    ``type_check``, or ``None`` when checking it would spuriously fail: it freshly
-    rebinds a name a prior snippet bound (no-redef), or reads a name not resolvable
-    from prior / its own binds / builtins (name-defined). Both are normal in a REPL,
-    neither a real type error.
-
-    The REPL is a module built incrementally, so earlier snippets' source is the
-    type-check context. This static decision runs first; the source is assembled and
-    checked only when it holds.
-    """
-    tree = ast.parse(snippet)
-    # Newline-terminate each prior snippet before concatenating: snippets recovered
-    # from linecache need not end in "\n", and joining them raw would fuse two lines
-    # into a syntax error (`a = 1` + `b = 2` -> `a = 1b = 2`).
-    body = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
-    # Tally prior module binds WITH multiplicity: a name bound more than once across the
-    # prior -- whether in two cells or twice in one -- was rebound, and mypy pins it to its
-    # first-seen type in the concatenation, refusing the later reassignment, so its type
-    # there is stale w.r.t. the runtime's latest value.
-    prior_bind_counts: collections.Counter[str] = collections.Counter()
-    future = _imports_future_annotations(tree)
-    for p in prior:
-        p_tree = ast.parse(p)
-        prior_bind_counts += _module_bind_counts(p_tree)
-        future = future or _imports_future_annotations(p_tree)
-    prior_binds = set(prior_bind_counts)
-    rebound = {name for name, count in prior_bind_counts.items() if count > 1}
-    snippet_binds = _module_binds(tree)
-    if snippet_binds & prior_binds:  # cross-snippet rebind -> no-redef
-        return None
-    # A read is resolvable iff it is bound at module scope (in the snippet or a prior
-    # one) or is a builtin; anything else needs the seed env. The seed env (the session's
-    # lexical context, e.g. `readings`) is deliberately NOT threaded in: declaring it is
-    # #578/#577 runtime-type territory, so a read of a seed name declines (safe: never a
-    # spurious name-defined) rather than being checked. This means the first snippet of a
-    # session -- which typically reads seeded context -- is usually skipped, by design.
-    reads = _external_reads(snippet)
-    if reads - snippet_binds - prior_binds - _BUILTIN_NAMES:
-        return None
-    # A read of a name already rebound across prior cells is also declined: mypy's stale
-    # type for it (above) would spuriously reject a use valid for its latest runtime value.
-    if reads & rebound:
-        return None
-    # Deferred annotations (string forward-refs, or any annotation under a module-active
-    # `from __future__ import annotations` -- `future`, computed above across prior + this
-    # snippet) hold names mypy resolves but the runtime never evaluates and `_external_reads`
-    # can't see -> an unresolved one would spuriously raise.
-    if _has_deferred_annotation(tree, future):
-        return None
-    n_lines = snippet.count("\n") + (0 if snippet.endswith("\n") else 1)
-    lo = body.count("\n") + 1
-    hi = lo + n_lines - 1
-    return body + snippet, lo, hi
-
-
 def _mypy_check_region(
-    source: str, lo: int | None = None, hi: int | None = None
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    lenient: bool = False,
 ) -> None:
     """Run mypy on `source` and raise ``TypeError`` if any error diagnostic falls
     within ``[lo, hi]``; raise ``RuntimeError`` if mypy itself fails to run.
@@ -558,7 +340,23 @@ def _mypy_check_region(
     Applies mypy to whatever source it's given -- spliced or otherwise -- and
     reports only the region's errors (the whole source when the region is
     omitted), so pre-existing errors elsewhere in `source` never block synthesis.
+
+    When ``lenient`` (for REPL code spliced into a Template body): allow a variable
+    to be redefined with a new type across cells (``--allow-redefinition``), allow a
+    def/class/import to be redefined (``no-redef``), and don't require the body to
+    return the Template's declared type (``return``/``empty-body``). These are normal
+    for an incrementally-built REPL, not real errors.
     """
+    lenient_flags = (
+        [
+            "--allow-redefinition",
+            "--disable-error-code=no-redef",
+            "--disable-error-code=return",
+            "--disable-error-code=empty-body",
+        ]
+        if lenient
+        else []
+    )
     # Run mypy on the source as a temp file (not --command: it hits an argv
     # length limit on large modules). Each call gets an isolated temp dir + cache
     # so parallel decodes don't share -- and deadlock on -- mypy's SQLite cache.
@@ -576,6 +374,7 @@ def _mypy_check_region(
                 "--output=json",
                 "--ignore-missing-imports",
                 "--disable-error-code=import-untyped",
+                *lenient_flags,
             ]
         )
     finally:
@@ -603,9 +402,14 @@ class UnsafeEvalProvider(ObjectInterpretation):
 
     @implements(type_check)
     def type_check(
-        self, source: str, lo: int | None = None, hi: int | None = None
+        self,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        _mypy_check_region(source, lo, hi)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -669,9 +473,14 @@ class RestrictedEvalProvider(ObjectInterpretation):
 
     @implements(type_check)
     def type_check(
-        self, source: str, lo: int | None = None, hi: int | None = None
+        self,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        _mypy_check_region(source, lo, hi)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -781,7 +590,7 @@ class ReplSession(code.InteractiveInterpreter):
     stdout: io.StringIO
     stderr: io.StringIO
 
-    def __init__(self, env: MutableMapping[str, Any]):
+    def __init__(self, env: MutableMapping[str, Any], anchor: Any = None):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
         # rejected), and a REPL needs a single persistent namespace so a function
@@ -804,7 +613,13 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
-        # Ordered prior-snippet sources, the type-check context for repl_check_source.
+        # The Template's underlying function (`template.__default__`) whose body the
+        # cumulative REPL code is spliced into for type checking. Passed by the per-call
+        # `_repl_session` handler in `PythonRepl.__apply__` (which has `template` in
+        # scope); `None` outside a managed Template call (or in unit tests) -> no anchor
+        # -> exec_code runs code without type-checking it.
+        self._anchor = anchor
+        # Ordered prior-snippet sources: the cumulative module spliced for the check.
         # linecache keys snippets by random per-call <exec_code-{uuid}> filenames and
         # retains no ordered key list, so the accumulated module can't be rebuilt from
         # it. Single-session state -- not the multi-session self._buffers smell of #687.
@@ -847,20 +662,27 @@ class ReplSession(code.InteractiveInterpreter):
         """
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
-        # Type-check the snippet against the accumulated module when feasible, and
-        # report any error as text (the snippet still runs -- a type error is not a
-        # runtime error, and the session's contract is that errors are text it reads).
+        # Type-check the cumulative session code (prior snippets + this one) spliced into
+        # the Template body, so names resolve in their real execution context, and report
+        # any error as text (the snippet still runs -- a type error is not a runtime error,
+        # and the session's contract is that errors are text it reads). Lenient: a REPL
+        # cell may rebind/redefine names and need not return the Template's type.
         snippet = "".join(linecache.getlines(code.co_filename))
-        checked = repl_check_source(self._prior_snippets, snippet)
-        if checked is not None:
+        if self._anchor is not None:
             try:
-                type_check(*checked)
-            except TypeError as e:
-                self.stderr.write(f"{e}\n")  # in-region type error: a mypy diagnostic
-            except NotImplementedError:
-                pass  # provider implements exec but not type_check -> unavailable, skip
-            except RuntimeError as e:
-                logger.warning("REPL type-check skipped: mypy failed to run: %s", e)
+                checked = _splice_repl(self._prior_snippets, snippet, self._anchor)
+            except RuntimeError as e:  # source drifted since import; skip, don't abort
+                checked = None
+                logger.warning("REPL type-check skipped: %s", e)
+            if checked is not None:
+                try:
+                    type_check(*checked, lenient=True)
+                except TypeError as e:
+                    self.stderr.write(f"{e}\n")  # in-region type error: a mypy diagnostic
+                except NotImplementedError:
+                    pass  # provider has no type_check impl -> unavailable, skip
+                except RuntimeError as e:
+                    logger.warning("REPL type-check skipped: mypy failed to run: %s", e)
         self._prior_snippets.append(snippet)
         with (
             contextlib.redirect_stdout(self.stdout),

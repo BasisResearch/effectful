@@ -339,7 +339,11 @@ class PythonRepl(ObjectInterpretation):
         ) -> ReplSession:
             nonlocal session
             if session is None:
-                session = ReplSession(env)
+                # Splice anchor for type-checking REPL code: the Template's own function,
+                # the same value #706 threads as the result anchor. `session_for` runs in
+                # `__apply__`, which has `template`, so the per-call session gets the
+                # per-call anchor -- no separate op or global state.
+                session = ReplSession(env, anchor=template.__default__)
             return session
 
         with handler({_repl_session: session_for}):

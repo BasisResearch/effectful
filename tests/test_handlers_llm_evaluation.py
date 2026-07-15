@@ -24,7 +24,7 @@ from effectful.handlers.llm.evaluation import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
-    repl_check_source,
+    _splice_repl,
     scan_non_nestable,
     splice_into_source,
     type_check,
