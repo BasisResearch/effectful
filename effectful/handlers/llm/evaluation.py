@@ -678,7 +678,9 @@ class ReplSession(code.InteractiveInterpreter):
                 try:
                     type_check(*checked, lenient=True)
                 except TypeError as e:
-                    self.stderr.write(f"{e}\n")  # in-region type error: a mypy diagnostic
+                    self.stderr.write(
+                        f"{e}\n"
+                    )  # in-region type error: a mypy diagnostic
                 except NotImplementedError:
                     pass  # provider has no type_check impl -> unavailable, skip
                 except RuntimeError as e:

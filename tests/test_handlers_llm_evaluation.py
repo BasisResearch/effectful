@@ -661,276 +661,131 @@ def test_restricted_exec_print_captured_to_stdout():
 
 
 # ============================================================================
-# REPL snippet type-checking (issue #690)
+# REPL code type-checking (issue #690)
 #
-# `repl_check_source(prior, snippet)` decides when a REPL snippet can be
-# type-checked soundly against the accumulated module (concatenation of prior
-# snippets) and, when feasible, returns the assembled source + the snippet's
-# [lo, hi] line span for `type_check`; otherwise `None` (declined). These
-# tests assert the feasibility *laws* and the region/detection *contract* by
-# exception type -- never by matching a mypy message, error code, or filename.
+# `exec_code` type-checks the cumulative session code -- prior snippets plus the
+# current one -- spliced into the enclosing Template's body (`_splice_repl` + the
+# `type_check` op, `lenient=True`), so names resolve in their real execution
+# context. These tests drive that pipeline against a real anchor and assert the
+# contract by exception type / runtime effect -- never by matching a mypy message
+# or a filename.
 # ============================================================================
 
 
-def _feasible(prior: list[str], snippet: str) -> bool:
-    return repl_check_source(prior, snippet) is not None
+def _repl_anchor(readings: list[int]) -> int:
+    """A module-level stand-in for a Template function: the REPL splice target. Its
+    real source is recoverable (it lives in this test module) and its parameter
+    `readings` stands in for a name from the session's seed env."""
+    raise NotImplementedError
 
 
-# --- Feasibility laws: one per gate branch (declined -> None, else a triple) ---
-
-
-def test_repl_check_resolvable_snippet_is_feasible():
-    """A snippet whose reads all resolve, with no cross-snippet rebind, is checked
-    against its own line span within the assembled module."""
-    result = repl_check_source(["h = 0\n"], "def f() -> int:\n    return h()")
-    assert result is not None
-    _source, lo, hi = result
-    assert (lo, hi) == (2, 3)  # snippet occupies lines 2-3 after the 1-line prior
-
-
-def test_repl_check_joins_newline_less_prior_snippets():
-    """Prior snippets recovered from linecache need not end in a newline; they are
-    newline-terminated before concatenation so two lines never fuse into a syntax
-    error. With several such priors the snippet still resolves and is checked."""
-    assert _feasible(["a = 1", "b = 2"], "print(a + b)")
-
-
-def test_repl_check_builtins_only_is_feasible():
-    """A builtins-only snippet with no prior is checked over its own span --
-    isolates `_BUILTIN_NAMES` (a general resolvable-read law could pass via a
-    prior-bound name and never exercise the builtin set)."""
-    assert repl_check_source([], "print(len(range(3)))") == (
-        "print(len(range(3)))",
-        1,
-        1,
-    )
-
-
-def test_repl_check_module_dunder_read_declined():
-    """A read of a module dunder mypy does NOT resolve (`__loader__`) is declined
-    -- pins the non-dunder `_BUILTIN_NAMES` (would be feasible under raw
-    `dir(builtins)`, then get a spurious name-defined)."""
-    assert repl_check_source([], "__loader__") is None
-
-
-def test_repl_check_cross_snippet_rebind_declined():
-    """Freshly rebinding at module scope a name a prior snippet bound is normal
-    REPL usage but concatenates to a mypy no-redef -- declined."""
-    assert repl_check_source(["x = 1"], "x = 2") is None
-    assert repl_check_source(["def f():\n    pass"], "def f():\n    return 1") is None
-
-
-def test_repl_check_compound_statement_binding_declined():
-    """A prior name bound inside a module-level compound statement (`if`) is still
-    a prior module bind -- rebinding it is declined. Pins the `_ModuleBinds`
-    visitor (a naive `tree.body` loop would miss the `if`-body bind)."""
-    assert repl_check_source(["if True:\n    x = 1\n"], "x = 2") is None
-
-
-def test_repl_check_augassign_on_seed_declined_on_prior_feasible():
-    """`x += 1` reads x: with no prior binding of x it is an unresolved read
-    (declined); on a prior-bound x it resolves (feasible) -- recovering the
-    counter/accumulator pattern without a false name-defined."""
-    assert repl_check_source([], "x += 1") is None
-    assert _feasible(["x = 1"], "x += 1")
-
-
-def test_repl_check_del_of_seed_declined():
-    """`del z` reads z; with no prior binding it is unresolved -> declined."""
-    assert repl_check_source([], "del z") is None
-
-
-def test_repl_check_nested_read_resolution():
-    """A read inside a nested scope is resolved across scopes: unresolved ->
-    declined; resolvable from a prior bind -> feasible."""
-    snippet = "def f() -> int:\n    return h()"
-    assert repl_check_source([], snippet) is None
-    assert _feasible(["h = 0"], snippet)
-
-
-def test_repl_check_nested_bind_is_not_a_module_rebind():
-    """A name bound only inside a nested scope does not count as rebinding a prior
-    module name -- the snippet stays feasible."""
-    assert _feasible(["x = 1"], "def f():\n    x = 2\n    return x")
-
-
-def test_repl_check_nested_scope_bind_does_not_resolve_module_read():
-    """Read resolution respects lexical scope: a name bound only in a nested scope
-    (a parameter, a comprehension target, a nested-function local) never satisfies a
-    module-level read of the same name -- such a read escapes to the global namespace,
-    so it is declined (it would runtime-`NameError` and spuriously mypy-`name-defined`
-    if wrongly deemed resolvable). A closure reading a real enclosing local is fine."""
-    assert repl_check_source([], "def f(s):\n    return s\nprint(len(s))") is None
-    assert repl_check_source([], "[x for x in range(3)]\nprint(x)") is None
-    assert repl_check_source([], "def f():\n    inner = 1\nprint(inner)") is None
-    assert _feasible(
-        [],
-        "def outer():\n    y = 1\n    def inner():\n        return y\n    return inner",
-    )
-
-
-def test_repl_check_walrus_and_match_captures_count_as_module_rebinds():
-    """A walrus (`:=`) and a match capture leak a binding to module scope even when the
-    binder sits inside a comprehension, a def's default/decorator (evaluated in the
-    enclosing scope), or a match pattern -- so rebinding that name in a later snippet is
-    a cross-snippet rebind (mypy no-redef) and is declined."""
-    for prior in (
-        ["[(y := i) for i in range(3)]"],  # walrus in a comprehension
-        [
-            "def g(a=(y := 5)):\n    return a"
-        ],  # walrus in a default (enclosing-evaluated)
-        ["@(y := deco)\ndef g():\n    pass"],  # walrus in a decorator
-    ):
-        assert repl_check_source(prior, "def y():\n    pass") is None
-    assert (
-        repl_check_source(
-            ["match 1:\n    case v:\n        pass\n"], "def v():\n    pass"
-        )
-        is None
-    )
-
-
-def test_repl_check_deferred_annotation_is_declined():
-    """A deferred annotation -- a string forward-ref, or any annotation under a module-
-    active `from __future__ import annotations` -- holds names mypy resolves but the
-    interpreter never evaluates. An unresolved one would spuriously `name-defined` on
-    code that runs fine, and the read analysis can't see it (it isn't evaluated), so the
-    snippet is declined. A bare, eagerly-evaluated annotation is unaffected."""
-    assert repl_check_source([], 'def f(x: "Foo") -> None:\n    pass') is None
-    assert repl_check_source([], 'v: "Foo" = None') is None
-    assert (
-        repl_check_source(
-            [], "from __future__ import annotations\ndef f(x: Foo) -> None:\n    pass"
-        )
-        is None
-    )
-    assert (
-        repl_check_source(
-            ["from __future__ import annotations\n"], "def f(x: Foo) -> None:\n    pass"
-        )
-        is None
-    )
-    # a bare, resolvable annotation is still checked (not swept up by the decline)
-    assert _feasible([], "def f(x: int) -> int:\n    return x")
-    # string *values* in Literal[...] / Annotated[...] metadata are not forward-refs, so
-    # those common annotations are NOT over-declined (the type in Annotated[T, ...] still is)
-    assert _feasible(
-        ["from typing import Literal"], 'def f(x: Literal["a", "b"]) -> None:\n    pass'
-    )
-    assert _feasible(
-        ["from typing import Annotated"],
-        'def f(x: Annotated[int, "doc"]) -> None:\n    pass',
-    )
-    assert (
-        repl_check_source(
-            ["from typing import Annotated"],
-            'def f(x: Annotated["Foo", "m"]) -> None:\n    pass',
-        )
-        is None
-    )
-
-
-def test_repl_check_except_handler_binds_its_name():
-    """`except X as e` binds e (its `.name` is a bare str, not a Name node): a
-    read of e resolves, so the handler is feasible."""
-    snippet = "try:\n    pass\nexcept Exception as e:\n    print(e)"
-    assert _feasible([], snippet)
-
-
-def test_repl_check_read_of_cross_cell_rebound_name_declined():
-    """A name bound in more than one prior snippet was rebound across cells. mypy pins
-    it to its first-seen type in the concatenated module and rejects the later
-    reassignment, so its type there is stale w.r.t. the runtime's latest value -- a
-    later snippet that reads it (e.g. as the rebound type) would spuriously fail, so it
-    is declined. A name bound in only ONE prior snippet is unaffected."""
-    # x: int in cell 1, rebound to str in cell 2 (mypy keeps int); reading it declines.
-    assert repl_check_source(["x = 2", 'x = "s"'], "print(x.upper())") is None
-    # the rebind counts with multiplicity, so it also fires when both binds are in ONE
-    # prior cell (not just across cells).
-    assert repl_check_source(['x = 1\nx = "s"'], "print(x.upper())") is None
-    # a name bound once and then read is still checked (no over-broad decline).
-    assert _feasible(["x = 2"], "print(x + 1)")
-    # the counter pattern is not a rebind (`+=` isn't a fresh bind), so it stays feasible.
-    assert _feasible(["x = 0", "x += 1"], "print(x + 1)")
-    # an intra-snippet rebind in the CURRENT snippet is standard mypy (checked, not a
-    # prior-poisoning case), so it stays feasible.
-    assert _feasible([], 'x = 1\nx = "s"')
-
-
-def test_repl_check_rebind_is_conservatively_declined():
-    """The rebind rule is deliberately conservative: it declines ANY reassignment
-    of a prior module name -- for-loop, tuple-unpack, bare-annotation and plain
-    targets alike -- because distinguishing a type-compatible rebind from a
-    conflicting one needs the prior type (out of scope). All four are mypy-valid
-    yet declined by design (pinned so the over-decline is deliberate, §9)."""
-    assert repl_check_source(["for i in range(3):\n    pass\n"], "i = 5") is None
-    assert repl_check_source(["a, b = 1, 2\n"], "a = 3") is None
-    assert repl_check_source(["x: int\n"], "x = 1") is None
-    assert repl_check_source(["x = 1\n"], "x = 2") is None
-
-
-# --- Detection & region laws: drive `type_check` on the assembled source ---
-
-
-def _checks_clean(prior: list[str], snippet: str) -> bool:
-    """type_check the assembled source; True if it does not raise (feasible)."""
-    checked = repl_check_source(prior, snippet)
+def _repl_raises(prior: list[str], snippet: str) -> bool:
+    """type_check the cumulative REPL code spliced into `_repl_anchor`'s body; True
+    if it reports an in-region error."""
+    checked = _splice_repl(prior, snippet, _repl_anchor)
     assert checked is not None
     with handler(UnsafeEvalProvider()):
         try:
-            type_check(*checked)
-            return True
-        except TypeError:
+            type_check(*checked, lenient=True)
             return False
+        except TypeError:
+            return True
 
 
-def test_repl_check_in_region_type_error_raises():
-    """An ill-typed snippet, checked against the assembled module, raises -- this is
-    what the feature buys: `x: int = "s"` binds fine at runtime (plain execution never
-    catches it), but the type check reports it."""
-    assert not _checks_clean([], 'x: int = "s"')
+# --- Type-check semantics: checked in the Template body, leniently ---
 
 
-def test_repl_check_out_of_region_error_does_not_raise():
-    """A type error confined to a PRIOR snippet (outside the checked snippet's
-    [lo, hi]) does not raise -- the region filter keeps accumulated-context
-    errors from blocking a clean later snippet."""
-    assert _checks_clean(['y: int = "bad"'], "z = 1")
+def test_repl_seed_env_read_is_checked():
+    """A snippet reading a seed name (a Template parameter) resolves in the spliced
+    body and is checked -- the case the old module-scope gate could only decline.
+    A correct use is clean; misusing the seed's type is a real error."""
+    assert not _repl_raises([], "total = sum(readings)\nprint(total)")
+    assert _repl_raises([], "bad: str = sum(readings)\nprint(bad)")
 
 
-def test_repl_check_cross_snippet_call_is_checked():
-    """A call in a later snippet is checked against a typed def in an earlier one:
-    a mistyped argument raises; a correct one does not."""
-    prior = ["def f(x: int) -> int:\n    return x"]
-    assert not _checks_clean(prior, 'f("bad")')
-    assert _checks_clean(prior, "f(1)")
+def test_repl_cross_snippet_names_resolve():
+    """A helper defined in an earlier cell resolves when a later cell uses it (the
+    cumulative splice); calling it with the wrong type is caught."""
+    prior = ["def helper(n: int) -> int:\n    return n + 1"]
+    assert not _repl_raises(prior, "print(helper(3))")
+    assert _repl_raises(prior, "print(helper('bad'))")
 
 
-def test_repl_check_except_handler_real_error_is_caught():
-    """The except-handler feasibility fix flips the handler to *checked* AND
-    surfaces a real in-handler error (a pre-fix decline dropped it silently)."""
-    assert not _checks_clean(
-        [], "try:\n    pass\nexcept ValueError as e:\n    x: int = e"
-    )
+def test_repl_rebind_across_cells_is_lenient():
+    """A cell may rebind a name to a new type and use it -- normal REPL editing,
+    allowed by `--allow-redefinition`, not a type error."""
+    assert not _repl_raises(["x = 1"], "x = 'now a string'\nprint(x.upper())")
 
 
-# --- REPL behavior: drive `exec_code`, asserting runtime effects, not text ---
+def test_repl_body_need_not_return_template_type():
+    """REPL code isn't a function returning the Template's declared type; the return
+    contract is waived, so a body with no matching return is clean."""
+    assert not _repl_raises([], "y = sum(readings)\nprint(y)")
 
 
-def test_repl_illtyped_snippet_does_not_abort_session():
-    """An ill-typed snippet is reported but still runs, and the session survives:
-    a later valid snippet reading the prior binding still produces its value
-    (report-not-gate -- valid code is never blocked by a type error)."""
+def test_repl_illtyped_but_runnable_snippet_is_caught():
+    """An ill-typed snippet that would execute with no runtime error is reported --
+    plain execution never catches it."""
+    assert _repl_raises([], "n: int = 'oops'\nprint(n)")
+
+
+def test_repl_check_region_is_the_current_snippet():
+    """Only the current snippet's lines are reported: an error confined to a prior
+    snippet is out of region (not raised); the same error in the current snippet is
+    in region (raised)."""
+    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")
+    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")
+
+
+# --- exec_code behavior with an anchor: report-not-gate ---
+
+
+def test_repl_exec_code_reports_illtyped_but_runs_and_survives():
+    """With an anchor, an ill-typed-but-runnable snippet writes a diagnostic to
+    stderr yet still runs, and the session survives -- a later valid snippet
+    reading the seed still produces its value."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({})
-        session.exec_code(_code('nums: list = "hello"'))  # ill-typed, runs anyway
-        assert session.exec_code(_code("print(len(nums))")) == "5\n"
+        session = ReplSession({"readings": [1, 2, 3]}, anchor=_repl_anchor)
+        before = len(session.stderr.getvalue())
+        session.exec_code(_code("bad: int = 'x'"))
+        assert len(session.stderr.getvalue()) > before  # a type error was reported
+        assert session.locals["bad"] == "x"  # ... and the snippet still ran
+        assert session.exec_code(_code("print(sum(readings))")) == "6\n"
 
 
-def test_repl_valid_snippet_is_not_blocked():
-    """A well-typed snippet runs and its bindings persist -- the type check never
-    interferes with valid code."""
+def test_repl_exec_code_valid_snippet_is_not_reported():
+    """A well-typed snippet runs and produces no diagnostic."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({})
-        session.exec_code(_code("total: int = 41"))
-        assert session.exec_code(_code("print(total + 1)")) == "42\n"
+        session = ReplSession({"readings": [1, 2, 3]}, anchor=_repl_anchor)
+        out = session.exec_code(_code("good: int = sum(readings)\nprint(good)"))
+        assert out == "6\n"
+        assert session.stderr.getvalue() == ""
+
+
+def test_repl_no_anchor_runs_without_type_checking():
+    """Without an anchor (outside a managed Template call) the session runs code and
+    never type-checks it, so an ill-typed-but-runnable snippet produces no
+    diagnostic."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})  # no anchor
+        out = session.exec_code(_code("bad: int = 'x'\nprint(bad)"))
+        assert out == "x\n"
+        assert session.stderr.getvalue() == ""
+
+
+# --- decode boundary: non-nestable constructs rejected at Encodable[CodeType] ---
+
+
+def test_encodable_code_rejects_future_import():
+    """`from __future__ import ...` is illegal once nested in a function body, so it
+    is rejected when the code object is decoded, before it can run."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from __future__ import annotations\nx = 1")
+
+
+def test_encodable_code_rejects_star_import():
+    """A star import is likewise rejected at decode."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from os import *\nx = 1")
