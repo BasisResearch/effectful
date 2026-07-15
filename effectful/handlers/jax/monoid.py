@@ -475,27 +475,6 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
         return bind_dims(inner, fresh_op)
 
 
-# Cross-cutting delta rules not yet implemented:
-#
-# - **Delta-commuting** (DC-hoist): for any pure op ``f`` (no Scoped binders
-#   that intersect a delta's index ops), push delta outward:
-#       f(args..., delta(idx, body), args...)
-#       ≡ delta(idx, f(args..., body, args...))
-#   This normalizes delta to the outermost position so the reduce rules can
-#   pattern-match ``isinstance(body, Term) and body.op == delta`` cleanly.
-#   The soundness condition is mechanical via ``op.__fvs_rule__``: refuse to
-#   commute when a non-delta arg's scope binds any op in the delta's idx.
-#
-# - **Delta-merging** (DC-merge): under a pure binary op ``f`` (or
-#   generalized n-ary), merge multiple deltas when their index tuples are
-#   subsequence-compatible:
-#       f(delta(idx_a, v), delta(idx_b, w)) ≡ delta(idx_max, f(v, w))
-#   where ``idx_max`` is the longer of ``idx_a``, ``idx_b`` and ``idx_a`` is
-#   a subsequence of ``idx_b`` (or vice versa). Refuse to fire when neither
-#   is a subsequence of the other, since that would silently insert an
-#   outer-product broadcast.
-
-
 class ReduceSumProductContraction(ObjectInterpretation):
     """Fast-path a sum-of-products contraction."""
 
