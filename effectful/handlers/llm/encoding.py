@@ -243,7 +243,10 @@ def _pydantic_type_code(ty):
         ctx = info.context or {}
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
-            prior = evaluation._repl_session(ctx).prior_snippets
+            # Pass an empty env (not `ctx`): the managed session ignores it, and a fresh
+            # fallback session must not be seeded from the decode context (which holds tool
+            # names and the anchor key). The decoder only reads `prior_snippets`.
+            prior = evaluation._repl_session({}).prior_snippets
             checked = evaluation._splice_repl(prior, value, anchor)
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)
