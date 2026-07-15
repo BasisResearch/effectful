@@ -208,6 +208,11 @@ is_idempotent = _ExtensiblePredicate({Max, Min, And, Or})
 class _ExtensibleBinaryRelation[S, T]:
     tuples: set[tuple[S, T]]
 
+    def __init__(self, *args):
+        self.tuples = set()
+        for s, t in args:
+            self.register(s, t)
+
     def register(self, s: S, t: T) -> None:
         self.tuples.add((s, t))
 
@@ -233,15 +238,13 @@ class _ExtensiblePartialInvolution[S](_ExtensibleBinaryRelation[S, S]):
 
 
 distributes_over = _ExtensibleBinaryRelation(
-    {
-        (Max, Min),
-        (Min, Max),
-        (Sum, Min),
-        (Sum, Max),
-        (Product, Sum),
-        (CartesianProduct, Union),
-        (And, Or),
-    }
+    (Max, Min),
+    (Min, Max),
+    (Sum, Min),
+    (Sum, Max),
+    (Product, Sum),
+    (CartesianProduct, Union),
+    (And, Or),
 )
 
 
@@ -1503,9 +1506,7 @@ class ReduceWhereEqualityPeel(ObjectInterpretation):
 
 
 complement = _ExtensiblePartialInvolution(
-    {
-        (_NumberTerm.__ne__, _NumberTerm.__eq__),
-    }
+    (_NumberTerm.__ne__, _NumberTerm.__eq__),
 )
 
 
@@ -1529,32 +1530,20 @@ class ReduceWhereToMasks(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        if not (
-            streams
-            and isinstance(body, Term)
-            and body.op is ite
-            and len(body.args) == 3
-            and not body.kwargs
-        ):
+        if not (isinstance(body, Term) and body.op == ite):
             return fwd()
 
         cond, when_true, when_false = body.args
-        equalities = (
-            cond.args if isinstance(cond, Term) and cond.op is And.plus else (cond,)
+        conds = cond.args if isinstance(cond, Term) and cond.op == And.plus else (cond,)
+        all_have_compl = all(
+            isinstance(t, Term) and complement.of(t.op) is not None for t in conds
         )
         stream_ops = set(streams)
-        if not equalities or not all(
-            isinstance(eq, Term)
-            and is_equality(eq.op)
-            and complement.of(eq.op) is not None
-            and bool(fvsof(eq) & stream_ops)
-            for eq in equalities
-        ):
+        all_stream_dep = all(bool(fvsof(t) & stream_ops) for t in conds)
+        if not (conds and all_have_compl and all_stream_dep):
             return fwd()
 
-        disequalities = tuple(
-            complement.of(eq.op)(*eq.args, **eq.kwargs) for eq in equalities
-        )
+        disequalities = tuple(complement.of(t.op)(*t.args, **t.kwargs) for t in conds)
         return monoid.plus(
             monoid.reduce(monoid.mask(when_true, cond), streams),
             monoid.reduce(
