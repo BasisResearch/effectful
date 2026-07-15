@@ -158,7 +158,7 @@ class MaskJax(ObjectInterpretation):
     def mask(self, monoid, value, mask):
         if not (
             (is_eager_array(value) or not isinstance(value, Term))
-            and (is_eager_array(mask) or not isinstance(value, Term))
+            and (is_eager_array(mask) or not isinstance(mask, Term))
         ):
             return fwd()
         return jnp.where(mask, value, monoid.identity)
