@@ -6,7 +6,7 @@ import typing
 from collections import UserDict, defaultdict
 from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
-from graphlib import CycleError, TopologicalSorter
+from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 from effectful.internals.runtime import interpreter
@@ -795,7 +795,6 @@ class ReduceUnfactor(ObjectInterpretation):
             inner_body, inner_streams = factor.args
             assert isinstance(inner_streams, Mapping)
 
-            inner_keys = set(inner_streams)
             merged_streams = dict(streams) | dict(inner_streams)
 
             inner_factors = (
