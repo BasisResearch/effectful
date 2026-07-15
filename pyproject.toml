@@ -45,7 +45,9 @@ numpyro = [
   "jax<0.10"
 ]
 llm = [
-  "litellm",
+  # 1.92.0 ships no wheel, so it builds from sdist; on Python 3.14 that build pulls
+  # pyo3-ffi 0.23.5, which doesn't support 3.14, so `uv sync` fails the whole matrix.
+  "litellm!=1.92.0",
   "tenacity",
   "mypy",
   "autoflake",
