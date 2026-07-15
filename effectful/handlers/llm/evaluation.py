@@ -621,8 +621,6 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
-        # Sources of the actual error-free executed snippets, in order -- the accumulated
-        # module a later snippet's decode-time type check splices into the Template body.
         self._prior_snippets: list[str] = []
 
     @property

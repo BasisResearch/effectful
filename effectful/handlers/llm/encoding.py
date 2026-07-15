@@ -232,10 +232,9 @@ def _pydantic_type_code(ty):
         filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
         try:
             module = evaluation.parse(value, filename)
-            # Reject `from __future__ import ...` and star imports here, at decode: they
-            # are `SyntaxError` once nested in a function body, so code containing them
-            # can't be spliced into the Template body for type checking. Rejecting at the
-            # decode/compile gate keeps such code from ever becoming a runnable snippet.
+            # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
+            # function body, so such a snippet can't be spliced into the Template for
+            # type checking.
             evaluation.scan_non_nestable(module)
         except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source is not valid REPL code: {exc}") from exc
