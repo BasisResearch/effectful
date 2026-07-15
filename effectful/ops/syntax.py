@@ -943,7 +943,8 @@ def _(x: collections.abc.Sequence, other) -> bool:
         )
     else:
         return (
-            isinstance(other, collections.abc.Sequence)
+            not isinstance(other, Term)
+            and isinstance(other, collections.abc.Sequence)
             and len(x) == len(other)
             and all(syntactic_eq(a, b) for a, b in zip(x, other))
         )
