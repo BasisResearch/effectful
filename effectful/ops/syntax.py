@@ -880,6 +880,15 @@ class _MappingTerm[K, V](_CollectionTerm[K]):
             raise NotHandled
 
 
+@Operation.define
+def as_dict[K, V](*args: tuple[K, V]) -> Mapping[K, V]:
+    from effectful.ops.semantics import fvsof
+
+    if not fvsof(args):
+        return dict(args)
+    raise NotHandled
+
+
 @_CustomSingleDispatchCallable
 def syntactic_eq(
     __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other

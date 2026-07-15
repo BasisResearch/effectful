@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
+import effectful.ops.syntax
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
@@ -16,6 +17,7 @@ from effectful.ops.syntax import (
     Scoped,
     _MappingTerm,
     _NumberTerm,
+    as_dict,
     defdata,
     deffn,
     implements,
@@ -888,7 +890,10 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             match cprod_body:
                 case Term(
                     Union.reduce,
-                    ([Term(Union.delta, (idx, union_body), {})], union_streams),
+                    (
+                        [Term(effectful.ops.syntax.as_dict, ((idx, union_body),), {})],
+                        union_streams,
+                    ),
                     {},
                 ) if isinstance(idx, Sequence) and set(
                     i.op for i in idx if isinstance(i, Term)
@@ -991,15 +996,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 k: v for (k, v) in cprod_streams.items() if k != plate_op
             }
             if not peeled_cprod_streams and not peeled_idx:
-                # Base case: the plate was the only cartesian product stream and
-                # the row was fully peeled, so ``Union.delta((), union_body)``
-                # collapses to ``union_body``. Rather than emit a bare
-                # ``Union.reduce`` stream and defer to
-                # ``ReduceUnion``/``EliminateSingletonStreams`` (which would leave
-                # an empty-index ``Union.delta`` behind), substitute the union
-                # body directly for each empty ``stream_key[()]`` subscript --
-                # equivalently ``Union.delta((), union_body)[()]`` -- and reduce
-                # directly over ``union_streams``.
+
                 def _to_body(mapping, key):
                     if isinstance(mapping, Term) and mapping.op == stream_key:
                         return union_body
@@ -1011,7 +1008,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 inner_reduce_body = monoid.reduce(subst_combined, union_streams)
             else:
                 peeled_body = Union.reduce(
-                    [Union.delta(peeled_idx, union_body)], union_streams
+                    [as_dict((peeled_idx, union_body))], union_streams
                 )
                 if not peeled_cprod_streams:
                     peeled_cprod = peeled_body

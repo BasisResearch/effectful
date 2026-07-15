@@ -36,7 +36,13 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements, ite
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    as_dict,
+    deffn,
+    implements,
+    ite,
+)
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -745,9 +751,7 @@ class _EinsumBuilder:
             c_streams = {op: range(self.sizes[p]) for (p, op) in ps}
             v = Operation.define(int, name=f"{c}_v")
             rows[c] = CartesianProduct.reduce(
-                UnionM.reduce(
-                    [UnionM.delta(delta_idx, v())], {v: range(self.sizes[c])}
-                ),
+                UnionM.reduce([as_dict((delta_idx, v()))], {v: range(self.sizes[c])}),
                 c_streams,
             )
 
