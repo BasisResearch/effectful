@@ -142,14 +142,14 @@ def test_unannotated_container_is_not_a_false_positive():
 
 
 def test_star_import_raises():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         scan_non_nestable(
             ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
         )
 
 
 def test_future_import_raises():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         scan_non_nestable(
             ast.parse(
                 "from __future__ import annotations\n"
@@ -754,43 +754,46 @@ def test_repl_check_reports_only_the_current_snippet():
     assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
 
 
-# --- exec_code behavior with an anchor: report-not-gate ---
+# --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
 
 
-def test_repl_exec_code_illtyped_snippet_runs_and_session_survives():
-    """report-not-gate: an ill-typed-but-runnable snippet surfaces a diagnostic in its
-    output yet still runs (its binding takes effect), and the session survives -- a
-    later valid snippet reading the seed still produces its value. (That the check
-    itself raises is pinned by ``_repl_raises``; here the point is it never blocks
-    execution.)"""
+def _decode(source: str, *, anchor: bool) -> types.CodeType:
+    """Decode `source` to a code object the way the `exec_code` tool argument does -- with
+    the Template type-check anchor in the decode context (``anchor=True``, as a managed
+    Template call supplies) or without it."""
+    ctx = {TYPE_CHECK_ANCHOR_KEY: _repl_anchor} if anchor else None
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
+        source, context=ctx
+    )
+
+
+def test_repl_decode_rejects_illtyped_snippet():
+    """With the Template anchor in the decode context, an ill-typed-but-runnable snippet is
+    type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
+    fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
+    to a code object."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({"readings": [1, 2, 3]}, anchor=_repl_anchor)
-        out = session.exec_code(_code("bad: int = 'x'"))  # ill-typed, no print
-        assert out != ""  # the diagnostic was surfaced to the caller, not swallowed
-        assert session.locals["bad"] == "x"  # ... and the snippet still ran
-        # session alive: a later valid cell runs and produces just its value -- the earlier
-        # cell's error is not re-reported (only the current snippet's lines are).
-        assert session.exec_code(_code("print(sum(readings))")) == "6\n"
+        with pytest.raises((pydantic.ValidationError, TypeError)):
+            _decode("n: int = 'oops'\nprint(n)", anchor=True)
+        assert isinstance(
+            _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
+        )
 
 
-def test_repl_exec_code_valid_snippet_is_not_reported():
-    """A well-typed snippet runs and produces no diagnostic."""
+def test_repl_decode_without_anchor_skips_typecheck():
+    """Outside a managed Template call there is no anchor in the decode context, so an
+    ill-typed snippet decodes without a type check (it can still run)."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({"readings": [1, 2, 3]}, anchor=_repl_anchor)
-        out = session.exec_code(_code("good: int = sum(readings)\nprint(good)"))
-        assert out == "6\n"
-        assert session.stderr.getvalue() == ""
+        assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
 
 
-def test_repl_no_anchor_runs_without_type_checking():
-    """Without an anchor (outside a managed Template call) the session runs code and
-    never type-checks it, so an ill-typed-but-runnable snippet produces no
-    diagnostic."""
+def test_repl_exec_code_runs_and_records_history():
+    """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
+    records each snippet's source so a later decode can splice the accumulated session."""
     with handler(UnsafeEvalProvider()):
-        session = ReplSession({})  # no anchor
-        out = session.exec_code(_code("bad: int = 'x'\nprint(bad)"))
-        assert out == "x\n"
-        assert session.stderr.getvalue() == ""
+        session = ReplSession({"readings": [1, 2, 3]})
+        assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
+        assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
 
 
 # --- decode boundary: non-nestable constructs rejected at Encodable[CodeType] ---

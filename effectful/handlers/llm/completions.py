@@ -423,10 +423,14 @@ def call_assistant[T](
     # REPL `exec_code` tool) is type-checked against the Template body at decode -- exactly
     # as a synthesized result is (see below). The `Encodable[CodeType]` decoder reads the
     # anchor from the context and splices the accumulated REPL session into it.
-    tool_context = {**tools, TYPE_CHECK_ANCHOR_KEY: anchor} if anchor is not None else tools
+    tool_context = (
+        {**tools, TYPE_CHECK_ANCHOR_KEY: anchor} if anchor is not None else tools
+    )
     for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tool_context)]
+            tool_calls += [
+                encoding.validate_python(raw_tool_call, context=tool_context)
+            ]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
