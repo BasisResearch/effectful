@@ -305,25 +305,23 @@ def _splice_repl(
     them), but only the current snippet's lines are reported, so an earlier cell's error
     isn't re-reported on every later call.
 
-    Returns ``None`` only when the current snippet has no statements to check. Raises
-    ``RuntimeError`` if the Template's source can't be recovered or has drifted -- a
-    Template always has recoverable source, so that is a broken type-check context, not a
-    benign skip (contrast ``splice_into_source``, whose Callable anchor may be sourceless).
+    Returns ``None`` when the current snippet has no statements to check, or when the
+    Template's source can't be recovered -- a Template defined at a REPL, in a notebook, or
+    via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
+    as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
+    only on source *drift* (source recovered but the def no longer sits where it was
+    compiled from), which ``_recover_template_def`` surfaces.
     """
     # An empty or comment-only snippet parses to zero statements: nothing to check.
     n_current = len(ast.parse(snippet).body)
     if n_current == 0:
         return None
-    # A Template always has recoverable source, so -- unlike the Callable path, where a
-    # sourceless anchor is a benign skip -- an unrecoverable anchor here means the
-    # type-check context is broken. `_recover_template_def` returns None only for a
-    # sourceless function (REPL/exec/notebook-defined, not a Template) and raises on source
-    # drift; both are real problems, so fail loudly rather than silently run code unchecked.
+    # None means the Template's source can't be recovered (REPL/exec/notebook-defined) --
+    # skip, like the Callable path, rather than break the tool; `_recover_template_def`
+    # raises on source drift, which is a real error and propagates.
     recovered = _recover_template_def(anchor)
     if recovered is None:
-        raise RuntimeError(
-            f"cannot recover source for the REPL Template anchor {anchor!r}"
-        )
+        return None
     module_ast, template_def = recovered
     cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
     template_def.body = ast.parse(cumulative).body

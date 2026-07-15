@@ -754,6 +754,15 @@ def test_repl_check_reports_only_the_current_snippet():
     assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
 
 
+def test_repl_splice_skips_sourceless_anchor():
+    """A Template with no recoverable source (defined via exec/REPL/notebook) skips the
+    check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
+    Callable anchor. Only source *drift* raises."""
+    ns: dict[str, Any] = {}
+    exec("def t(readings):\n    raise NotImplementedError", ns)
+    assert _splice_repl([], "x = 1", ns["t"]) is None
+
+
 # --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
 
 
