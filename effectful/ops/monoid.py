@@ -790,11 +790,9 @@ class ReduceUnfactor(ObjectInterpretation):
                 continue
 
             inner_body, inner_streams = factor.args
-            if not isinstance(inner_streams, Mapping):
-                continue
+            assert isinstance(inner_streams, Mapping)
+
             inner_keys = set(inner_streams)
-            if set(streams) & inner_keys:
-                continue
             merged_streams = dict(streams) | dict(inner_streams)
 
             # A reduction's stream bindings must still form an acyclic
@@ -1722,7 +1720,7 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 EvaluateIntp = _ExtensibleInterpretation().extend(
-    # ReducePartial(),
+    ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
     MinPlus(),

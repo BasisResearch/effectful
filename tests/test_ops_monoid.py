@@ -37,6 +37,7 @@ from effectful.ops.monoid import (
     ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
+    ReduceUnfactor,
     ReduceUnion,
     ReduceWeightedStream,
     ReduceWhereEqualityPeel,
@@ -45,6 +46,7 @@ from effectful.ops.monoid import (
     Union,
     WhereHoist,
     distributes_over,
+    is_commutative,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import ite, range_, syntactic_eq
@@ -92,6 +94,12 @@ MONOID_PAIRS = [
     if distributes_over(
         typing.cast(Monoid, i.values[0]), typing.cast(Monoid, o.values[0])
     )
+]
+
+COMMUTATIVE_MONOID_PAIRS = [
+    v
+    for v in MONOID_PAIRS
+    if all(is_commutative(typing.cast(Monoid, vv)) for vv in v.values)
 ]
 
 
@@ -1412,3 +1420,26 @@ def test_reduce_dependent_range_mask(monoid, backend: Backend):
     lhs = monoid.reduce(body, {u: range_(N), v: range_(u())})
     rhs = monoid.reduce(monoid.mask(v() < u(), body), {u: range_(N), v: range_(N)})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
+
+
+@pytest.mark.parametrize("Sum,Product", COMMUTATIVE_MONOID_PAIRS)
+def test_reduce_unfactor_simple(Sum, Product, backend: Backend):
+    x, y, g = backend.define_vars("x", "y", "g", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    lhs = Sum.reduce(Product.plus(Sum.reduce(f(x()), {x: X()}), g()), {y: Y()})
+    rhs = Sum.reduce(Product.plus(f(x()), g()), {x: X(), y: Y()})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+@pytest.mark.parametrize("Sum,Product", COMMUTATIVE_MONOID_PAIRS)
+def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
+    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
+    X, Y, Z = backend.define_vars("X", "Y", "Z", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+    lhs = Sum.reduce(
+        Product.plus(Sum.reduce(f(x()), {x: X()}), Sum.reduce(g(y()), {y: Y()})),
+        {z: Z()},
+    )
+    rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
