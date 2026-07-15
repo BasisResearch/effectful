@@ -290,24 +290,25 @@ def _splice_repl(
 ) -> tuple[str, int, int] | None:
     """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
     ``snippet`` -- into the anchor Template's body, in its real module source, and return
-    the modified source with the ``[lo, hi]`` line span of the whole spliced body.
+    the modified source with the ``[lo, hi]`` line span of the *current* snippet.
 
     The REPL code becomes the Template function's body at its real (possibly nested)
     position, so the Template's parameters and enclosing scope -- i.e. the session's seed
     env -- are in scope, and each snippet sees the ones before it (they are function
     locals). No ``return`` is appended; the REPL code doesn't produce the Template's
-    declared type, and that contract is waived by ``lenient`` type checking. The region is
-    the whole accumulated body (as ``splice_into_source`` does for a synthesized def), so
-    an error in an earlier cell is re-reported until the session fixes it.
+    declared type, and that contract is waived by ``lenient`` type checking. Every prior
+    snippet stays in the body so its bindings resolve (matching the runtime, which ran
+    them), but only the current snippet's lines are reported, so an earlier cell's error
+    isn't re-reported on every later call.
 
-    Returns ``None`` only when the accumulated code is empty (nothing to check). Raises
+    Returns ``None`` only when the current snippet has no statements to check. Raises
     ``RuntimeError`` if the Template's source can't be recovered or has drifted -- a
     Template always has recoverable source, so that is a broken type-check context, not a
     benign skip (contrast ``splice_into_source``, whose Callable anchor may be sourceless).
     """
-    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
-    body = ast.parse(cumulative).body
-    if not body:  # all snippets empty/comment-only: nothing to check, no valid body
+    # An empty or comment-only snippet parses to zero statements: nothing to check.
+    n_current = len(ast.parse(snippet).body)
+    if n_current == 0:
         return None
     # A Template always has recoverable source, so -- unlike the Callable path, where a
     # sourceless anchor is a benign skip -- an unrecoverable anchor here means the
@@ -320,17 +321,17 @@ def _splice_repl(
             f"cannot recover source for the REPL Template anchor {anchor!r}"
         )
     module_ast, template_def = recovered
-    template_def.body = body
+    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
+    template_def.body = ast.parse(cumulative).body
 
-    # mypy reports line numbers in the coordinates of the unparsed source; take the spliced
-    # body's span there. ast.unparse keeps def order, so the template def is at the same
-    # walk index after the round-trip. Region is the body only, not the def header (mirrors
-    # `splice_into_source`).
+    # mypy reports line numbers in the coordinates of the unparsed source; the current
+    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps def
+    # order, so the template def is at the same walk index after the round-trip.
     def_index = _def_nodes(module_ast).index(template_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo = spliced.body[0].lineno
-    hi = spliced.end_lineno or lo
+    lo = spliced.body[-n_current].lineno
+    hi = spliced.body[-1].end_lineno or lo
     return checked_source, lo, hi
 
 

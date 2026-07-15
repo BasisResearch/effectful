@@ -745,15 +745,13 @@ def test_repl_illtyped_but_runnable_snippet_is_caught():
     assert _repl_raises([], "n: int = 'oops'\nprint(n)")
 
 
-def test_repl_check_reports_across_the_whole_cumulative_body():
-    """The region is the whole accumulated session body (like ``splice_into_source``), so
-    an error is reported whether it is in the current cell or an earlier one -- the model
-    keeps seeing it until a later cell fixes it. (Errors in the Template's own module,
-    outside its body, stay out of region.)"""
-    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell
-    assert _repl_raises(
-        ["bad: int = 'x'"], "ok = 1\nprint(ok)"
-    )  # earlier cell, re-reported
+def test_repl_check_reports_only_the_current_snippet():
+    """Only the current snippet's lines are reported: an error in the current cell raises,
+    but the same error confined to an earlier cell is out of region (not re-reported) --
+    while that earlier cell stays in the body so its bindings still resolve."""
+    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell -> reported
+    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")  # earlier -> not
+    assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
 
 
 # --- exec_code behavior with an anchor: report-not-gate ---
@@ -770,9 +768,9 @@ def test_repl_exec_code_illtyped_snippet_runs_and_session_survives():
         out = session.exec_code(_code("bad: int = 'x'"))  # ill-typed, no print
         assert out != ""  # the diagnostic was surfaced to the caller, not swallowed
         assert session.locals["bad"] == "x"  # ... and the snippet still ran
-        assert (
-            session.exec_code(_code("print(sum(readings))")) == "6\n"
-        )  # session alive
+        # session alive: a later valid cell runs and produces just its value -- the earlier
+        # cell's error is not re-reported (only the current snippet's lines are).
+        assert session.exec_code(_code("print(sum(readings))")) == "6\n"
 
 
 def test_repl_exec_code_valid_snippet_is_not_reported():
