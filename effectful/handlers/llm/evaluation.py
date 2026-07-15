@@ -30,6 +30,7 @@ from RestrictedPython.PrintCollector import PrintCollector
 
 from effectful.handlers.llm.template import Tool
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.types import Operation
 
 
 @defop
@@ -119,17 +120,20 @@ def scan_non_nestable(generated: ast.Module) -> None:
     ``from ... import *`` and ``from __future__ import ...`` are both ``SyntaxError``s
     inside a function body, but mypy *accepts* a nested star import silently, so the
     splice would slip an illegal construct past the type check and fail later at
-    ``compile``/``exec``. Detect them explicitly and raise before splicing.
+    ``compile``/``exec``. Detect them explicitly and raise before splicing. Raises
+    ``ValueError`` (this is rejecting invalid generated *source*, not signaling a type
+    error), so a decoder can catch it alongside ``SyntaxError`` without swallowing a real
+    ``TypeError`` from a broken provider.
     """
     for stmt in generated.body:
         if isinstance(stmt, ast.ImportFrom):
             if stmt.module == "__future__":
-                raise TypeError(
+                raise ValueError(
                     "generated code uses `from __future__ import ...`, which is "
                     "illegal once spliced into a function body"
                 )
             if any(alias.name == "*" for alias in stmt.names):
-                raise TypeError(
+                raise ValueError(
                     "generated code uses a star import (`from ... import *`), which "
                     "is illegal once spliced into a function body"
                 )
@@ -596,7 +600,7 @@ class ReplSession(code.InteractiveInterpreter):
     stdout: io.StringIO
     stderr: io.StringIO
 
-    def __init__(self, env: MutableMapping[str, Any], anchor: Any = None):
+    def __init__(self, env: MutableMapping[str, Any]):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
         # rejected), and a REPL needs a single persistent namespace so a function
@@ -619,17 +623,18 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
-        # The Template's underlying function (`template.__default__`) whose body the
-        # cumulative REPL code is spliced into for type checking. Passed by the per-call
-        # `_repl_session` handler in `PythonRepl.__apply__` (which has `template` in
-        # scope); `None` outside a managed Template call (or in unit tests) -> no anchor
-        # -> exec_code runs code without type-checking it.
-        self._anchor = anchor
-        # Ordered prior-snippet sources: the cumulative module spliced for the check.
-        # linecache keys snippets by random per-call <exec_code-{uuid}> filenames and
-        # retains no ordered key list, so the accumulated module can't be rebuilt from
-        # it. Single-session state -- not the multi-session self._buffers smell of #687.
+        # Ordered sources of the snippets that have run, in order -- the accumulated module
+        # a later snippet's decode-time type check splices into the Template body (linecache
+        # keys snippets by random <exec_code-{uuid}> filenames and retains no ordered key
+        # list, so the module can't be rebuilt from it). Single-session state -- not the
+        # multi-session self._buffers smell of #687.
         self._prior_snippets: list[str] = []
+
+    @property
+    def prior_snippets(self) -> list[str]:
+        """Sources of the snippets that have run so far, in order -- the type-check
+        context the `Encodable[CodeType]` decoder splices before the current snippet."""
+        return self._prior_snippets
 
     def runcode(self, code: CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
@@ -668,32 +673,31 @@ class ReplSession(code.InteractiveInterpreter):
         """
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
-        # Type-check the cumulative session code (prior snippets + this one) spliced into
-        # the Template body, so names resolve in their real execution context, and report
-        # any error as text (the snippet still runs -- a type error is not a runtime error,
-        # and the session's contract is that errors are text it reads). Lenient: a REPL
-        # cell may rebind/redefine names and need not return the Template's type.
-        snippet = "".join(linecache.getlines(code.co_filename))
-        if self._anchor is not None:
-            # `_splice_repl` raises on a broken type-check context (source drift, or an
-            # unrecoverable Template anchor) -- let it propagate rather than silently run
-            # unchecked. It returns None only for an empty snippet (nothing to check).
-            checked = _splice_repl(self._prior_snippets, snippet, self._anchor)
-            if checked is not None:
-                try:
-                    type_check(*checked, lenient=True)
-                except TypeError as e:
-                    self.stderr.write(
-                        f"{e}\n"
-                    )  # in-region type error: a mypy diagnostic
-                except NotImplementedError:
-                    pass  # provider has no type_check impl -> unavailable, skip
-                except RuntimeError as e:
-                    logger.warning("REPL type-check skipped: mypy failed to run: %s", e)
-        self._prior_snippets.append(snippet)
+        # Record this snippet's source so the *next* snippet's decode-time type check can
+        # splice the accumulated session code into the Template body. The type check itself
+        # lives in the `Encodable[CodeType]` decoder (as it does for synthesized Callables),
+        # not here -- this session only runs code.
+        self._prior_snippets.append("".join(linecache.getlines(code.co_filename)))
         with (
             contextlib.redirect_stdout(self.stdout),
             contextlib.redirect_stderr(self.stderr),
         ):
             self.runcode(code)
         return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
+
+
+@Operation.define
+def _repl_session(env: MutableMapping[str, Any]) -> "ReplSession":
+    """Return the REPL session for the current Template call, seeded from `env`.
+
+    `PythonRepl` (in completions.py) installs a fresh handler for this inside each
+    `Template.__apply__` (mirroring how `__history__` is managed), giving the session a
+    lifetime of exactly one Template call. Outside such a scope there is no managed
+    session, so this falls back to a fresh one -- e.g. when tools are listed outside a
+    Template call, or when a code object is decoded with no REPL in scope.
+
+    Defined here (not with `PythonRepl`) so the `Encodable[CodeType]` decoder can reach the
+    session -- and its accumulated `prior_snippets` -- at decode time without importing
+    `completions` (which would be a cycle).
+    """
+    return ReplSession(env)

@@ -216,7 +216,7 @@ def _pydantic_type_code(ty):
     `linecache`, which carries everything the source string did.
     """
 
-    def validate(value: object) -> types.CodeType:
+    def validate(value: object, info: pydantic.ValidationInfo) -> types.CodeType:
         if isinstance(value, types.CodeType):
             return value
         if not isinstance(value, str):
@@ -231,9 +231,23 @@ def _pydantic_type_code(ty):
             # can't be spliced into the Template body for type checking. Rejecting at the
             # decode/compile gate keeps such code from ever becoming a runnable snippet.
             evaluation.scan_non_nestable(module)
-            return evaluation.compile(module, filename)
-        except (SyntaxError, ValueError, TypeError) as exc:
+        except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source is not valid REPL code: {exc}") from exc
+
+        # Type-check the snippet in its execution context, exactly as a synthesized
+        # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
+        # type-check anchor in the decode context, splice the accumulated REPL session (the
+        # `_repl_session` op is in scope during the response decode) plus this snippet into
+        # the Template body and check it. A type error raises here -> the tool-call decode
+        # fails -> `RetryLLMHandler` retries, so ill-typed code never reaches `runcode`.
+        ctx = info.context or {}
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
+        if anchor is not None:
+            prior = evaluation._repl_session(ctx).prior_snippets
+            checked = evaluation._splice_repl(prior, value, anchor)
+            if checked is not None:
+                evaluation.type_check(*checked, lenient=True)
+        return evaluation.compile(module, filename)
 
     return typing.Annotated[
         ty,
