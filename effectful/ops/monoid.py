@@ -1617,11 +1617,8 @@ class ReduceDependentRangeMask(ObjectInterpretation):
             # streams of the form k: range(X)
             if not (
                 isinstance(u_stream, range)
-                and isinstance(u_stream.start, int)
                 and u_stream.start == 0
-                and isinstance(u_stream.step, int)
                 and u_stream.step == 1
-                and not fvsof(u_stream) & stream_vars
             ):
                 continue
 
@@ -1629,6 +1626,10 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                 if (
                     isinstance(v_stream, Term)
                     and v_stream.op == range_
+                    and isinstance(v_stream.start, int)
+                    and v_stream.start == 0
+                    and isinstance(v_stream.step, int)
+                    and v_stream.step == 1
                     and isinstance(v_stream.stop, Term)  # type: ignore[attr-defined]
                     and v_stream.stop.op == u  # type: ignore[attr-defined]
                 ):
