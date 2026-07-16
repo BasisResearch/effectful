@@ -2,7 +2,7 @@ import functools
 import logging
 import typing
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -678,7 +678,7 @@ class _EinsumBuilder:
 
     def _build_plate_reductions(
         self, plate_tree: Node, parent_plates: frozenset[str] = frozenset()
-    ) -> Mapping[tuple[int, ...], float]:
+    ) -> Expr[jax.Array]:
 
         masked_factors = []
         for factor_idx in plate_tree.factors:
@@ -724,7 +724,7 @@ class _EinsumBuilder:
         return product
 
     @functools.cached_property
-    def term(self):
+    def term(self) -> Expr[Callable]:
         # one stream of per-plate-assignment rows for each plated sum dim
         rows = {}
         plated_enums = {c: o for c, o in self.ordinal.items() if o}
@@ -744,15 +744,18 @@ class _EinsumBuilder:
             if c not in self.out_spec
         } | {self.dim_op[c]: r for c, r in rows.items()}
 
+        dims = [(self.out_vars[c], self.sizes[c]) for c in self.out_spec]
+
         reductions = self._build_plate_reductions(self.plate_tree)
         reduction = Sum.reduce(reductions, streams) if streams else reductions
-        return (
-            deffn(
-                reduction,
-                *(a.op for a in self.arrays),
-                *(self.out_vars[c] for c in self.out_spec),
+        return deffn(
+            bind_dims(
+                deffn(reduction, *(self.out_vars[c] for c in self.out_spec))(
+                    *((unbind_dims(jnp.arange(d), v) for (v, d) in dims))
+                ),
+                *(v for (v, _) in dims),
             ),
-            [(self.out_vars[c], self.sizes[c]) for c in self.out_spec],
+            *(a.op for a in self.arrays),
         )
 
 
@@ -775,7 +778,7 @@ def einsum(
     over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
     each plated input is a :data:`Product` reduction over its plates.
     """
-    expr, dims = _EinsumBuilder(subscripts, *operands, plates=plates).term
+    expr = _EinsumBuilder(subscripts, *operands, plates=plates).term
 
     with handler(NormalizeIntp):
         norm_expr = evaluate(expr)
@@ -786,11 +789,7 @@ def einsum(
 
     with handler(EvaluateIntp), handler(NormalizeIntp):
         assert callable(norm_expr)
-
-        out_dims = tuple(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
-        result = evaluate(
-            bind_dims(norm_expr(*operands, *out_dims), *(v for (v, _) in dims))
-        )
+        result = norm_expr(*operands)
         assert isinstance(result, jax.Array), "failed to fully evaluate"
         return result
 
