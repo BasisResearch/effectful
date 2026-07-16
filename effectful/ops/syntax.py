@@ -806,24 +806,15 @@ class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
             raise NotHandled
 
     @Operation.define
-    def index(
-        self: collections.abc.Sequence[T],
-        value: T,
-        start: int = 0,
-        stop: int | None = None,
-    ) -> int:
-        if not any(isinstance(x, Term) for x in (self, value, start, stop)):
-            return (
-                self.index(value, start)
-                if stop is None
-                else self.index(value, start, stop)
-            )
+    def index(self: collections.abc.Sequence[T], *args, **kwargs) -> int:
+        if not fvsof((self, *args, *kwargs.values())):
+            return self.index(*args, **kwargs)
         else:
             raise NotHandled
 
     @Operation.define
     def count(self: collections.abc.Sequence[T], value: T) -> int:
-        if not any(isinstance(x, Term) for x in (self, value)):
+        if not fvsof((self, value)):
             return self.count(value)
         else:
             raise NotHandled
