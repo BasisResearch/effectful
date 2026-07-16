@@ -31,6 +31,7 @@ from effectful.ops.monoid import (
     _conjuncts,
     _is_monoid_mask,
     _is_monoid_plus,
+    _is_simple_range,
     complement,
     distributes_over,
     is_equality,
@@ -257,60 +258,10 @@ class ReduceArray(ObjectInterpretation):
         return reduced_body
 
 
-class ReduceArrayScan(ObjectInterpretation):
-    @staticmethod
-    def _disequality_to_plus(monoid, streams, stream_op, value, index, tail_mask_elems):
-        return monoid.plus(
-            monoid.reduce(
-                monoid.mask(value, And.plus(stream_op() < index, *tail_mask_elems)),
-                streams,
-            ),
-            monoid.reduce(
-                monoid.mask(value, And.plus(stream_op() > index, *tail_mask_elems)),
-                streams,
-            ),
-        )
-
-    @staticmethod
-    def _is_simple_range(obj):
-        return isinstance(obj, range) and obj.start == 0 and obj.step == 1
-
-    @staticmethod
-    def _inequality_to_scan(
-        monoid, streams, stream_op, value, index, tail_mask_elems, cmp_op
-    ):
-        stream = streams[stream_op]
-        reverse = cmp_op in (jnp.greater_equal, jnp.greater)
-        n = len(stream)
-        pos_value = monoid.reduce(
-            monoid.delta((stream_op(),), value), {stream_op: stream}
-        )
-        # inclusive prefix (or suffix, when reverse) scan over the stream
-        inclusive = lax.associative_scan(monoid.plus, pos_value, reverse=reverse)
-        # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
-        # an identity element on the appropriate side and shift the result
-        # so that scan_val[k] aggregates only the positions satisfying the
-        # comparison against k. The non-strict comparisons (`<=`, `>=`) use
-        # the inclusive scan directly.
-        match cmp_op:
-            case jnp.less:
-                scan_val = jnp.pad(
-                    inclusive, (1, 0), mode="constant", constant_values=monoid.identity
-                )[:n]
-            case jnp.greater:
-                scan_val = jnp.pad(
-                    inclusive, (0, 1), mode="constant", constant_values=monoid.identity
-                )[1:]
-            case _:
-                scan_val = inclusive
-
-        tail_body = monoid.mask(
-            jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
-        )
-        tail_streams = {k: v for (k, v) in streams.items() if k != stream_op}
-        if tail_streams:
-            return monoid.reduce(tail_body, tail_streams)
-        return tail_body
+class ReduceDisequalityMask(ObjectInterpretation):
+    """M.reduce(M.mask(v, And.plus(a != b, c)), S)
+    ≡ M.reduce(M.plus(M.mask(v, And.plus(a < b, c)), M.mask(v, And.plus(a > b, c))))
+    """
 
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams: Streams):
@@ -325,33 +276,101 @@ class ReduceArrayScan(ObjectInterpretation):
 
         mask_elems = _conjuncts(mask)
 
+        def _neq_to_plus(args, tail_mask_elems):
+            match args:
+                case (Term(stream_op, (), {}), index) if _is_simple_range(
+                    streams.get(stream_op, None)
+                ):
+                    pass
+                case _:
+                    return None
+            return monoid.reduce(
+                monoid.plus(
+                    monoid.mask(value, And.plus(stream_op() < index, *tail_mask_elems)),
+                    monoid.mask(value, And.plus(stream_op() > index, *tail_mask_elems)),
+                ),
+                streams,
+            )
+
+        for i, elem in enumerate(mask_elems):
+            match elem:
+                case Term(jnp.not_equal, args, {}):
+                    tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+                    ret = _neq_to_plus(args, tail_mask_elems) or _neq_to_plus(
+                        tuple(reversed(args)), tail_mask_elems
+                    )
+                    if ret:
+                        return ret
+
+        return fwd()
+
+
+class ReduceArrayScan(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+
+            case _:
+                return fwd()
+
+        def _inequality_to_scan(cmp_op, args, tail_mask_elems):
+            match args:
+                case (Term(stream_op, (), {}), index):
+                    pass
+                case _:
+                    return None
+
+            stream = streams.get(stream_op, None)
+            if not _is_simple_range(stream):
+                return None
+            assert isinstance(stream, range)
+
+            reverse = cmp_op in (jnp.greater_equal, jnp.greater)
+            n = len(stream)
+            pos_value = monoid.reduce(
+                monoid.delta((stream_op(),), value), {stream_op: stream}
+            )
+            # inclusive prefix (or suffix, when reverse) scan over the stream
+            inclusive = lax.associative_scan(monoid.plus, pos_value, reverse=reverse)
+            # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
+            # an identity element on the appropriate side and shift the result
+            # so that scan_val[k] aggregates only the positions satisfying the
+            # comparison against k. The non-strict comparisons (`<=`, `>=`) use
+            # the inclusive scan directly.
+            match cmp_op:
+                case jnp.less:
+                    scan_val = jnp.pad(
+                        inclusive,
+                        (1, 0),
+                        mode="constant",
+                        constant_values=monoid.identity,
+                    )[:n]
+                case jnp.greater:
+                    scan_val = jnp.pad(
+                        inclusive,
+                        (0, 1),
+                        mode="constant",
+                        constant_values=monoid.identity,
+                    )[1:]
+                case _:
+                    scan_val = inclusive
+
+            tail_body = monoid.mask(
+                jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
+            )
+            tail_streams = {k: v for (k, v) in streams.items() if k != stream_op}
+            if tail_streams:
+                return monoid.reduce(tail_body, tail_streams)
+            return tail_body
+
+        mask_elems = _conjuncts(mask)
         for i, elem in enumerate(mask_elems):
             tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
             match elem:
-                case Term(jnp.not_equal, args, {}):
-                    match args:
-                        case (Term(stream_op, (), {}), index) if self._is_simple_range(
-                            streams.get(stream_op, None)
-                        ):
-                            return self._disequality_to_plus(
-                                monoid,
-                                streams,
-                                stream_op,
-                                value,
-                                index,
-                                tail_mask_elems,
-                            )
-                        case (index, Term(stream_op, (), {})) if self._is_simple_range(
-                            streams.get(stream_op, None)
-                        ):
-                            return self._disequality_to_plus(
-                                monoid,
-                                streams,
-                                stream_op,
-                                value,
-                                index,
-                                tail_mask_elems,
-                            )
                 case Term(
                     (
                         jnp.less_equal | jnp.greater_equal | jnp.less | jnp.greater
@@ -359,31 +378,13 @@ class ReduceArrayScan(ObjectInterpretation):
                     args,
                     {},
                 ):
-                    match args:
-                        case (Term(stream_op, (), {}), index) if self._is_simple_range(
-                            streams.get(stream_op, None)
-                        ):
-                            return self._inequality_to_scan(
-                                monoid,
-                                streams,
-                                stream_op,
-                                value,
-                                index,
-                                tail_mask_elems,
-                                cmp_op,
-                            )
-                        case (index, Term(stream_op, (), {})) if self._is_simple_range(
-                            streams.get(stream_op, None)
-                        ):
-                            return self._inequality_to_scan(
-                                monoid,
-                                streams,
-                                stream_op,
-                                value,
-                                index,
-                                tail_mask_elems,
-                                complement.of(cmp_op),
-                            )
+                    ret = _inequality_to_scan(
+                        cmp_op, args, tail_mask_elems
+                    ) or _inequality_to_scan(
+                        complement.of(cmp_op), tuple(reversed(args)), tail_mask_elems
+                    )
+                    if ret:
+                        return ret
         return fwd()
 
 

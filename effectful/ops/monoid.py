@@ -191,13 +191,17 @@ And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
 
 
-def _conjuncts(mask) -> tuple:
+def _conjuncts(mask) -> Sequence[Term]:
     """Return the conjuncts of an ``And`` mask as a flat tuple."""
     match mask:
         case Term(And.plus, elems, {}):
             return elems
         case _:
             return (mask,)
+
+
+def _is_simple_range(obj) -> bool:
+    return isinstance(obj, range) and obj.start == 0 and obj.step == 1
 
 
 @dataclass
@@ -349,9 +353,7 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             return (
                 is_equality(op)
                 and stream_op in streams
-                and isinstance(stream := streams[stream_op], range)
-                and stream.start == 0
-                and stream.step == 1
+                and _is_simple_range(streams[stream_op])
                 and not (fvsof(mask_key) & set(streams))
             )
 
@@ -1614,11 +1616,7 @@ class ReduceDependentRangeMask(ObjectInterpretation):
     def _(self, monoid: Monoid, body, streams: Streams):
         for u, u_stream in streams.items():
             # streams of the form k: range(X)
-            if not (
-                isinstance(u_stream, range)
-                and u_stream.start == 0
-                and u_stream.step == 1
-            ):
+            if not _is_simple_range(u_stream):
                 continue
 
             for v, v_stream in streams.items():
@@ -1641,6 +1639,54 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                 }
                 fresh_body = monoid.mask(body, v() < u())
                 return monoid.reduce(fresh_body, fresh_streams)
+
+        return fwd()
+
+
+class ReduceDisequalityMask(ObjectInterpretation):
+    """M.reduce(M.mask(v, And.plus(a != b, c)), S)
+    ≡ M.reduce(M.plus(M.mask(v, And.plus(a < b, c)), M.mask(v, And.plus(a > b, c))))
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
+
+            case _:
+                return fwd()
+
+        mask_elems = _conjuncts(mask)
+
+        def _neq_to_plus(args, tail_mask_elems):
+            match args:
+                case (Term(stream_op, (), {}), index) if _is_simple_range(
+                    streams.get(stream_op, None)
+                ):
+                    pass
+                case _:
+                    return None
+            return monoid.reduce(
+                monoid.plus(
+                    monoid.mask(value, And.plus(stream_op() < index, *tail_mask_elems)),
+                    monoid.mask(value, And.plus(stream_op() > index, *tail_mask_elems)),
+                ),
+                streams,
+            )
+
+        for i, elem in enumerate(mask_elems):
+            if not (isinstance(elem, Term) and is_equality(complement.of(elem.op))):
+                continue
+
+            tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+            ret = _neq_to_plus(elem.args, tail_mask_elems) or _neq_to_plus(
+                tuple(reversed(elem.args)), tail_mask_elems
+            )
+            if ret:
+                return ret
 
         return fwd()
 
@@ -1727,6 +1773,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWhereEqualityPeel(),
     ReduceDisjunctiveDisequalityMask(),
     ReduceDependentRangeMask(),
+    ReduceDisequalityMask(),
     ContractLongestStream(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
