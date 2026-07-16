@@ -191,6 +191,15 @@ And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
 
 
+def _conjuncts(mask) -> tuple:
+    """Return the conjuncts of an ``And`` mask as a flat tuple."""
+    match mask:
+        case Term(And.plus, elems, {}):
+            return elems
+        case _:
+            return (mask,)
+
+
 @dataclass
 class _ExtensiblePredicate[T]:
     elems: set[T]
@@ -331,14 +340,6 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
     """
 
     @staticmethod
-    def _conds(mask):
-        match mask:
-            case Term(And.plus, conds, {}):
-                return conds
-            case cond:
-                return (cond,)
-
-    @staticmethod
     def _match_eq(cond, streams):
         """If ``cond`` is ``stream_op == key`` (either order) where ``stream_op``
         is a ``range(0, N)`` stream and ``key`` is stream-independent, return
@@ -369,7 +370,7 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
     def _eliminate(self, monoid, value, mask, streams):
         """Discharge one eliminable equality constraint via a gather, or return
         ``None`` if no constraint is eliminable."""
-        conds = self._conds(mask)
+        conds = _conjuncts(mask)
         for i, cond in enumerate(conds):
             matched = self._match_eq(cond, streams)
             if matched is None:
@@ -1499,7 +1500,7 @@ class ReduceWhereToMasks(ObjectInterpretation):
             return fwd()
 
         cond, when_true, when_false = body.args
-        conds = cond.args if isinstance(cond, Term) and cond.op == And.plus else (cond,)
+        conds = _conjuncts(cond)
         all_have_compl = all(
             isinstance(t, Term) and complement.of(t.op) is not None for t in conds
         )

@@ -28,6 +28,7 @@ from effectful.ops.monoid import (
     Product,
     Streams,
     Sum,
+    _conjuncts,
     _is_monoid_mask,
     _is_monoid_plus,
     complement,
@@ -322,11 +323,7 @@ class ReduceArrayScan(ObjectInterpretation):
             case _:
                 return fwd()
 
-        match mask:
-            case Term(And.plus, mask_elems, {}):
-                ...
-            case _:
-                mask_elems = (mask,)
+        mask_elems = _conjuncts(mask)
 
         for i, elem in enumerate(mask_elems):
             tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
