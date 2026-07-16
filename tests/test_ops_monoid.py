@@ -49,7 +49,7 @@ from effectful.ops.monoid import (
     is_commutative,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import ite, range_, syntactic_eq
+from effectful.ops.syntax import as_dict, ite, range_, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
