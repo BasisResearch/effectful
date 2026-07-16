@@ -877,7 +877,7 @@ def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
 def test_cartesian_union():
     i, a = Operation.define(int), Operation.define(int)
     lhs = CartesianProduct.reduce(
-        Union.reduce([Union.delta((i(),), a())], {a: range(2)}), {i: range(2)}
+        Union.reduce([as_dict(((i(),), a()))], {a: range(2)}), {i: range(2)}
     )
     with handler(NormalizeIntp), handler(EvaluateIntp):
         rhs = evaluate(lhs)
@@ -903,7 +903,7 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
         inner.reduce(f(A()[(i(),)]), {i: range(3)}),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(),), a())], {a: A_domain()}), {i: range(3)}
+                Union.reduce([as_dict(((i(),), a()))], {a: A_domain()}), {i: range(3)}
             )
         },
     )
@@ -935,15 +935,14 @@ def test_reduce_lifted_aligns_equal_ranges_by_row_position():
         ),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((p(), q()), a())], {a: range(3)}),
+                Union.reduce([as_dict(((p(), q()), a()))], {a: range(3)}),
                 {p: plate, q: plate},
             )
         },
     )
     rhs = Product.reduce(
         Product.reduce(
-            Sum.reduce(Product.plus(f(a()), g(a())), {a: range(3)}),
-            {q: plate},
+            Sum.reduce(Product.plus(f(a()), g(a())), {a: range(3)}), {q: plate}
         ),
         {p: plate},
     )
@@ -966,26 +965,18 @@ def test_reduce_lifted_unfactors_single_product_factor():
 
     lhs = Sum.reduce(
         Product.plus(
-            Sum.reduce(
-                Product.reduce(f(A()[(i(),)], b()), {i: plate}),
-                {b: range(4)},
-            ),
+            Sum.reduce(Product.reduce(f(A()[(i(),)], b()), {i: plate}), {b: range(4)}),
             h(),
         ),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((p(),), a())], {a: range(3)}),
-                {p: plate},
+                Union.reduce([as_dict(((p(),), a()))], {a: range(3)}), {p: plate}
             )
         },
     )
     rhs = Sum.reduce(
         Product.plus(
-            Product.reduce(
-                Sum.reduce(f(a(), b()), {a: range(3)}),
-                {p: plate},
-            ),
-            h(),
+            Product.reduce(Sum.reduce(f(a(), b()), {a: range(3)}), {p: plate}), h()
         ),
         {b: range(4)},
     )
@@ -1028,7 +1019,7 @@ def test_reduce_lifted_sum_of_products_cartesian_body():
         ),
         {
             d: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(),), d_v())], {d_v: range(5)}),
+                Union.reduce([as_dict(((i(),), d_v()))], {d_v: range(5)}),
                 {i: range(2)},
             )
         },
@@ -1076,11 +1067,11 @@ def test_reduce_lifted_3(backend: Backend):
         Product.reduce(f(A()[(i(), j())], B()[(i(), j())]), {i: range(2), j: range(3)}),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(), j()), a())], {a: A_domain()}),
+                Union.reduce([as_dict(((i(), j()), a()))], {a: A_domain()}),
                 {i: range(2), j: range(3)},
             ),
             B: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(), j()), b())], {b: B_domain()}),
+                Union.reduce([as_dict(((i(), j()), b()))], {b: B_domain()}),
                 {i: range(2), j: range(3)},
             ),
         },
@@ -1107,7 +1098,7 @@ def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
         inner.reduce(f(A()[(i(), j())]), {i: range(3), j: range(2)}),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(), j()), a())], {a: A_domain()}),
+                Union.reduce([as_dict(((i(), j()), a()))], {a: A_domain()}),
                 {i: range(3), j: range(2)},
             )
         },
@@ -1141,7 +1132,7 @@ def test_reduce_lifted_2(outer, inner, backend: Backend):
         ),
         {
             A: CartesianProduct.reduce(
-                Union.reduce([Union.delta((i(),), a())], {a: A_domain(i())}),
+                Union.reduce([as_dict(((i(),), a()))], {a: A_domain(i())}),
                 {i: range(3)},
             ),
             t: T(),
