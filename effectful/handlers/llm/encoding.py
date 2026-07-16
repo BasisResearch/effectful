@@ -256,8 +256,6 @@ def _pydantic_type_code(ty):
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)
         try:
-            # `parse` accepts more than `compile` does (e.g. `return` outside a
-            # function), so a compile-only error is rejected here, at decode.
             return evaluation.compile(module, filename)
         except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source does not compile: {exc}") from exc
@@ -496,9 +494,12 @@ def _validate_signature_ast(
     if expected_params is not None:
         ast_params = func_ast.args.args + func_ast.args.posonlyargs
         if len(ast_params) != len(expected_params):
+            params_str = ", ".join(
+                getattr(t, "__name__", str(t)) for t in expected_params
+            )
             raise ValueError(
-                f"decode() expected function with {len(expected_params)} parameters, "
-                f"got {len(ast_params)}"
+                f"synthesized function must take exactly {len(expected_params)} "
+                f"parameter(s) ({params_str}), but got {len(ast_params)}"
             )
 
 
@@ -516,9 +517,14 @@ def _validate_signature_callable(
     if expected_params is not None:
         actual_params = list(sig.parameters.values())
         if len(actual_params) != len(expected_params):
+            params_str = ", ".join(
+                getattr(t, "__name__", str(t)) for t in expected_params
+            )
+            return_str = getattr(expected_return, "__name__", str(expected_return))
             raise ValueError(
-                f"decode() expected function with {len(expected_params)} parameters, "
-                f"got {len(actual_params)}"
+                f"synthesized function must match Callable[[{params_str}], {return_str}] "
+                f"-- exactly {len(expected_params)} parameter(s) -- "
+                f"but got {len(actual_params)}"
             )
 
     actual_return = sig.return_annotation
