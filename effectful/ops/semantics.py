@@ -151,6 +151,7 @@ def evaluate[T](
 @evaluate.register(object)
 @evaluate.register(str)
 @evaluate.register(bytes)
+@evaluate.register(range)
 def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return typing.cast(
@@ -228,6 +229,13 @@ def _evaluate_list_view(expr, **kwargs):
 
 def _simple_type(tp: type) -> type:
     """Convert a type object into a type that can be dispatched on."""
+
+    def _resolve_aliases(tp: type) -> type:
+        tp = typing.get_origin(tp) or tp
+        if isinstance(tp, typing.TypeAliasType):
+            return _resolve_aliases(tp.__value__)
+        return tp
+
     if isinstance(tp, typing.TypeVar):
         tp = (
             tp.__bound__
@@ -245,7 +253,7 @@ def _simple_type(tp: type) -> type:
         tp = functools.reduce(operator.or_, (type(arg) for arg in args))
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
-    return typing.get_origin(tp) or tp
+    return _resolve_aliases(tp)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:

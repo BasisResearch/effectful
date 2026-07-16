@@ -69,7 +69,7 @@ def map_structure(func, expr):
         else:
             return type(expr)(map_structure(func, tuple(expr.items())))
     elif isinstance(expr, collections.abc.Sequence):
-        if isinstance(expr, str | bytes):
+        if isinstance(expr, str | bytes | range):
             return expr
         elif (
             isinstance(expr, tuple)

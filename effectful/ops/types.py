@@ -311,6 +311,15 @@ class Operation[**Q, V]:
 
         return typing.cast(Operation[P, T], cls.define(func, **kwargs))
 
+    @define.register(types.MethodType)
+    @classmethod
+    def _define_methodtype[**P, T](
+        cls, t: Callable[P, T], *, name: str | None = None
+    ) -> "Operation[P, T]":
+        op = cls._define_callable(t, name=name)
+        op.__self__ = t.__self__  # type: ignore[attr-defined]
+        return typing.cast("Operation[P, T]", op)
+
     @define.register(staticmethod)
     @classmethod
     def _define_staticmethod[**P, T](cls, t: "staticmethod[P, T]", **kwargs):
@@ -488,7 +497,10 @@ class Operation[**Q, V]:
                     else:
                         return default_result
 
-                instance_op = self.define(types.MethodType(_instance_op, instance))
+                name = ("" if owner is None else f"{owner.__name__}_") + self.__name__
+                instance_op = self.define(
+                    types.MethodType(_instance_op, instance), name=name
+                )
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:
