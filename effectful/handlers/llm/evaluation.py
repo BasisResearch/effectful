@@ -11,6 +11,7 @@ import linecache
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import typing
@@ -18,7 +19,6 @@ from collections.abc import MutableMapping
 from types import CodeType
 from typing import Any
 
-from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
     Guards,
@@ -365,16 +365,22 @@ def _mypy_check_region(
         if lenient
         else []
     )
-    # Run mypy on the source as a temp file (not --command: it hits an argv
-    # length limit on large modules). Each call gets an isolated temp dir + cache
-    # so parallel decodes don't share -- and deadlock on -- mypy's SQLite cache.
+    # Run mypy as a subprocess, not the in-process `mypy.api.run`: the API builds
+    # typeshed and a full module graph inside this process and never returns that
+    # memory, so under a test/agent session doing many checks it accumulates to many
+    # GB (OOM). A subprocess reclaims all of it on exit. Pass a file (not --command:
+    # it hits an argv length limit on large modules); each call gets an isolated temp
+    # dir + cache so parallel decodes don't share -- and deadlock on -- mypy's cache.
     tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
     try:
         tf_path = os.path.join(tmpdir, "_synthesized.py")
         with open(tf_path, "w", encoding="utf-8") as f:
             f.write(source)
-        stdout, stderr, status = mypy_api.run(
+        proc = subprocess.run(
             [
+                sys.executable,
+                "-m",
+                "mypy",
                 tf_path,
                 "--cache-dir",
                 os.path.join(tmpdir, "cache"),
@@ -383,8 +389,11 @@ def _mypy_check_region(
                 "--ignore-missing-imports",
                 "--disable-error-code=import-untyped",
                 *lenient_flags,
-            ]
+            ],
+            capture_output=True,
+            text=True,
         )
+        stdout, stderr, status = proc.stdout, proc.stderr, proc.returncode
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
