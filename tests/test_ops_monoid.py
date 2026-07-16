@@ -1401,7 +1401,7 @@ def test_reduce_dependent_range_mask(monoid, backend: Backend):
     body = f(u(), v())
 
     lhs = monoid.reduce(body, {u: range_(N), v: range_(u())})
-    rhs = monoid.reduce(monoid.mask(v() < u(), body), {u: range_(N), v: range_(N)})
+    rhs = monoid.reduce(monoid.mask(body, v() < u()), {u: range_(N), v: range_(N)})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
 
 

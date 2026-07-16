@@ -1635,7 +1635,7 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                     fresh_streams = {
                         a: (u_stream if a == v else b) for (a, b) in streams.items()
                     }
-                    fresh_body = monoid.mask(v() < u(), body)
+                    fresh_body = monoid.mask(body, v() < u())
                     return monoid.reduce(fresh_body, fresh_streams)
 
         return fwd()
