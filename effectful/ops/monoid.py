@@ -1685,7 +1685,7 @@ class ReduceDisequalityMask(ObjectInterpretation):
             ret = _neq_to_plus(elem.args, tail_mask_elems) or _neq_to_plus(
                 tuple(reversed(elem.args)), tail_mask_elems
             )
-            if ret:
+            if ret is not None:
                 return ret
 
         return fwd()

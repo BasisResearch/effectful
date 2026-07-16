@@ -383,7 +383,7 @@ class ReduceArrayScan(ObjectInterpretation):
                     ) or _inequality_to_scan(
                         complement.of(cmp_op), tuple(reversed(args)), tail_mask_elems
                     )
-                    if ret:
+                    if ret is not None:
                         return ret
         return fwd()
 
