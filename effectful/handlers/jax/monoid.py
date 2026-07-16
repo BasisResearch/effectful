@@ -751,7 +751,7 @@ class _EinsumBuilder:
         return deffn(
             bind_dims(
                 deffn(reduction, *(self.out_vars[c] for c in self.out_spec))(
-                    *((unbind_dims(jnp.arange(d), v) for (v, d) in dims))
+                    *(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
                 ),
                 *(v for (v, _) in dims),
             ),

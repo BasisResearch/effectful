@@ -807,6 +807,8 @@ class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
 
     @Operation.define
     def index(self: collections.abc.Sequence[T], *args, **kwargs) -> int:
+        from effectful.ops.semantics import fvsof
+
         if not fvsof((self, *args, *kwargs.values())):
             return self.index(*args, **kwargs)
         else:
@@ -814,6 +816,8 @@ class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
 
     @Operation.define
     def count(self: collections.abc.Sequence[T], value: T) -> int:
+        from effectful.ops.semantics import fvsof
+
         if not fvsof((self, value)):
             return self.count(value)
         else:

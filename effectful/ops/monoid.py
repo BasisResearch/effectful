@@ -1611,8 +1611,6 @@ class ReduceDependentRangeMask(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        stream_vars = set(streams.keys())
-
         for u, u_stream in streams.items():
             # streams of the form k: range(X)
             if not (
@@ -1623,21 +1621,25 @@ class ReduceDependentRangeMask(ObjectInterpretation):
                 continue
 
             for v, v_stream in streams.items():
-                if (
-                    isinstance(v_stream, Term)
-                    and v_stream.op == range_
-                    and isinstance(v_stream.start, int)
-                    and v_stream.start == 0
-                    and isinstance(v_stream.step, int)
-                    and v_stream.step == 1
-                    and isinstance(v_stream.stop, Term)  # type: ignore[attr-defined]
-                    and v_stream.stop.op == u  # type: ignore[attr-defined]
+                if not (isinstance(v_stream, Term) and v_stream.op == range_):
+                    continue
+
+                start, stop, step = v_stream.start, v_stream.stop, v_stream.step  # type: ignore[attr-defined]
+                if not (
+                    isinstance(start, int)
+                    and start == 0
+                    and isinstance(step, int)
+                    and step == 1
+                    and isinstance(stop, Term)
+                    and stop.op == u
                 ):
-                    fresh_streams = {
-                        a: (u_stream if a == v else b) for (a, b) in streams.items()
-                    }
-                    fresh_body = monoid.mask(body, v() < u())
-                    return monoid.reduce(fresh_body, fresh_streams)
+                    continue
+
+                fresh_streams = {
+                    a: (u_stream if a == v else b) for (a, b) in streams.items()
+                }
+                fresh_body = monoid.mask(body, v() < u())
+                return monoid.reduce(fresh_body, fresh_streams)
 
         return fwd()
 
