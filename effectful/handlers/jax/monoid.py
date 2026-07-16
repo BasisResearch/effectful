@@ -271,6 +271,10 @@ class ReduceArrayScan(ObjectInterpretation):
         )
 
     @staticmethod
+    def _is_simple_range(obj):
+        return isinstance(obj, range) and obj.start == 0 and obj.step == 1
+
+    @staticmethod
     def _inequality_to_scan(
         monoid, streams, stream_op, value, index, tail_mask_elems, cmp_op
     ):
@@ -329,8 +333,8 @@ class ReduceArrayScan(ObjectInterpretation):
             match elem:
                 case Term(jnp.not_equal, args, {}):
                     match args:
-                        case (Term(stream_op, (), {}), index) if isinstance(
-                            streams.get(stream_op, None), range
+                        case (Term(stream_op, (), {}), index) if self._is_simple_range(
+                            streams.get(stream_op, None)
                         ):
                             return self._disequality_to_plus(
                                 monoid,
@@ -340,8 +344,8 @@ class ReduceArrayScan(ObjectInterpretation):
                                 index,
                                 tail_mask_elems,
                             )
-                        case (index, Term(stream_op, (), {})) if isinstance(
-                            streams.get(stream_op, None), range
+                        case (index, Term(stream_op, (), {})) if self._is_simple_range(
+                            streams.get(stream_op, None)
                         ):
                             return self._disequality_to_plus(
                                 monoid,
@@ -359,8 +363,8 @@ class ReduceArrayScan(ObjectInterpretation):
                     {},
                 ):
                     match args:
-                        case (Term(stream_op, (), {}), index) if isinstance(
-                            streams.get(stream_op, None), range
+                        case (Term(stream_op, (), {}), index) if self._is_simple_range(
+                            streams.get(stream_op, None)
                         ):
                             return self._inequality_to_scan(
                                 monoid,
@@ -371,8 +375,8 @@ class ReduceArrayScan(ObjectInterpretation):
                                 tail_mask_elems,
                                 cmp_op,
                             )
-                        case (index, Term(stream_op, (), {})) if isinstance(
-                            streams.get(stream_op, None), range
+                        case (index, Term(stream_op, (), {})) if self._is_simple_range(
+                            streams.get(stream_op, None)
                         ):
                             return self._inequality_to_scan(
                                 monoid,
