@@ -189,8 +189,6 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 
 
 _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
-_CACHE_MISSING = object()
-_CACHE_PENDING = object()
 
 
 def _current_cache_key() -> Operation | None:
@@ -226,21 +224,12 @@ def _evaluate_term(expr: Term, **kwargs):
         return expr.op(*args, **kwargs)
 
     cache = _term_cache(expr)
-    result = cache.get(cache_key, _CACHE_MISSING)
-    if result is _CACHE_PENDING:
-        raise RuntimeError("cyclic memoized evaluation of a Term")
-    if result is not _CACHE_MISSING:
-        return result
+    if cache_key in cache:
+        return cache[cache_key]
 
-    cache[cache_key] = _CACHE_PENDING
-    try:
-        args = tuple(evaluate(arg) for arg in expr.args)
-        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-        result = expr.op(*args, **kwargs)
-    except BaseException:
-        cache.pop(cache_key, None)
-        raise
-
+    args = tuple(evaluate(arg) for arg in expr.args)
+    kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+    result = expr.op(*args, **kwargs)
     cache[cache_key] = result
     return result
 
