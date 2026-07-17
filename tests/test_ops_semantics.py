@@ -485,6 +485,10 @@ def test_memoized_interpretation():
 
     assert get(intp, term) == expected
     assert calls == 2
+    assert all(
+        isinstance(cache_key, Operation)
+        for cache_key in term.__effectful_evaluation_cache__
+    )
 
     # The root cache is checked before its children are traversed, including
     # when evaluation is expressed directly through a handler.

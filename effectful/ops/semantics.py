@@ -21,56 +21,25 @@ apply = Operation.__apply__
 
 
 @defop
-def _get_cache_key() -> object | None:
-    """Return the cache key for the current memoized interpretation.
+def _get_cache_key() -> Operation:
+    """Return the operation identifying the current memoized interpretation.
 
     This is queried directly by :func:`evaluate`, rather than dispatched as an
     ordinary operation, so that interpretations of :data:`apply` do not see it.
     """
-    return None
+    raise RuntimeError("_get_cache_key must be handled directly")
 
 
-class MemoizedInterpretation(collections.abc.Mapping):
-    """An interpretation whose evaluations of terms are memoized.
-
-    Results are stored on each term and keyed by this interpretation's private
-    identity. Memoization is therefore shared by every installation of this
-    object, while wrapping an interpretation a second time creates a fresh
-    cache namespace.
-
-    Memoized interpretations should be deterministic and independent of
-    enclosing handlers. In particular, handlers that use :func:`fwd` to depend
-    on an enclosing interpretation are generally not safe to memoize.
-    """
-
-    def __init__(self, intp: Interpretation):
-        self._intp = intp
-        self._cache_key = object()
-
-    def __iter__(self):
-        yield from self._intp
-        if _get_cache_key not in self._intp:
-            yield _get_cache_key
-
-    def __len__(self):
-        return len(self._intp) + (_get_cache_key not in self._intp)
-
-    def __getitem__(self, op: Operation):
-        if op is _get_cache_key:
-            return lambda: self._cache_key
-        return self._intp[op]
-
-
-def memoize(intp: Interpretation) -> MemoizedInterpretation:
+def memoize(intp: Interpretation) -> Interpretation:
     """Flag ``intp`` for term-local memoization.
 
-    Calling ``memoize`` on an already memoized interpretation is idempotent.
-    The interpretation must be deterministic and independent of enclosing
-    handlers for cached evaluation to preserve its semantics.
+    A fresh operation identifies each resulting interpretation and is used as
+    the key in term-local caches. The interpretation must be deterministic and
+    independent of enclosing handlers for cached evaluation to preserve its
+    semantics.
     """
-    if isinstance(intp, MemoizedInterpretation):
-        return intp
-    return MemoizedInterpretation(intp)
+    cache_key = defop(object, name="cache_key")
+    return coproduct(intp, {_get_cache_key: lambda: cache_key})
 
 
 @defop
@@ -224,7 +193,7 @@ _CACHE_MISSING = object()
 _CACHE_PENDING = object()
 
 
-def _current_cache_key() -> object | None:
+def _current_cache_key() -> Operation | None:
     """Return the current interpretation's cache key without effect dispatch."""
     from effectful.internals.runtime import get_interpretation
 
