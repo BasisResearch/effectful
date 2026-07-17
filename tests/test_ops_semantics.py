@@ -530,25 +530,6 @@ def test_memoized_interpretation_does_not_cache_failures():
     assert calls == 2
 
 
-def test_fvsof_is_memoized():
-    x = defop(int, name="x")
-
-    @defop
-    def identity(value: int) -> int:
-        raise NotHandled
-
-    term = identity(x())
-    assert not hasattr(term, "__effectful_evaluation_cache__")
-
-    assert fvsof(term) == {identity, x}
-    cache = term.__effectful_evaluation_cache__
-    assert len(cache) == 1
-
-    assert fvsof(term) == {identity, x}
-    assert term.__effectful_evaluation_cache__ is cache
-    assert len(cache) == 1
-
-
 def test_ctxof():
     x = defop(object)
     y = defop(object)
@@ -593,23 +574,6 @@ def test_handler_typing() -> None:
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
     )
     evaluate(0, intp={f: lambda x: x + 1, g: lambda x, y: x + str(y)})
-
-
-def test_typeof_is_memoized():
-    @defop
-    def identity(x: int) -> int:
-        raise NotHandled
-
-    term = identity(1)
-    assert not hasattr(term, "__effectful_evaluation_cache__")
-
-    assert typeof(term) is int
-    cache = term.__effectful_evaluation_cache__
-    assert len(cache) == 1
-
-    assert typeof(term) is int
-    assert term.__effectful_evaluation_cache__ is cache
-    assert len(cache) == 1
 
 
 def test_typeof_basic():

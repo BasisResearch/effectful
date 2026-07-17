@@ -8,7 +8,11 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defop
+from effectful.ops.syntax import (
+    _CustomSingleDispatchCallable,
+    defdata,
+    defop,
+)
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -354,54 +358,6 @@ def typeof[T](term: Expr[T]) -> type[T]:
     return typing.cast(type[T], type(type_or_value))
 
 
-@dataclasses.dataclass(frozen=True)
-class _FreeVariables:
-    value: frozenset[Operation]
-
-
-def _collect_free_variables(expr) -> frozenset[Operation]:
-    if isinstance(expr, _FreeVariables):
-        return expr.value
-    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-        return frozenset().union(
-            *(
-                _collect_free_variables(getattr(expr, field.name))
-                for field in dataclasses.fields(expr)
-            )
-        )
-    elif isinstance(expr, collections.abc.Mapping):
-        return frozenset().union(
-            *(
-                _collect_free_variables(item)
-                for key, value in expr.items()
-                for item in (key, value)
-            )
-        )
-    elif isinstance(expr, collections.abc.Sequence) and not isinstance(
-        expr, str | bytes
-    ):
-        return frozenset().union(*map(_collect_free_variables, expr))
-    elif isinstance(
-        expr,
-        collections.abc.ItemsView
-        | collections.abc.KeysView
-        | collections.abc.ValuesView,
-    ):
-        return frozenset().union(*map(_collect_free_variables, expr))
-    return frozenset()
-
-
-def _fvsof_apply(op, *args, **kwargs):
-    fvs = {op} | set(_collect_free_variables((args, kwargs)))
-    bindings = op.__fvs_rule__(*args, **kwargs)
-    bound_vars = set().union(*(*bindings.args, *bindings.kwargs.values()))
-    assert all(isinstance(bound_var, Operation) for bound_var in bound_vars)
-    return _FreeVariables(frozenset(fvs - bound_vars))
-
-
-_FVSOF_INTERPRETATION = memoize({apply: _fvsof_apply})
-
-
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """Return the free variables of an expression.
 
@@ -414,5 +370,20 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert f in fvs
     >>> assert len(fvs) == 1
     """
-    analyzed = evaluate(term, intp=_FVSOF_INTERPRETATION)
-    return _collect_free_variables(analyzed)
+    from effectful.internals.runtime import interpreter
+
+    _fvs: set[Operation] = set()
+
+    def _update_fvs(op, *args, **kwargs):
+        _fvs.add(op)
+        bindings = op.__fvs_rule__(*args, **kwargs)
+        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
+            assert isinstance(bound_var, Operation)
+            if bound_var in _fvs:
+                _fvs.remove(bound_var)
+        return defdata(op, *args, **kwargs)
+
+    with interpreter({apply: _update_fvs}):
+        evaluate(term)
+
+    return _fvs
