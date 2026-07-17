@@ -14,7 +14,6 @@ from effectful.ops.semantics import (
     evaluate,
     fvsof,
     fwd,
-    get,
     handler,
     memoize,
     typeof,
@@ -483,7 +482,7 @@ def test_memoized_interpretation():
     intp = memoize({apply: analyze})
     expected = ("node", (("node", (1,), {}),), {})
 
-    assert get(intp, term) == expected
+    assert handler(intp)(evaluate)(term) == expected
     assert calls == 2
     assert all(
         isinstance(cache_key, Operation)
@@ -497,12 +496,12 @@ def test_memoized_interpretation():
     assert calls == 2
 
     # Child results are cached independently and can be reused directly.
-    assert get(intp, term.args[0]) == expected[1][0]
+    assert handler(intp)(evaluate)(term.args[0]) == expected[1][0]
     assert calls == 2
 
     # A separately memoized interpretation has a separate cache namespace.
     other_intp = memoize({apply: analyze})
-    assert get(other_intp, term) == expected
+    assert handler(other_intp)(evaluate)(term) == expected
     assert calls == 4
 
 
@@ -523,11 +522,11 @@ def test_memoized_interpretation_does_not_cache_failures():
 
     intp = memoize({apply: analyze})
     with pytest.raises(ValueError, match="failed analysis"):
-        get(intp, term)
+        handler(intp)(evaluate)(term)
 
-    assert get(intp, term) == "success"
+    assert handler(intp)(evaluate)(term) == "success"
     assert calls == 2
-    assert get(intp, term) == "success"
+    assert handler(intp)(evaluate)(term) == "success"
     assert calls == 2
 
 

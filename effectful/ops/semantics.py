@@ -235,16 +235,6 @@ def _evaluate_term(expr: Term, **kwargs):
     return result
 
 
-def get[T](intp: Interpretation, term: Expr[T]) -> Expr[T]:
-    """Evaluate ``term`` under ``intp``, reusing cached results when enabled.
-
-    This is equivalent to ``handler(intp)(evaluate)(term)``. If ``intp`` was
-    created by :func:`memoize`, results are cached on each visited term.
-    """
-    with handler(intp):
-        return evaluate(term)
-
-
 @evaluate.register(Operation)
 def _evaluate_operation(expr: Operation, **kwargs) -> Operation:
     from effectful.internals.runtime import get_interpretation
