@@ -467,6 +467,8 @@ def test_evaluate():
 
 
 def test_memoized_interpretation():
+    from effectful.internals.runtime import interpreter
+
     @defop
     def node(x: object) -> object:
         raise NotHandled
@@ -482,30 +484,37 @@ def test_memoized_interpretation():
     intp = memoize({apply: analyze})
     expected = ("node", (("node", (1,), {}),), {})
 
-    assert handler(intp)(evaluate)(term) == expected
+    assert interpreter(intp)(evaluate)(term) == expected
     assert calls == 2
     assert all(
-        isinstance(cache_key, Operation)
-        for cache_key in term.__effectful_evaluation_cache__
+        isinstance(cache_key, int) for cache_key in term.__effectful_evaluation_cache__
     )
 
     # The root cache is checked before its children are traversed, including
     # when evaluation is expressed directly through a handler.
-    with handler(intp):
+    with interpreter(intp):
         assert evaluate(term) == expected
     assert calls == 2
 
     # Child results are cached independently and can be reused directly.
-    assert handler(intp)(evaluate)(term.args[0]) == expected[1][0]
+    assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
     assert calls == 2
+
+    # A composition has a distinct identity even when its added handler is not
+    # used while evaluating this term.
+    combined_intp = coproduct(intp, {plus_1: lambda x: x})
+    assert interpreter(combined_intp)(evaluate)(term) == expected
+    assert calls == 4
 
     # A separately memoized interpretation has a separate cache namespace.
     other_intp = memoize({apply: analyze})
-    assert handler(other_intp)(evaluate)(term) == expected
-    assert calls == 4
+    assert interpreter(other_intp)(evaluate)(term) == expected
+    assert calls == 6
 
 
 def test_memoized_interpretation_does_not_cache_failures():
+    from effectful.internals.runtime import interpreter
+
     @defop
     def node() -> object:
         raise NotHandled
@@ -522,11 +531,11 @@ def test_memoized_interpretation_does_not_cache_failures():
 
     intp = memoize({apply: analyze})
     with pytest.raises(ValueError, match="failed analysis"):
-        handler(intp)(evaluate)(term)
+        interpreter(intp)(evaluate)(term)
 
-    assert handler(intp)(evaluate)(term) == "success"
+    assert interpreter(intp)(evaluate)(term) == "success"
     assert calls == 2
-    assert handler(intp)(evaluate)(term) == "success"
+    assert interpreter(intp)(evaluate)(term) == "success"
     assert calls == 2
 
 

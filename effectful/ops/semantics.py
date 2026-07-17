@@ -25,13 +25,9 @@ apply = Operation.__apply__
 
 
 @defop
-def _get_cache_key() -> Operation:
-    """Return the operation identifying the current memoized interpretation.
-
-    This is queried directly by :func:`evaluate`, rather than dispatched as an
-    ordinary operation, so that interpretations of :data:`apply` do not see it.
-    """
-    raise RuntimeError("_get_cache_key must be handled directly")
+def _is_memoized() -> bool:
+    """Return whether evaluation under the current interpretation is memoized."""
+    return False
 
 
 def memoize(intp: Interpretation) -> Interpretation:
@@ -42,8 +38,7 @@ def memoize(intp: Interpretation) -> Interpretation:
     independent of enclosing handlers for cached evaluation to preserve its
     semantics.
     """
-    cache_key = defop(object, name="cache_key")
-    return coproduct(intp, {_get_cache_key: lambda: cache_key})
+    return coproduct(intp, {_is_memoized: lambda: True})
 
 
 @defop
@@ -195,13 +190,14 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
 
 
-def _current_cache_key() -> Operation | None:
-    """Return the current interpretation's cache key, if it has one."""
+def _current_interpretation_cache_id() -> int | None:
+    """Return the current memoized interpretation's object identity."""
     from effectful.internals.runtime import get_interpretation
 
-    if _get_cache_key not in get_interpretation():
+    intp = get_interpretation()
+    if _is_memoized not in intp:
         return None
-    return _get_cache_key()
+    return id(intp)
 
 
 def _term_cache(expr: Term) -> dict[object, object] | None:
@@ -219,21 +215,18 @@ def _term_cache(expr: Term) -> dict[object, object] | None:
 
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    cache_key = _current_cache_key()
-    if cache_key is None:
-        args = tuple(evaluate(arg) for arg in expr.args)
-        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-        return expr.op(*args, **kwargs)
-
-    cache = _term_cache(expr)
-    if cache is not None and cache_key in cache:
-        return cache[cache_key]
+    cache = None
+    cache_id = _current_interpretation_cache_id()
+    if cache_id is not None:
+        cache = _term_cache(expr)
+        if cache is not None and cache_id in cache:
+            return cache[cache_id]
 
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
     result = expr.op(*args, **kwargs)
-    if cache is not None:
-        cache[cache_key] = result
+    if cache is not None and cache_id is not None:
+        cache[cache_id] = result
     return result
 
 
