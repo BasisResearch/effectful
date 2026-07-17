@@ -192,11 +192,12 @@ _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
 
 
 def _current_cache_key() -> Operation | None:
-    """Return the current interpretation's cache key without effect dispatch."""
+    """Return the current interpretation's cache key, if it has one."""
     from effectful.internals.runtime import get_interpretation
 
-    impl = get_interpretation().get(_get_cache_key)
-    return None if impl is None else impl()
+    if _get_cache_key not in get_interpretation():
+        return None
+    return _get_cache_key()
 
 
 def _term_cache(expr: Term) -> dict[object, object]:
