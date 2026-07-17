@@ -8,7 +8,17 @@ from typing import Annotated, Any, Literal, Union
 
 import pytest
 
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import (
+    apply,
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    get,
+    handler,
+    memoize,
+    typeof,
+)
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
@@ -457,6 +467,85 @@ def test_evaluate():
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
 
 
+def test_memoized_interpretation():
+    @defop
+    def node(x: object) -> object:
+        raise NotHandled
+
+    term = node(node(1))
+    calls = 0
+
+    def analyze(op, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return (op.__name__, args, kwargs)
+
+    intp = memoize({apply: analyze})
+    expected = ("node", (("node", (1,), {}),), {})
+
+    assert get(intp, term) == expected
+    assert calls == 2
+
+    # The root cache is checked before its children are traversed, including
+    # when evaluation is expressed directly through a handler.
+    with handler(intp):
+        assert evaluate(term) == expected
+    assert calls == 2
+
+    # Child results are cached independently and can be reused directly.
+    assert get(intp, term.args[0]) == expected[1][0]
+    assert calls == 2
+
+    # A separately memoized interpretation has a separate cache namespace.
+    other_intp = memoize({apply: analyze})
+    assert get(other_intp, term) == expected
+    assert calls == 4
+
+
+def test_memoized_interpretation_does_not_cache_failures():
+    @defop
+    def node() -> object:
+        raise NotHandled
+
+    term = node()
+    calls = 0
+
+    def analyze(op, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("failed analysis")
+        return "success"
+
+    intp = memoize({apply: analyze})
+    with pytest.raises(ValueError, match="failed analysis"):
+        get(intp, term)
+
+    assert get(intp, term) == "success"
+    assert calls == 2
+    assert get(intp, term) == "success"
+    assert calls == 2
+
+
+def test_fvsof_is_memoized():
+    x = defop(int, name="x")
+
+    @defop
+    def identity(value: int) -> int:
+        raise NotHandled
+
+    term = identity(x())
+    assert not hasattr(term, "__effectful_evaluation_cache__")
+
+    assert fvsof(term) == {identity, x}
+    cache = term.__effectful_evaluation_cache__
+    assert len(cache) == 1
+
+    assert fvsof(term) == {identity, x}
+    assert term.__effectful_evaluation_cache__ is cache
+    assert len(cache) == 1
+
+
 def test_ctxof():
     x = defop(object)
     y = defop(object)
@@ -501,6 +590,23 @@ def test_handler_typing() -> None:
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
     )
     evaluate(0, intp={f: lambda x: x + 1, g: lambda x, y: x + str(y)})
+
+
+def test_typeof_is_memoized():
+    @defop
+    def identity(x: int) -> int:
+        raise NotHandled
+
+    term = identity(1)
+    assert not hasattr(term, "__effectful_evaluation_cache__")
+
+    assert typeof(term) is int
+    cache = term.__effectful_evaluation_cache__
+    assert len(cache) == 1
+
+    assert typeof(term) is int
+    assert term.__effectful_evaluation_cache__ is cache
+    assert len(cache) == 1
 
 
 def test_typeof_basic():

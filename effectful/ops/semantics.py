@@ -8,7 +8,7 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
+from effectful.ops.syntax import _CustomSingleDispatchCallable, defop
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -18,6 +18,59 @@ from effectful.ops.types import (
 )
 
 apply = Operation.__apply__
+
+
+@defop
+def _get_cache_key() -> object | None:
+    """Return the cache key for the current memoized interpretation.
+
+    This is queried directly by :func:`evaluate`, rather than dispatched as an
+    ordinary operation, so that interpretations of :data:`apply` do not see it.
+    """
+    return None
+
+
+class MemoizedInterpretation(collections.abc.Mapping):
+    """An interpretation whose evaluations of terms are memoized.
+
+    Results are stored on each term and keyed by this interpretation's private
+    identity. Memoization is therefore shared by every installation of this
+    object, while wrapping an interpretation a second time creates a fresh
+    cache namespace.
+
+    Memoized interpretations should be deterministic and independent of
+    enclosing handlers. In particular, handlers that use :func:`fwd` to depend
+    on an enclosing interpretation are generally not safe to memoize.
+    """
+
+    def __init__(self, intp: Interpretation):
+        self._intp = intp
+        self._cache_key = object()
+
+    def __iter__(self):
+        yield from self._intp
+        if _get_cache_key not in self._intp:
+            yield _get_cache_key
+
+    def __len__(self):
+        return len(self._intp) + (_get_cache_key not in self._intp)
+
+    def __getitem__(self, op: Operation):
+        if op is _get_cache_key:
+            return lambda: self._cache_key
+        return self._intp[op]
+
+
+def memoize(intp: Interpretation) -> MemoizedInterpretation:
+    """Flag ``intp`` for term-local memoization.
+
+    Calling ``memoize`` on an already memoized interpretation is idempotent.
+    The interpretation must be deterministic and independent of enclosing
+    handlers for cached evaluation to preserve its semantics.
+    """
+    if isinstance(intp, MemoizedInterpretation):
+        return intp
+    return MemoizedInterpretation(intp)
 
 
 @defop
@@ -166,11 +219,71 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
+_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
+_CACHE_MISSING = object()
+_CACHE_PENDING = object()
+
+
+def _current_cache_key() -> object | None:
+    """Return the current interpretation's cache key without effect dispatch."""
+    from effectful.internals.runtime import get_interpretation
+
+    impl = get_interpretation().get(_get_cache_key)
+    return None if impl is None else impl()
+
+
+def _term_cache(expr: Term) -> dict[object, object]:
+    """Return the evaluation cache owned by ``expr``, creating it if needed."""
+    try:
+        return object.__getattribute__(expr, _EVALUATION_CACHE_ATTR)
+    except AttributeError:
+        cache: dict[object, object] = {}
+        try:
+            object.__setattr__(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError) as exc:
+            raise TypeError(
+                f"Term implementation {type(expr).__qualname__} does not support "
+                "memoized evaluation"
+            ) from exc
+        return cache
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    args = tuple(evaluate(arg) for arg in expr.args)
-    kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    return expr.op(*args, **kwargs)
+    cache_key = _current_cache_key()
+    if cache_key is None:
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        return expr.op(*args, **kwargs)
+
+    cache = _term_cache(expr)
+    result = cache.get(cache_key, _CACHE_MISSING)
+    if result is _CACHE_PENDING:
+        raise RuntimeError("cyclic memoized evaluation of a Term")
+    if result is not _CACHE_MISSING:
+        return result
+
+    cache[cache_key] = _CACHE_PENDING
+    try:
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+        result = expr.op(*args, **kwargs)
+    except BaseException:
+        cache.pop(cache_key, None)
+        raise
+
+    cache[cache_key] = result
+    return result
+
+
+def get[T](intp: Interpretation, term: Expr[T]) -> Expr[T]:
+    """Evaluate ``term`` under ``intp``, reusing cached results when enabled.
+
+    This is equivalent to ``handler(intp)(evaluate)(term)``. If ``intp`` was
+    created by :func:`memoize`, results are cached on each visited term.
+    """
+    with handler(intp):
+        return evaluate(term)
 
 
 @evaluate.register(Operation)
@@ -248,6 +361,20 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
+def _typeof_apply(op, *args, **kwargs):
+    from effectful.internals.unification import Box
+
+    return Box(op.__type_rule__(*args, **kwargs))
+
+
+_TYPEOF_INTERPRETATION = memoize({apply: _typeof_apply})
+
+
+def _typeof(term: Expr):
+    """Evaluate the cached type analysis without unwrapping its result."""
+    return evaluate(term, intp=_TYPEOF_INTERPRETATION)
+
+
 def typeof[T](term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
@@ -270,17 +397,60 @@ def typeof[T](term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    from effectful.internals.runtime import interpreter
     from effectful.internals.unification import Box
 
-    def _apply(op, *args, **kwargs):
-        return Box(op.__type_rule__(*args, **kwargs))
+    type_or_value = _typeof(term)
+    if isinstance(type_or_value, Box):
+        return _simple_type(type_or_value.value)
+    return typing.cast(type[T], type(type_or_value))
 
-    with interpreter({apply: _apply}):
-        type_or_value = evaluate(term)
-        if isinstance(type_or_value, Box):
-            return _simple_type(type_or_value.value)
-        return typing.cast(type[T], type(type_or_value))
+
+@dataclasses.dataclass(frozen=True)
+class _FreeVariables:
+    value: frozenset[Operation]
+
+
+def _collect_free_variables(expr) -> frozenset[Operation]:
+    if isinstance(expr, _FreeVariables):
+        return expr.value
+    elif dataclasses.is_dataclass(expr) and not isinstance(expr, type):
+        return frozenset().union(
+            *(
+                _collect_free_variables(getattr(expr, field.name))
+                for field in dataclasses.fields(expr)
+            )
+        )
+    elif isinstance(expr, collections.abc.Mapping):
+        return frozenset().union(
+            *(
+                _collect_free_variables(item)
+                for key, value in expr.items()
+                for item in (key, value)
+            )
+        )
+    elif isinstance(expr, collections.abc.Sequence) and not isinstance(
+        expr, str | bytes
+    ):
+        return frozenset().union(*map(_collect_free_variables, expr))
+    elif isinstance(
+        expr,
+        collections.abc.ItemsView
+        | collections.abc.KeysView
+        | collections.abc.ValuesView,
+    ):
+        return frozenset().union(*map(_collect_free_variables, expr))
+    return frozenset()
+
+
+def _fvsof_apply(op, *args, **kwargs):
+    fvs = {op} | set(_collect_free_variables((args, kwargs)))
+    bindings = op.__fvs_rule__(*args, **kwargs)
+    bound_vars = set().union(*(*bindings.args, *bindings.kwargs.values()))
+    assert all(isinstance(bound_var, Operation) for bound_var in bound_vars)
+    return _FreeVariables(frozenset(fvs - bound_vars))
+
+
+_FVSOF_INTERPRETATION = memoize({apply: _fvsof_apply})
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
@@ -295,20 +465,5 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert f in fvs
     >>> assert len(fvs) == 1
     """
-    from effectful.internals.runtime import interpreter
-
-    _fvs: set[Operation] = set()
-
-    def _update_fvs(op, *args, **kwargs):
-        _fvs.add(op)
-        bindings = op.__fvs_rule__(*args, **kwargs)
-        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
-            assert isinstance(bound_var, Operation)
-            if bound_var in _fvs:
-                _fvs.remove(bound_var)
-        return defdata(op, *args, **kwargs)
-
-    with interpreter({apply: _update_fvs}):
-        evaluate(term)
-
-    return _fvs
+    analyzed = evaluate(term, intp=_FVSOF_INTERPRETATION)
+    return _collect_free_variables(analyzed)

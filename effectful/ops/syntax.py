@@ -484,9 +484,8 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.internals.product_n import _unpack, productN
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _simple_type, apply, evaluate
+    from effectful.ops.semantics import _simple_type, _typeof, apply, evaluate
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -497,38 +496,20 @@ def defdata[T](
         for var in bound_vars
     }
 
-    # Analysis for type computation and term reconstruction
-    typ = defop(object, name="typ")
-    cast = defop(object, name="cast")
-
-    def apply_type(op, *args, **kwargs):
-        from effectful.internals.unification import Box
-
-        assert isinstance(op, Operation)
-        tp = op.__type_rule__(*args, **kwargs)
-        return Box(tp)
-
-    def apply_cast(op, *args, **kwargs):
-        assert isinstance(op, Operation)
-        full_type = typ()
-        dispatch_type = _simple_type(full_type.value)
-        return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
-
-    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
-
     def evaluate_with_renaming(expr, ctx):
         """Evaluate an expression with renaming applied."""
         renaming_ctx = {
             old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
         }
 
+        if not renaming_ctx:
+            return expr
+
         # Note: coproduct cannot be used to compose these interpretations
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
-        with interpreter(analysis | renaming_ctx):
-            result = evaluate(expr)
-
-        return result
+        with interpreter({apply: defdata} | renaming_ctx):
+            return evaluate(expr)
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
@@ -542,11 +523,12 @@ def defdata[T](
         for (k, v) in renamed_args.kwargs.items()
     }
 
-    # Build the final term with type analysis
-    with interpreter(analysis):
-        result = op(*args_, **kwargs_)
-
-    return _unpack(result, cast)
+    # Build the final term using the cached type analysis of its children.
+    typed_args = tuple(_typeof(arg) for arg in args_)
+    typed_kwargs = {k: _typeof(v) for k, v in kwargs_.items()}
+    full_type = op.__type_rule__(*typed_args, **typed_kwargs)
+    dispatch_type = _simple_type(full_type)
+    return __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
 
 
 def _construct_dataclass_term[T](
