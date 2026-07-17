@@ -530,6 +530,34 @@ def test_memoized_interpretation_does_not_cache_failures():
     assert calls == 2
 
 
+def test_memoized_interpretation_skips_terms_without_attribute_storage():
+    @defop
+    def node() -> object:
+        raise NotHandled
+
+    @Term.register
+    class SlottedTerm:
+        __slots__ = ("op", "args", "kwargs")
+
+        def __init__(self):
+            self.op = node
+            self.args = ()
+            self.kwargs = {}
+
+    calls = 0
+
+    def analyze(op, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return "result"
+
+    term = SlottedTerm()
+    intp = memoize({apply: analyze})
+    assert handler(intp)(evaluate)(term) == "result"
+    assert handler(intp)(evaluate)(term) == "result"
+    assert calls == 2
+
+
 def test_ctxof():
     x = defop(object)
     y = defop(object)

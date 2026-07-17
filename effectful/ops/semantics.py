@@ -204,19 +204,16 @@ def _current_cache_key() -> Operation | None:
     return _get_cache_key()
 
 
-def _term_cache(expr: Term) -> dict[object, object]:
-    """Return the evaluation cache owned by ``expr``, creating it if needed."""
+def _term_cache(expr: Term) -> dict[object, object] | None:
+    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
     try:
-        return object.__getattribute__(expr, _EVALUATION_CACHE_ATTR)
+        return getattr(expr, _EVALUATION_CACHE_ATTR)
     except AttributeError:
         cache: dict[object, object] = {}
         try:
-            object.__setattr__(expr, _EVALUATION_CACHE_ATTR, cache)
-        except (AttributeError, TypeError) as exc:
-            raise TypeError(
-                f"Term implementation {type(expr).__qualname__} does not support "
-                "memoized evaluation"
-            ) from exc
+            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return None
         return cache
 
 
@@ -229,13 +226,14 @@ def _evaluate_term(expr: Term, **kwargs):
         return expr.op(*args, **kwargs)
 
     cache = _term_cache(expr)
-    if cache_key in cache:
+    if cache is not None and cache_key in cache:
         return cache[cache_key]
 
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
     result = expr.op(*args, **kwargs)
-    cache[cache_key] = result
+    if cache is not None:
+        cache[cache_key] = result
     return result
 
 
