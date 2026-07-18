@@ -1101,7 +1101,9 @@ def _(value: collections.abc.Collection):
 
 @nested_type.register
 def _(value: tuple):
-    if type(value) != tuple or len(value) == 0:
+    if hasattr(value, "_fields"):
+        return Box(type(value))
+    elif type(value) != tuple or len(value) == 0:
         return nested_type.dispatch(collections.abc.Sequence)(value)
     else:
         return Box(tuple[tuple(nested_type(item).value for item in value)])  # type: ignore

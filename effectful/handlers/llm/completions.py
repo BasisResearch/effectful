@@ -690,6 +690,7 @@ class LexicalReaders(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
+        anchor: types.FunctionType | None = None,
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
         taken = {t.__name__ for t in tools}
@@ -706,7 +707,7 @@ class LexicalReaders(ObjectInterpretation):
                 taken.add(name)
             except Exception:
                 continue
-        return fwd(env, response_type, readers)
+        return fwd(env, response_type, readers, anchor=anchor)
 
 
 class SynthesizeAndCall(ObjectInterpretation):
@@ -817,8 +818,8 @@ class SynthesizeAndCall(ObjectInterpretation):
         bound_args.apply_defaults()
         tool = self._SynthesisFinalTool.define(template, bound_args)
 
-        def _add_synthesis_tool(env, response_type, tools=frozenset()):
-            return fwd(env, response_type, tools | {tool})
+        def _add_synthesis_tool(env, response_type, tools=frozenset(), anchor=None):
+            return fwd(env, response_type, tools | {tool}, anchor=anchor)
 
         with handler({call_assistant: _add_synthesis_tool}):
             return fwd()
@@ -898,11 +899,13 @@ class PythonRepl(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
+        anchor: types.FunctionType | None = None,
     ) -> AssistantResult[T]:
         return fwd(
             env,
             response_type,
             tools | {self.exec_code, self.read_lexical_variable},
+            anchor=anchor,
         )
 
 
@@ -971,6 +974,7 @@ class RetryLLMHandler(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
+        anchor: types.FunctionType | None = None,
     ) -> AssistantResult[T]:
         _message_sequence = _get_history().copy()
 

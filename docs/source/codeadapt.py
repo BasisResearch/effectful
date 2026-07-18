@@ -15,7 +15,7 @@ import argparse
 import contextlib
 import os
 import pathlib
-from typing import Literal, NamedTuple
+import typing
 
 import tenacity
 
@@ -56,7 +56,7 @@ def least_beautiful_base(threshold: int) -> int:
     raise NotHandled
 
 
-class LineupClue(NamedTuple):
+class LineupClue(typing.NamedTuple):
     """
     A clue about the relative ordering of n people, numbered 0 to n - 1, in a line.
     Used to describe puzzles like the classic "zebra puzzle" represented in `solve_lineup`.
@@ -70,7 +70,7 @@ class LineupClue(NamedTuple):
     - ``("adj", a, b)``      -- persons ``a`` and ``b`` are in adjacent positions
     """
 
-    kind: Literal["at", "left", "imm_left", "adj"]
+    kind: typing.Literal["at", "left", "imm_left", "adj"]
     a: int
     b: int
 
@@ -186,7 +186,7 @@ def musr_object_placement(
 
 
 def main(
-    task: Literal["beautiful", "lineup", "countdown", "paragraph", "typos", "musr"],
+    task: typing.Literal["beautiful", "lineup", "countdown", "paragraph", "typos", "musr"],
 ) -> None:
     if task == "beautiful":
         threshold = 10
