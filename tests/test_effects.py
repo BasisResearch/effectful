@@ -77,12 +77,34 @@ def test_computation_callback_inspecting_arg_is_refused_not_silent():
         lambda x: write(len(x)),                    # __len__
         lambda x: write(str(x)),                    # formatting/conversion
         lambda x: x(),                              # calls the arg
-        lambda x: x.field,                          # attribute access
+        lambda x: x.field,                          # missing-attribute access
         lambda x: x[0],                             # indexing
     ]
     for cb_fn in inspecting:
         with pytest.raises(UnsoundCallbackFold):
             usesof(cb(cb_fn))  # type: ignore[func-returns-value]
+
+
+def test_computation_callback_identity_and_type_inspection_is_a_known_unsound_hole():
+    # KNOWN LIMITATION (documented, not a bug silently ignored): object identity (`is`/`id`),
+    # the type builtins (`type(x)`, `isinstance`), and access to an *existing* attribute
+    # (`x.__class__`) bypass the type-level dunder protocol, so `_Opaque` cannot intercept
+    # them (a blanket `__getattribute__` override would break the fold's own
+    # `isinstance(arg, Operation)` dispatch). A callback branching on them silently
+    # under-approximates. This is the general precondition restated: callbacks must be
+    # straight-line in their argument. The tripwire catches the dunder-protocol cases (see
+    # the test above); these it cannot.
+    @defop
+    def cb(fn: Annotated[Callable[[int], int], Computation]) -> int:
+        raise NotHandled
+
+    # `x is None` is False for the placeholder, so only the else-branch folds: read is
+    # dropped. We assert the (unsound) status quo so the limitation is visible and pinned —
+    # if a future sound implementation closes it, this test flips and must be updated.
+    assert usesof(cb(lambda x: read() if x is None else write(x))) == frozenset({cb, write})
+    # `type(x)` / `isinstance` likewise are not intercepted.
+    assert usesof(cb(lambda x: read() if type(x) is str else write(x))) == frozenset({cb, write})
+    assert usesof(cb(lambda x: read() if isinstance(x, str) else write(x))) == frozenset({cb, write})
 
 
 def test_undeclared_callable_fails_loudly():
