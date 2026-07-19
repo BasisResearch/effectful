@@ -7,28 +7,10 @@ work out by hand are often easy to brute-force or verify with a short program.
 
 import argparse
 import collections.abc
-import contextlib
 import dataclasses
-import os
-import pathlib
 import typing
 
-import tenacity
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import (
-    LangfuseTracer,
-    LexicalReaders,
-    LiteLLMProvider,
-    PythonRepl,
-    RetryLLMHandler,
-    SynthesizeAndCall,
-    SystemPromptDumper,
-    TerminalRenderer,
-)
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 
 @dataclasses.dataclass(frozen=True)
@@ -74,60 +56,53 @@ def solve_lineup(n: int, clues: collections.abc.Sequence[LineupClue]) -> list[in
     """
 
 
-def main(args: argparse.Namespace) -> None:
-    puzzle = [
-        LineupClue("imm_left", 0, 1),
-        LineupClue("imm_left", 1, 2),
-        LineupClue("at", 3, 5),
-        LineupClue("left", 4, 0),
-    ]
-    print(f"Zebra-style ordering puzzle: n=5, clues={puzzle}")
-    print(f"Answer: {solve_lineup(5, puzzle)}")
+def main() -> None:
+    kinds = typing.get_args(LineupClue.__annotations__["kind"])
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--n",
+        type=int,
+        default=5,
+        help="Number of people in the line (used with --clue)",
+    )
+    parser.add_argument(
+        "--clue",
+        dest="clues",
+        action="append",
+        nargs=3,
+        metavar=("KIND", "A", "B"),
+        default=None,
+        help=(
+            f"An ordering constraint 'KIND A B' where KIND is one of "
+            f"{'/'.join(kinds)} (e.g. --clue imm_left 0 1); repeatable"
+        ),
+    )
+    args = parser.parse_args()
+
+    if args.clues is not None:
+        n = args.n
+        clues = []
+        for kind, a, b in args.clues:
+            if kind not in kinds:
+                parser.error(
+                    f"invalid clue kind {kind!r}; choose from {'/'.join(kinds)}"
+                )
+            try:
+                clues.append(LineupClue(kind, int(a), int(b)))
+            except ValueError:
+                parser.error(f"clue positions must be integers, got {a!r} {b!r}")
+    else:
+        n = 5
+        clues = [
+            LineupClue("imm_left", 0, 1),
+            LineupClue("imm_left", 1, 2),
+            LineupClue("at", 3, 5),
+            LineupClue("left", 4, 0),
+        ]
+
+    print(f"Zebra-style ordering puzzle: n={n}, clues={clues}")
+    print(f"Answer: {solve_lineup(n, clues)}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed/failing LLM output",
-    )
-    parser.add_argument(
-        "--langfuse",
-        action="store_true",
-        help="Whether to log LLM calls and metadata to Langfuse",
-    )
-    parser.add_argument(
-        "--render",
-        action="store_true",
-        help="Live-render the streaming message history in the terminal",
-    )
-    parser.add_argument(
-        "--dump-system-prompt",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Dump the assembled system prompt to this Markdown file",
-    )
-    args = parser.parse_args()
-    with (
-        handler(LiteLLMProvider(model=args.model, tool_choice="required", api_base="http://localhost:8030/v1", api_key="")),
-        handler(TerminalRenderer()) if args.render else contextlib.nullcontext(),
-        handler(SystemPromptDumper(path=pathlib.Path(args.dump_system_prompt)))
-        if args.dump_system_prompt
-        else contextlib.nullcontext(),
-        handler(UnsafeEvalProvider()),
-        handler(PythonRepl()),
-        handler(SynthesizeAndCall()),
-        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(args.num_retries))),
-        handler(LexicalReaders()),
-        handler(LangfuseTracer()) if args.langfuse else contextlib.nullcontext(),
-    ):
-        main(args)
+    main()

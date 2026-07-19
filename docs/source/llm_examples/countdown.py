@@ -4,25 +4,8 @@ In-context learning to solve problems with code across a conversation.
 
 import argparse
 import collections.abc
-import contextlib
-import os
-import pathlib
-
-import tenacity
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.completions import (
-    LangfuseTracer,
-    LexicalReaders,
-    LiteLLMProvider,
-    PythonRepl,
-    RetryLLMHandler,
-    SynthesizeAndCall,
-    SystemPromptDumper,
-    TerminalRenderer,
-)
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.ops.semantics import handler
 
 
 class CountdownSolver(Agent):
@@ -50,8 +33,35 @@ class CountdownSolver(Agent):
         """
 
 
-def main(args: argparse.Namespace) -> None:
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--numbers",
+        nargs="+",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Numbers to combine (used with --target for a single problem)",
+    )
+    parser.add_argument(
+        "--target",
+        type=int,
+        default=None,
+        help="Target value to make from --numbers",
+    )
+    args = parser.parse_args()
+    if (args.numbers is None) != (args.target is None):
+        parser.error("--numbers and --target must be given together")
+
     agent = CountdownSolver()
+
+    # A custom problem has no known answer to validate against, so just solve it.
+    if args.numbers is not None:
+        print(f"Testing solve({args.numbers}, {args.target})...")
+        answer = agent.solve(args.numbers, args.target)
+        print(f"solve({args.numbers}, {args.target}): {answer}")
+        return
+
     # Fresh examples (none appear in the docstring doctests), each paired with its
     # known-correct answer so we can validate the agent's output.
     test_examples: list[tuple[list[int], int, bool]] = [
@@ -63,57 +73,11 @@ def main(args: argparse.Namespace) -> None:
         print(f"Testing solve({numbers}, {target})...")
         answer = agent.solve(numbers, target)
         status = "OK" if answer == expected else "WRONG"
-        print(
-            f"[{status}] solve({numbers}, {target}): {answer} (expected {expected})"
-        )
+        print(f"[{status}] solve({numbers}, {target}): {answer} (expected {expected})")
         assert answer == expected, (
             f"solve({numbers}, {target}) = {answer}, expected {expected}"
         )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed/failing LLM output",
-    )
-    parser.add_argument(
-        "--langfuse",
-        action="store_true",
-        help="Whether to log LLM calls and metadata to Langfuse",
-    )
-    parser.add_argument(
-        "--render",
-        action="store_true",
-        help="Live-render the streaming message history in the terminal",
-    )
-    parser.add_argument(
-        "--dump-system-prompt",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Dump the assembled system prompt to this Markdown file",
-    )
-    args = parser.parse_args()
-    with (
-        handler(LiteLLMProvider(model=args.model, tool_choice="required", api_base="http://localhost:8030/v1", api_key="")),
-        handler(TerminalRenderer()) if args.render else contextlib.nullcontext(),
-        handler(SystemPromptDumper(path=pathlib.Path(args.dump_system_prompt)))
-        if args.dump_system_prompt
-        else contextlib.nullcontext(),
-        handler(UnsafeEvalProvider()),
-        handler(PythonRepl()),
-        handler(SynthesizeAndCall()),
-        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(args.num_retries))),
-        handler(LexicalReaders()),
-        handler(LangfuseTracer()) if args.langfuse else contextlib.nullcontext(),
-    ):
-        main(args)
+    main()

@@ -7,25 +7,8 @@ work out by hand are often easy to brute-force or verify with a short program.
 
 import argparse
 import collections.abc
-import contextlib
-import os
-import pathlib
-
-import tenacity
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import (
-    LangfuseTracer,
-    LexicalReaders,
-    LiteLLMProvider,
-    PythonRepl,
-    RetryLLMHandler,
-    SynthesizeAndCall,
-    SystemPromptDumper,
-    TerminalRenderer,
-)
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.ops.semantics import handler
 
 
 @Template.define
@@ -54,7 +37,7 @@ def musr_object_placement(
     """
 
 
-def main(args: argparse.Namespace) -> None:
+def main() -> None:
     STUDIO_STORY = """\
 In the heart of the bustling studio, Ricky, Emma, and Danny readied themselves \
 for a day of creating magic. Ricky, the gifted singer-songwriter, had his \
@@ -75,57 +58,38 @@ producer's desk. At the desk, he glimpses a pair of earphones indirectly drawing
 his attention amidst his routine of tidying up. Meanwhile Emma, from inside a \
 sound-proofed booth, was lost in reviewing already-recorded tracks, out of \
 Danny's view."""
-    person = "Danny"
-    item = "earphones"
-    locations = ["piano", "producer's desk", "recording booth"]
-    answer = musr_object_placement(STUDIO_STORY, person, item, locations)
-    print(f"MuSR: where would {person} look for the {item}?")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--story",
+        type=str,
+        default=STUDIO_STORY,
+        help="The narrative describing where the item is moved and who saw it",
+    )
+    parser.add_argument(
+        "--person",
+        type=str,
+        default="Danny",
+        help="The person whose belief about the item's location is queried",
+    )
+    parser.add_argument(
+        "--item",
+        type=str,
+        default="earphones",
+        help="The object being tracked",
+    )
+    parser.add_argument(
+        "--locations",
+        nargs="+",
+        default=["piano", "producer's desk", "recording booth"],
+        metavar="LOCATION",
+        help="Candidate locations to choose the answer from",
+    )
+    args = parser.parse_args()
+
+    answer = musr_object_placement(args.story, args.person, args.item, args.locations)
+    print(f"MuSR: where would {args.person} look for the {args.item}?")
     print(f"Answer: {answer}")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed/failing LLM output",
-    )
-    parser.add_argument(
-        "--langfuse",
-        action="store_true",
-        help="Whether to log LLM calls and metadata to Langfuse",
-    )
-    parser.add_argument(
-        "--render",
-        action="store_true",
-        help="Live-render the streaming message history in the terminal",
-    )
-    parser.add_argument(
-        "--dump-system-prompt",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="Dump the assembled system prompt to this Markdown file",
-    )
-    args = parser.parse_args()
-    with (
-        handler(LiteLLMProvider(model=args.model, tool_choice="required", api_base="http://localhost:8030/v1", api_key="")),
-        handler(TerminalRenderer()) if args.render else contextlib.nullcontext(),
-        handler(SystemPromptDumper(path=pathlib.Path(args.dump_system_prompt)))
-        if args.dump_system_prompt
-        else contextlib.nullcontext(),
-        handler(UnsafeEvalProvider()),
-        handler(PythonRepl()),
-        handler(SynthesizeAndCall()),
-        handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(args.num_retries))),
-        handler(LexicalReaders()),
-        handler(LangfuseTracer()) if args.langfuse else contextlib.nullcontext(),
-    ):
-        main(args)
+    main()
