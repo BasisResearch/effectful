@@ -84,7 +84,7 @@ class harness(contextlib.ContextDecorator):
         langfuse: bool = False,
         render: bool = False,
         dump_system_prompt: str | os.PathLike[str] | None = None,
-        tool_choice: str = "required",
+        tool_choice: str = "auto",
         api_base: str | None = None,
         api_key: str | None = None,
     ) -> None:
@@ -171,6 +171,13 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         metavar="PATH",
         help="Dump the assembled system prompt to this Markdown file",
     )
+    parser.add_argument(
+        "--tool-choice",
+        type=str,
+        default="auto",
+        choices=["required", "auto", "none"],
+        help="Whether to require, allow, or disable tool calls (none means disabled)",
+    )
     return parser.parse_known_args(argv)
 
 
@@ -184,6 +191,7 @@ def main(argv: list[str] | None = None) -> None:
         langfuse=ns.langfuse,
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
+        tool_choice=ns.tool_choice,
         api_base="http://localhost:8030/v1"
         if ns.model == "openai/deepseek-v4-flash"
         else None,
