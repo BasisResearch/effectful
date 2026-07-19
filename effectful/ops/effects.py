@@ -29,7 +29,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any
 
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply, evaluate
+from effectful.ops.semantics import apply, evaluate, typeof
 from effectful.ops.types import Annotation, Expr, Operation
 
 __all__ = [
@@ -40,6 +40,8 @@ __all__ = [
     "uses_rule",
     "usesof",
     "effectsof",
+    "effect_type",
+    "check_uses",
     "requires_rule",
     "check_requires",
 ]
@@ -157,6 +159,22 @@ def usesof[S](term: Expr[S]) -> frozenset[Operation]:
 
 #: Reads better at effect-typing call sites; same function.
 effectsof = usesof
+
+
+def effect_type[S](term: Expr[S]) -> tuple[type[S], frozenset[Operation]]:
+    """The effect type ``(τ, ε)`` of a term: its result type and its effect row —
+    ``τ`` from :func:`typeof`, ``ε`` from :func:`usesof`. The two folds compose over the
+    same ``apply`` op."""
+    return typeof(term), usesof(term)
+
+
+def check_uses(op: Operation, body: Expr[Any]) -> frozenset[Operation]:
+    """Effects ``body`` performs that ``op``'s declared ``Uses[...]`` does not cover —
+    empty == the declaration is sound (and transitively closed, since ``usesof`` unions
+    the whole DAG). This is the checker for a composite op: ``usesof(body) ⊆ declared``.
+    An op with no ``Uses`` annotation declares nothing, so every effect is reported."""
+    declared = _declared_uses(op)
+    return usesof(body) - (declared if declared is not None else frozenset())
 
 
 # ---------------------------------------------------------------------------

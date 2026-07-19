@@ -12,6 +12,8 @@ from effectful.ops.effects import (
     UndeclaredCallable,
     Uses,
     check_requires,
+    check_uses,
+    effect_type,
     usesof,
 )
 from effectful.ops.syntax import defop
@@ -57,6 +59,20 @@ def test_undeclared_callable_fails_loudly():
 
     with pytest.raises(UndeclaredCallable):
         usesof(bad(lambda x: x))
+
+
+def test_effect_type_pairs_tau_and_epsilon():
+    tau, eps = effect_type(pure_add(read(), read()))
+    assert tau is int and eps == frozenset({read})
+
+
+def test_check_uses_flags_undeclared_effects():
+    @defop
+    def declared() -> Annotated[int, Uses[read]]:  # declares read only
+        raise NotHandled
+
+    assert check_uses(declared, read()) == frozenset()          # body ⊆ declared
+    assert check_uses(declared, write(read())) == frozenset({write})  # write undeclared
 
 
 def test_requires_provenance():
