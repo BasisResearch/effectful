@@ -216,15 +216,8 @@ class Template[**P, T](Tool[P, T]):
     @property
     def tools(self) -> Mapping[str, Tool]:
         """Operations and Templates available as tools, plus synthetic
-        readers for other lexical symbols. Auto-captured from lexical context.
-
-        If the return type declares an allow-list with ``Uses[...]`` metadata, the
-        lexical capture is intersected with it — the LLM is offered *only* the declared
-        tools. With no ``Uses`` annotation (the default) the full lexical capture is
-        returned, so this is backward-compatible.
-        """
+        readers for other lexical symbols. Auto-captured from lexical context."""
         from effectful.handlers.llm.completions import collect_tools
-        from effectful.ops.syntax import Uses
 
         result = dict(collect_tools(self.__context__))
 
@@ -234,11 +227,6 @@ class Template[**P, T](Tool[P, T]):
             for name, tool in tuple(result.items()):
                 if tool is self:
                     del result[name]
-
-        # A `Uses[...]` return annotation is an allow-list: keep only declared tools.
-        allowed = Uses.declared(self.__signature__)
-        if allowed is not None:
-            result = {name: t for name, t in result.items() if t in allowed}
 
         return result
 

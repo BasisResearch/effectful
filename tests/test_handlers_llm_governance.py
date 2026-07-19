@@ -4,13 +4,10 @@ These check the static tool graph (§5): which tools a template, or a function t
 one, can reach — computed by reifying to a Term and folding, never running the LLM.
 """
 
-from typing import Annotated
-
 from effectful.handlers.llm.governance import check_tools, reachable_tools, toolsof
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply
-from effectful.ops.syntax import Uses
 
 
 def _trip_planner():
@@ -71,43 +68,6 @@ def test_reachable_tools_is_the_leak_check():
     declared = {suggest_city} | toolsof(suggest_city) - {delete_everything}
     leak = reachable_tools(my_fn) - declared
     assert leak == frozenset({delete_everything})  # flagged, LLM never called
-
-
-def test_uses_restricts_template_tools_to_the_allow_list():
-    # L1: a `Uses[...]` return annotation makes `.tools` an allow-list. With cities,
-    # weather and delete_everything all in scope, a template declaring `Uses[cities]`
-    # is offered only cities — the dangerous tool is never even presented to the LLM.
-    @Tool.define
-    def cities() -> list[str]:
-        """Return a list of cities."""
-        return ["Chicago"]
-
-    @Tool.define
-    def weather(city: str) -> str:
-        """Return the weather."""
-        return "sunny"
-
-    @Tool.define
-    def delete_everything() -> None:
-        """Dangerous."""
-        raise RuntimeError
-
-    @Template.define
-    def restricted() -> Annotated[str, Uses[cities]]:
-        """Suggest a city using only `cities`."""
-        raise NotImplementedError
-
-    @Template.define
-    def unrestricted() -> str:
-        """Suggest a city."""
-        raise NotImplementedError
-
-    assert set(restricted.tools.values()) == {cities}
-    # the restriction flows transitively — the dangerous tool drops out of reachability
-    assert delete_everything not in toolsof(restricted)
-    assert delete_everything not in reachable_tools(lambda: restricted())
-    # default (no Uses) is unchanged: full lexical capture, dangerous tool included
-    assert {cities, weather, delete_everything} <= set(unrestricted.tools.values())
 
 
 def test_check_tools_flags_the_leak():

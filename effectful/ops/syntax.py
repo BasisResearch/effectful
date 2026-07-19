@@ -412,7 +412,7 @@ class Uses:
             return frozenset({m})
         raise NotImplementedError(  # loud, not a silent frozenset() drop
             f"Uses member {m!r} is not supported: use `Literal[op]` or a bare `Operation`. "
-            "Polymorphic `Operation[[A], B]` members are a TODO (#448 §8 Q4)."
+            "Polymorphic `Operation[[A], B]` members are not yet supported."
         )
 
     @classmethod

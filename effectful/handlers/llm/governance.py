@@ -4,21 +4,23 @@ A :class:`~effectful.handlers.llm.template.Tool` **is** an
 :class:`~effectful.ops.types.Operation` (``class Tool(Operation)``,
 ``class Template(Tool)``), so a template's tools *are* part of its effect row. These are
 the ``ε``-engine siblings specialised to the tool graph — the **static, sound** core of
-§5 tool governance, computable with **no LLM call**:
+tool governance, computable with **no LLM call**:
 
 * :func:`toolsof` — the transitive tool graph reachable from a tool/template via ``.tools``.
 * :func:`reachable_tools` — the tools a zero-arg function can reach, *through* templates,
   by reifying it to a :class:`~effectful.ops.types.Term` (never running the LLM) and
-  folding it with :func:`~effectful.ops.effects.usesof`.
+  walking it for the tools it mentions.
+* :func:`check_tools` — the leak check ``reachable_tools(fn) - allowed``.
 
-``reachable_tools(fn) <= declared`` is then a compile-time tool-safety check (L2): an
-agent provably cannot reach a dangerous tool, even through nested sub-agents. This is
-*more* tractable than the general effect fold — a static named-op graph, so none of the
-higher-order/reifiability caveats of the general case apply.
+``check_tools(fn, *allowed) == frozenset()`` is then a compile-time tool-safety guarantee:
+an agent provably cannot reach a tool outside ``allowed``, even through nested sub-agents.
+This is *more* tractable than the general effect fold — a static named-op graph, so none
+of the higher-order/reifiability caveats of the general case apply.
 """
 
 import collections.abc
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from effectful.handlers.llm.template import Tool
 from effectful.internals.runtime import interpreter
@@ -100,8 +102,8 @@ def reachable_tools(fn: Callable[[], Any]) -> frozenset[Tool]:
 
 def check_tools(fn: Callable[[], Any], *allowed: Tool) -> frozenset[Tool]:
     """Tools ``fn`` can reach that are not in the ``allowed`` set — the static tool-safety
-    leak check (§5 L2). Empty == ``fn`` provably cannot reach a tool outside ``allowed``,
-    even through nested templates, and **no LLM was called** to prove it.
+    leak check. Empty == ``fn`` provably cannot reach a tool outside ``allowed``, even
+    through nested templates, and **no LLM was called** to prove it.
 
     The tool-graph analogue of :func:`~effectful.ops.effects.check_uses`:
     ``reachable_tools(fn) - allowed``.

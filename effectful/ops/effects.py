@@ -1,25 +1,20 @@
-"""Effect-row inference for effectful — the ``ε`` engine.
+"""Effect-row inference — the ``ε`` engine.
 
 Sibling of :func:`effectful.ops.semantics.typeof` / :func:`fvsof`: a fold over the
 universal ``apply`` operation that computes which operations a term performs (its
-**effect row**), plus the ``Uses`` / ``Computation`` / ``Requires`` annotations
-(#448, #664) that operations declare and the fold reads.
+**effect row**), plus the ``Uses`` / ``Computation`` / ``Requires`` annotations that
+operations declare and the fold reads.
 
-This branches off ``master``: #694 (the doctest-validation PR) touches only
-``handlers/llm/`` and **never** ``ops/``, so the engine has no dependency on it. The
-LLM integration (an ``ε`` validator at #694's decode stage + tool governance on its
-``tool_types`` seam) is a separate, later follow-up in ``handlers/llm/``.
-
-**Upstream placement.** The per-op rule and its annotation now live on the core types,
-mirroring the ``τ`` / ``fvs`` machinery exactly:
+The per-op rule and its annotation live on the core types, mirroring the ``τ`` / ``fvs``
+machinery exactly:
 
 ======================  =====================================================
 symbol                  home
 ======================  =====================================================
 ``Operation.__uses_rule__``   ``ops/types.py``, a ``@final`` method next to ``__type_rule__`` / ``__fvs_rule__``
 ``Uses``                    ``ops/syntax.py``, next to ``Scoped`` (read by ``__uses_rule__``)
-``usesof`` / ``effectsof``   this module (final home: ``ops/semantics.py``, next to ``typeof`` / ``fvsof``)
-``Computation`` / ``Requires``   this module (final home: ``ops/syntax.py``); argument annotations read by the fold
+``usesof`` / ``effectsof``   this module (fold, next to ``typeof`` / ``fvsof`` in spirit)
+``Computation`` / ``Requires``   this module; argument annotations read by the fold
 ======================  =====================================================
 
 Like ``Uses``, ``Computation`` and ``Requires`` are plain *read*-metadata, not
@@ -28,13 +23,15 @@ Like ``Uses``, ``Computation`` and ``Requires`` are plain *read*-metadata, not
 there is no build-time ``infer_annotations`` gate to wire.
 
 The static LLM tool-governance layer (``toolsof`` / ``reachable_tools`` / ``check_tools``
-and ``Uses``-restricted ``Template.tools``) is built on top of this in
-``handlers/llm/governance.py`` and ``handlers/llm/template.py``.
+— transitive tool-graph reachability with no LLM call) is built on top of this in
+``handlers/llm/governance.py``.
 
-**Deferred (not implemented yet):** ``usagesof`` (usage multiset) and handler discharge
-(2nd PR); polymorphic ``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer;
-and the runtime LLM layer (Branch B, off #694) — the ``ε``-validator at the decode seam
-and ``tool_choice`` forcing. This module is the ``ε`` core (fold + argument annotations).
+**Not yet implemented:** ``usagesof`` (usage multiset) and handler discharge; polymorphic
+``Operation[[A], B]`` ``Uses`` members; and the *runtime* LLM tool-governance layer — tool
+**restriction** as an off-by-default handler filtering the offered tool set (which must
+leave synthetic ``LexicalReaders`` tools untouched — they are prompt-variable plumbing,
+not effectful tools), a decode-time ``ε`` validator, and ``tool_choice`` forcing. This
+module is the ``ε`` core (fold + argument annotations).
 """
 
 import typing
