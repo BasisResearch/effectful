@@ -118,8 +118,10 @@ def reachable_tools(fn: Callable[[], Any]) -> frozenset[Tool]:
 
 def check_tools(fn: Callable[[], Any], *allowed: Tool) -> frozenset[Tool]:
     """Tools ``fn`` can reach that are not in the ``allowed`` set — the static tool-safety
-    leak check. Empty == ``fn`` provably cannot reach a tool outside ``allowed``, even
-    through nested templates, and **no LLM was called** to prove it.
+    leak check, computed with **no LLM call**. Empty == ``fn`` reaches no tool outside
+    ``allowed`` *on this reification* (including through nested templates); this is a
+    guarantee only for a straight-line ``fn`` — see :func:`reachable_tools` for the
+    precondition (a branchy ``fn`` may under-approximate).
 
     The tool-graph analogue of :func:`~effectful.ops.effects.check_uses`:
     ``reachable_tools(fn) - allowed``.

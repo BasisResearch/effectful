@@ -105,6 +105,9 @@ def test_computation_callback_identity_and_type_inspection_is_a_known_unsound_ho
     # `type(x)` / `isinstance` likewise are not intercepted.
     assert usesof(cb(lambda x: read() if type(x) is str else write(x))) == frozenset({cb, write})
     assert usesof(cb(lambda x: read() if isinstance(x, str) else write(x))) == frozenset({cb, write})
+    # `callable(x)` reads the tripwire's own __call__ binding (True), not the real arg, so it
+    # takes the *then* branch — the opposite under-approximation, but the same class of hole.
+    assert usesof(cb(lambda x: read() if callable(x) else write(x))) == frozenset({cb, read})
 
 
 def test_undeclared_callable_fails_loudly():

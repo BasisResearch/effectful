@@ -254,8 +254,9 @@ class _Opaque:
     **cannot** be intercepted (a blanket ``__getattribute__`` override would also break the
     fold's own ``isinstance(arg, Operation)`` dispatch), so a callback branching on them
     silently under-approximates: object **identity** (``x is None``, ``id(x)``), the **type**
-    builtins (``type(x)``, ``isinstance(x, …)``), and access to an **existing** attribute
-    (``x.__class__``). These are the general precondition restated — the fold is a
+    builtins (``type(x)``, ``isinstance(x, …)``, and ``callable(x)`` — which reads the
+    ``__call__`` bound below and so is always ``True``), and access to an **existing**
+    attribute (``x.__class__``). These are the general precondition restated — the fold is a
     path-insensitive over-approximation of the *reified* term, so a callback doing native
     control flow on its argument violates the precondition regardless. The tripwire catches
     the dunder-protocol cases; the rest are the caller's responsibility: keep callbacks
