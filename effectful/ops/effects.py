@@ -44,7 +44,6 @@ from effectful.ops.syntax import Uses
 from effectful.ops.types import Expr, Operation
 
 __all__ = [
-    "Uses",
     "Computation",
     "Requires",
     "UndeclaredCallable",
@@ -217,7 +216,7 @@ def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
         if _has(p.annotation, (_Computation,)):
             if callable(val):
                 val(_Opaque())  # run under the active interpreter -> its ops fold; loud if it inspects its arg
-        elif callable(val) and not _has(p.annotation, (Uses,)):
+        elif callable(val) and not isinstance(val, _Opaque) and not _has(p.annotation, (Uses,)):
             raise UndeclaredCallable(
                 f"{op}: argument {name!r} is callable but not declared `Computation`/`Uses[()]`; "
                 "its effects can't be soundly folded — annotate it, or the check is unsound."
@@ -227,22 +226,54 @@ def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
 def _refuse(*_a: Any, **_k: Any) -> Any:
     raise UnsoundCallbackFold(
         "usesof ran a Computation callback on an opaque placeholder to collect its "
-        "effects, but the callback inspected its argument (branched on it, accessed an "
-        "attribute, or destructured it). Folding it on a fake value would "
-        "path/structure-under-approximate; refusing rather than under-approximating."
+        "effects, but the callback *inspected* its argument (compared it, did arithmetic on "
+        "it, called it, branched on it, took its length, accessed an attribute, iterated or "
+        "indexed it, …). Folding on a fake value would path/structure-under-approximate; "
+        "refusing rather than under-approximating."
     )
 
 
 class _Opaque:
     """Placeholder fed to a ``Computation`` callback so its op-calls fire. Usable only as
-    opaque *data* (passed on to ops); any *inspection* — bool-test, attribute access,
-    iteration, indexing — raises :class:`UnsoundCallbackFold`. So ``lambda x: op()`` and
-    ``lambda x: op(x)`` fold soundly, while ``lambda x: a() if x else b()`` or
-    ``lambda x: x.field`` are refused loudly rather than folded on a fake value."""
+    opaque *data* — passed straight through to operations, which never inspect their
+    argument *values* under the fold. **Any** other use (comparison, arithmetic, ``len``,
+    ``bool``, call, attribute access, iteration, indexing, formatting, …) raises
+    :class:`UnsoundCallbackFold`. So ``lambda x: op()`` and ``lambda x: op(x)`` fold
+    soundly, while ``lambda x: a() if x == 0 else b()``, ``lambda x: op(x + 1)`` or
+    ``lambda x: x.field`` are refused *loudly* — never silently folded on a fake value.
+
+    The refusal is default-deny: every inspection dunder is bound to :func:`_refuse`
+    (below), so an operator we did not anticipate raises rather than silently returning a
+    wrong answer (e.g. the identity ``__eq__`` would return ``False`` and drop a branch)."""
 
     __slots__ = ()
 
-    __bool__ = _refuse
-    __getattr__ = _refuse
-    __iter__ = _refuse
-    __getitem__ = _refuse
+
+# Default-deny: bind every operation a callback could perform on its argument — other than
+# handing it to an op — to a loud refusal. Enumerated so a missed operator fails closed.
+_INSPECTION_DUNDERS = (
+    # truth / identity / hashing / formatting / conversions
+    "__bool__", "__hash__", "__eq__", "__ne__", "__repr__", "__str__", "__format__",
+    "__bytes__", "__int__", "__float__", "__complex__", "__index__", "__round__",
+    "__trunc__", "__floor__", "__ceil__",
+    # ordering
+    "__lt__", "__le__", "__gt__", "__ge__",
+    # attribute access / call
+    "__getattr__", "__call__",
+    # container protocol
+    "__len__", "__length_hint__", "__contains__", "__getitem__", "__setitem__",
+    "__delitem__", "__iter__", "__next__", "__reversed__",
+    # context / async
+    "__enter__", "__exit__", "__await__", "__aiter__", "__anext__",
+    # unary numeric
+    "__neg__", "__pos__", "__abs__", "__invert__",
+)
+# binary numeric, plus reflected (r) and in-place (i) forms
+for _binop in (
+    "add", "sub", "mul", "matmul", "truediv", "floordiv", "mod", "divmod", "pow",
+    "lshift", "rshift", "and", "xor", "or",
+):
+    _INSPECTION_DUNDERS += (f"__{_binop}__", f"__r{_binop}__", f"__i{_binop}__")
+
+for _dunder in _INSPECTION_DUNDERS:
+    setattr(_Opaque, _dunder, _refuse)

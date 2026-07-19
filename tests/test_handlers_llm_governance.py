@@ -1,13 +1,14 @@
-"""L0 static tool governance: ``toolsof`` / ``reachable_tools`` — no LLM call.
+"""Static tool governance: ``toolsof`` / ``reachable_tools`` / ``check_tools`` — no LLM call.
 
-These check the static tool graph (§5): which tools a template, or a function that calls
-one, can reach — computed by reifying to a Term and folding, never running the LLM.
+These check the static tool graph: which tools a template, or a function that calls one,
+can reach — computed by reading ``.tools`` and by reifying to a Term, never running the LLM.
 """
 
+from effectful.handlers.llm.completions import LexicalReaders
 from effectful.handlers.llm.governance import check_tools, reachable_tools, toolsof
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import apply
+from effectful.ops.semantics import apply, handler
 
 
 def _trip_planner():
@@ -65,15 +66,41 @@ def test_reachable_tools_sees_through_a_template_without_calling_the_llm():
 def test_reachable_tools_is_the_leak_check():
     # `reachable_tools(fn) <= declared` is the static tool-safety guarantee.
     suggest_city, delete_everything, my_fn = _trip_planner()
-    declared = {suggest_city} | toolsof(suggest_city) - {delete_everything}
+    declared = {suggest_city} | (toolsof(suggest_city) - {delete_everything})
     leak = reachable_tools(my_fn) - declared
     assert leak == frozenset({delete_everything})  # flagged, LLM never called
+
+
+def test_governed_tool_graph_excludes_synthetic_lexical_readers():
+    # Synthetic LexicalReaders tools are prompt-variable plumbing, not tools an agent
+    # reaches. Law: the governed tool graph is invariant to whether readers are exposed —
+    # so a plain lexical value never gets counted as a reachable tool (and thus never
+    # flagged as a leak).
+    @Tool.define
+    def real_tool() -> int:
+        """A real tool."""
+        return 0
+
+    favorite_city = "Paris"  # a plain lexical value -> becomes a synthetic reader
+
+    @Template.define
+    def t() -> str:
+        """Use {favorite_city} with the real_tool."""
+        raise NotImplementedError
+
+    baseline = toolsof(t)  # no readers exposed
+    with handler(LexicalReaders()):
+        assert "favorite_city" in t.tools  # guard: a synthetic reader really was created
+        with_readers = toolsof(t)
+
+    assert real_tool in baseline
+    assert with_readers == baseline  # readers do not enter the governed graph
 
 
 def test_check_tools_flags_the_leak():
     # check_tools = reachable_tools - allowed; the L2 tool-safety check (no LLM).
     suggest_city, delete_everything, my_fn = _trip_planner()
-    allowed = {suggest_city} | toolsof(suggest_city) - {delete_everything}
+    allowed = {suggest_city} | (toolsof(suggest_city) - {delete_everything})
     assert check_tools(my_fn, *allowed) == frozenset({delete_everything})
     # allowing everything reachable -> no leak
     assert check_tools(my_fn, *reachable_tools(my_fn)) == frozenset()

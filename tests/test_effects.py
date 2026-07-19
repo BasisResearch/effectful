@@ -11,13 +11,12 @@ from effectful.ops.effects import (
     Requires,
     UndeclaredCallable,
     UnsoundCallbackFold,
-    Uses,
     check_requires,
     check_uses,
     effect_type,
     usesof,
 )
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import Uses, defop
 from effectful.ops.types import NotHandled
 
 
@@ -67,12 +66,23 @@ def test_computation_callback_inspecting_arg_is_refused_not_silent():
     def cb(fn: Annotated[Callable[[int], int], Computation]) -> int:
         raise NotHandled
 
-    # branches on the arg -> would drop a branch if folded on a fake value -> refuse loudly
-    with pytest.raises(UnsoundCallbackFold):
-        usesof(cb(lambda x: write(x) if x else read()))  # type: ignore[func-returns-value]
-    # destructures the arg -> refuse loudly (not silently swallowed)
-    with pytest.raises(UnsoundCallbackFold):
-        usesof(cb(lambda x: x.field))
+    # Every way of *inspecting* the arg must refuse loudly — never fold on a fake value
+    # (which would silently drop a branch) and never leak a raw TypeError. The refusal is
+    # default-deny, so these cover the operator families, not a hand-picked few.
+    inspecting = [
+        lambda x: write(x) if x else read(),        # truthiness branch
+        lambda x: write(x) if x == 0 else read(),   # __eq__ branch (identity would say False)
+        lambda x: write(x) if x < 1 else read(),    # ordering branch
+        lambda x: write(x + 1),                     # arithmetic
+        lambda x: write(len(x)),                    # __len__
+        lambda x: write(str(x)),                    # formatting/conversion
+        lambda x: x(),                              # calls the arg
+        lambda x: x.field,                          # attribute access
+        lambda x: x[0],                             # indexing
+    ]
+    for cb_fn in inspecting:
+        with pytest.raises(UnsoundCallbackFold):
+            usesof(cb(cb_fn))  # type: ignore[func-returns-value]
 
 
 def test_undeclared_callable_fails_loudly():
@@ -105,3 +115,47 @@ def test_requires_provenance():
 
     assert check_requires(sink(read())) == {}  # x came from read
     assert check_requires(sink(pure_add(1, 1))) == {sink: {"x": frozenset({read})}}
+
+
+def test_requires_provenance_holds_transitively():
+    # provenance is the arg's whole effect row, so a required op reached *through* other
+    # ops still satisfies Requires.
+    @defop
+    def sink(x: Annotated[int, Requires(read)]) -> None:
+        raise NotHandled
+
+    # read is under a pure combinator but still in x's row -> satisfied
+    assert check_requires(sink(pure_add(read(), 1))) == {}
+
+
+def test_requires_reports_only_the_missing_ops():
+    # Requires(read, write) on an arg that provides only read -> report just write.
+    @defop
+    def sink(x: Annotated[int, Requires(read, write)]) -> None:
+        raise NotHandled
+
+    assert check_requires(sink(read())) == {sink: {"x": frozenset({write})}}
+    assert check_requires(sink(write(read()))) == {}  # both present -> satisfied
+
+
+def test_requires_is_per_argument_and_by_keyword():
+    # multiple Requires on different params, passed by keyword; each checked independently.
+    @defop
+    def move(
+        src: Annotated[int, Requires(read)],
+        dst: Annotated[int, Requires(write)],
+    ) -> None:
+        raise NotHandled
+
+    assert check_requires(move(src=read(), dst=write(1))) == {}
+    # dst lacks write in its provenance -> only dst flagged
+    assert check_requires(move(src=read(), dst=read())) == {move: {"dst": frozenset({write})}}
+
+
+def test_requires_absent_annotation_is_unconstrained():
+    # an argument with no Requires imposes no provenance obligation.
+    @defop
+    def sink(x: int) -> None:
+        raise NotHandled
+
+    assert check_requires(sink(pure_add(1, 1))) == {}
