@@ -1,4 +1,5 @@
 import argparse
+import pathlib
 
 from PIL import Image
 
@@ -65,11 +66,18 @@ class ImageTools(Agent):
 
 
 def main() -> None:
+    DEFAULT_IMAGE = (
+        pathlib.Path(__file__).resolve().parent.parent
+        / "_static"
+        / "img"
+        / "chirho_logo_wide.png"
+    )
+
     parser = argparse.ArgumentParser(description=__doc__ or ImageTools.__doc__)
     parser.add_argument(
         "--image",
         type=str,
-        default="../_static/img/chirho_logo_wide.png",
+        default=str(DEFAULT_IMAGE),
         metavar="PATH",
         help="Path to the input image to rotate-and-concatenate.",
     )
