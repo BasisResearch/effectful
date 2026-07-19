@@ -13,33 +13,12 @@ from PIL import Image
 
 from effectful.handlers.llm import Template
 
-# ---------------------------------------------------------------------------
-# Inline image (32x32 yellow smiley face)
-# ---------------------------------------------------------------------------
-
-IMAGE_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAhElEQVR4nO2W4QqA"
-    "MAiEVXr/VzYWDGoMdk7Cgrt/sUs/DqZTd3EplFU2JwATYAJMoOlAB4bq89s95+Mg"
-    "+gyAchsKAYplBBBA43hFhfxnUixDjdEUUL8hpr7R0KLdt9qElzcyiu8As+Kr8zQA"
-    "mgLavAl+kIzFZyCRxtsAmWb/voZvqRzgBE1sIDuVFX4eAAAAAElFTkSuQmCC"
-)
-
-
-# ---------------------------------------------------------------------------
-# Template
-# ---------------------------------------------------------------------------
-
 
 @Template.define
 def describe_image(image: Image.Image) -> str:
     """Return a short description of the following image.
     {image}
     """
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -56,6 +35,12 @@ def main() -> None:
     if args.image is not None:
         image = Image.open(args.image)
     else:
+        IMAGE_BASE64 = (
+            "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAAAhElEQVR4nO2W4QqA"
+            "MAiEVXr/VzYWDGoMdk7Cgrt/sUs/DqZTd3EplFU2JwATYAJMoOlAB4bq89s95+Mg"
+            "+gyAchsKAYplBBBA43hFhfxnUixDjdEUUL8hpr7R0KLdt9qElzcyiu8As+Kr8zQA"
+            "mgLavAl+kIzFZyCRxtsAmWb/voZvqRzgBE1sIDuVFX4eAAAAAElFTkSuQmCC"
+        )
         image = Image.open(io.BytesIO(base64.b64decode(IMAGE_BASE64)))
 
     print(describe_image(image))

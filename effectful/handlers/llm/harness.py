@@ -37,7 +37,6 @@ import tenacity
 
 from effectful.handlers.llm.completions import (
     LangfuseTracer,
-    LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
@@ -86,8 +85,8 @@ class harness(contextlib.ContextDecorator):
         render: bool = False,
         dump_system_prompt: str | os.PathLike[str] | None = None,
         tool_choice: str = "required",
-        api_base: str = "http://localhost:8030/v1",
-        api_key: str = "",
+        api_base: str | None = None,
+        api_key: str | None = None,
     ) -> None:
         self.model = model
         self.num_retries = num_retries
@@ -122,7 +121,7 @@ class harness(contextlib.ContextDecorator):
         stack.enter_context(
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(self.num_retries)))
         )
-        stack.enter_context(handler(LexicalReaders()))
+        # stack.enter_context(handler(LexicalReaders()))
         if self.langfuse:
             stack.enter_context(handler(LangfuseTracer()))
         self._stack = stack
@@ -185,6 +184,10 @@ def main(argv: list[str] | None = None) -> None:
         langfuse=ns.langfuse,
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
+        api_base="http://localhost:8030/v1"
+        if ns.model == "openai/deepseek-v4-flash"
+        else None,
+        api_key="" if ns.model == "openai/deepseek-v4-flash" else None,
     ):
         runpy.run_path(ns.script, run_name="__main__")
 

@@ -163,6 +163,7 @@ def solve_hanoi(state: GameState, max_steps: int = 30):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(

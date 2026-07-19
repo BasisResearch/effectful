@@ -97,7 +97,8 @@ async def map_reduce_evaluate(
     job_description: str,
 ) -> str:
     """Evaluate resumes in parallel (map), then summarize (reduce)."""
-    # Map: evaluate each resume concurrently
+    # Map: fork/join -- evaluate each resume concurrently via asyncio.gather +
+    # asyncio.to_thread (sync template calls run in parallel threads).
     evaluate = functools.partial(asyncio.to_thread, evaluate_resume)
     evaluations: list[Evaluation] = list(
         await asyncio.gather(*(evaluate(resume, job_description) for resume in resumes))
@@ -116,6 +117,7 @@ async def map_reduce_evaluate(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

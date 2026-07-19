@@ -17,10 +17,6 @@ from typing import Literal
 
 from effectful.handlers.llm import Agent, Template, Tool
 
-# ---------------------------------------------------------------------------
-# Sub-templates (module-level; auto-captured into the scopes below)
-# ---------------------------------------------------------------------------
-
 
 @Template.define
 def story_with_moral(topic: str) -> str:
@@ -30,12 +26,6 @@ def story_with_moral(topic: str) -> str:
 @Template.define
 def story_funny(topic: str) -> str:
     """Write a funny, humorous story about {topic}."""
-
-
-# ---------------------------------------------------------------------------
-# (1) Model-driven composition: an orchestrator template calls tools and
-#     sub-templates directly during its own turn.
-# ---------------------------------------------------------------------------
 
 
 class TripPlanner(Agent):
@@ -59,24 +49,6 @@ class TripPlanner(Agent):
         style: {style}"""
 
 
-# ---------------------------------------------------------------------------
-# (2) Code-driven composition: a template synthesizes a function that calls the
-#     same sub-templates when executed.
-# ---------------------------------------------------------------------------
-
-
-@Template.define
-def write_story_fn(style: Literal["moral", "funny"]) -> Callable[[str], str]:
-    """Generate a Python function that takes a topic string and returns a story
-    about it in the {style} style. The function should delegate the writing to the
-    `story_funny` sub-template for humor, or `story_with_moral` for a lesson."""
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -92,19 +64,35 @@ def main() -> None:
         default="a curious cat",
         help="Topic for the synthesized story function to run on",
     )
+    parser.add_argument(
+        "--method",
+        type=str,
+        choices=["model", "code"],
+        default="model",
+        help="Whether to run the model-driven or code-driven composition",
+    )
     args = parser.parse_args()
 
-    # (1) Model-driven: the orchestrator template calls tools and sub-templates.
-    print("=== Orchestrator template (model-driven composition) ===")
-    planner = TripPlanner()
-    print(planner.plan_trip_story(args.style))
+    if args.method == "model":
+        # (1) Model-driven: the orchestrator template calls tools and sub-templates.
+        print("=== Orchestrator template (model-driven composition) ===")
+        planner = TripPlanner()
+        print(planner.plan_trip_story(args.style))
 
-    # (2) Code-driven: the model synthesizes a function that calls the sub-templates.
-    print(f"\n=== Synthesized higher-order function (style={args.style}) ===")
-    story_fn = write_story_fn(args.style)
-    print(inspect.getsource(story_fn))
-    print(f"\n=== Running it on {args.topic!r} ===")
-    print(story_fn(args.topic))
+    elif args.method == "code":
+
+        @Template.define
+        def write_story_fn(style: Literal["moral", "funny"]) -> Callable[[str], str]:
+            """Generate a Python function that takes a topic string and returns a story
+            about it in the {style} style. The function should delegate the writing to the
+            `story_funny` sub-template for humor, or `story_with_moral` for a lesson."""
+
+        # (2) Code-driven: the model synthesizes a function that calls the sub-templates.
+        print(f"\n=== Synthesized higher-order function (style={args.style}) ===")
+        story_fn = write_story_fn(args.style)
+        print(inspect.getsource(story_fn))
+        print(f"\n=== Running it on {args.topic!r} ===")
+        print(story_fn(args.topic))
 
 
 if __name__ == "__main__":

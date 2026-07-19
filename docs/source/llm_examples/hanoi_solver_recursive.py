@@ -101,9 +101,7 @@ class GameState:
 
 
 @Template.define
-def solve(
-    n_disks: int, source: int, target: int, auxiliary: int
-) -> list[Step]:
+def solve(n_disks: int, source: int, target: int, auxiliary: int) -> list[Step]:
     """Solve Tower of Hanoi: move {n_disks} disks from tower {source} to
     tower {target}, using tower {auxiliary} as temporary storage.
 
@@ -146,6 +144,7 @@ def validate_solution(size: int, steps: list[Step]) -> bool:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

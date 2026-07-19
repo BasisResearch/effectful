@@ -17,7 +17,7 @@ from effectful.handlers.llm import Agent, Template
 class ChatBot(Agent):
     """Conversational agent that remembers the conversation so far."""
 
-    bot_name: str = dataclasses.field(default="ChatBot")
+    bot_name: str
 
     @Template.define
     def send(self, user_input: str) -> str:

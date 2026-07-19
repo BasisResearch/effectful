@@ -14,7 +14,7 @@ import datetime
 import enum
 from typing import Literal
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Template
 
 # ---------------------------------------------------------------------------
 # Structured output types
@@ -28,14 +28,14 @@ class Airport(enum.StrEnum):
     JNU = "JNU"
     NYC = "NYC"
     LAX = "LAX"
-    CHI = "CHI"
+    ORD = "ORD"
     MIA = "MIA"
     BOS = "BOS"
     SEA = "SEA"
     DFW = "DFW"
     DEN = "DEN"
     ATL = "ATL"
-    HOU = "HOU"
+    IAH = "IAH"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -51,11 +51,12 @@ class FlightDetails:
 class SeatPreference:
     """
     User's seat preference extracted from natural language.
-    
+
     Seats A and F are window seats. Seats C and D are aisle seats.
     Row 1 is the front row with extra legroom.
     Rows 14 and 20 also have extra legroom.
     """
+
     row: int  # 1-30
     seat: Literal["A", "B", "C", "D", "E", "F"]
 
@@ -68,11 +69,11 @@ FLIGHTS_PAGE = """\
 1. Flight SFO-AK123 - $350 - San Francisco (SFO) to Anchorage (ANC) - 2025-01-10
 2. Flight SFO-AK456 - $370 - San Francisco (SFO) to Fairbanks (FAI) - 2025-01-10
 3. Flight SFO-AK789 - $400 - San Francisco (SFO) to Juneau (JNU) - 2025-01-20
-4. Flight NYC-LA101 - $250 - San Francisco (SFO) to Anchorage (ANC) - 2025-01-10
-5. Flight CHI-MIA202 - $200 - Chicago (ORD) to Miami (MIA) - 2025-01-12
-6. Flight BOS-SEA303 - $120 - Boston (BOS) to Anchorage (ANC) - 2025-01-12
+4. Flight NYC-LA101 - $250 - New York (NYC) to Los Angeles (LAX) - 2025-01-10
+5. Flight ORD-MIA202 - $200 - Chicago (ORD) to Miami (MIA) - 2025-01-12
+6. Flight BOS-SEA303 - $120 - Boston (BOS) to Seattle (SEA) - 2025-01-12
 7. Flight DFW-DEN404 - $150 - Dallas (DFW) to Denver (DEN) - 2025-01-10
-8. Flight ATL-HOU505 - $180 - Atlanta (ATL) to Houston (IAH) - 2025-01-10
+8. Flight ATL-IAH505 - $180 - Atlanta (ATL) to Houston (IAH) - 2025-01-10
 """
 
 # ---------------------------------------------------------------------------
@@ -89,36 +90,25 @@ def extract_flights(web_page_text: str) -> list[FlightDetails]:
 
 
 # ---------------------------------------------------------------------------
-# Tool that delegates to the extraction template
-# ---------------------------------------------------------------------------
-
-# The tool is defined at module scope so that FlightFinder's template
-# captures it via lexical scope (same pattern as search_web in other examples).
-
-
-@Tool.define
-def get_available_flights() -> list[FlightDetails]:
-    """Retrieve all available flights from the booking page."""
-    return extract_flights(FLIGHTS_PAGE)
-
-
-# ---------------------------------------------------------------------------
 # Flight search agent
 # ---------------------------------------------------------------------------
 
 
+@dataclasses.dataclass
 class FlightFinder(Agent):
     """Agent that finds flights matching user criteria."""
+
+    available_flights: list[FlightDetails]
 
     @Template.define
     def find_flight(
         self, origin: Airport, destination: Airport, date: datetime.date
     ) -> FlightDetails:
-        """Find the cheapest flight from {origin} to {destination} on {date}.
+        """
+        Find the cheapest flight from {origin} to {destination} on {date}.
 
-        Use the get_available_flights tool to retrieve all flights, then
-        select the cheapest one that matches the origin, destination,
-        and date exactly.
+        List of available flights (from the web page):
+        <flights>{self.available_flights}</flights>
         """
 
 
@@ -170,7 +160,7 @@ def book_flight(
     max_retries: int = 3,
 ) -> None:
     """End-to-end flight booking with search, validation, and seat selection."""
-    searcher = FlightFinder()
+    searcher = FlightFinder(available_flights=extract_flights(FLIGHTS_PAGE))
 
     # --- Search with validation retry ---
     flight = None
@@ -215,6 +205,7 @@ def book_flight(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)

@@ -46,6 +46,7 @@ class Rating:
     A movie rating, with a score (an integer from 1 to 5) and an explanation.
     The explanation MUST mention the score, otherwise it will be rejected as invalid.
     """
+
     score: typing.Literal[1, 2, 3, 4, 5]
     explanation: str
 
@@ -53,7 +54,9 @@ class Rating:
         if self.score < 1 or self.score > 5:
             raise ValueError(f"score must be 1-5, got {self.score}")
         if str(self.score) not in self.explanation:
-            raise ValueError(f"explanation must mention the score {self.score}, got '{self.explanation}'")
+            raise ValueError(
+                f"explanation must mention the score {self.score}, got '{self.explanation}'"
+            )
 
 
 # ---------------------------------------------------------------------------

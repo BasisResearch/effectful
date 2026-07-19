@@ -41,6 +41,7 @@ class ProposedAction:
 @dataclasses.dataclass
 class Planner(Agent):
     """Agent that proposes actions one at a time for human approval."""
+
     execution_log: list[str] = dataclasses.field(default_factory=list)
 
     @Tool.define
@@ -112,6 +113,7 @@ def run_with_approval(
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
