@@ -20,6 +20,14 @@ this module             upstream home
 ``uses_rule``               a method ``Operation.__uses_rule__`` in ``ops/types.py``
 ``Uses`` / ``Computation`` / ``Requires``   ``ops/syntax.py``, next to ``Scoped``
 ======================  =====================================================
+
+**Deferred (not in this module yet):** `__uses_rule__` as a real ``@final`` method on
+``Operation`` (so subclassed ops like ``Tool``/``Template`` can override their row) —
+currently the free ``uses_rule``; wiring ``Annotation.infer_annotations`` into ``defop``
+(the build-time gate); ``usagesof`` (usage multiset) and handler discharge (2nd PR);
+polymorphic ``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer; and the whole
+LLM layer (Branch B, off #694) — ``toolsof``/``reachable_tools``, the ``ε``-validator at the
+decode seam, tool governance. This module is the ``ε`` core only.
 """
 
 import collections.abc
@@ -78,9 +86,12 @@ class _Computation(Annotation):
 
     @classmethod
     def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        # A callable-typed parameter must be classified — Computation (its effects fold)
-        # or Uses[()] (declared not-effectful) — else its effects would be silent. This
-        # is the sound-by-construction gate (mirrors Scoped validating scoping).
+        # Validates that every callable-typed parameter is classified — Computation (its
+        # effects fold) or Uses[()] (declared not-effectful). NOTE: this is NOT yet wired
+        # into `defop`, so it is a validate-if-called helper, not an automatic build-time
+        # gate. Actual enforcement is at `usesof`-time: `_fold_computation_args` raises
+        # `UndeclaredCallable` on an unclassified callable. Wiring generic
+        # `Annotation.infer_annotations` dispatch into op construction is deferred.
         for name, p in sig.parameters.items():
             if _is_callable_annotation(p.annotation) and not _has(p.annotation, (_Computation, Uses)):
                 raise TypeError(
