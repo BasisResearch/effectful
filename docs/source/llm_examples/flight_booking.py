@@ -49,6 +49,13 @@ class FlightDetails:
 
 @dataclasses.dataclass(frozen=True)
 class SeatPreference:
+    """
+    User's seat preference extracted from natural language.
+    
+    Seats A and F are window seats. Seats C and D are aisle seats.
+    Row 1 is the front row with extra legroom.
+    Rows 14 and 20 also have extra legroom.
+    """
     row: int  # 1-30
     seat: Literal["A", "B", "C", "D", "E", "F"]
 
@@ -128,10 +135,6 @@ class SeatSelector(Agent):
         """Extract the user's seat preference from their message.
 
         {user_input}
-
-        Seats A and F are window seats. Seats C and D are aisle seats.
-        Row 1 is the front row with extra legroom.
-        Rows 14 and 20 also have extra legroom.
         """
 
 
@@ -215,6 +218,30 @@ def book_flight(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    airports = list(Airport)
+    parser.add_argument(
+        "--origin",
+        type=Airport,
+        choices=airports,
+        default=Airport.SFO,
+        metavar="CODE",
+        help="Origin airport code",
+    )
+    parser.add_argument(
+        "--destination",
+        type=Airport,
+        choices=airports,
+        default=Airport.ANC,
+        metavar="CODE",
+        help="Destination airport code",
+    )
+    parser.add_argument(
+        "--date",
+        type=datetime.date.fromisoformat,
+        default=datetime.date(2025, 1, 10),
+        metavar="YYYY-MM-DD",
+        help="Travel date (YYYY-MM-DD)",
+    )
     parser.add_argument(
         "--interactive",
         action="store_true",
@@ -223,9 +250,9 @@ def main() -> None:
     args = parser.parse_args()
 
     book_flight(
-        origin=Airport.SFO,
-        destination=Airport.ANC,
-        date=datetime.date(2025, 1, 10),
+        origin=args.origin,
+        destination=args.destination,
+        date=args.date,
         interactive=args.interactive,
     )
 

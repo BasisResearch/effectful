@@ -1,10 +1,12 @@
-"""Think-Act-Observe chain-of-thought agent.
+"""Think-Act-Observe agent: structured chain-of-thought with optional tool use.
 
 Demonstrates:
-- ``Agent`` mixin for persistent conversation history
-- Structured output with Pydantic models (``AgentThought``)
-- A think → act → observe reasoning loop
-- Pattern matching for action dispatch
+- Agent mixin for persistent conversation history (the LLM sees its own prior
+  reasoning across steps)
+- Structured output with an AgentThought dataclass carrying an is_final flag
+- A think -> act -> observe loop that continues until the agent is done
+- Pattern-matching action dispatch: reason straight to an answer, or call a
+  web-search tool when a fact is missing
 """
 
 import argparse
@@ -68,7 +70,6 @@ def search_web(query: str) -> str:
 
 class AgentAction(enum.StrEnum):
     search_the_web = "search_the_web"
-    calculate = "calculate"
     answer = "answer"
 
 
@@ -91,8 +92,10 @@ class TAOAgent(Agent):
     @Template.define
     def think(self, query: str) -> AgentThought:
         """You are an AI assistant solving a problem. Based on the user's query
-        ({query}) and prior conversation context, think about what action to
-        take next.
+        ({query}) and your own prior reasoning in the conversation history, think
+        about what to do next: either `search_the_web` for a fact you are missing,
+        or `answer` once you can conclude. Set is_final=true when your action is
+        the final answer.
         """
 
     @Template.define
@@ -110,8 +113,9 @@ class TAOAgent(Agent):
 
     def run(self, query: str, max_steps: int = 5) -> str:
         result = ""
-        for _ in range(max_steps):
+        for i in range(max_steps):
             thought = self.think(query)
+            print(f"  [step {i + 1}] {thought.thinking}")
             result = self._act(thought.action, thought.action_input)
             self.observe(str(thought.action), thought.action_input, result)
             if thought.is_final:
@@ -122,11 +126,6 @@ class TAOAgent(Agent):
         match action:
             case AgentAction.search_the_web:
                 return search_web(action_input)
-            case AgentAction.calculate:
-                try:
-                    return action_input  # eval(action_input))  # noqa: S307
-                except Exception as e:
-                    return str(e)
             case AgentAction.answer:
                 return action_input
 
@@ -135,23 +134,42 @@ class TAOAgent(Agent):
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--max-steps",
         type=int,
         default=5,
-        help="Maximum number of steps before giving up",
+        help="Maximum think-act-observe steps per problem",
+    )
+    parser.add_argument(
+        "--problem",
+        dest="problems",
+        metavar="PROBLEM",
+        nargs="+",
+        default=[
+            (
+                "A farmer has 17 sheep. All but 9 run away. "
+                "Then he buys 5 more. How many sheep does he have now?"
+            ),
+            "What year was the Eiffel Tower completed, and how tall is it?",
+        ],
+        help=(
+            "One or more problems to solve (a pure-reasoning puzzle and a "
+            "web-lookup question by default)"
+        ),
     )
     args = parser.parse_args()
 
-    agent = TAOAgent()
-
-    answer = agent.run(
-        "How many tennis balls would fill an Olympic swimming pool?",
-        max_steps=args.max_steps,
-    )
-    print("Answer:", answer)
+    # By default, one puzzle the agent can reason through with no tools, and one
+    # that needs a web lookup -- the same loop handles both via its action
+    # dispatch.
+    for problem in args.problems:
+        agent = TAOAgent()
+        print(f"\nProblem: {problem}")
+        answer = agent.run(problem, max_steps=args.max_steps)
+        print(f"Answer: {answer}")
 
 
 if __name__ == "__main__":

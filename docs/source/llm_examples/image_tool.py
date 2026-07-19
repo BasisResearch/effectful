@@ -1,3 +1,5 @@
+import argparse
+
 from PIL import Image
 
 from effectful.handlers.llm import Agent, Template, Tool
@@ -63,8 +65,18 @@ class ImageTools(Agent):
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__ or ImageTools.__doc__)
+    parser.add_argument(
+        "--image",
+        type=str,
+        default="../_static/img/chirho_logo_wide.png",
+        metavar="PATH",
+        help="Path to the input image to rotate-and-concatenate.",
+    )
+    args = parser.parse_args()
+
     image_agent = ImageTools()
-    img = Image.open("../_static/img/chirho_logo_wide.png")
+    img = Image.open(args.image)
 
     image_agent.rotate_and_concat(img).show()
 

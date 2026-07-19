@@ -5,6 +5,8 @@ Demonstrates:
 - Simple control-flow gating based on LLM classification
 """
 
+import argparse
+
 from effectful.handlers.llm import Template
 
 # ---------------------------------------------------------------------------
@@ -44,8 +46,21 @@ def answer_travel_query(user_query: str) -> str:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print(answer_travel_query("What are great places to check out in NYC?"))
-    print(answer_travel_query("Should I buy apple stocks?"))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--queries",
+        nargs="+",
+        default=[
+            "What are great places to check out in NYC?",
+            "Should I buy apple stocks?",
+        ],
+        metavar="QUERY",
+        help="User queries to run through the travel-advice guardrail",
+    )
+    args = parser.parse_args()
+
+    for query in args.queries:
+        print(answer_travel_query(query))
 
 
 if __name__ == "__main__":

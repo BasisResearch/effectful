@@ -1,21 +1,23 @@
-"""Research agent with web search.
+"""Research agent with web search and LLM quality control.
 
 Demonstrates:
-- ``@defop`` + ``ObjectInterpretation`` to define a pluggable web search effect
-- ``@Template.define`` for LLM-implemented answer/refine/judge templates
-- Handler composition: stacking a search provider alongside an LLM provider
-- Iterative refinement loop: answer → judge → refine → judge → ...
+- @Tool.define web-search tool, auto-captured into templates from lexical scope
+- An Agent subclass with persistent conversation history
+- One Template judging another's output, returning a structured QualityJudgment
+  (a bool plus written feedback)
+- A feedback-driven refinement loop: answer -> judge -> refine -> judge -> ...
 """
 
 import argparse
+import dataclasses
 import urllib.parse
 
 import requests
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Agent, Template, Tool
 
 # ---------------------------------------------------------------------------
-# Search effect + handler
+# Search tool
 # ---------------------------------------------------------------------------
 
 
@@ -60,42 +62,74 @@ def search_web(query: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Templates (auto-capture `search_web` from lexical scope)
+# Structured output for quality judgment
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass(frozen=True)
+class QualityJudgment:
+    is_acceptable: bool
+    feedback: str
+
+
+# ---------------------------------------------------------------------------
+# Research agent (persistent history; search_web auto-captured from scope)
+# ---------------------------------------------------------------------------
+
+
+class Researcher(Agent):
+    """Agent that answers research questions using web search, refining on feedback."""
+
+    @Template.define
+    def answer(self, question: str) -> str:
+        """You are a research assistant. Use the search tool to find accurate,
+        specific information, then answer the question: {question}"""
+
+    @Template.define
+    def refine(self, question: str, feedback: str) -> str:
+        """A reviewer rejected your previous answer to the question ({question})
+        with this feedback: {feedback}. Use the search tool as needed and provide
+        an improved answer that addresses the feedback."""
+
+
+# ---------------------------------------------------------------------------
+# Supervisor (quality judge)
 # ---------------------------------------------------------------------------
 
 
 @Template.define
-def answer_question(question: str) -> str:
-    """Acting as a research assistant that can search the web,
-    construct an answer to the user's question: {question}."""
+def judge_quality(question: str, answer: str) -> QualityJudgment:
+    """You are a strict quality reviewer. Evaluate whether this answer adequately
+    addresses the question with accurate, specific information.
 
+    Question: {question}
+    Answer: {answer}
 
-@Template.define
-def refine_answer(question: str, answer: str) -> str:
-    """Acting as a research assistant that can search the web,
-    given the user's original question ({question}),
-    refine this previous answer: {answer}."""
-
-
-@Template.define
-def is_question_answered(question: str, answer: str) -> bool:
-    """Acting as a research assistant, decide if the user's question
-    ({question}) is appropriately answered by: {answer}.
-    Respond only true or false."""
+    An answer is acceptable if it contains specific facts (names, dates, numbers)
+    relevant to the question. Vague or generic answers should be rejected; when
+    rejecting, explain in the feedback what is missing.
+    """
 
 
 # ---------------------------------------------------------------------------
-# Agent loop
+# Supervised agent loop
 # ---------------------------------------------------------------------------
 
 
-def research_agent(question: str, max_attempts: int = 3) -> str:
-    """Answer a question, iteratively refining until satisfactory."""
-    answer = answer_question(question)
-    for _ in range(max_attempts):
-        if is_question_answered(question, answer):
-            break
-        answer = refine_answer(question, answer)
+def research_agent(question: str, max_retries: int = 3) -> str:
+    """Answer a question, refining on supervisor feedback until it is acceptable."""
+    researcher = Researcher()
+    answer = researcher.answer(question)
+
+    for attempt in range(1, max_retries + 1):
+        judgment = judge_quality(question, answer)
+        if judgment.is_acceptable:
+            print(f"[supervisor] Accepted on attempt {attempt}")
+            return answer
+        print(f"[supervisor] Rejected attempt {attempt}: {judgment.feedback}")
+        answer = researcher.refine(question, judgment.feedback)
+
+    print("[supervisor] Returning best effort after max retries")
     return answer
 
 
@@ -103,18 +137,25 @@ def research_agent(question: str, max_attempts: int = 3) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--question",
         type=str,
-        default="What is the meaning of life?",
+        default="What year was the Eiffel Tower completed and how tall is it?",
         help="The question to research",
+    )
+    parser.add_argument(
+        "--max-retries",
+        type=int,
+        default=3,
+        help="Maximum number of supervisor rejections before returning best effort",
     )
     args = parser.parse_args()
 
-    result = research_agent(args.question)
-    print(result)
+    result = research_agent(args.question, max_retries=args.max_retries)
+    print(f"\nFinal answer: {result}")
 
 
 if __name__ == "__main__":

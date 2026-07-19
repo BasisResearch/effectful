@@ -14,7 +14,7 @@ import dataclasses
 import litellm
 import numpy as np
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Agent, Template, Tool
 
 # ---------------------------------------------------------------------------
 # Embedding helpers
@@ -45,8 +45,7 @@ class VectorIndex:
         self.chunks.append(text)
         self.embeddings.append(get_embedding(text, model=self.model))
 
-    @Tool.define
-    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
+    def search(self, query: str, top_k: int = 3) -> list[str]:
         """Return the top-k most similar chunks to the query."""
         if not self.embeddings:
             return []
@@ -123,25 +122,38 @@ def build_index(documents: list[str], embedding_model: str) -> VectorIndex:
 
 
 # ---------------------------------------------------------------------------
-# RAG query (online phase)
+# RAG agent (online phase): the `retrieve` tool and `answer_question` template
+# share one instance, so the tool is auto-captured from lexical scope.
 # ---------------------------------------------------------------------------
 
 
-@Template.define
-def answer_question(question: str) -> str:
-    """You are a helpful assistant. Answer the user's question using ONLY
-    information retrieved from the knowledge base via the retrieve tool.
+@dataclasses.dataclass
+class RAGAgent(Agent):
+    """Answers a question grounded in the vector index via a retrieval tool."""
 
-    If the retrieved information doesn't contain the answer, say so.
-    Always cite which document your information comes from.
+    index: VectorIndex
 
-    Question: {question}
-    """
+    @Tool.define
+    def retrieve(self, query: str, top_k: int = 3) -> list[str]:
+        """Return the top-k most similar chunks to the query."""
+        return self.index.search(query, top_k)
+
+    @Template.define
+    def answer_question(self, question: str) -> str:
+        """You are a helpful assistant. Answer the user's question using ONLY
+        information retrieved from the knowledge base via the retrieve tool.
+
+        If the retrieved information doesn't contain the answer, say so.
+        Always cite which document your information comes from.
+
+        Question: {question}
+        """
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -151,27 +163,27 @@ def main() -> None:
         default="lm_studio/text-embedding-embeddinggemma-300m-qat",
         help="Embedding model to use",
     )
+    parser.add_argument(
+        "--questions",
+        type=str,
+        nargs="+",
+        metavar="QUESTION",
+        default=[
+            "How tall is the Eiffel Tower?",
+            "When was the Great Wall of China built?",
+            "How many spectators could the Colosseum hold?",
+        ],
+        help="Questions to answer against the indexed documents",
+    )
     args = parser.parse_args()
 
-    # Offline: build the index
+    # Offline: build the index once.
     index = build_index(DOCUMENTS, embedding_model=args.embedding_model)
 
-    # Create the retrieval tool bound to our index. `answer_question` is a
-    # module-level template, so the tool must be bound in module globals to be
-    # in its lexical scope.
-    global retrieve
-    retrieve = index.retrieve
-
-    # Online: answer questions
-    questions = [
-        "How tall is the Eiffel Tower?",
-        "When was the Great Wall of China built?",
-        "How many spectators could the Colosseum hold?",
-    ]
-
-    for question in questions:
+    # Online: answer each question with a fresh (stateless) agent over that index.
+    for question in args.questions:
         print(f"\nQ: {question}")
-        answer = answer_question(question)
+        answer = RAGAgent(index=index).answer_question(question)
         print(f"A: {answer}")
 
 

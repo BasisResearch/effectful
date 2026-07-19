@@ -25,18 +25,16 @@ See: https://en.wikipedia.org/wiki/Tower_of_Hanoi
 """
 
 import argparse
-import typing
-from dataclasses import dataclass, field
+import dataclasses
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.template import IsRecursive
 
 # ---------------------------------------------------------------------------
 # Step model
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclasses.dataclass
 class Step:
     """A single move: take the top disk from tower ``start`` and place it on
     tower ``end``.  Tower indices are zero-based."""
@@ -50,7 +48,7 @@ class Step:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
+@dataclasses.dataclass
 class GameState:
     """State of a Towers of Hanoi game.
 
@@ -60,7 +58,7 @@ class GameState:
     """
 
     size: int
-    towers: tuple[tuple[int, ...], ...] = field(default=())
+    towers: tuple[tuple[int, ...], ...] = dataclasses.field(default=())
 
     def __post_init__(self):
         if self.size > 0 and not self.towers:
@@ -105,7 +103,7 @@ class GameState:
 @Template.define
 def solve(
     n_disks: int, source: int, target: int, auxiliary: int
-) -> typing.Annotated[list[Step], IsRecursive]:
+) -> list[Step]:
     """Solve Tower of Hanoi: move {n_disks} disks from tower {source} to
     tower {target}, using tower {auxiliary} as temporary storage.
 

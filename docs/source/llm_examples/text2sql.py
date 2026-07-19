@@ -7,6 +7,7 @@ Demonstrates:
 - ``@Tool.define`` to expose the database schema as a tool
 """
 
+import argparse
 import sqlite3
 import textwrap
 
@@ -125,15 +126,22 @@ def text_to_sql(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--questions",
+        nargs="+",
+        metavar="QUESTION",
+        default=[
+            "What is the average salary by department?",
+            "Who is the highest paid employee?",
+            "How many employees were hired after 2021?",
+        ],
+        help="Natural-language questions to answer against the sample database",
+    )
+    args = parser.parse_args()
+
     conn = create_sample_db()
-
-    questions = [
-        "What is the average salary by department?",
-        "Who is the highest paid employee?",
-        "How many employees were hired after 2021?",
-    ]
-
-    for question in questions:
+    for question in args.questions:
         print(f"\nQ: {question}")
         try:
             rows = text_to_sql(conn, question)

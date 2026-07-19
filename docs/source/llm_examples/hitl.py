@@ -126,13 +126,19 @@ def main() -> None:
         default=5,
         help="Maximum number of action steps",
     )
+    parser.add_argument(
+        "--task",
+        type=str,
+        default=(
+            "Organize a team lunch for next Friday. "
+            "Send an email to the team, create a shared document for "
+            "restaurant suggestions, and schedule a meeting to finalize plans."
+        ),
+        help="The goal for the planner to accomplish",
+    )
     args = parser.parse_args()
 
-    task = (
-        "Organize a team lunch for next Friday. "
-        "Send an email to the team, create a shared document for "
-        "restaurant suggestions, and schedule a meeting to finalize plans."
-    )
+    task = args.task
 
     print(f"Task: {task}\n")
     log = run_with_approval(

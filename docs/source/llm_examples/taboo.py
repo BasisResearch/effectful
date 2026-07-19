@@ -18,7 +18,7 @@ from effectful.handlers.llm import Agent, Template, Tool
 # ---------------------------------------------------------------------------
 
 
-class Confidence(enum.Enum):
+class Confidence(enum.StrEnum):
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -39,8 +39,8 @@ class Guess:
 class Hinter(Agent):
     """Agent that gives hints about a secret word without saying it."""
 
-    secret_word: str = dataclasses.field(default="")
-    taboo_words: list[str] = dataclasses.field(default_factory=list)
+    secret_word: str
+    taboo_words: list[str]
 
     @Tool.define
     def is_taboo(self, hint: str) -> bool:
@@ -130,12 +130,33 @@ def main() -> None:
         default=5,
         help="Maximum rounds per game",
     )
+    parser.add_argument(
+        "--secret-word",
+        type=str,
+        default=None,
+        metavar="WORD",
+        help="Secret word to guess (used with --taboo-words for a single custom game)",
+    )
+    parser.add_argument(
+        "--taboo-words",
+        nargs="+",
+        type=str,
+        default=None,
+        metavar="WORD",
+        help="Taboo words the hinter may not say (used with --secret-word)",
+    )
     args = parser.parse_args()
 
-    games = [
-        ("piano", ["music", "keys", "instrument", "play"]),
-        ("volcano", ["lava", "eruption", "mountain", "hot"]),
-    ]
+    if (args.secret_word is None) != (args.taboo_words is None):
+        parser.error("--secret-word and --taboo-words must be given together")
+
+    if args.secret_word is not None:
+        games = [(args.secret_word, args.taboo_words)]
+    else:
+        games = [
+            ("piano", ["music", "keys", "instrument", "play"]),
+            ("volcano", ["lava", "eruption", "mountain", "hot"]),
+        ]
 
     for secret, taboo in games:
         print(f"\nGame: '{secret}' (taboo: {taboo})")

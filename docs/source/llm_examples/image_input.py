@@ -5,6 +5,7 @@ Demonstrates:
 - Inline base64 image data so the script is self-contained
 """
 
+import argparse
 import base64
 import io
 
@@ -42,7 +43,20 @@ def describe_image(image: Image.Image) -> str:
 
 
 def main() -> None:
-    image = Image.open(io.BytesIO(base64.b64decode(IMAGE_BASE64)))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--image",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="Path to an image file to describe (defaults to a built-in 32x32 smiley face)",
+    )
+    args = parser.parse_args()
+
+    if args.image is not None:
+        image = Image.open(args.image)
+    else:
+        image = Image.open(io.BytesIO(base64.b64decode(IMAGE_BASE64)))
 
     print(describe_image(image))
 

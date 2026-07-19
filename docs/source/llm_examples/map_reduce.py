@@ -7,6 +7,7 @@ Demonstrates:
 - Structured output with dataclasses
 """
 
+import argparse
 import asyncio
 import collections.abc
 import dataclasses
@@ -117,8 +118,18 @@ async def map_reduce_evaluate(
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    print(f"Evaluating {len(RESUMES)} resumes for: {JOB_DESCRIPTION}\n")
-    summary = asyncio.run(map_reduce_evaluate(RESUMES, JOB_DESCRIPTION))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--job-description",
+        type=str,
+        metavar="TEXT",
+        default=JOB_DESCRIPTION,
+        help="Job description to evaluate resumes against.",
+    )
+    args = parser.parse_args()
+
+    print(f"Evaluating {len(RESUMES)} resumes for: {args.job_description}\n")
+    summary = asyncio.run(map_reduce_evaluate(RESUMES, args.job_description))
     print(f"\n{summary}")
 
 
