@@ -8,14 +8,8 @@ Demonstrates:
 
 import argparse
 import dataclasses
-import os
-
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -48,7 +42,6 @@ class Thinker(Agent):
         logical steps. Set is_final=true only when you have a complete,
         well-supported answer.
         """
-        raise NotHandled
 
     def solve(self, problem: str, max_steps: int = 10) -> str:
         """Solve a problem by iterative chain-of-thought reasoning."""
@@ -65,14 +58,8 @@ class Thinker(Agent):
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Chain-of-thought reasoning agent")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--max-steps",
         type=int,
@@ -88,15 +75,7 @@ if __name__ == "__main__":
         ),
         help="The problem to solve",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
-
-    provider = LiteLLMProvider(model=args.model)
 
     problems = [
         args.problem,
@@ -106,12 +85,12 @@ if __name__ == "__main__":
         ),
     ]
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        for problem in problems:
-            thinker = Thinker()
-            print(f"\nProblem: {problem}")
-            answer = thinker.solve(problem, max_steps=args.max_steps)
-            print(f"Answer: {answer}")
+    for problem in problems:
+        thinker = Thinker()
+        print(f"\nProblem: {problem}")
+        answer = thinker.solve(problem, max_steps=args.max_steps)
+        print(f"Answer: {answer}")
+
+
+if __name__ == "__main__":
+    main()

@@ -9,12 +9,8 @@ import argparse
 import collections
 import collections.abc
 import enum
-import os
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Template
@@ -32,7 +28,6 @@ def yes_or_no(question: str) -> Answer:
     """
     Answer the following yes/no/maybe question: {question}
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -52,16 +47,8 @@ def majority_vote[Q](
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Majority voting ensemble for yes/no questions"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--num-voters", type=int, default=3, help="Number of voters for majority vote"
     )
@@ -73,9 +60,11 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
-    with handler(provider):
-        answer, count = majority_vote(yes_or_no, args.question, voters=args.num_voters)
-        print(
-            f"Question: {args.question}\nAnswer: {answer} (voted {count}/{args.num_voters})"
-        )
+    answer, count = majority_vote(yes_or_no, args.question, voters=args.num_voters)
+    print(
+        f"Question: {args.question}\nAnswer: {answer} (voted {count}/{args.num_voters})"
+    )
+
+
+if __name__ == "__main__":
+    main()

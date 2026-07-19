@@ -12,15 +12,9 @@ import argparse
 import dataclasses
 import datetime
 import enum
-import os
 from typing import Literal
 
-from tenacity import stop_after_attempt
-
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output types
@@ -85,7 +79,6 @@ def extract_flights(web_page_text: str) -> list[FlightDetails]:
 
     {web_page_text}
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +113,6 @@ class FlightFinder(Agent):
         select the cheapest one that matches the origin, destination,
         and date exactly.
         """
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +133,6 @@ class SeatSelector(Agent):
         Row 1 is the front row with extra legroom.
         Rows 14 and 20 also have extra legroom.
         """
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -222,38 +213,22 @@ def book_flight(
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Flight booking with multi-agent delegation"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--interactive",
         action="store_true",
         help="Run in interactive mode with user prompts",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=4,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
+    book_flight(
+        origin=Airport.SFO,
+        destination=Airport.ANC,
+        date=datetime.date(2025, 1, 10),
+        interactive=args.interactive,
+    )
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        book_flight(
-            origin=Airport.SFO,
-            destination=Airport.ANC,
-            date=datetime.date(2025, 1, 10),
-            interactive=args.interactive,
-        )
+
+if __name__ == "__main__":
+    main()

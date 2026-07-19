@@ -1,15 +1,10 @@
 import argparse
 import dataclasses
-import os
 import urllib.parse
 
 import requests
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 
 @Tool.define
@@ -68,18 +63,11 @@ class ChatBot(Agent):
         The user writes:
         {user_input}
         """
-        raise NotHandled
 
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="LLM-guided research agent with web search"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
     )
     parser.add_argument(
         "--name",
@@ -92,25 +80,18 @@ if __name__ == "__main__":
         action="store_true",
         help="Run in interactive mode, allowing multiple back-and-forth messages",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=4,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
     chatbot = ChatBot(bot_name=args.name)
-    provider = LiteLLMProvider(model=args.model)
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        if args.interactive:
-            while True:
-                print(chatbot.send(input("You: ")))
-        else:
-            print(chatbot.send("Hi! Can you tell me about the Statue of Liberty?"))
-            print(chatbot.send("Who designed it?"))
-            print(chatbot.send("What about the speed of light? How fast is it?"))
+    if args.interactive:
+        while True:
+            print(chatbot.send(input("You: ")))
+    else:
+        print(chatbot.send("Hi! Can you tell me about the Statue of Liberty?"))
+        print(chatbot.send("Who designed it?"))
+        print(chatbot.send("What about the speed of light? How fast is it?"))
+
+
+if __name__ == "__main__":
+    main()

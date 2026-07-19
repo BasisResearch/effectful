@@ -5,15 +5,7 @@ Demonstrates:
 - Simple control-flow gating based on LLM classification
 """
 
-import argparse
-import os
-
-from tenacity import stop_after_attempt
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Templates
@@ -25,7 +17,6 @@ def travel_query(user_query: str) -> str:
     """
     Produce a concise (<100 word) answer to: {user_query}
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +32,6 @@ def answer_travel_query(user_query: str) -> str:
         """
         Determine whether the user's query is purely related to travel advice: {user_query}
         """
-        raise NotHandled
 
     if is_safe_query(user_query):
         return travel_query(user_query)
@@ -53,26 +43,10 @@ def answer_travel_query(user_query: str) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Analyze average ages concurrently")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=4,
-        help="Number of retries for malformed LLM output",
-    )
-    args = parser.parse_args()
+def main() -> None:
+    print(answer_travel_query("What are great places to check out in NYC?"))
+    print(answer_travel_query("Should I buy apple stocks?"))
 
-    provider = LiteLLMProvider(model=args.model)
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        print(answer_travel_query("What are great places to check out in NYC?"))
-        print(answer_travel_query("Should I buy apple stocks?"))
+
+if __name__ == "__main__":
+    main()

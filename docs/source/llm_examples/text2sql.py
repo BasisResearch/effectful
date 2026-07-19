@@ -7,17 +7,10 @@ Demonstrates:
 - ``@Tool.define`` to expose the database schema as a tool
 """
 
-import argparse
-import os
 import sqlite3
 import textwrap
 
-from tenacity import stop_after_attempt
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # In-memory database setup
@@ -78,7 +71,6 @@ def generate_sql(question: str, db_schema: str) -> str:
 
     Return ONLY the SQL query, no explanation.
     """
-    raise NotHandled
 
 
 @Template.define
@@ -94,7 +86,6 @@ def fix_sql(question: str, db_schema: str, bad_sql: str, error: str) -> str:
 
     Write a corrected SQLite query. Return ONLY the SQL query.
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -133,26 +124,8 @@ def text_to_sql(
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Natural language to SQL with LLM-powered debug loop"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
-    args = parser.parse_args()
-
+def main() -> None:
     conn = create_sample_db()
-    provider = LiteLLMProvider(model=args.model)
 
     questions = [
         "What is the average salary by department?",
@@ -160,15 +133,15 @@ if __name__ == "__main__":
         "How many employees were hired after 2021?",
     ]
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        for question in questions:
-            print(f"\nQ: {question}")
-            try:
-                rows = text_to_sql(conn, question)
-                for row in rows:
-                    print(f"  => {row}")
-            except Exception as e:
-                print(f"  FAILED: {e}")
+    for question in questions:
+        print(f"\nQ: {question}")
+        try:
+            rows = text_to_sql(conn, question)
+            for row in rows:
+                print(f"  => {row}")
+        except Exception as e:
+            print(f"  FAILED: {e}")
+
+
+if __name__ == "__main__":
+    main()

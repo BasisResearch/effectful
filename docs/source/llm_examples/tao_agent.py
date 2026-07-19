@@ -10,19 +10,11 @@ Demonstrates:
 import argparse
 import dataclasses
 import enum
-import os
 import urllib.parse
 
 import requests
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import (
-    LiteLLMProvider,
-    RetryLLMHandler,
-)
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Search tool
@@ -102,7 +94,6 @@ class TAOAgent(Agent):
         ({query}) and prior conversation context, think about what action to
         take next.
         """
-        raise NotHandled
 
     @Template.define
     def observe(self, action: str, action_input: str, action_result: str) -> str:
@@ -116,7 +107,6 @@ class TAOAgent(Agent):
         Do not make decisions, just describe what you see.
         </instructions>
         """
-        raise NotHandled
 
     def run(self, query: str, max_steps: int = 5) -> str:
         result = ""
@@ -145,38 +135,24 @@ class TAOAgent(Agent):
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="TAO chain-of-thought agent")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--max-steps",
         type=int,
         default=5,
         help="Maximum number of steps before giving up",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
-
-    provider = LiteLLMProvider(model=args.model)
 
     agent = TAOAgent()
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        answer = agent.run(
-            "How many tennis balls would fill an Olympic swimming pool?",
-            max_steps=args.max_steps,
-        )
-        print("Answer:", answer)
+    answer = agent.run(
+        "How many tennis balls would fill an Olympic swimming pool?",
+        max_steps=args.max_steps,
+    )
+    print("Answer:", answer)
+
+
+if __name__ == "__main__":
+    main()

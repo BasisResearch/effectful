@@ -8,17 +8,11 @@ Demonstrates:
 """
 
 import argparse
-import os
 import urllib.parse
 
 import requests
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import (
-    LiteLLMProvider,
-)
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Search effect + handler
@@ -74,7 +68,6 @@ def search_web(query: str) -> str:
 def answer_question(question: str) -> str:
     """Acting as a research assistant that can search the web,
     construct an answer to the user's question: {question}."""
-    raise NotHandled
 
 
 @Template.define
@@ -82,7 +75,6 @@ def refine_answer(question: str, answer: str) -> str:
     """Acting as a research assistant that can search the web,
     given the user's original question ({question}),
     refine this previous answer: {answer}."""
-    raise NotHandled
 
 
 @Template.define
@@ -90,7 +82,6 @@ def is_question_answered(question: str, answer: str) -> bool:
     """Acting as a research assistant, decide if the user's question
     ({question}) is appropriately answered by: {answer}.
     Respond only true or false."""
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -112,16 +103,8 @@ def research_agent(question: str, max_attempts: int = 3) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="LLM-guided research agent with web search"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--question",
         type=str,
@@ -130,8 +113,9 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
+    result = research_agent(args.question)
+    print(result)
 
-    with handler(provider):
-        result = research_agent(args.question)
-        print(result)
+
+if __name__ == "__main__":
+    main()

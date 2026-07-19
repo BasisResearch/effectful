@@ -6,17 +6,12 @@ Demonstrates:
 - Simple in-memory vector store with L2 distance
 """
 
-import argparse
 import dataclasses
-import os
 
 import litellm
 import numpy as np
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Embedding helpers
@@ -59,7 +54,6 @@ def respond_to_user(
     Continue the conversation.
     The last few messages were: {prev_messages}
     Older relevant context: {relevant_context}"""
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -102,23 +96,14 @@ class ChatAgent:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Chat agent with embedding-based memory"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    args = parser.parse_args()
-
+def main() -> None:
     agent = ChatAgent()
 
-    provider = LiteLLMProvider(model=args.model)
-    with handler(provider):
-        agent.chat("Hello! How are you doing?")
-        agent.chat("Lovely! I'm having a great day.")
-        agent.chat("What is the capital of France?")
-        agent.chat("I didn't know that! That's amazing!")
+    agent.chat("Hello! How are you doing?")
+    agent.chat("Lovely! I'm having a great day.")
+    agent.chat("What is the capital of France?")
+    agent.chat("I didn't know that! That's amazing!")
+
+
+if __name__ == "__main__":
+    main()

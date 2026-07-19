@@ -1,15 +1,6 @@
-import argparse
-import os
-
 from PIL import Image
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import (
-    LiteLLMProvider,
-    RetryLLMHandler,
-)
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 
 class ImageTools(Agent):
@@ -66,25 +57,17 @@ class ImageTools(Agent):
         the previous.
 
         """
-        raise NotHandled
 
     def rotate_and_concat(self, i: Image.Image) -> Image.Image:
         return self._decode(self._rotate_and_concat(self._encode(i)))
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use (must support image inputs)",
-    )
-    args = parser.parse_args()
-
+def main() -> None:
     image_agent = ImageTools()
     img = Image.open("../_static/img/chirho_logo_wide.png")
 
-    provider = LiteLLMProvider(model=args.model)
-    with handler(provider), handler(RetryLLMHandler()):
-        image_agent.rotate_and_concat(img).show()
+    image_agent.rotate_and_concat(img).show()
+
+
+if __name__ == "__main__":
+    main()

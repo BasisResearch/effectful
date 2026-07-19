@@ -7,13 +7,7 @@ Demonstrates:
 - The model chains multiple tool calls to answer a multi-step query
 """
 
-import argparse
-import os
-
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Tools
@@ -41,25 +35,15 @@ def weather(city: str) -> str:
 @Template.define
 def vacation() -> str:
     """Use the provided tools to suggest a city that has good weather. Use only the `cities` and `weather` tools provided."""
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Tool calling with auto-captured lexical scope"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    args = parser.parse_args()
+def main() -> None:
+    print(vacation())
 
-    provider = LiteLLMProvider(model=args.model)
-    with handler(provider):
-        print(vacation())
+
+if __name__ == "__main__":
+    main()

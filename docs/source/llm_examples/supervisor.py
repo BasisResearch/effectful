@@ -8,16 +8,11 @@ Demonstrates:
 
 import argparse
 import dataclasses
-import os
 import urllib.parse
 
 import requests
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Search tool
@@ -90,7 +85,6 @@ class Researcher(Agent):
 
         Question: {question}
         """
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -110,7 +104,6 @@ def judge_quality(question: str, answer: str) -> QualityJudgment:
     numbers) relevant to the question. Vague or generic answers should
     be rejected.
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -144,15 +137,9 @@ def supervised_research(question: str, max_retries: int = 3) -> str:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
+def main() -> None:
     parser = argparse.ArgumentParser(
         description="Supervised research agent with quality control"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
     )
     parser.add_argument(
         "--question",
@@ -166,22 +153,14 @@ if __name__ == "__main__":
         default=3,
         help="Maximum number of supervisor rejections before accepting",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
+    result = supervised_research(
+        args.question,
+        max_retries=args.max_retries,
+    )
+    print(f"\nFinal answer: {result}")
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        result = supervised_research(
-            args.question,
-            max_retries=args.max_retries,
-        )
-        print(f"\nFinal answer: {result}")
+
+if __name__ == "__main__":
+    main()

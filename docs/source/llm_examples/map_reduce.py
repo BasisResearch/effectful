@@ -7,19 +7,12 @@ Demonstrates:
 - Structured output with dataclasses
 """
 
-import argparse
 import asyncio
 import collections.abc
 import dataclasses
 import functools
-import os
-
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -52,7 +45,6 @@ def evaluate_resume(resume: str, job_description: str) -> Evaluation:
 
     Score from 1 (poor fit) to 10 (perfect fit).
     """
-    raise NotHandled
 
 
 @Template.define
@@ -70,7 +62,6 @@ def summarize_evaluations(
     Provide a brief summary: rank the candidates from best to worst,
     highlight the top candidate, and note any concerns.
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -101,20 +92,12 @@ RESUMES = [
 
 
 async def map_reduce_evaluate(
-    provider: LiteLLMProvider,
     resumes: list[str],
     job_description: str,
 ) -> str:
     """Evaluate resumes in parallel (map), then summarize (reduce)."""
     # Map: evaluate each resume concurrently
-    evaluate = functools.partial(
-        asyncio.to_thread,
-        handler(provider)(
-            handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries)))(
-                evaluate_resume
-            )
-        ),
-    )
+    evaluate = functools.partial(asyncio.to_thread, evaluate_resume)
     evaluations: list[Evaluation] = list(
         await asyncio.gather(*(evaluate(resume, job_description) for resume in resumes))
     )
@@ -126,35 +109,18 @@ async def map_reduce_evaluate(
         print(f"    - {ev.weaknesses}")
 
     # Reduce: summarize all evaluations
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        return summarize_evaluations(job_description, evaluations)
+    return summarize_evaluations(job_description, evaluations)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Map-reduce resume evaluation")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
-    args = parser.parse_args()
-
-    provider = LiteLLMProvider(model=args.model)
-
+def main() -> None:
     print(f"Evaluating {len(RESUMES)} resumes for: {JOB_DESCRIPTION}\n")
-    summary = asyncio.run(map_reduce_evaluate(provider, RESUMES, JOB_DESCRIPTION))
+    summary = asyncio.run(map_reduce_evaluate(RESUMES, JOB_DESCRIPTION))
     print(f"\n{summary}")
+
+
+if __name__ == "__main__":
+    main()

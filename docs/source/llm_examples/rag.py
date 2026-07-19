@@ -10,16 +10,11 @@ Demonstrates:
 
 import argparse
 import dataclasses
-import os
 
 import litellm
 import numpy as np
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Embedding helpers
@@ -142,40 +137,30 @@ def answer_question(question: str) -> str:
 
     Question: {question}
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Retrieval-augmented generation (RAG)")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--embedding-model",
         type=str,
         default="lm_studio/text-embedding-embeddinggemma-300m-qat",
         help="Embedding model to use",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
     # Offline: build the index
     index = build_index(DOCUMENTS, embedding_model=args.embedding_model)
 
-    # Create the retrieval tool bound to our index
-    retrieve: Tool = index.retrieve
+    # Create the retrieval tool bound to our index. `answer_question` is a
+    # module-level template, so the tool must be bound in module globals to be
+    # in its lexical scope.
+    global retrieve
+    retrieve = index.retrieve
 
     # Online: answer questions
     questions = [
@@ -184,13 +169,11 @@ if __name__ == "__main__":
         "How many spectators could the Colosseum hold?",
     ]
 
-    provider = LiteLLMProvider(model=args.model)
+    for question in questions:
+        print(f"\nQ: {question}")
+        answer = answer_question(question)
+        print(f"A: {answer}")
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        for question in questions:
-            print(f"\nQ: {question}")
-            answer = answer_question(question)
-            print(f"A: {answer}")
+
+if __name__ == "__main__":
+    main()

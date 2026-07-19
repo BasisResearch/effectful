@@ -7,12 +7,8 @@ Demonstrates:
 
 import argparse
 import dataclasses
-import os
 
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -33,13 +29,11 @@ class KnockKnockJoke:
 @Template.define
 def write_joke(theme: str) -> KnockKnockJoke:
     """Write a knock-knock joke on the theme of {theme}. Do not use any tools."""
-    raise NotHandled
 
 
 @Template.define
 def rate_joke(joke: KnockKnockJoke) -> bool:
     """Decide if {joke} is funny or not. Do not use any tools."""
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -64,19 +58,15 @@ def do_comedy(theme: str) -> None:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Structured output via dataclasses")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--theme", type=str, default="lizards", help="Theme for the joke"
     )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
-    with handler(provider):
-        do_comedy(args.theme)
+    do_comedy(args.theme)
+
+
+if __name__ == "__main__":
+    main()

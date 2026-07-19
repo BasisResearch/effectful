@@ -10,14 +10,8 @@ Demonstrates:
 import argparse
 import dataclasses
 import enum
-import os
-
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -73,7 +67,6 @@ class Hinter(Agent):
 
         The guesser's last response was: {guesser_response}
         """
-        raise NotHandled
 
 
 class Guesser(Agent):
@@ -89,7 +82,6 @@ class Guesser(Agent):
         Review the conversation history for all previous hints.
         Make your best guess.
         """
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -130,25 +122,13 @@ def play_taboo(
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Multi-agent Taboo word guessing game")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--max-rounds",
         type=int,
         default=5,
         help="Maximum rounds per game",
-    )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
     )
     args = parser.parse_args()
 
@@ -157,12 +137,10 @@ if __name__ == "__main__":
         ("volcano", ["lava", "eruption", "mountain", "hot"]),
     ]
 
-    provider = LiteLLMProvider(model=args.model)
+    for secret, taboo in games:
+        print(f"\nGame: '{secret}' (taboo: {taboo})")
+        play_taboo(secret, taboo, max_rounds=args.max_rounds)
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        for secret, taboo in games:
-            print(f"\nGame: '{secret}' (taboo: {taboo})")
-            play_taboo(secret, taboo, max_rounds=args.max_rounds)
+
+if __name__ == "__main__":
+    main()

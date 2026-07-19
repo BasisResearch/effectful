@@ -25,17 +25,11 @@ See: https://en.wikipedia.org/wiki/Tower_of_Hanoi
 """
 
 import argparse
-import os
 import typing
 from dataclasses import dataclass, field
 
-from tenacity import stop_after_attempt
-
 from effectful.handlers.llm import Template
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
 from effectful.handlers.llm.template import IsRecursive
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Step model
@@ -125,7 +119,6 @@ def solve(
            n_disks-1 disks from auxiliary to the target tower.
         4. Return the concatenated list of all steps from (1), (2), and (3).
     """
-    raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -156,38 +149,22 @@ def validate_solution(size: int, steps: list[Step]) -> bool:
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Recursive LLM-based Towers of Hanoi solver"
-    )
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--game-size",
         type=int,
         default=3,
         help="Number of disks in the Towers of Hanoi game",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
+    n = args.game_size
+    print(f"Solving Tower of Hanoi with {n} disks...")
+    steps = solve(n_disks=n, source=0, target=n - 1, auxiliary=1)
+    print(f"\nLLM returned {len(steps)} steps. Validating...\n")
+    validate_solution(n, steps)
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        n = args.game_size
-        print(f"Solving Tower of Hanoi with {n} disks...")
-        steps = solve(n_disks=n, source=0, target=n - 1, auxiliary=1)
-        print(f"\nLLM returned {len(steps)} steps. Validating...\n")
-        validate_solution(n, steps)
+
+if __name__ == "__main__":
+    main()

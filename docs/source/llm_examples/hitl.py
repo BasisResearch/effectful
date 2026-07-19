@@ -11,14 +11,8 @@ Demonstrates:
 import argparse
 import dataclasses
 import enum
-import os
-
-from tenacity import stop_after_attempt
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -40,28 +34,21 @@ class ProposedAction:
 
 
 # ---------------------------------------------------------------------------
-# Simulated action execution
-# ---------------------------------------------------------------------------
-
-
-execution_log: list[str] = []
-
-
-@Tool.define
-def execute_action(action: ActionType, details: str) -> str:
-    """Execute an approved action. Returns a confirmation message."""
-    msg = f"[executed] {action}: {details}"
-    execution_log.append(msg)
-    return msg
-
-
-# ---------------------------------------------------------------------------
 # Planner agent
 # ---------------------------------------------------------------------------
 
 
+@dataclasses.dataclass
 class Planner(Agent):
     """Agent that proposes actions one at a time for human approval."""
+    execution_log: list[str] = dataclasses.field(default_factory=list)
+
+    @Tool.define
+    def execute_action(self, action: ActionType, details: str) -> str:
+        """Execute an approved action. Returns a confirmation message."""
+        msg = f"[executed] {action}: {details}"
+        self.execution_log.append(msg)
+        return msg
 
     @Template.define
     def propose_next(self, task: str, feedback: str) -> ProposedAction:
@@ -78,7 +65,6 @@ class Planner(Agent):
         If a previous proposal was rejected, propose something different
         that addresses the feedback.
         """
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -113,28 +99,22 @@ def run_with_approval(
             approved = True
 
         if approved:
-            result = execute_action(proposal.action, proposal.details)
+            result = planner.execute_action(proposal.action, proposal.details)
             print(f"  {result}")
             feedback = f"Approved and executed: {result}"
         else:
             print(f"  [rejected] {answer}")
             feedback = f"Rejected: {answer}"
 
-    return list(execution_log)
+    return list(planner.execution_log)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Human-in-the-loop task planner")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--interactive",
         action="store_true",
@@ -146,15 +126,7 @@ if __name__ == "__main__":
         default=5,
         help="Maximum number of action steps",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=3,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
-
-    provider = LiteLLMProvider(model=args.model)
 
     task = (
         "Organize a team lunch for next Friday. "
@@ -162,16 +134,16 @@ if __name__ == "__main__":
         "restaurant suggestions, and schedule a meeting to finalize plans."
     )
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        print(f"Task: {task}\n")
-        log = run_with_approval(
-            task,
-            interactive=args.interactive,
-            max_steps=args.max_steps,
-        )
-        print(f"\nExecution log ({len(log)} actions):")
-        for entry in log:
-            print(f"  {entry}")
+    print(f"Task: {task}\n")
+    log = run_with_approval(
+        task,
+        interactive=args.interactive,
+        max_steps=args.max_steps,
+    )
+    print(f"\nExecution log ({len(log)} actions):")
+    for entry in log:
+        print(f"  {entry}")
+
+
+if __name__ == "__main__":
+    main()

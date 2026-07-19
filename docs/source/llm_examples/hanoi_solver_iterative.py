@@ -11,15 +11,9 @@ Demonstrates:
 
 import argparse
 import itertools
-import os
 from dataclasses import dataclass, field
 
-from tenacity import stop_after_attempt
-
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-from effectful.ops.semantics import handler
-from effectful.ops.types import NotHandled
 
 # ---------------------------------------------------------------------------
 # Step model
@@ -137,7 +131,6 @@ def predict_next_step(state: GameState) -> Step:
         rightmost tower).  You MUST call get_valid_moves first to see which
         moves are legal, then pick the best one.  Give a brief reasoning.
         """
-        raise NotHandled
 
     return predict(state)
 
@@ -170,14 +163,8 @@ def solve_hanoi(state: GameState, max_steps: int = 30):
 # Main
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="LLM-guided Towers of Hanoi solver")
-    parser.add_argument(
-        "--model",
-        type=str,
-        default=os.environ.get("EFFECTFUL_LLM_MODEL", ""),
-        help="LLM model to use",
-    )
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--game-size",
         type=int,
@@ -190,18 +177,10 @@ if __name__ == "__main__":
         default=30,
         help="Maximum number of steps before giving up",
     )
-    parser.add_argument(
-        "--num-retries",
-        type=int,
-        default=5,
-        help="Number of retries for malformed LLM output",
-    )
     args = parser.parse_args()
 
-    provider = LiteLLMProvider(model=args.model)
+    solve_hanoi(GameState(size=args.game_size), max_steps=args.max_steps)
 
-    with (
-        handler(provider),
-        handler(RetryLLMHandler(stop=stop_after_attempt(args.num_retries))),
-    ):
-        solve_hanoi(GameState(size=args.game_size), max_steps=args.max_steps)
+
+if __name__ == "__main__":
+    main()
