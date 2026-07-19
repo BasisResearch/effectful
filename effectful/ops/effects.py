@@ -37,6 +37,7 @@ __all__ = [
     "Computation",
     "Requires",
     "UndeclaredCallable",
+    "UnsoundCallbackFold",
     "uses_rule",
     "usesof",
     "effectsof",
@@ -122,6 +123,14 @@ class Requires(Annotation):
 class UndeclaredCallable(Exception):
     """Raised by the fold on a callable argument that is neither ``Computation`` nor
     ``Uses[()]`` — the checker refuses to guess rather than silently under-approximate."""
+
+
+class UnsoundCallbackFold(Exception):
+    """Raised when folding a ``Computation`` callback that *inspects* its argument
+    (branches on it, accesses its attributes, iterates/indexes it). The fold runs the
+    callback on an opaque placeholder to collect its effects; a callback that inspects
+    that placeholder would path/structure-under-approximate, so the fold refuses loudly
+    (a symbolic-execution provider is needed for such callbacks)."""
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +244,12 @@ def _is_callable_annotation(annotation: Any) -> bool:
 def _member_ops(m: Any) -> frozenset[Operation]:
     if typing.get_origin(m) is typing.Literal:
         return frozenset(a for a in typing.get_args(m) if isinstance(a, Operation))
-    return frozenset({m}) if isinstance(m, Operation) else frozenset()
+    if isinstance(m, Operation):
+        return frozenset({m})
+    raise NotImplementedError(  # loud, not a silent frozenset() drop
+        f"Uses member {m!r} is not supported: use `Literal[op]` or a bare `Operation`. "
+        "Polymorphic `Operation[[A], B]` members are a TODO (#448 §8 Q4)."
+    )
 
 
 def _declared_uses(op: Operation) -> frozenset[Operation] | None:
@@ -263,7 +277,7 @@ def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
         val = bound.arguments.get(name)
         if _has(p.annotation, (_Computation,)):
             if callable(val):
-                val(_hole())  # run it under the active interpreter -> its ops fold; loud if it can't
+                val(_Opaque())  # run under the active interpreter -> its ops fold; loud if it inspects its arg
         elif callable(val) and not _has(p.annotation, (Uses,)):
             raise UndeclaredCallable(
                 f"{op}: argument {name!r} is callable but not declared `Computation`/`Uses[()]`; "
@@ -271,12 +285,25 @@ def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
             )
 
 
-class _hole:
-    """A permissive placeholder fed to a Computation callback so its op-calls fire (the
-    values don't matter to the effect fold)."""
+def _refuse(*_a: Any, **_k: Any) -> Any:
+    raise UnsoundCallbackFold(
+        "usesof ran a Computation callback on an opaque placeholder to collect its "
+        "effects, but the callback inspected its argument (branched on it, accessed an "
+        "attribute, or destructured it). Folding it on a fake value would "
+        "path/structure-under-approximate; refusing rather than under-approximating."
+    )
 
-    def __getattr__(self, _name: str) -> "Any":
-        return _hole()
 
-    def __call__(self, *a: Any, **k: Any) -> "Any":
-        return _hole()
+class _Opaque:
+    """Placeholder fed to a ``Computation`` callback so its op-calls fire. Usable only as
+    opaque *data* (passed on to ops); any *inspection* — bool-test, attribute access,
+    iteration, indexing — raises :class:`UnsoundCallbackFold`. So ``lambda x: op()`` and
+    ``lambda x: op(x)`` fold soundly, while ``lambda x: a() if x else b()`` or
+    ``lambda x: x.field`` are refused loudly rather than folded on a fake value."""
+
+    __slots__ = ()
+
+    __bool__ = _refuse
+    __getattr__ = _refuse
+    __iter__ = _refuse
+    __getitem__ = _refuse

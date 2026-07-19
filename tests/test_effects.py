@@ -10,6 +10,7 @@ from effectful.ops.effects import (
     Computation,
     Requires,
     UndeclaredCallable,
+    UnsoundCallbackFold,
     Uses,
     check_requires,
     check_uses,
@@ -50,6 +51,28 @@ def test_computation_callback_is_entered():
         raise NotHandled
 
     assert usesof(apply_cb(lambda x: read())) == frozenset({apply_cb, read})
+
+
+def test_computation_callback_ignoring_or_passing_arg_folds():
+    @defop
+    def cb_pass(fn: Annotated[Callable[[int], None], Computation]) -> int:
+        raise NotHandled
+
+    # passes the arg straight to an op (no inspection) — folds soundly
+    assert usesof(cb_pass(lambda x: write(x))) == frozenset({cb_pass, write})
+
+
+def test_computation_callback_inspecting_arg_is_refused_not_silent():
+    @defop
+    def cb(fn: Annotated[Callable[[int], int], Computation]) -> int:
+        raise NotHandled
+
+    # branches on the arg -> would drop a branch if folded on a fake value -> refuse loudly
+    with pytest.raises(UnsoundCallbackFold):
+        usesof(cb(lambda x: write(x) if x else read()))  # type: ignore[func-returns-value]
+    # destructures the arg -> refuse loudly (not silently swallowed)
+    with pytest.raises(UnsoundCallbackFold):
+        usesof(cb(lambda x: x.field))
 
 
 def test_undeclared_callable_fails_loudly():
