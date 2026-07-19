@@ -10,24 +10,24 @@ This branches off ``master``: #694 (the doctest-validation PR) touches only
 LLM integration (an ``ε`` validator at #694's decode stage + tool governance on its
 ``tool_types`` seam) is a separate, later follow-up in ``handlers/llm/``.
 
-**Final upstream placement** (kept in one module here to be reviewable without editing
-core files):
+**Upstream placement.** The per-op rule and its annotation now live on the core types,
+mirroring the ``τ`` / ``fvs`` machinery exactly:
 
 ======================  =====================================================
-this module             upstream home
+symbol                  home
 ======================  =====================================================
-``usesof`` / ``effectsof``   ``ops/semantics.py``, next to ``typeof`` / ``fvsof``
-``uses_rule``               a method ``Operation.__uses_rule__`` in ``ops/types.py``
-``Uses`` / ``Computation`` / ``Requires``   ``ops/syntax.py``, next to ``Scoped``
+``Operation.__uses_rule__``   ``ops/types.py``, a ``@final`` method next to ``__type_rule__`` / ``__fvs_rule__``
+``Uses``                    ``ops/syntax.py``, next to ``Scoped`` (read by ``__uses_rule__``)
+``usesof`` / ``effectsof``   this module (final home: ``ops/semantics.py``, next to ``typeof`` / ``fvsof``)
+``Computation`` / ``Requires``   this module (final home: ``ops/syntax.py``); argument annotations read by the fold
 ======================  =====================================================
 
-**Deferred (not in this module yet):** `__uses_rule__` as a real ``@final`` method on
-``Operation`` (so subclassed ops like ``Tool``/``Template`` can override their row) —
-currently the free ``uses_rule``; wiring ``Annotation.infer_annotations`` into ``defop``
-(the build-time gate); ``usagesof`` (usage multiset) and handler discharge (2nd PR);
-polymorphic ``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer; and the whole
-LLM layer (Branch B, off #694) — ``toolsof``/``reachable_tools``, the ``ε``-validator at the
-decode seam, tool governance. This module is the ``ε`` core only.
+**Deferred (not implemented yet):** wiring ``Annotation.infer_annotations`` into ``defop``
+(the build-time gate — enforcement is currently at ``usesof``-time, see ``_Computation``);
+``usagesof`` (usage multiset) and handler discharge (2nd PR); polymorphic
+``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer; and the LLM layer
+(Branch B, off #694) — ``toolsof``/``reachable_tools``, the ``ε``-validator at the decode
+seam, tool governance. This module is the ``ε`` core (fold + argument annotations).
 """
 
 import collections.abc
@@ -38,6 +38,7 @@ from typing import Annotated, Any
 
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, typeof
+from effectful.ops.syntax import Uses
 from effectful.ops.types import Annotation, Expr, Operation
 
 __all__ = [
@@ -46,7 +47,6 @@ __all__ = [
     "Requires",
     "UndeclaredCallable",
     "UnsoundCallbackFold",
-    "uses_rule",
     "usesof",
     "effectsof",
     "effect_type",
@@ -57,26 +57,11 @@ __all__ = [
 
 
 # ---------------------------------------------------------------------------
-# Annotations an op declares (read off ``Annotated[T, ...]``)
+# Annotations an op declares (read off ``Annotated[T, ...]``).
+# ``Uses`` itself lives in ``ops/syntax.py`` (next to ``Scoped``) and is read by
+# ``Operation.__uses_rule__``; ``Computation`` / ``Requires`` are argument annotations
+# read by the fold below.
 # ---------------------------------------------------------------------------
-class Uses:
-    """Effect-row annotation metadata: ``Annotated[T, Uses[op1, op2, ...]]`` on a
-    *return* type. ``Uses[()]`` is the empty row — explicitly pure. Read by
-    :func:`uses_rule`. (Not an :class:`Annotation` subtype: it is plain metadata, not
-    a signature transform.)"""
-
-    __slots__ = ("members",)
-
-    def __class_getitem__(cls, items: Any) -> "Uses":
-        return cls(items if isinstance(items, tuple) else (items,))
-
-    def __init__(self, members: tuple[Any, ...]) -> None:
-        self.members = members
-
-    def __repr__(self) -> str:
-        return f"Uses{list(self.members)!r}"
-
-
 @dataclass(frozen=True)
 class _Computation(Annotation):
     """``Annotated[Callable[[A], B], Computation]`` on an *argument*: a suspended
@@ -145,31 +130,21 @@ class UnsoundCallbackFold(Exception):
 
 
 # ---------------------------------------------------------------------------
-# The per-op rule (upstream: Operation.__uses_rule__, default {self})
-# ---------------------------------------------------------------------------
-def uses_rule(op: Operation) -> frozenset[Operation]:
-    """The effect row an op contributes *itself*: its declared ``Uses[...]`` if the
-    return is annotated, else ``{op}``. (``Computation`` args are folded by
-    :func:`usesof`, not here.)"""
-    declared = _declared_uses(op)
-    return declared if declared is not None else frozenset({op})
-
-
-# ---------------------------------------------------------------------------
 # The fold (upstream: ops/semantics.py, next to typeof/fvsof)
 # ---------------------------------------------------------------------------
 def usesof[S](term: Expr[S]) -> frozenset[Operation]:
     """Return the effect row of a term: the set of operations it performs. The
     effect-typing sibling of :func:`typeof` / :func:`fvsof`.
 
-    Each applied op contributes :func:`uses_rule` (default ``{self}``, ``Uses[()]`` =
-    pure). ``Computation``-marked callback args are *entered* so their effects fold too;
-    an undeclared callable arg raises :class:`UndeclaredCallable` (never silent).
+    Each applied op contributes :meth:`Operation.__uses_rule__` (default ``{self}``,
+    ``Uses[()]`` = pure). ``Computation``-marked callback args are *entered* so their
+    effects fold too; an undeclared callable arg raises :class:`UndeclaredCallable`
+    (never silent).
     """
     used: set[Operation] = set()
 
     def _update(op: Operation, *args: Any, **kwargs: Any) -> Any:
-        used.update(uses_rule(op))
+        used.update(op.__uses_rule__())
         _fold_computation_args(op, args, kwargs)  # enters callbacks; loud on undeclared
 
     with interpreter({apply: _update}):
@@ -193,7 +168,7 @@ def check_uses(op: Operation, body: Expr[Any]) -> frozenset[Operation]:
     empty == the declaration is sound (and transitively closed, since ``usesof`` unions
     the whole DAG). This is the checker for a composite op: ``usesof(body) ⊆ declared``.
     An op with no ``Uses`` annotation declares nothing, so every effect is reported."""
-    declared = _declared_uses(op)
+    declared = Uses.declared(op.__signature__)
     return usesof(body) - (declared if declared is not None else frozenset())
 
 
@@ -250,30 +225,6 @@ def _is_callable_annotation(annotation: Any) -> bool:
     while typing.get_origin(annotation) is Annotated:
         annotation = typing.get_args(annotation)[0]
     return annotation is collections.abc.Callable or typing.get_origin(annotation) is collections.abc.Callable
-
-
-def _member_ops(m: Any) -> frozenset[Operation]:
-    if typing.get_origin(m) is typing.Literal:
-        return frozenset(a for a in typing.get_args(m) if isinstance(a, Operation))
-    if isinstance(m, Operation):
-        return frozenset({m})
-    raise NotImplementedError(  # loud, not a silent frozenset() drop
-        f"Uses member {m!r} is not supported: use `Literal[op]` or a bare `Operation`. "
-        "Polymorphic `Operation[[A], B]` members are a TODO (#448 §8 Q4)."
-    )
-
-
-def _declared_uses(op: Operation) -> frozenset[Operation] | None:
-    """The ``Uses[...]`` row off ``op``'s return annotation, or ``None`` if no ``Uses``
-    metadata is present (distinct from ``Uses[()]`` = present-and-empty = pure)."""
-    ret = op.__signature__.return_annotation
-    found: frozenset[Operation] | None = None
-    for anno in _annotations(ret):
-        if isinstance(anno, Uses):
-            found = (found or frozenset())
-            for m in anno.members:
-                found |= _member_ops(m)
-    return found
 
 
 def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:

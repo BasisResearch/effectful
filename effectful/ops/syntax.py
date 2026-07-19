@@ -382,6 +382,58 @@ class Scoped(Annotation):
         return bound_vars
 
 
+class Uses:
+    """Effect-row annotation metadata: ``Annotated[T, Uses[op1, op2, ...]]`` on a
+    *return* type, declaring the operations a composite operation performs. ``Uses[()]``
+    is the empty row — explicitly pure. Read by :meth:`Operation.__uses_rule__` (the
+    ``ε`` sibling of ``__type_rule__``), the same way :class:`Scoped` on an argument is
+    read by :meth:`Operation.__fvs_rule__`.
+
+    Members are bare :class:`Operation` s or ``Literal[op]``. (Not an :class:`Annotation`
+    subtype: it is plain metadata on the return type, not a signature transform.)
+    """
+
+    __slots__ = ("members",)
+
+    def __class_getitem__(cls, items: Any) -> "Uses":
+        return cls(items if isinstance(items, tuple) else (items,))
+
+    def __init__(self, members: tuple[Any, ...]) -> None:
+        self.members = members
+
+    def __repr__(self) -> str:
+        return f"Uses{list(self.members)!r}"
+
+    @staticmethod
+    def _member_ops(m: Any) -> frozenset[Operation]:
+        if typing.get_origin(m) is typing.Literal:
+            return frozenset(a for a in typing.get_args(m) if isinstance(a, Operation))
+        if isinstance(m, Operation):
+            return frozenset({m})
+        raise NotImplementedError(  # loud, not a silent frozenset() drop
+            f"Uses member {m!r} is not supported: use `Literal[op]` or a bare `Operation`. "
+            "Polymorphic `Operation[[A], B]` members are a TODO (#448 §8 Q4)."
+        )
+
+    @classmethod
+    def declared(cls, sig: inspect.Signature) -> frozenset[Operation] | None:
+        """The ``Uses[...]`` row off a signature's return annotation, or ``None`` if no
+        ``Uses`` metadata is present (distinct from ``Uses[()]`` = present-and-empty =
+        explicitly pure). ``defop`` may wrap the return in a nested ``Annotated``, so this
+        flattens all metadata layers."""
+        anno = sig.return_annotation
+        found: frozenset[Operation] | None = None
+        while typing.get_origin(anno) is Annotated:
+            args = typing.get_args(anno)
+            for meta in args[1:]:
+                if isinstance(meta, cls):
+                    found = found or frozenset()
+                    for m in meta.members:
+                        found |= cls._member_ops(m)
+            anno = args[0]
+        return found
+
+
 defop = Operation.define
 
 
