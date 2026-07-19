@@ -22,16 +22,21 @@ symbol                  home
 ``Computation`` / ``Requires``   this module (final home: ``ops/syntax.py``); argument annotations read by the fold
 ======================  =====================================================
 
-**Deferred (not implemented yet):** wiring ``Annotation.infer_annotations`` into ``defop``
-(the build-time gate — enforcement is currently at ``usesof``-time, see ``_Computation``);
-``usagesof`` (usage multiset) and handler discharge (2nd PR); polymorphic
-``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer; and the LLM layer
-(Branch B, off #694) — ``toolsof``/``reachable_tools``, the ``ε``-validator at the decode
-seam, tool governance. This module is the ``ε`` core (fold + argument annotations).
+Like ``Uses``, ``Computation`` and ``Requires`` are plain *read*-metadata, not
+:class:`~effectful.ops.types.Annotation` signature-transforms: enforcement is at
+``usesof``-time (``_fold_computation_args`` fails loudly on an unclassified callable), so
+there is no build-time ``infer_annotations`` gate to wire.
+
+The static LLM tool-governance layer (``toolsof`` / ``reachable_tools`` / ``check_tools``
+and ``Uses``-restricted ``Template.tools``) is built on top of this in
+``handlers/llm/governance.py`` and ``handlers/llm/template.py``.
+
+**Deferred (not implemented yet):** ``usagesof`` (usage multiset) and handler discharge
+(2nd PR); polymorphic ``Operation[[A], B]`` ``Uses`` members; the autumn thin consumer;
+and the runtime LLM layer (Branch B, off #694) — the ``ε``-validator at the decode seam
+and ``tool_choice`` forcing. This module is the ``ε`` core (fold + argument annotations).
 """
 
-import collections.abc
-import inspect
 import typing
 from dataclasses import dataclass
 from typing import Annotated, Any
@@ -39,7 +44,7 @@ from typing import Annotated, Any
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, typeof
 from effectful.ops.syntax import Uses
-from effectful.ops.types import Annotation, Expr, Operation
+from effectful.ops.types import Expr, Operation
 
 __all__ = [
     "Uses",
@@ -63,27 +68,16 @@ __all__ = [
 # read by the fold below.
 # ---------------------------------------------------------------------------
 @dataclass(frozen=True)
-class _Computation(Annotation):
+class _Computation:
     """``Annotated[Callable[[A], B], Computation]`` on an *argument*: a suspended
     computation whose effect row joins the op's row when the op runs it. Higher-order
     combinators (``map``/``filter``/…) mark their callback arg with this instead of the
-    checker hard-coding which ops are higher-order."""
+    checker hard-coding which ops are higher-order.
 
-    @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        # Validates that every callable-typed parameter is classified — Computation (its
-        # effects fold) or Uses[()] (declared not-effectful). NOTE: this is NOT yet wired
-        # into `defop`, so it is a validate-if-called helper, not an automatic build-time
-        # gate. Actual enforcement is at `usesof`-time: `_fold_computation_args` raises
-        # `UndeclaredCallable` on an unclassified callable. Wiring generic
-        # `Annotation.infer_annotations` dispatch into op construction is deferred.
-        for name, p in sig.parameters.items():
-            if _is_callable_annotation(p.annotation) and not _has(p.annotation, (_Computation, Uses)):
-                raise TypeError(
-                    f"{name!r}: a callable argument must be declared `Computation` or "
-                    "`Uses[()]` — else its effects would be silently dropped."
-                )
-        return sig
+    Plain read-metadata (like :class:`~effectful.ops.syntax.Uses`), not an
+    :class:`~effectful.ops.types.Annotation` — it is *read* by the fold, not a signature
+    transform. An unclassified callable argument is caught loudly at fold time by
+    :func:`_fold_computation_args`, so no build-time gate is needed."""
 
 
 #: Singleton marker (data-less, like ``IsRecursive``) — use in ``Annotated[C, Computation]``.
@@ -91,24 +85,16 @@ Computation = _Computation()
 
 
 @dataclass(frozen=True, init=False)
-class Requires(Annotation):
+class Requires:
     """``Annotated[T, Requires(op, ...)]`` on an *argument*: the value's provenance must
     cover these ops — ``{op,...} ⊆ usesof(arg)``. The precondition dual of ``Uses``
-    (#664)."""
+    (#664). Plain read-metadata (like :class:`~effectful.ops.syntax.Uses`), read by
+    :func:`requires_rule`."""
 
     ops: frozenset[Operation]
 
     def __init__(self, *ops: Operation) -> None:
         object.__setattr__(self, "ops", frozenset(ops))
-
-    @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        ret = sig.return_annotation
-        if typing.get_origin(ret) is Annotated and any(
-            isinstance(a, cls) for a in typing.get_args(ret)[1:]
-        ):
-            raise TypeError("Requires annotates arguments, not return types.")
-        return sig
 
     def missing(self, arg: Any) -> frozenset[Operation]:
         """Required ops absent from the argument's provenance — the whole check is one
@@ -219,12 +205,6 @@ def _annotations(annotation: Any) -> tuple[Any, ...]:
 
 def _has(annotation: Any, kinds: tuple[type, ...]) -> bool:
     return any(isinstance(a, kinds) for a in _annotations(annotation))
-
-
-def _is_callable_annotation(annotation: Any) -> bool:
-    while typing.get_origin(annotation) is Annotated:
-        annotation = typing.get_args(annotation)[0]
-    return annotation is collections.abc.Callable or typing.get_origin(annotation) is collections.abc.Callable
 
 
 def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
