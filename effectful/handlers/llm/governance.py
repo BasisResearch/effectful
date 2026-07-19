@@ -26,7 +26,7 @@ from effectful.ops.semantics import apply
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Term
 
-__all__ = ["toolsof", "reachable_tools"]
+__all__ = ["toolsof", "reachable_tools", "check_tools"]
 
 
 def _tools_in(term: Any) -> frozenset[Tool]:
@@ -96,3 +96,14 @@ def reachable_tools(fn: Callable[[], Any]) -> frozenset[Tool]:
         term = fn()  # reify — no tool body runs, no LLM call, ambient handlers ignored
     direct = _tools_in(term)
     return direct.union(*(toolsof(t) for t in direct))
+
+
+def check_tools(fn: Callable[[], Any], *allowed: Tool) -> frozenset[Tool]:
+    """Tools ``fn`` can reach that are not in the ``allowed`` set — the static tool-safety
+    leak check (§5 L2). Empty == ``fn`` provably cannot reach a tool outside ``allowed``,
+    even through nested templates, and **no LLM was called** to prove it.
+
+    The tool-graph analogue of :func:`~effectful.ops.effects.check_uses`:
+    ``reachable_tools(fn) - allowed``.
+    """
+    return reachable_tools(fn) - frozenset(allowed)

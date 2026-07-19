@@ -4,7 +4,7 @@ These check the static tool graph (§5): which tools a template, or a function t
 one, can reach — computed by reifying to a Term and folding, never running the LLM.
 """
 
-from effectful.handlers.llm.governance import reachable_tools, toolsof
+from effectful.handlers.llm.governance import check_tools, reachable_tools, toolsof
 from effectful.handlers.llm.template import Template, Tool
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply
@@ -68,6 +68,15 @@ def test_reachable_tools_is_the_leak_check():
     declared = {suggest_city} | toolsof(suggest_city) - {delete_everything}
     leak = reachable_tools(my_fn) - declared
     assert leak == frozenset({delete_everything})  # flagged, LLM never called
+
+
+def test_check_tools_flags_the_leak():
+    # check_tools = reachable_tools - allowed; the L2 tool-safety check (no LLM).
+    suggest_city, delete_everything, my_fn = _trip_planner()
+    allowed = {suggest_city} | toolsof(suggest_city) - {delete_everything}
+    assert check_tools(my_fn, *allowed) == frozenset({delete_everything})
+    # allowing everything reachable -> no leak
+    assert check_tools(my_fn, *reachable_tools(my_fn)) == frozenset()
 
 
 def test_reachable_tools_ignores_ambient_apply_handler():
