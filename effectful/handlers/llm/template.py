@@ -40,7 +40,6 @@ class Tool[**P, T](Operation[P, T]):
     @Template.define  # cities and weather auto-captured from lexical scope
     def vacation() -> str:
         \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
-        raise NotHandled
     ```
 
     Class methods may be used as templates, in which case any other methods
@@ -101,7 +100,7 @@ class Template[**P, T](Tool[P, T]):
     ## Constructing Templates
 
     Apply `Template.define` as a decorator to a fully type-annotated function or
-    method whose body is `raise NotHandled`. The docstring is a
+    method whose body is either empty or `raise NotHandled`. The docstring is a
     [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
     prompt: its `{...}` fields are filled at call time (see *Prompt assembly*
     below) and the LLM's response is decoded to the return type.
@@ -122,7 +121,6 @@ class Template[**P, T](Tool[P, T]):
     >>> @Template.define
     ... def limerick(theme: str) -> str:
     ...     \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
     ## Structured output
 
@@ -134,7 +132,6 @@ class Template[**P, T](Tool[P, T]):
     >>> @Template.define
     ... def primes(first_digit: int) -> int:
     ...     \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
     Structured generation is used to constrain the LLM to return values that can be decoded without error.
 
@@ -149,7 +146,6 @@ class Template[**P, T](Tool[P, T]):
     >>> @Template.define
     ... def write_joke(theme: str) -> KnockKnockJoke:
     ...     \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
     Many common Python data types are decodable without additional effort.
     To register a decoder for a custom type, see `effectful.handlers.llm.encoding.type_to_encodable_type`.
@@ -390,7 +386,6 @@ class Agent(abc.ABC):
         @Template.define
         def send(self, user_input: str) -> str:
             \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
-            raise NotHandled
 
     provider = LiteLLMProvider()
     chatbot = ChatBot()
