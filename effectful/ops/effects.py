@@ -163,7 +163,9 @@ def check_uses(op: Operation, body: Expr[Any]) -> frozenset[Operation]:
 # ---------------------------------------------------------------------------
 # Requires verification (upstream: with usesof, in semantics.py)
 # ---------------------------------------------------------------------------
-def requires_rule(op: Operation, *args: Any, **kwargs: Any) -> dict[str, frozenset[Operation]]:
+def requires_rule(
+    op: Operation, *args: Any, **kwargs: Any
+) -> dict[str, frozenset[Operation]]:
     """Per-argument unmet provenance for ``op``: ``{arg_name: missing_ops}``. Empty ==
     every ``Requires`` on ``op`` is satisfied by the given args."""
     bound = op.__signature__.bind(*args, **kwargs)
@@ -171,7 +173,9 @@ def requires_rule(op: Operation, *args: Any, **kwargs: Any) -> dict[str, frozens
     unmet: dict[str, frozenset[Operation]] = {}
     for name, p in op.__signature__.parameters.items():
         for anno in _annotations(p.annotation):
-            if isinstance(anno, Requires) and (m := anno.missing(bound.arguments[name])):
+            if isinstance(anno, Requires) and (
+                m := anno.missing(bound.arguments[name])
+            ):
                 unmet[name] = m
     return unmet
 
@@ -221,8 +225,14 @@ def _fold_computation_args(op: Operation, args: Any, kwargs: Any) -> None:
         val = bound.arguments.get(name)
         if _has(p.annotation, (_Computation,)):
             if callable(val):
-                val(_Opaque())  # run under the active interpreter -> its ops fold; loud if it inspects its arg
-        elif callable(val) and type(val) is not _Opaque and not _has(p.annotation, (Uses,)):
+                val(
+                    _Opaque()
+                )  # run under the active interpreter -> its ops fold; loud if it inspects its arg
+        elif (
+            callable(val)
+            and type(val) is not _Opaque
+            and not _has(p.annotation, (Uses,))
+        ):
             raise UndeclaredCallable(
                 f"{op}: argument {name!r} is callable but not declared `Computation`/`Uses[()]`; "
                 "its effects can't be soundly folded — annotate it, or the check is unsound."
@@ -271,27 +281,70 @@ class _Opaque:
 # silently returning a wrong answer (e.g. the identity ``__eq__`` would return ``False`` and
 # drop a branch). This does not — cannot — cover the identity/type/existing-attribute checks
 # noted in :class:`_Opaque`.
-_INSPECTION_DUNDERS = (
+_INSPECTION_DUNDERS: tuple[str, ...] = (
     # truth / hashing / formatting / conversions
-    "__bool__", "__hash__", "__eq__", "__ne__", "__repr__", "__str__", "__format__",
-    "__bytes__", "__int__", "__float__", "__complex__", "__index__", "__round__",
-    "__trunc__", "__floor__", "__ceil__",
+    "__bool__",
+    "__hash__",
+    "__eq__",
+    "__ne__",
+    "__repr__",
+    "__str__",
+    "__format__",
+    "__bytes__",
+    "__int__",
+    "__float__",
+    "__complex__",
+    "__index__",
+    "__round__",
+    "__trunc__",
+    "__floor__",
+    "__ceil__",
     # ordering
-    "__lt__", "__le__", "__gt__", "__ge__",
+    "__lt__",
+    "__le__",
+    "__gt__",
+    "__ge__",
     # missing-attribute access (only fires on a miss) / call
-    "__getattr__", "__call__",
+    "__getattr__",
+    "__call__",
     # container protocol
-    "__len__", "__length_hint__", "__contains__", "__getitem__", "__setitem__",
-    "__delitem__", "__iter__", "__next__", "__reversed__",
+    "__len__",
+    "__length_hint__",
+    "__contains__",
+    "__getitem__",
+    "__setitem__",
+    "__delitem__",
+    "__iter__",
+    "__next__",
+    "__reversed__",
     # context / async
-    "__enter__", "__exit__", "__await__", "__aiter__", "__anext__",
+    "__enter__",
+    "__exit__",
+    "__await__",
+    "__aiter__",
+    "__anext__",
     # unary numeric
-    "__neg__", "__pos__", "__abs__", "__invert__",
+    "__neg__",
+    "__pos__",
+    "__abs__",
+    "__invert__",
 )
 # binary numeric, plus reflected (r) and in-place (i) forms
 for _binop in (
-    "add", "sub", "mul", "matmul", "truediv", "floordiv", "mod", "divmod", "pow",
-    "lshift", "rshift", "and", "xor", "or",
+    "add",
+    "sub",
+    "mul",
+    "matmul",
+    "truediv",
+    "floordiv",
+    "mod",
+    "divmod",
+    "pow",
+    "lshift",
+    "rshift",
+    "and",
+    "xor",
+    "or",
 ):
     _INSPECTION_DUNDERS += (f"__{_binop}__", f"__r{_binop}__", f"__i{_binop}__")
 

@@ -1,8 +1,7 @@
-"""The effect-row engine (``ε``): ``usesof`` / ``Uses`` / ``Computation`` / ``Requires``.
+"""The effect-row engine (``ε``): ``usesof`` / ``Uses`` / ``Computation`` / ``Requires``."""
 
-Branches off ``master`` — the engine lives in ``ops/`` and does not depend on #694.
-"""
-from typing import Annotated, Callable
+from collections.abc import Callable
+from typing import Annotated
 
 import pytest
 
@@ -70,19 +69,21 @@ def test_computation_callback_inspecting_arg_is_refused_not_silent():
     # (which would silently drop a branch) and never leak a raw TypeError. The refusal is
     # default-deny, so these cover the operator families, not a hand-picked few.
     inspecting = [
-        lambda x: write(x) if x else read(),        # truthiness branch
-        lambda x: write(x) if x == 0 else read(),   # __eq__ branch (identity would say False)
-        lambda x: write(x) if x < 1 else read(),    # ordering branch
-        lambda x: write(x + 1),                     # arithmetic
-        lambda x: write(len(x)),                    # __len__
-        lambda x: write(str(x)),                    # formatting/conversion
-        lambda x: x(),                              # calls the arg
-        lambda x: x.field,                          # missing-attribute access
-        lambda x: x[0],                             # indexing
+        lambda x: write(x) if x else read(),  # truthiness branch
+        lambda x: (
+            write(x) if x == 0 else read()
+        ),  # __eq__ branch (identity would say False)
+        lambda x: write(x) if x < 1 else read(),  # ordering branch
+        lambda x: write(x + 1),  # arithmetic
+        lambda x: write(len(x)),  # __len__
+        lambda x: write(str(x)),  # formatting/conversion
+        lambda x: x(),  # calls the arg
+        lambda x: x.field,  # missing-attribute access
+        lambda x: x[0],  # indexing
     ]
     for cb_fn in inspecting:
         with pytest.raises(UnsoundCallbackFold):
-            usesof(cb(cb_fn))  # type: ignore[func-returns-value]
+            usesof(cb(cb_fn))
 
 
 def test_computation_callback_identity_and_type_inspection_is_a_known_unsound_hole():
@@ -101,13 +102,21 @@ def test_computation_callback_identity_and_type_inspection_is_a_known_unsound_ho
     # `x is None` is False for the placeholder, so only the else-branch folds: read is
     # dropped. We assert the (unsound) status quo so the limitation is visible and pinned —
     # if a future sound implementation closes it, this test flips and must be updated.
-    assert usesof(cb(lambda x: read() if x is None else write(x))) == frozenset({cb, write})
+    assert usesof(cb(lambda x: read() if x is None else write(x))) == frozenset(
+        {cb, write}
+    )
     # `type(x)` / `isinstance` likewise are not intercepted.
-    assert usesof(cb(lambda x: read() if type(x) is str else write(x))) == frozenset({cb, write})
-    assert usesof(cb(lambda x: read() if isinstance(x, str) else write(x))) == frozenset({cb, write})
+    assert usesof(cb(lambda x: read() if type(x) is str else write(x))) == frozenset(
+        {cb, write}
+    )
+    assert usesof(
+        cb(lambda x: read() if isinstance(x, str) else write(x))
+    ) == frozenset({cb, write})
     # `callable(x)` reads the tripwire's own __call__ binding (True), not the real arg, so it
     # takes the *then* branch — the opposite under-approximation, but the same class of hole.
-    assert usesof(cb(lambda x: read() if callable(x) else write(x))) == frozenset({cb, read})
+    assert usesof(cb(lambda x: read() if callable(x) else write(x))) == frozenset(
+        {cb, read}
+    )
 
 
 def test_undeclared_callable_fails_loudly():
@@ -129,7 +138,7 @@ def test_check_uses_flags_undeclared_effects():
     def declared() -> Annotated[int, Uses[read]]:  # declares read only
         raise NotHandled
 
-    assert check_uses(declared, read()) == frozenset()          # body ⊆ declared
+    assert check_uses(declared, read()) == frozenset()  # body ⊆ declared
     assert check_uses(declared, write(read())) == frozenset({write})  # write undeclared
 
 
@@ -174,7 +183,9 @@ def test_requires_is_per_argument_and_by_keyword():
 
     assert check_requires(move(src=read(), dst=write(1))) == {}
     # dst lacks write in its provenance -> only dst flagged
-    assert check_requires(move(src=read(), dst=read())) == {move: {"dst": frozenset({write})}}
+    assert check_requires(move(src=read(), dst=read())) == {
+        move: {"dst": frozenset({write})}
+    }
 
 
 def test_requires_absent_annotation_is_unconstrained():

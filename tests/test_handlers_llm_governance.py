@@ -90,7 +90,8 @@ def test_governed_tool_graph_excludes_synthetic_lexical_readers():
 
     baseline = toolsof(t)  # no readers exposed
     with handler(LexicalReaders()):
-        assert "favorite_city" in t.tools  # guard: a synthetic reader really was created
+        # guard: a synthetic reader really was created, snapshotting the lexical value
+        assert t.tools["favorite_city"]() == favorite_city
         with_readers = toolsof(t)
 
     assert real_tool in baseline
