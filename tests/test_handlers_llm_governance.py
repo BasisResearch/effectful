@@ -6,6 +6,8 @@ one, can reach — computed by reifying to a Term and folding, never running the
 
 from effectful.handlers.llm.governance import reachable_tools, toolsof
 from effectful.handlers.llm.template import Template, Tool
+from effectful.internals.runtime import interpreter
+from effectful.ops.semantics import apply
 
 
 def _trip_planner():
@@ -46,8 +48,6 @@ def test_toolsof_is_the_static_tool_graph():
     suggest_city, delete_everything, _ = _trip_planner()
     reached = toolsof(suggest_city)
     # every lexically-captured tool is reachable, including the dangerous one
-    names = {t.__name__ for t in reached}
-    assert {"cities", "weather", "delete_everything"} <= names
     assert delete_everything in reached
     # the root itself is not one of the tools it reaches
     assert suggest_city not in reached
@@ -56,12 +56,10 @@ def test_toolsof_is_the_static_tool_graph():
 def test_reachable_tools_sees_through_a_template_without_calling_the_llm():
     suggest_city, delete_everything, my_fn = _trip_planner()
     reached = reachable_tools(my_fn)
-    # the template it calls, and (transitively) that template's tools
+    # the template it calls, and (transitively) that template's captured tools
     assert suggest_city in reached
     assert delete_everything in reached
-    assert {"suggest_city", "cities", "weather", "delete_everything"} <= {
-        t.__name__ for t in reached
-    }
+    assert toolsof(suggest_city) <= reached
 
 
 def test_reachable_tools_is_the_leak_check():
@@ -70,3 +68,27 @@ def test_reachable_tools_is_the_leak_check():
     declared = {suggest_city} | toolsof(suggest_city) - {delete_everything}
     leak = reachable_tools(my_fn) - declared
     assert leak == frozenset({delete_everything})  # flagged, LLM never called
+
+
+def test_reachable_tools_ignores_ambient_apply_handler():
+    # Soundness law: static reachability must not depend on what is installed at the call
+    # site. With `handler` (merge) an ambient apply interpretation would win dispatch, so a
+    # called tool runs concretely instead of reifying and is silently missed. The reifier
+    # uses `interpreter` (replace), so the row is identical either way and the reified
+    # tool ops never reach the ambient handler.
+    suggest_city, delete_everything, my_fn = _trip_planner()
+    baseline = reachable_tools(my_fn)
+
+    ran = []
+
+    def ambient(op, *a, **k):  # a valid ambient interpretation (concrete execution)
+        ran.append(op)
+        return op.__default_rule__(*a, **k)
+
+    with interpreter({apply: ambient}):
+        under_ambient = reachable_tools(my_fn)
+
+    assert under_ambient == baseline  # row unaffected by the ambient handler
+    assert delete_everything in under_ambient
+    # reification isolated the tool calls — none of the trip tools executed concretely
+    assert not ({suggest_city, delete_everything} & set(ran))

@@ -21,7 +21,8 @@ import collections.abc
 from typing import Any, Callable
 
 from effectful.handlers.llm.template import Tool
-from effectful.ops.semantics import apply, handler
+from effectful.internals.runtime import interpreter
+from effectful.ops.semantics import apply
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Term
 
@@ -85,8 +86,13 @@ def reachable_tools(fn: Callable[[], Any]) -> frozenset[Tool]:
     *directly* reached tools; :func:`toolsof` expands each to the tools it in turn reaches.
     A template's body is ``raise NotHandled`` so it performs no tools directly, but the
     tools it captured lexically are recovered statically through :func:`toolsof`.
+
+    The reifier uses ``interpreter`` (*replace*), never ``handler`` (*merge*): merging
+    would let an ambient ``Tool.__apply__`` handler win dispatch, so the tool would run
+    concretely instead of reifying and the walk would silently miss it — the static
+    guarantee must hold regardless of what is installed at the call site.
     """
-    with handler({apply: defdata}):
-        term = fn()  # reify — no tool body runs, no LLM call
+    with interpreter({apply: defdata}):
+        term = fn()  # reify — no tool body runs, no LLM call, ambient handlers ignored
     direct = _tools_in(term)
     return direct.union(*(toolsof(t) for t in direct))
