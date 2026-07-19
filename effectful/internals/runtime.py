@@ -1,36 +1,27 @@
 import contextlib
-import dataclasses
+import contextvars
 import functools
 import inspect
 from collections.abc import Callable, Mapping
-from threading import local
 
 from effectful.ops.types import Interpretation, Operation
 
-
-@dataclasses.dataclass
-class Runtime[S, T](local):
-    interpretation: "Interpretation[S, T]"
-
-
-@functools.lru_cache(maxsize=1)
-def get_runtime() -> Runtime:
-    return Runtime(interpretation={})
+_INTERPRETATION: "contextvars.ContextVar[Interpretation]" = contextvars.ContextVar(
+    "effectful_interpretation", default={}
+)
 
 
-def get_interpretation():
-    return get_runtime().interpretation
+def get_interpretation() -> "Interpretation":
+    return _INTERPRETATION.get()
 
 
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
-    r = get_runtime()
-    old_intp = r.interpretation
+    token = _INTERPRETATION.set(intp)
     try:
-        old_intp, r.interpretation = r.interpretation, dict(intp)
         yield intp
     finally:
-        r.interpretation = old_intp
+        _INTERPRETATION.reset(token)
 
 
 @Operation.define
