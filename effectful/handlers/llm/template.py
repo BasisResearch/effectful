@@ -84,15 +84,6 @@ class FinalTool[**P, T](Tool[P, T]):
     `effectful.handlers.llm.completions.RetryLLMHandler`).
     """
 
-    @classmethod
-    def define(cls, *args, **kwargs) -> "FinalTool[P, T]":
-        """Define a final tool.
-
-        See `effectful.ops.types.Operation.define` for more information on
-        the use of `FinalTool.define`.
-        """
-        return typing.cast("FinalTool[P, T]", super().define(*args, **kwargs))
-
 
 class Template[**P, T](Tool[P, T]):
     """A `Template` is a function that is implemented by a large language model.
