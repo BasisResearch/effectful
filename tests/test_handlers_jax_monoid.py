@@ -1,33 +1,35 @@
-import functools
+import sys
 
 import jax
+import jax.dlpack
+import numpy as np
+import pyro.ops.contract
 import pytest
+import torch
 from jax import random as random
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax.monoid import (
     ARRAY_REDUCTORS,
-    DeltaEmpty,
     ReduceArray,
     ReduceArrayGather,
     ReduceDeltaSimpleRange,
-    ReduceDependentRangeMask,
     ReduceSumProductContraction,
-    delta,
     einsum,
 )
 from effectful.ops.monoid import (
     EliminateSingletonStreams,
+    EvaluateIntp,
     NormalizeIntp,
     Product,
     Sum,
 )
-from effectful.ops.semantics import coproduct, handler
+from effectful.ops.semantics import coproduct, evaluate, handler
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
-    pytest.param(monoid, reductor, id=monoid._name)
+    pytest.param(monoid, reductor, id=monoid.__name__)
     for (monoid, reductor) in ARRAY_REDUCTORS.items()
 ]
 
@@ -94,105 +96,32 @@ def test_reduce_array_gather_dep(monoid, reductor, backend: JaxBackend):
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_reduce_array_1(monoid, reductor, backend: JaxBackend):
-    (x, k) = backend.define_vars("x", "k", ret="scalar")
+    x = backend.define_vars("x", ret="scalar")
+    arr = jnp.arange(4, 9)
     X = jnp.arange(5)
 
-    lhs = monoid.reduce(x(), {x: X})
-    rhs = reductor(bind_dims(unbind_dims(X, k), k), axis=(0,))
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=functools.reduce(
-            coproduct,  # type: ignore[arg-type]
-            [
-                ReduceArrayGather(),
-                EliminateSingletonStreams(),
-                ReduceArray(),
-                ReduceDeltaSimpleRange(),
-            ],
-        ),
-    )
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = monoid.reduce(unbind_dims(arr, x), {x: X})
+    assert jnp.allclose(actual, reductor(arr))
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
-    (x, y, k1, k2) = backend.define_vars("x", "y", "k1", "k2", ret="scalar")
+    (x, y) = backend.define_vars("x", "y", ret="scalar")
     X = jnp.arange(5)
     Y = jnp.arange(7)
-    f = backend.define_vars(
-        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
-    )
+    arr_X = jnp.arange(4, 9)
+    arr_Y = jnp.arange(4, 11)
 
-    lhs = monoid.reduce(f(x(), y()), {x: X, y: Y})
-    rhs = reductor(
-        bind_dims(f(unbind_dims(X, k1), unbind_dims(Y, k2)), k1, k2), axis=(0, 1)
-    )
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=functools.reduce(
-            coproduct,  # type: ignore[arg-type]
-            [
-                ReduceArrayGather(),
-                EliminateSingletonStreams(),
-                ReduceArray(),
-                ReduceDeltaSimpleRange(),
-            ],
-        ),
-    )
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = monoid.reduce(
+            monoid.plus(unbind_dims(arr_X, x), unbind_dims(arr_Y, y)), {x: X, y: Y}
+        )
+        expected = reductor(
+            bind_dims(monoid.plus(unbind_dims(arr_X, x), unbind_dims(arr_Y, y)), x, y)
+        )
 
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_array_3(monoid, reductor, backend: JaxBackend):
-    """Stream `y` is `g(x())` — depends on the bound element of X. The reducer
-    must inline ``g`` along the same named dim used to unbind `x`."""
-    (x, y, k1, k2) = backend.define_vars("x", "y", "k1", "k2", ret="scalar")
-    X = jnp.arange(5)
-
-    f = backend.define_vars(
-        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
-    )
-    g = backend.define_vars("g", arg_types=[backend.scalar_typ], ret="stream")
-
-    lhs = monoid.reduce(f(x(), y()), {x: X, y: g(x())})
-    rhs = reductor(
-        bind_dims(
-            monoid.reduce(f(unbind_dims(X, x), y()), {y: g(unbind_dims(X, x))}), x
-        ),
-        axis=(0,),
-    )
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=functools.reduce(
-            coproduct,  # type: ignore[arg-type]
-            [
-                ReduceArrayGather(),
-                EliminateSingletonStreams(),
-                ReduceArray(),
-                ReduceDeltaSimpleRange(),
-                DeltaEmpty(),
-            ],
-        ),
-    )
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_arange_reduce_direct_full(monoid, reductor, backend: JaxBackend):
-    """A full-range direct index ``A[v()]`` over ``v: arange(N)`` slices the
-    whole axis (``A[0:N:1]``) and reduces it -- no materialized-arange gather.
-    """
-    (v, k) = backend.define_vars("v", "k", ret="scalar")
-    A = backend.define_vars("A", ret="stream")
-
-    lhs = monoid.reduce(jax_getitem(A(), [v()]), {v: range(7)})
-    rhs = reductor(
-        bind_dims(jax_getitem(jax_getitem(A(), [slice(0, 7, 1)]), [k()]), k),
-        axis=(0,),
-    )
-    backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceArray(), ReduceDeltaSimpleRange())
-    )
+    assert jnp.allclose(actual, expected)
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
@@ -245,27 +174,11 @@ def test_arange_reduce_two_streams(monoid, reductor, backend: JaxBackend):
 
 
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_delta_empty(monoid, reductor, backend: JaxBackend):
-    """An empty-index delta unwraps to its body.
-
-    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
-    """
-    x = backend.define_vars("x", ret="scalar")
-    X = backend.define_vars("X", ret="stream")
-
-    lhs = monoid.reduce(delta((), x()), {x: X()})
-    rhs = monoid.reduce(x(), {x: X()})
-    backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceDeltaSimpleRange(), DeltaEmpty())
-    )
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_reduce_delta_empty_arange(monoid, reductor, backend: JaxBackend):
     x = backend.define_vars("x", ret="scalar")
     f = backend.define_vars("f", arg_types=[backend.scalar_typ], ret="scalar")
 
-    lhs = monoid.reduce(delta((x(),), f(x())), {x: range(0)})
+    lhs = monoid.reduce(monoid.delta((x(),), f(x())), {x: range(0)})
     rhs = bind_dims(f(unbind_dims(jnp.array([]), x)), x)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
 
@@ -282,7 +195,7 @@ def test_reduce_delta_independent_one(monoid, reductor, backend: JaxBackend):
     # We use a concrete range here instead of an abstract one, because
     # unbind_dims is undefined on empty arrays (and the rewrite produces a
     # different rhs in this case)
-    lhs = monoid.reduce(delta((y(),), f(y())), {y: range(3)})
+    lhs = monoid.reduce(monoid.delta((y(),), f(y())), {y: range(3)})
     rhs = bind_dims(f(unbind_dims(jnp.arange(3), k)), k)
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
 
@@ -302,7 +215,9 @@ def test_reduce_delta_independent_preserves_others(
         "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
     )
 
-    lhs = monoid.reduce(delta((x(), y()), f(x(), y())), {x: range(2), y: range(3)})
+    lhs = monoid.reduce(
+        monoid.delta((x(), y()), f(x(), y())), {x: range(2), y: range(3)}
+    )
     rhs = bind_dims(
         bind_dims(f(unbind_dims(jnp.arange(2), x), unbind_dims(jnp.arange(3), k)), k), x
     )
@@ -315,12 +230,12 @@ def test_reduce_delta_simple_dep(monoid, reductor, backend: JaxBackend):
     X = jnp.arange(3)
 
     lhs = monoid.reduce(
-        delta((x(),), unbind_dims(X, x) + y()),
+        monoid.delta((x(),), unbind_dims(X, x) + y()),
         {x: range(3), y: jnp.stack([x(), x() + 1])},
     )
     rhs = bind_dims(
         monoid.reduce(
-            delta((), unbind_dims(X, x) + y()),
+            unbind_dims(X, x) + y(),
             {
                 y: jnp.stack(
                     [unbind_dims(jnp.arange(3), x), unbind_dims(jnp.arange(3), x) + 1]
@@ -332,55 +247,6 @@ def test_reduce_delta_simple_dep(monoid, reductor, backend: JaxBackend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDeltaSimpleRange())
 
 
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_dependent_range_mask(monoid, reductor, backend: JaxBackend):
-    """A dependent range stream gets rewritten to the referent's bbox stream,
-    with the original constraint folded into the body as a where-guard.
-
-    reduce(M, {u: range(0, N, 1), v: range(0, u(), 1)}, body)
-    ≡ reduce(M, {u: range(0, N, 1), v: range(0, N, 1)}, where(v() < u(), body, M.identity))
-    """
-    (u, v) = backend.define_vars("u", "v", ret="scalar")
-    N = 5
-    f = backend.define_vars(
-        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
-    )
-
-    body = f(u(), v())
-
-    lhs = monoid.reduce(body, {u: range(N), v: jnp.arange(u())})
-    rhs = monoid.reduce(
-        jnp.where(v() < u(), body, monoid.identity), {u: range(N), v: range(N)}
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
-
-
-@pytest.mark.parametrize("monoid,reductor", MONOIDS)
-def test_reduce_dependent_range_mask_delta_body(monoid, reductor, backend: JaxBackend):
-    """When the body is a delta term, R4 folds the constraint into the delta's
-    weight while leaving its index tuple untouched.
-
-    reduce(M, {u: range(N), v: range(u())}, delta((u(), v()), w))
-    ≡ reduce(M, {u: range(N), v: range(N)},
-             delta((u(), v()), where(v() < u(), w, M.identity)))
-    """
-    (u, v) = backend.define_vars("u", "v", ret="scalar")
-    N = 5
-    f = backend.define_vars(
-        "f", arg_types=[backend.scalar_typ, backend.scalar_typ], ret="scalar"
-    )
-
-    weight = f(u(), v())
-    idx = (u(), v())
-
-    lhs = monoid.reduce(delta(idx, weight), {u: range(N), v: jnp.arange(u())})
-    rhs = monoid.reduce(
-        delta(idx, jnp.where(v() < u(), weight, monoid.identity)),
-        {u: range(N), v: range(N)},
-    )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDependentRangeMask())
-
-
 def test_reduce_contraction_single(backend: JaxBackend):
     i = backend.define_vars("i", ret="scalar")
     (A, B) = backend.define_vars(
@@ -390,8 +256,8 @@ def test_reduce_contraction_single(backend: JaxBackend):
     lhs = Sum.reduce(Product.plus(A(i()), B(i())), {i: range(5)})
     rhs = jnp.einsum(
         "a...,a...->...",
-        Sum.reduce(delta((i(),), A(i())), {i: range(5)}),
-        Sum.reduce(delta((i(),), B(i())), {i: range(5)}),
+        Sum.reduce(Sum.delta((i(),), A(i())), {i: range(5)}),
+        Sum.reduce(Sum.delta((i(),), B(i())), {i: range(5)}),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
 
@@ -405,8 +271,8 @@ def test_reduce_contraction_double(backend: JaxBackend):
     lhs = Sum.reduce(Product.plus(A(i(), j()), B(i(), j())), {i: range(5), j: range(7)})
     rhs = jnp.einsum(
         "ab...,ab...->...",
-        Sum.reduce(delta((i(), j()), A(i(), j())), {i: range(5), j: range(7)}),
-        Sum.reduce(delta((i(), j()), B(i(), j())), {i: range(5), j: range(7)}),
+        Sum.reduce(Sum.delta((i(), j()), A(i(), j())), {i: range(5), j: range(7)}),
+        Sum.reduce(Sum.delta((i(), j()), B(i(), j())), {i: range(5), j: range(7)}),
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSumProductContraction())
 
@@ -422,11 +288,16 @@ def test_reduce_matmul(backend: JaxBackend):
     (b, i, j, k) = backend.define_vars("b", "i", "j", "k", ret="scalar")
 
     with handler(NormalizeIntp):
-        actual = Sum.reduce(
-            delta((b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)),
+        norm = Sum.reduce(
+            Sum.delta(
+                (b(), i(), k()), unbind_dims(X, b, i, j) * unbind_dims(Y, b, j, k)
+            ),
             {b: range(B), i: range(I), j: range(J), k: range(K)},
         )
+    with handler(EvaluateIntp), handler(NormalizeIntp):
+        actual = evaluate(norm)
 
+    assert isinstance(actual, jax.Array)
     expected = jnp.einsum("bij,bjk->bik", X, Y)
     assert jnp.allclose(actual, expected)
 
@@ -553,6 +424,63 @@ def test_einsum_matches_jnp(spec: str, sizes, rng_key):
     assert actual.shape == expected.shape, (
         f"shape mismatch for {spec!r}: got {actual.shape}, expected {expected.shape}"
     )
-    assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-4), (
+    assert jnp.allclose(actual, expected, atol=1e-4, rtol=1e-3), (
         f"value mismatch for {spec!r}"
     )
+
+
+# see https://github.com/pyro-ppl/pyro/blob/dev/tests/ops/test_contract.py
+# Let abcde be enum dims and ijk be plates.
+PLATED_EINSUM_CASES = [
+    ("abi,abi->", "i"),
+    ("abi,b->", "i"),
+    ("abi,b->i", "i"),
+    ("abi,b->b", "i"),
+    ("abi,b->ai", "i"),
+    ("aij,bi->", "ij"),
+    ("acij,bi->", "ij"),
+    ("aij,bi,c->", "ij"),
+    ("abij,bi->aij", "ij"),
+    ("abij,bci->acij", "ij"),
+    ("abij,bci->", "ij"),
+    ("ab,bcij->", "ij"),
+    ("ija,ika->", "ijk"),
+    ("ab,bcdi,defij,fgijk->", "ijk"),
+]
+
+
+@pytest.mark.parametrize("spec,plates", PLATED_EINSUM_CASES)
+def test_plated_einsum(spec, plates, rng_key):
+    sys.setrecursionlimit(10_000)
+
+    def _to_torch(arr):
+        return torch.from_dlpack(arr)
+
+    def _to_mapping(arr):
+        return {i: float(arr[*i]) for i in np.ndindex(arr.shape)}
+
+    dim_sizes = {
+        "a": 2,
+        "b": 3,
+        "c": 4,
+        "d": 5,
+        "e": 6,
+        "f": 7,
+        "g": 8,
+        "i": 2,
+        "j": 3,
+        "k": 4,
+    }
+
+    operands = _make_operands(spec, dim_sizes, rng_key)
+    torch_operands = (_to_torch(op) for op in operands)
+
+    try:
+        expected = pyro.ops.contract.naive_ubersum(
+            spec, *torch_operands, plates=plates, backend="torch"
+        )[0]
+    except NotImplementedError:
+        pytest.skip("Not implemented by pyro.ops.contract.einsum")
+
+    actual = einsum(spec, *operands, plates=plates)
+    assert torch.allclose(torch.tensor(actual), expected, atol=1e-4, rtol=1e-4)

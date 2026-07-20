@@ -1,4 +1,5 @@
 import types
+import typing
 from typing import TYPE_CHECKING
 
 import jax.numpy
@@ -45,6 +46,22 @@ for name in _REDUCTION:
 
 
 einsum = Operation.define(_einsum_named)
+
+
+@Operation.define
+def asarray(a, **kwargs) -> jax.Array:
+    import jax.core
+
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Term
+
+    if isinstance(a, Term):
+        if issubclass(typeof(a), jax.Array | jax.core.Tracer) and not kwargs:
+            return typing.cast(jax.Array, a)
+        else:
+            raise NotHandled
+    return jax.numpy.asarray(a, **kwargs)
+
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
