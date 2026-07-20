@@ -260,7 +260,7 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
     name2tool = {t.__name__: t for t in tools}
-    assert len(name2tool) == len(tools)
+    assert len(tools) == len(name2tool), "Tool name collision detected"
     env = {_TOOLS_KEY: name2tool, **env}
     tool_specs = []
     for name, t in sorted(name2tool.items()):
@@ -819,6 +819,8 @@ class SynthesizeAndCall(ObjectInterpretation):
         tool = self._SynthesisFinalTool.define(template, bound_args)
 
         def _add_synthesis_tool(env, response_type, tools=frozenset(), anchor=None):
+            if any(isinstance(t, self._SynthesisFinalTool) for t in tools):
+                return fwd()
             return fwd(env, response_type, tools | {tool}, anchor=anchor)
 
         with handler({call_assistant: _add_synthesis_tool}):
