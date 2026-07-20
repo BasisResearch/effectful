@@ -26,12 +26,13 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
+from effectful.handlers.llm.evaluation import ReplSession, _repl_session
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -291,19 +292,6 @@ class LexicalReaders(ObjectInterpretation):
         return result
 
 
-@Operation.define
-def _repl_session(env: collections.abc.MutableMapping[str, typing.Any]) -> ReplSession:
-    """Return the REPL session for the current Template call, seeded from `env`.
-
-    `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
-    (mirroring how `__history__` is managed), giving the session a lifetime of
-    exactly one Template call.  Outside such a scope there is no managed session,
-    so this falls back to a fresh one -- e.g. when tools are listed outside a
-    Template call.
-    """
-    return ReplSession(env)
-
-
 class PythonRepl(ObjectInterpretation):
     """Expose a persistent Python session to the LLM as an `exec_code` Tool.
 
@@ -432,13 +420,15 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
-    # Tool arguments decode with `context=tools` (no anchor key), so a synthesized
-    # tool-argument Callable gets no type-check anchor -- correctly: its contract
-    # is the tool parameter's type, not the enclosing Template's return type, so
-    # the Template anchor would be the wrong splice target.
+    # Thread the type-check anchor into the tool-argument context under REPL_ANCHOR_KEY, so
+    # the `Encodable[CodeType]` decoder type-checks a `code` argument (the REPL `exec_code`
+    # tool) against the Template body at decode, splicing in the accumulated REPL session.
+    tool_context = {**tools, REPL_ANCHOR_KEY: anchor} if anchor is not None else tools
     for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            tool_calls += [
+                encoding.validate_python(raw_tool_call, context=tool_context)
+            ]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
