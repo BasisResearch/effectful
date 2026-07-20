@@ -12,6 +12,7 @@ import asyncio
 import collections.abc
 import dataclasses
 import functools
+import typing
 
 from effectful.handlers.llm import Template
 
@@ -26,7 +27,7 @@ class Evaluation:
     qualified: bool
     strengths: str
     weaknesses: str
-    score: int  # 1-10
+    score: typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
 # ---------------------------------------------------------------------------
@@ -43,8 +44,6 @@ def evaluate_resume(resume: str, job_description: str) -> Evaluation:
 
     Resume:
     {resume}
-
-    Score from 1 (poor fit) to 10 (perfect fit).
     """
 
 
