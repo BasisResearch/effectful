@@ -1,28 +1,4 @@
-"""Recursive LLM-based Towers of Hanoi solver.
-
-Adapted from https://github.com/BasisResearch/effectful/pull/404
-
-Demonstrates:
-- ``IsRecursive`` annotation to let a template call itself as a tool
-- Recursive problem decomposition via LLM tool calls
-- Post-hoc validation of the LLM-generated move sequence
-
-The classic recursive algorithm for Tower of Hanoi is:
-
-    hanoi(n, source, target, auxiliary):
-        if n == 1: move disk from source to target
-        else:
-            hanoi(n-1, source, auxiliary, target)   # move n-1 disks out of the way
-            move largest disk from source to target  # move the bottom disk
-            hanoi(n-1, auxiliary, target, source)    # move n-1 disks to target
-
-This solver defines a recursive ``Template`` that can call itself as a tool.
-The LLM decomposes the n-disk problem into three sub-steps, making recursive
-tool calls for the (n-1)-disk sub-problems, and returns the concatenated
-list of moves.
-
-See: https://en.wikipedia.org/wiki/Tower_of_Hanoi
-"""
+"""Recursive LLM-based Towers of Hanoi solver."""
 
 import argparse
 import dataclasses
@@ -102,18 +78,8 @@ class GameState:
 
 @Template.define
 def solve(n_disks: int, source: int, target: int, auxiliary: int) -> list[Step]:
-    """Solve Tower of Hanoi: move {n_disks} disks from tower {source} to
+    """Solve Tower of Hanoi using recursion: move {n_disks} disks from tower {source} to
     tower {target}, using tower {auxiliary} as temporary storage.
-
-    Recursive strategy:
-    - Base case (n_disks == 1): return [Step(start=source, end=target)]
-    - Recursive case (n_disks > 1):
-        1. Call solve(n_disks - 1, source, auxiliary, target) to move the
-           top n_disks-1 disks out of the way onto the auxiliary tower.
-        2. Move the largest disk: Step(start=source, end=target).
-        3. Call solve(n_disks - 1, auxiliary, target, source) to move the
-           n_disks-1 disks from auxiliary to the target tower.
-        4. Return the concatenated list of all steps from (1), (2), and (3).
     """
 
 
