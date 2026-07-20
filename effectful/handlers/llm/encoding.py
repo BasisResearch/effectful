@@ -53,6 +53,12 @@ _TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
 # and it can never collide with a lexical name.
 TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
 
+# Type-check anchor for REPL `exec_code` snippets, separate from the Callable/result
+# synthesis anchor (TYPE_CHECK_ANCHOR_KEY): the two decoders check against different
+# contracts -- a REPL snippet against the Template body, a synthesized Callable tool
+# argument against its own parameter type.
+REPL_ANCHOR_KEY = "<repl_anchor>"
+
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
     for member in typing.get_args(OpenAIMessageContentListBlock)
@@ -299,7 +305,7 @@ def _pydantic_type_code(ty):
     `linecache`, which carries everything the source string did.
     """
 
-    def validate(value: object) -> types.CodeType:
+    def validate(value: object, info: pydantic.ValidationInfo) -> types.CodeType:
         if isinstance(value, types.CodeType):
             return value
         if not isinstance(value, str):
@@ -308,7 +314,32 @@ def _pydantic_type_code(ty):
             )
         filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
         try:
-            return evaluation.compile(evaluation.parse(value, filename), filename)
+            module = evaluation.parse(value, filename)
+            # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
+            # function body, so such a snippet can't be spliced into the Template for
+            # type checking.
+            evaluation.scan_non_nestable(module)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"source is not valid REPL code: {exc}") from exc
+
+        # Type-check the snippet in its execution context, exactly as a synthesized
+        # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
+        # type-check anchor in the decode context, splice the accumulated REPL session (the
+        # `_repl_session` op is in scope during the response decode) plus this snippet into
+        # the Template body and check it. A type error raises here -> the tool-call decode
+        # fails -> `RetryLLMHandler` retries, so ill-typed code never reaches `runcode`.
+        ctx = info.context or {}
+        anchor = ctx.get(REPL_ANCHOR_KEY)
+        if anchor is not None:
+            # Pass an empty env (not `ctx`): the managed session ignores it, and a fresh
+            # fallback session must not be seeded from the decode context (which holds tool
+            # names and the anchor key). The decoder only reads `prior_snippets`.
+            prior = evaluation._repl_session({}).prior_snippets
+            checked = evaluation._splice_repl(prior, value, anchor)
+            if checked is not None:
+                evaluation.type_check(*checked, lenient=True)
+        try:
+            return evaluation.compile(module, filename)
         except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source does not compile: {exc}") from exc
 
@@ -631,9 +662,14 @@ def _validate_signature_callable(
     if expected_params is not None:
         actual_params = list(sig.parameters.values())
         if len(actual_params) != len(expected_params):
+            params_str = ", ".join(
+                getattr(t, "__name__", str(t)) for t in expected_params
+            )
+            return_str = getattr(expected_return, "__name__", str(expected_return))
             raise ValueError(
-                f"decode() expected function with {len(expected_params)} parameters, "
-                f"got {len(actual_params)}"
+                f"synthesized function must match Callable[[{params_str}], {return_str}] "
+                f"-- exactly {len(expected_params)} parameter(s) -- "
+                f"but got {len(actual_params)}"
             )
 
     actual_return = sig.return_annotation

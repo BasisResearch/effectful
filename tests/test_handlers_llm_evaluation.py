@@ -16,6 +16,7 @@ import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     SynthesizedFunction,
 )
@@ -23,6 +24,7 @@ from effectful.handlers.llm.evaluation import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
+    _splice_repl,
     run_doctests,
     scan_non_nestable,
     splice_into_source,
@@ -142,14 +144,14 @@ def test_unannotated_container_is_not_a_false_positive():
 
 
 def test_star_import_raises():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         scan_non_nestable(
             ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
         )
 
 
 def test_future_import_raises():
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         scan_non_nestable(
             ast.parse(
                 "from __future__ import annotations\n"
@@ -792,3 +794,166 @@ class TestRunDoctestsThroughCallableDecode:
             provider=RestrictedEvalProvider(),
         )
         assert fn("hello", "l") == 2
+
+
+# ============================================================================
+# REPL code type-checking (issue #690)
+#
+# `exec_code` type-checks the cumulative session code -- prior snippets plus the
+# current one -- spliced into the enclosing Template's body (`_splice_repl` + the
+# `type_check` op, `lenient=True`), so names resolve in their real execution
+# context. These tests drive that pipeline against a real anchor and assert the
+# contract by exception type / runtime effect -- never by matching a mypy message
+# or a filename.
+# ============================================================================
+
+
+def _repl_anchor(readings: list[int]) -> int:
+    """A module-level stand-in for a Template function: the REPL splice target. Its
+    real source is recoverable (it lives in this test module) and its parameter
+    `readings` stands in for a name from the session's seed env."""
+    raise NotImplementedError
+
+
+def _repl_raises(prior: list[str], snippet: str) -> bool:
+    """type_check the cumulative REPL code spliced into `_repl_anchor`'s body; True
+    if it reports an in-region error."""
+    checked = _splice_repl(prior, snippet, _repl_anchor)
+    assert checked is not None
+    with handler(UnsafeEvalProvider()):
+        try:
+            type_check(*checked, lenient=True)
+            return False
+        except TypeError:
+            return True
+
+
+# --- Type-check semantics: checked in the Template body, leniently ---
+
+
+def test_repl_seed_env_read_is_checked():
+    """A snippet reading a seed name (a Template parameter) resolves in the spliced
+    body and is checked -- the case the old module-scope gate could only decline.
+    A correct use is clean; misusing the seed's type is a real error."""
+    assert not _repl_raises([], "total = sum(readings)\nprint(total)")
+    assert _repl_raises([], "bad: str = sum(readings)\nprint(bad)")
+
+
+def test_repl_cross_snippet_names_resolve():
+    """A helper defined in an earlier cell resolves when a later cell uses it (the
+    cumulative splice); calling it with the wrong type is caught."""
+    prior = ["def helper(n: int) -> int:\n    return n + 1"]
+    assert not _repl_raises(prior, "print(helper(3))")
+    assert _repl_raises(prior, "print(helper('bad'))")
+
+
+def test_repl_rebind_across_cells_is_lenient():
+    """A cell may rebind a name to a new type and use it -- normal REPL editing,
+    allowed by `--allow-redefinition`, not a type error."""
+    assert not _repl_raises(["x = 1"], "x = 'now a string'\nprint(x.upper())")
+
+
+def test_repl_body_need_not_return_template_type():
+    """REPL code isn't a function returning the Template's declared type; the return
+    contract is waived (``--disable-error-code=return``), so a body with no matching
+    return is clean."""
+    assert not _repl_raises([], "y = sum(readings)\nprint(y)")
+
+
+def test_repl_global_and_nonlocal_are_not_false_positives():
+    """`global`/`nonlocal` are legal REPL code; spliced into the Template body they do
+    not produce a spurious diagnostic."""
+    assert not _repl_raises(
+        ["counter = 0"], "def bump():\n    global counter\n    counter += 1\nbump()"
+    )
+
+
+def test_repl_read_of_cross_cell_rebound_name_is_lenient():
+    """A name rebound to a new type across cells, then read, is clean -- mypy narrows to
+    the latest binding under `--allow-redefinition`, so no spurious error on the read.
+    (The old module-scope gate had to decline this explicitly.)"""
+    assert not _repl_raises(['x = "s"', "x = 5"], "print(x + 1)")
+
+
+def test_repl_illtyped_but_runnable_snippet_is_caught():
+    """An ill-typed snippet that would execute with no runtime error is reported --
+    plain execution never catches it."""
+    assert _repl_raises([], "n: int = 'oops'\nprint(n)")
+
+
+def test_repl_check_reports_only_the_current_snippet():
+    """Only the current snippet's lines are reported: an error in the current cell raises,
+    but the same error confined to an earlier cell is out of region (not re-reported) --
+    while that earlier cell stays in the body so its bindings still resolve."""
+    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell -> reported
+    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")  # earlier -> not
+    assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
+
+
+def test_repl_splice_skips_sourceless_anchor():
+    """A Template with no recoverable source (defined via exec/REPL/notebook) skips the
+    check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
+    Callable anchor. Only source *drift* raises."""
+    ns: dict[str, Any] = {}
+    exec("def t(readings):\n    raise NotImplementedError", ns)
+    assert _splice_repl([], "x = 1", ns["t"]) is None
+
+
+# --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
+
+
+def _decode(source: str, *, anchor: bool) -> types.CodeType:
+    """Decode `source` to a code object the way the `exec_code` tool argument does -- with
+    the Template type-check anchor in the decode context (``anchor=True``, as a managed
+    Template call supplies) or without it."""
+    ctx = {REPL_ANCHOR_KEY: _repl_anchor} if anchor else None
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
+        source, context=ctx
+    )
+
+
+def test_repl_decode_rejects_illtyped_snippet():
+    """With the Template anchor in the decode context, an ill-typed-but-runnable snippet is
+    type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
+    fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
+    to a code object."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises((pydantic.ValidationError, TypeError)):
+            _decode("n: int = 'oops'\nprint(n)", anchor=True)
+        assert isinstance(
+            _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
+        )
+
+
+def test_repl_decode_without_anchor_skips_typecheck():
+    """Outside a managed Template call there is no anchor in the decode context, so an
+    ill-typed snippet decodes without a type check (it can still run)."""
+    with handler(UnsafeEvalProvider()):
+        assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
+
+
+def test_repl_exec_code_runs_and_records_history():
+    """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
+    records each snippet's source so a later decode can splice the accumulated session."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [1, 2, 3]})
+        assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
+        assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
+
+
+# --- decode boundary: non-nestable constructs rejected at Encodable[CodeType] ---
+
+
+def test_encodable_code_rejects_future_import():
+    """`from __future__ import ...` is illegal once nested in a function body, so it
+    is rejected when the code object is decoded, before it can run."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from __future__ import annotations\nx = 1")
+
+
+def test_encodable_code_rejects_star_import():
+    """A star import is likewise rejected at decode."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from os import *\nx = 1")

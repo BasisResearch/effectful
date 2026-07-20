@@ -39,6 +39,7 @@ from litellm import (
 
 from effectful.handlers.llm.encoding import (
     _TOOLS_KEY,
+    REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     _callable_type_from_signature,
@@ -46,7 +47,7 @@ from effectful.handlers.llm.encoding import (
     format_as_content_blocks,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
+from effectful.handlers.llm.evaluation import ReplSession, _repl_session
 from effectful.handlers.llm.template import (
     Agent,
     Encodable,
@@ -262,7 +263,7 @@ def call_assistant[T](
     """
     name2tool = {t.__name__: t for t in tools}
     assert len(tools) == len(name2tool), "Tool name collision detected"
-    env = {_TOOLS_KEY: name2tool, **env}
+    env = {_TOOLS_KEY: name2tool, REPL_ANCHOR_KEY: anchor, **env}
     tool_specs = []
     for name, t in sorted(name2tool.items()):
         spec = typing.cast(
@@ -928,6 +929,7 @@ class PythonRepl(ObjectInterpretation):
             {
                 self.exec_code: session.exec_code,
                 self.read_lexical_variable: env.get,
+                _repl_session: lambda _: session,
             }
         ):
             return fwd()
