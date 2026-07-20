@@ -498,7 +498,7 @@ class Operation[**Q, V]:
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import _restore_args, get_interpretation
-        from effectful.ops.semantics import fwd, handler
+        from effectful.ops.semantics import Fwd, fwd, handler
 
         intp = get_interpretation()
 
@@ -510,7 +510,11 @@ class Operation[**Q, V]:
                 Interpretation, {fwd: _restore_args(self.__default_rule__)}
             )
             with handler(fwd_intp):
-                return self_handler(*args, **kwargs)
+                result = self_handler(*args, **kwargs)
+                while isinstance(result, Fwd):  # discharge fwd tail calls
+                    result = result.next(*result.args, **result.kwargs)
+                return result
+
         elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
             # Prevent infinite recursion when calling self.apply directly
             return self.__default__(*args, **kwargs)

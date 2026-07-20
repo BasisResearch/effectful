@@ -6,6 +6,7 @@ import operator
 import types
 import typing
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
@@ -34,6 +35,22 @@ def fwd(*args, **kwargs) -> Any:
 
     """
     raise RuntimeError("fwd should only be called in the context of a handler")
+
+
+@dataclass
+class Fwd:
+    next: Callable
+    args: tuple = ()
+    kwargs: collections.abc.Mapping = field(default_factory=dict)
+
+    def __init__(self, *args, **kwargs):
+        from effectful.internals.runtime import _get_args, get_interpretation
+
+        self.args, self.kwargs = (args, kwargs) if args or kwargs else _get_args()
+
+        intp = get_interpretation()
+        assert fwd in intp
+        self.next = handler({_get_args: lambda: (self.args, self.kwargs)})(intp[fwd])
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
