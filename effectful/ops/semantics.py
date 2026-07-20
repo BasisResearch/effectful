@@ -30,7 +30,7 @@ def _is_memoized() -> bool:
     return False
 
 
-def memoize(intp: Interpretation) -> Interpretation:
+def _memoize(intp: Interpretation) -> Interpretation:
     """Flag ``intp`` for term-local memoization.
 
     A fresh operation identifies each resulting interpretation and is used as
@@ -311,7 +311,7 @@ def _typeof_apply(op, *args, **kwargs):
     return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTERPRETATION = memoize({apply: _typeof_apply})
+_TYPEOF_INTERPRETATION = _memoize({apply: _typeof_apply})
 
 
 def _typeof(term: Expr):

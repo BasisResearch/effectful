@@ -9,13 +9,13 @@ from typing import Annotated, Any, Literal, Union
 import pytest
 
 from effectful.ops.semantics import (
+    _memoize,
     apply,
     coproduct,
     evaluate,
     fvsof,
     fwd,
     handler,
-    memoize,
     typeof,
 )
 from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
@@ -481,7 +481,7 @@ def test_memoized_interpretation():
         calls += 1
         return (op.__name__, args, kwargs)
 
-    intp = memoize({apply: analyze})
+    intp = _memoize({apply: analyze})
     expected = ("node", (("node", (1,), {}),), {})
 
     assert interpreter(intp)(evaluate)(term) == expected
@@ -507,7 +507,7 @@ def test_memoized_interpretation():
     assert calls == 4
 
     # A separately memoized interpretation has a separate cache namespace.
-    other_intp = memoize({apply: analyze})
+    other_intp = _memoize({apply: analyze})
     assert interpreter(other_intp)(evaluate)(term) == expected
     assert calls == 6
 
@@ -529,7 +529,7 @@ def test_memoized_interpretation_does_not_cache_failures():
             raise ValueError("failed analysis")
         return "success"
 
-    intp = memoize({apply: analyze})
+    intp = _memoize({apply: analyze})
     with pytest.raises(ValueError, match="failed analysis"):
         interpreter(intp)(evaluate)(term)
 
@@ -561,7 +561,7 @@ def test_memoized_interpretation_skips_terms_without_attribute_storage():
         return "result"
 
     term = SlottedTerm()
-    intp = memoize({apply: analyze})
+    intp = _memoize({apply: analyze})
     assert handler(intp)(evaluate)(term) == "result"
     assert handler(intp)(evaluate)(term) == "result"
     assert calls == 2
