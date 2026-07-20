@@ -9,6 +9,7 @@ import inspect
 import json
 import pathlib
 import re
+import sys
 import time
 import traceback
 import types
@@ -1369,8 +1370,13 @@ class TerminalRenderer(ObjectInterpretation):
     :func:`litellm.stream_chunk_builder` so the rest of the pipeline is unchanged.
     """
 
+    # Pin the console to the process's original stdout rather than the live
+    # ``sys.stdout``. Otherwise, when a nested ``completion`` renders while stdout
+    # is redirected -- inside ``exec_code`` (``redirect_stdout``) or ``run_doctests``
+    # (doctest's ``_SpoofOut``) -- the rendered panels are captured and fed back
+    # into the model's context. ``sys.__stdout__`` is immune to those rebindings.
     console: rich.console.Console = dataclasses.field(
-        default_factory=rich.console.Console
+        default_factory=lambda: rich.console.Console(file=sys.__stdout__)
     )
 
     @implements(completion)
