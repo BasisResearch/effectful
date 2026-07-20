@@ -751,6 +751,42 @@ class SynthesizeAndCall(ObjectInterpretation):
     be compiled and executed.
     """
 
+    # TODO FIX THIS!!!
+    # KNOWN BUG -- the synthesized function is NOT type-checked against the
+    # Template.
+    #
+    # The docstring above (and PR #706) promise that the synthesized code is
+    # "type-checked": `decode` (encoding.py) splices the generated function into
+    # the Template's own module source and runs mypy on it, so the body is checked
+    # in its real lexical scope. That splice only happens when the enclosing
+    # Template's underlying function rides in the decode context under
+    # `TYPE_CHECK_ANCHOR_KEY` (see `decode`, encoding.py, and `_serialize`'s
+    # `if anchor is not None:` guard).
+    #
+    # That anchor is threaded on exactly ONE of the two decode paths in
+    # `call_assistant`:
+    #   - Direct result (model answers with content): decoded with
+    #     `context={**env, TYPE_CHECK_ANCHOR_KEY: anchor}`  -> spliced + mypy-checked.
+    #   - Tool call (model calls a tool): decoded with `context=env` -- no anchor
+    #     -> splice skipped.
+    #
+    # `submit_solution` is a `FinalTool`, so the model always reaches it via the
+    # *tool-call* path. Its `implementation` argument is therefore decoded WITHOUT
+    # the anchor, so the mypy splice never runs for it. The synthesized function --
+    # the whole product of this handler -- is only validated structurally
+    # (`_validate_signature_callable`: parameter count/return match), compiled, and
+    # executed (plus its own doctests). Its body escapes the type check entirely.
+    #
+    # The tool-call path drops the anchor deliberately: a Callable passed to an
+    # *arbitrary* tool is contracted by that tool's parameter type, not by the
+    # Template's body, so anchoring it to the Template would be wrong. But
+    # `submit_solution` is special -- its Callable argument *is* the Template's
+    # body -- so for this FinalTool the anchor should be the enclosing Template's
+    # `__default__`. The fix is to thread that anchor into the decode context when
+    # decoding a synthesis FinalTool's argument (rather than using the generic
+    # `context=env` tool-call path), so `submit_solution`'s implementation is
+    # spliced into the Template and mypy-checked like a directly-returned result.
+
     @typing.final
     class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
         """## Code synthesis

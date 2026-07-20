@@ -17,7 +17,6 @@ from collections.abc import (
     Mapping,
     MutableMapping,
 )
-from typing import Any
 
 import litellm
 import pydantic
@@ -284,7 +283,7 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
 
 
 @TypeToPydanticType.register(object)
-def _pydantic_type_base(ty: type) -> Any:
+def _pydantic_type_base(ty: type) -> typing.Any:
     return ty
 
 
@@ -533,7 +532,7 @@ class _SynthesisSpec[T]:
         else:
             return None
 
-    def _method_instance(self, other: Template) -> Any | None:
+    def _method_instance(self, other: Template) -> typing.Any | None:
         """The instance ``op`` is bound to, if ``op`` is this synthesized
         Agent-method on *some* instance; otherwise ``None``.
         """
@@ -680,8 +679,8 @@ def _validate_signature_callable(
 
 @TypeToPydanticType.register(Callable)
 def _pydantic_callable(
-    callable_type: Any, metadata: _SynthesisSpec | None = None
-) -> Any:
+    callable_type: typing.Any, metadata: _SynthesisSpec | None = None
+) -> typing.Any:
     """Create a Pydantic-compatible Annotated type for a parameterized Callable.
 
     Usage: PydanticCallable(Callable[[int, str], bool])
@@ -711,7 +710,7 @@ def _pydantic_callable(
         else:
             expected_params = None
 
-    def _validate(value: Any, info: pydantic.ValidationInfo) -> Callable:
+    def _validate(value: typing.Any, info: pydantic.ValidationInfo) -> Callable:
         if callable(value) and not isinstance(value, dict):
             return value
         if isinstance(value, SynthesizedFunction):
@@ -743,7 +742,7 @@ def _pydantic_callable(
             if spliced is not None:
                 evaluation.type_check(*spliced)
 
-        g: MutableMapping[str, Any] = {}
+        g: MutableMapping[str, typing.Any] = {}
         g.update({k: v for k, v in ctx.items() if k.isidentifier()})
 
         bytecode: types.CodeType = evaluation.compile(module, filename)
@@ -858,7 +857,7 @@ def _validate_tool(
 
 
 def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
-    fields: dict[str, Any] = {
+    fields: dict[str, typing.Any] = {
         name: TypeToPydanticType().evaluate(param.annotation)
         for name, param in inspect.signature(value).parameters.items()
     }
@@ -919,7 +918,7 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[param.annotation]  # type: ignore[name-defined]
         )
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
@@ -937,7 +936,7 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[nested_type(v).value]  # type: ignore[misc]
         )
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
