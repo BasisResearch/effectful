@@ -190,14 +190,14 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
 
 
-def _current_interpretation_cache_id() -> int | None:
+def _current_interpretation_cache_id() -> object | None:
     """Return the current memoized interpretation's object identity."""
     from effectful.internals.runtime import get_interpretation
 
     intp = get_interpretation()
     if _is_memoized not in intp:
         return None
-    return id(intp)
+    return frozenset(intp.items())
 
 
 def _term_cache(expr: Term) -> dict[object, object] | None:
