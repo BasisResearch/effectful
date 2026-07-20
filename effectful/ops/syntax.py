@@ -518,11 +518,11 @@ def defdata[T](
         {
             typ: {
                 apply: apply_type,
-                CollectionOperation.__apply__: apply.__default_rule__,
+                CollectionConstrOperation.__apply__: apply.__default_rule__,
             },
             cast: {
                 apply: apply_cast,
-                CollectionOperation.__apply__: apply.__default_rule__,
+                CollectionConstrOperation.__apply__: apply.__default_rule__,
             },
         }
     )
@@ -1340,24 +1340,24 @@ class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
 
 
-class CollectionOperation(Operation): ...
+class CollectionConstrOperation(Operation): ...
 
 
-@CollectionOperation.define
+@CollectionConstrOperation.define
 def as_tuple(*args) -> tuple:
     return tuple(args)
 
 
-@CollectionOperation.define
+@CollectionConstrOperation.define
 def as_list[T](*args: T) -> list[T]:
     return list(args)
 
 
-@CollectionOperation.define
+@CollectionConstrOperation.define
 def as_set[T](*args: T) -> set[T]:
     return set(args)
 
 
-@CollectionOperation.define
+@CollectionConstrOperation.define
 def as_dict[K, V](*args: tuple[K, V]) -> dict[K, V]:
     return dict(args)

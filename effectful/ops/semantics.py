@@ -9,9 +9,10 @@ from collections.abc import Callable
 from typing import Any
 
 from effectful.ops.syntax import (
-    CollectionOperation,
+    CollectionConstrOperation,
     _CustomSingleDispatchCallable,
     as_list,
+    as_set,
     as_tuple,
     defdata,
     defop,
@@ -122,9 +123,12 @@ def handler(intp: Interpretation):
         yield intp
 
 
+class DataclassConstrOperation(Operation): ...
+
+
 @functools.cache
-def _as_type(typ):
-    @CollectionOperation.define
+def _as_type(typ, operation_type=CollectionConstrOperation):
+    @operation_type.define
     def _as_typ(*args, **kwargs) -> typ:
         return typ(*args, **kwargs)
 
@@ -174,7 +178,7 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 
 
 def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
-    dataclass_op = _as_type(type(expr))
+    dataclass_op = _as_type(type(expr), operation_type=DataclassConstrOperation)
     subst = {
         field.name: evaluate(getattr(expr, field.name))
         for field in dataclasses.fields(expr)  # type: ignore[arg-type]
@@ -294,7 +298,9 @@ def typeof[T](term: Expr[T]) -> type[T]:
     def _apply(op, *args, **kwargs):
         return Box(op.__type_rule__(*args, **kwargs))
 
-    with interpreter({apply: _apply}):
+    with interpreter(
+        {apply: _apply, CollectionConstrOperation.__apply__: apply.__default_rule__}
+    ):
         type_or_value = evaluate(term)
         if isinstance(type_or_value, Box):
             return _simple_type(type_or_value.value)
@@ -315,18 +321,23 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """
     from effectful.internals.runtime import interpreter
 
-    _fvs: set[Operation] = set()
-
-    def _update_fvs(op, *args, **kwargs):
-        _fvs.add(op)
+    def _apply(op, *args, **kwargs):
+        free_vars = set().union(
+            {op},
+            *(
+                {x} if isinstance(x, Operation) else x
+                for x in (*args, *kwargs.values())
+            ),
+        )
         bindings = op.__fvs_rule__(*args, **kwargs)
-        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
-            assert isinstance(bound_var, Operation)
-            if bound_var in _fvs:
-                _fvs.remove(bound_var)
-        return defdata(op, *args, **kwargs)
+        bound_vars = set().union(*bindings.args, *bindings.kwargs.values())
+        return free_vars - bound_vars
 
-    with interpreter({apply: _update_fvs}):
-        evaluate(term)
+    with interpreter({apply: _apply}):
+        fvs = evaluate(term)
 
-    return _fvs
+    return {
+        op
+        for op in fvs
+        if not isinstance(op, DataclassConstrOperation | CollectionConstrOperation)
+    }
