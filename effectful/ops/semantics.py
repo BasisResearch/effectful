@@ -8,7 +8,14 @@ import typing
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
+from effectful.ops.syntax import (
+    CollectionOperation,
+    _CustomSingleDispatchCallable,
+    as_list,
+    as_tuple,
+    defdata,
+    defop,
+)
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -115,6 +122,15 @@ def handler(intp: Interpretation):
         yield intp
 
 
+@functools.cache
+def _as_type(typ):
+    @CollectionOperation.define
+    def _as_typ(*args, **kwargs) -> typ:
+        return typ(*args, **kwargs)
+
+    return _as_typ
+
+
 @_CustomSingleDispatchCallable
 def evaluate[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -183,17 +199,19 @@ def _evaluate_operation(expr: Operation, **kwargs) -> Operation:
 
 @evaluate.register(collections.defaultdict)
 def _evaluate_defaultdict(expr, **kwargs):
-    return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))
+    return _as_type(type(expr))(
+        expr.default_factory, as_list(*(evaluate(item) for item in expr.items()))
+    )
 
 
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
-    return type(expr)(dict(evaluate(tuple(expr.items()))))
+    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr.items())))
 
 
 @evaluate.register(collections.abc.Mapping)
 def _evaluate_mapping(expr, **kwargs):
-    return type(expr)(evaluate(tuple(expr.items())))
+    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr.items())))
 
 
 @evaluate.register(tuple)
@@ -203,27 +221,27 @@ def _evaluate_tuple(expr, **kwargs):
         and hasattr(expr, "_fields")
         and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
     ):  # namedtuple
-        return type(expr)(
+        return _as_type(type(expr))(
             **{field: evaluate(getattr(expr, field)) for field in expr._fields}
         )
     else:
-        return type(expr)(evaluate(item) for item in expr)
+        return _as_type(type(expr))(as_tuple(*(evaluate(item) for item in expr)))
 
 
 @evaluate.register(collections.abc.Sequence)
 def _evaluate_sequence(expr, **kwargs):
-    return type(expr)(evaluate(item) for item in expr)
+    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr)))
 
 
 @evaluate.register(collections.abc.ItemsView)
 @evaluate.register(collections.abc.KeysView)
 def _evaluate_set_view(expr, **kwargs):
-    return {evaluate(item) for item in expr}
+    return as_set(*(evaluate(item) for item in expr))
 
 
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
-    return [evaluate(item) for item in expr]
+    return as_list(*(evaluate(item) for item in expr))
 
 
 def _simple_type(tp: type) -> type:

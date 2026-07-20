@@ -514,7 +514,18 @@ def defdata[T](
         dispatch_type = _simple_type(full_type.value)
         return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
 
-    analysis = productN({typ: {apply: apply_type}, cast: {apply: apply_cast}})
+    analysis = productN(
+        {
+            typ: {
+                apply: apply_type,
+                CollectionOperation.__apply__: apply.__default_rule__,
+            },
+            cast: {
+                apply: apply_cast,
+                CollectionOperation.__apply__: apply.__default_rule__,
+            },
+        }
+    )
 
     def evaluate_with_renaming(expr, ctx):
         """Evaluate an expression with renaming applied."""
@@ -1327,3 +1338,26 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+class CollectionOperation(Operation): ...
+
+
+@CollectionOperation.define
+def as_tuple(*args) -> tuple:
+    return tuple(args)
+
+
+@CollectionOperation.define
+def as_list[T](*args: T) -> list[T]:
+    return list(args)
+
+
+@CollectionOperation.define
+def as_set[T](*args: T) -> set[T]:
+    return set(args)
+
+
+@CollectionOperation.define
+def as_dict[K, V](*args: tuple[K, V]) -> dict[K, V]:
+    return dict(args)
