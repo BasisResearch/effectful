@@ -25,7 +25,6 @@ from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    SynthesizedFunction,
     to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import (
@@ -789,11 +788,17 @@ def _int_pair_anchor() -> Callable[[int, int], int]:
 
 
 # Callable error cases: (type, ctx, source, exc_type, anchor)
+#
+# Sources are passed as raw ``{"module_code": ...}`` dicts, not pre-built
+# ``SynthesizedFunction`` instances: structurally-invalid code (e.g. a non-function
+# last statement) is rejected by ``SynthesizedFunction``'s own field validator, so
+# building it eagerly here would raise at collection. A dict defers that validation
+# to the decoder (``model_validate``), which is the real path an LLM's JSON takes.
 CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
-        SynthesizedFunction(module_code="x = 42"),
+        {"module_code": "x = 42"},
         ValueError,
         None,
         id="non-function-last-stmt",
@@ -801,7 +806,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(module_code="def add(a: int) -> int:\n    return a"),
+        {"module_code": "def add(a: int) -> int:\n    return a"},
         ValueError,
         None,
         id="wrong-param-count",
@@ -809,9 +814,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(
-            module_code="def add(a: int, b: int) -> str:\n    return str(a + b)"
-        ),
+        {"module_code": "def add(a: int, b: int) -> str:\n    return str(a + b)"},
         TypeError,
         _int_pair_anchor,
         id="wrong-return-type",
@@ -819,7 +822,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(module_code="def add(a: int, b: int):\n    return a + b"),
+        {"module_code": "def add(a: int, b: int):\n    return a + b"},
         ValueError,
         None,
         id="missing-return-annotation",

@@ -28,7 +28,6 @@ from RestrictedPython import (
 from RestrictedPython.PrintCollector import PrintCollector
 
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Operation
 
 
 @defop
@@ -728,22 +727,3 @@ class ReplSession(code.InteractiveInterpreter):
         ):
             self.runcode(code)
         return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
-
-
-@Operation.define
-def _repl_session(
-    env: collections.abc.MutableMapping[str, typing.Any],
-) -> "ReplSession":
-    """Return the REPL session for the current Template call, seeded from `env`.
-
-    `PythonRepl` (in completions.py) installs a fresh handler for this inside each
-    `Template.__apply__` (mirroring how `__history__` is managed), giving the session a
-    lifetime of exactly one Template call. Outside such a scope there is no managed
-    session, so this falls back to a fresh one -- e.g. when tools are listed outside a
-    Template call, or when a code object is decoded with no REPL in scope.
-
-    Defined here (not with `PythonRepl`) so the `Encodable[CodeType]` decoder can reach the
-    session -- and its accumulated `prior_snippets` -- at decode time without importing
-    `completions` (which would be a cycle).
-    """
-    return ReplSession(env)

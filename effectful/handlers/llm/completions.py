@@ -47,7 +47,7 @@ from effectful.handlers.llm.encoding import (
     format_as_content_blocks,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession, _repl_session
+from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
     Encodable,
@@ -873,9 +873,10 @@ class PythonRepl(ObjectInterpretation):
     single Template invocation.
 
     Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
-    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
-    the duration of the call, and intercepts `call_assistant` to inject an
-    `exec_code` Tool routed to that session.  The session is therefore introduced and
+    handles `Template.__apply__` to introduce fresh session-bound handlers (`exec_code`,
+    `read_lexical_variable`, `repl_history`) for the duration of the call, and intercepts
+    `call_assistant` to inject an `exec_code` Tool routed to that session.  The session is
+    therefore introduced and
     eliminated by its own handler, bounded to the Template call by construction --
     there is no global registry of sessions, and nested Template calls get their
     own isolated sessions.
@@ -913,6 +914,13 @@ class PythonRepl(ObjectInterpretation):
         """
         raise NotImplementedError("No handler")
 
+    @typing.final
+    @Operation.define
+    @classmethod
+    def repl_history(cls) -> list[str]:
+        """This REPL session's error-free executed snippets, in order."""
+        raise NotImplementedError("No handler")
+
     @implements(call_system)
     def _call_system(self, template, tool_types=frozenset()):
         return fwd(template, tool_types=tool_types | {self._ReplInteractionTool})
@@ -929,7 +937,7 @@ class PythonRepl(ObjectInterpretation):
             {
                 self.exec_code: session.exec_code,
                 self.read_lexical_variable: env.get,
-                _repl_session: lambda _: session,
+                self.repl_history: lambda: session.prior_snippets,
             }
         ):
             return fwd()

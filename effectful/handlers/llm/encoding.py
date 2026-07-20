@@ -324,17 +324,20 @@ def _pydantic_type_code(ty):
 
         # Type-check the snippet in its execution context, exactly as a synthesized
         # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
-        # type-check anchor in the decode context, splice the accumulated REPL session (the
-        # `_repl_session` op is in scope during the response decode) plus this snippet into
-        # the Template body and check it. A type error raises here -> the tool-call decode
-        # fails -> `RetryLLMHandler` retries, so ill-typed code never reaches `runcode`.
+        # type-check anchor in the decode context, splice the accumulated REPL session
+        # (`PythonRepl.repl_history` returns the prior snippets of the session in scope)
+        # plus this snippet into the Template body and check it. A type error raises here
+        # -> the tool-call decode fails -> `RetryLLMHandler` retries, so ill-typed code
+        # never reaches `runcode`.
         ctx = info.context or {}
         anchor = ctx.get(REPL_ANCHOR_KEY)
         if anchor is not None:
-            # Pass an empty env (not `ctx`): the managed session ignores it, and a fresh
-            # fallback session must not be seeded from the decode context (which holds tool
-            # names and the anchor key). The decoder only reads `prior_snippets`.
-            prior = evaluation._repl_session({}).prior_snippets
+            # Imported lazily (not at module load) to avoid an import cycle: `completions`
+            # imports this module. `repl_history` returns the managed session's prior
+            # snippets, or `[]` when no REPL is in scope.
+            from effectful.handlers.llm.completions import PythonRepl
+
+            prior = PythonRepl.repl_history()
             checked = evaluation._splice_repl(prior, value, anchor)
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)

@@ -192,10 +192,12 @@ def main(argv: list[str] | None = None) -> None:
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
         tool_choice=ns.tool_choice,
-        api_base="http://localhost:8030/v1"
+        api_base=os.environ.get("DS4_OPENAI_API_BASE", None)
         if ns.model == "openai/deepseek-v4-flash"
         else None,
-        api_key="" if ns.model == "openai/deepseek-v4-flash" else None,
+        api_key=os.environ.get("DS4_OPENAI_API_KEY", None)
+        if ns.model == "openai/deepseek-v4-flash"
+        else None,
     ):
         runpy.run_path(ns.script, run_name="__main__")
 
