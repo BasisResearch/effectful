@@ -17,17 +17,6 @@ import numpy as np
 from effectful.handlers.llm import Agent, Template, Tool
 
 # ---------------------------------------------------------------------------
-# Embedding helpers
-# ---------------------------------------------------------------------------
-
-
-def get_embedding(text: str, model: str) -> np.ndarray:
-    """Get an embedding vector for the given text using litellm."""
-    response = litellm.embedding(model=model, input=text)
-    return np.array(response.data[0]["embedding"], dtype=np.float32)
-
-
-# ---------------------------------------------------------------------------
 # Vector index
 # ---------------------------------------------------------------------------
 
@@ -40,16 +29,21 @@ class VectorIndex:
     chunks: list[str] = dataclasses.field(default_factory=list)
     embeddings: list[np.ndarray] = dataclasses.field(default_factory=list)
 
+    def get_embedding(self, text: str) -> np.ndarray:
+        """Get an embedding vector for the given text using litellm."""
+        response = litellm.embedding(model=self.model, input=text)
+        return np.array(response.data[0]["embedding"], dtype=np.float32)
+
     def add(self, text: str) -> None:
         """Add a text chunk to the index."""
         self.chunks.append(text)
-        self.embeddings.append(get_embedding(text, model=self.model))
+        self.embeddings.append(self.get_embedding(text))
 
     def search(self, query: str, top_k: int = 3) -> list[str]:
         """Return the top-k most similar chunks to the query."""
         if not self.embeddings:
             return []
-        query_emb = get_embedding(query, model=self.model)
+        query_emb = self.get_embedding(query)
         distances = [float(((emb - query_emb) ** 2).sum()) for emb in self.embeddings]
         indices = sorted(range(len(distances)), key=lambda i: distances[i])
         return [self.chunks[i] for i in indices[:top_k]]
