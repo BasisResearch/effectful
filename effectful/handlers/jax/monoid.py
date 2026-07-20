@@ -1,6 +1,9 @@
 import functools
 import logging
 import typing
+from collections import defaultdict
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from typing import Protocol
 
 import jax
@@ -8,41 +11,43 @@ import jax.core
 import opt_einsum
 from opt_einsum import get_symbol
 
+import effectful.handlers.jax.lax as lax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
 from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
+    And,
     CartesianProduct,
+    EvaluateIntp,
     Max,
     Min,
     Monoid,
     NormalizeIntp,
+    Or,
     Product,
     Streams,
     Sum,
+    _conjuncts,
+    _is_monoid_mask,
     _is_monoid_plus,
-    choose_contraction,
+    _is_simple_range,
+    complement,
     distributes_over,
+    is_equality,
 )
+from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, deffn, implements
-from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    as_dict,
+    deffn,
+    implements,
+    ite,
+)
+from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
-
-
-def cartesian_prod(x, y):
-    if x.ndim == 1:
-        x = x[:, None]
-    if y.ndim == 1:
-        y = y[:, None]
-    nx, dx = x.shape
-    ny, dy = y.shape
-    # Broadcast into (nx, ny, dx+dy), then flatten the first two axes
-    x_b = jnp.broadcast_to(x[:, None, :], (nx, ny, dx))
-    y_b = jnp.broadcast_to(y[None, :, :], (nx, ny, dy))
-    return jnp.concatenate([x_b, y_b], axis=-1).reshape(nx * ny, dx + dy)
 
 
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
@@ -51,21 +56,28 @@ LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
 #   a + logsumexp(b, c) = logsumexp(a + b, a + c)
 distributes_over.register(Sum, LogSumExp)
 
+is_equality.register(jnp.equal)
+for a, b in {
+    (jnp.less, jnp.greater),
+    (jnp.less_equal, jnp.greater_equal),
+    (jnp.equal, jnp.not_equal),
+}:
+    assert isinstance(a, Operation)
+    assert isinstance(b, Operation)
+    complement.register(a, b)
+
 
 def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
-    :class:`jax.typing.ArrayLike` or named tensor. At least one argument must be
-    a jax-related type.
+    :class:`jax.typing.ArrayLike` or named tensor.
 
     """
-    return (
-        bool(args)
-        and all(is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args)
-        and any(is_eager_array(a) or isinstance(a, jax.Array) for a in args)
+    return args and all(
+        isinstance(a, jax.typing.ArrayLike) or is_eager_array(a) for a in args
     )
 
 
-class PlusJaxUpcast(ObjectInterpretation):
+class PlusCastArray(ObjectInterpretation):
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         arg_types = [typeof(a) for a in args]
@@ -127,32 +139,39 @@ class LogSumExpPlusJax(ObjectInterpretation):
         return functools.reduce(jnp.logaddexp, args)
 
 
-class CartesianProductPlusJax(ObjectInterpretation):
-    @implements(CartesianProduct.plus)
+class AndPlusJax(ObjectInterpretation):
+    @implements(And.plus)
     def plus(self, *args):
-        # Skip identity ``[()]`` args; short-circuit on zero ``[]``. Both
-        # sentinels arrive as Python lists alongside jax-array factors, so
-        # check for them explicitly before composing.
-        if not any(isinstance(a, jax.Array) for a in args):
+        if not _jax_args(args):
             return fwd()
-        result = None
-        for a in args:
-            if a is CartesianProduct.zero:
-                return CartesianProduct.zero
-            if a is CartesianProduct.identity:
-                continue
-            if not isinstance(a, jax.Array):
-                return fwd()
-            result = a if result is None else cartesian_prod(result, a)
-        if result is None:
-            return CartesianProduct.identity
-        # CartesianProduct values are streams of rows. ``cartesian_prod``
-        # already lifts 1D inputs to 2D, but a single-array call seeds
-        # ``result = a`` unchanged — promote so the rank invariant holds for
-        # every array-path return.
-        if result.ndim == 1:
-            result = result[:, None]
-        return result
+        return functools.reduce(jnp.logical_and, args)
+
+
+class OrPlusJax(ObjectInterpretation):
+    @implements(Or.plus)
+    def plus(self, *args):
+        if not _jax_args(args):
+            return fwd()
+        return functools.reduce(jnp.logical_or, args)
+
+
+class IteJax(ObjectInterpretation):
+    @implements(ite)
+    def ite(self, cond, then, else_):
+        if not _jax_args((cond,)):
+            return fwd()
+        return jnp.where(cond, then, else_)
+
+
+class MaskJax(ObjectInterpretation):
+    @implements(Monoid.mask)
+    def mask(self, monoid, value, mask):
+        if not (
+            (is_eager_array(value) or not isinstance(value, Term))
+            and (is_eager_array(mask) or not isinstance(mask, Term))
+        ):
+            return fwd()
+        return jnp.where(mask, value, monoid.identity)
 
 
 class ReduceArrayGather(ObjectInterpretation):
@@ -173,7 +192,7 @@ class ReduceArrayGather(ObjectInterpretation):
         if typeof(body) is not jax.Array:
             return fwd()
 
-        if isinstance(body, Term) and body.op is delta:
+        if isinstance(body, Term) and body.op is monoid.delta:
             return fwd()
 
         body_fvs = fvsof(body)
@@ -221,73 +240,151 @@ class ReduceArray(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
+        if not is_eager_array(body):
+            return fwd()
+
         reductor = ARRAY_REDUCTORS.get(monoid, None)
         if reductor is None:
             return fwd()
 
-        if typeof(body) is not jax.Array:
-            return fwd()
-
-        pos_dims = {}
-        if isinstance(body, Term):
-            if body.op == delta:
-                pos_dims = {
-                    d.op
-                    for d in body.args[0]
-                    if isinstance(d, Term) and d.op in streams
-                }
-            elif _is_monoid_plus(body.op) and distributes_over(
-                body.op.__self__, monoid
-            ):
-                # delegate to factorization
-                return fwd()
-
         body_fvs = fvsof(body)
-        used = {
-            k
-            for k, v in streams.items()
-            if k in body_fvs and k not in pos_dims and isinstance(v, range)
-        }
+        used = {k for k, v in streams.items() if k in body_fvs and isinstance(v, range)}
         if not used:
             return fwd()
 
-        delta_key = tuple(k() for k in streams if k in used)
-        arr = monoid.reduce(delta(delta_key, body), streams)
+        index = tuple(k() for k in streams if k in used)
+        arr = monoid.reduce(monoid.delta(index, body), streams)
         reduced_body = reductor(arr, axis=tuple(range(len(used))))
         return reduced_body
 
 
-@Operation.define
-def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
-    raise NotHandled
+class ReduceDisequalityMask(ObjectInterpretation):
+    """M.reduce(M.mask(v, And.plus(a != b, c)), S)
+    ≡ M.reduce(M.plus(M.mask(v, And.plus(a < b, c)), M.mask(v, And.plus(a > b, c))))
+    """
 
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
 
-def _range_stop(term: Term):
-    assert term.op == jnp.arange
-    if "stop" in term.kwargs:
-        return term.kwargs["stop"]
-    if len(term.args) < 2:
-        return term.args[0]
-    return term.args[1]
+            case _:
+                return fwd()
 
+        mask_elems = _conjuncts(mask)
 
-class DeltaEmpty(ObjectInterpretation):
-    """delta((), weight) ≡ weight"""
+        def _neq_to_plus(args, tail_mask_elems):
+            match args:
+                case (Term(stream_op, (), {}), index) if _is_simple_range(
+                    streams.get(stream_op, None)
+                ):
+                    pass
+                case _:
+                    return None
+            return monoid.reduce(
+                monoid.plus(
+                    monoid.mask(value, And.plus(stream_op() < index, *tail_mask_elems)),
+                    monoid.mask(value, And.plus(stream_op() > index, *tail_mask_elems)),
+                ),
+                streams,
+            )
 
-    @implements(delta)
-    def _(self, index, weight):
-        if not index:
-            return weight
+        for i, elem in enumerate(mask_elems):
+            match elem:
+                case Term(jnp.not_equal, args, {}):
+                    tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+                    ret = _neq_to_plus(args, tail_mask_elems) or _neq_to_plus(
+                        tuple(reversed(args)), tail_mask_elems
+                    )
+                    if ret:
+                        return ret
+
         return fwd()
 
 
-class DeltaFusion(ObjectInterpretation):
-    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
+class ReduceArrayScan(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        match body:
+            case Term(mask_op, (value, mask), {}) if (
+                _is_monoid_mask(mask_op) and mask_op.__self__ == monoid
+            ):
+                pass
 
-    @implements(delta)
-    def _(self, index, weight):
-        if isinstance(weight, Term) and weight.op == delta:
-            return delta(index + weight.args[0], weight.args[1])
+            case _:
+                return fwd()
+
+        def _inequality_to_scan(cmp_op, args, tail_mask_elems):
+            match args:
+                case (Term(stream_op, (), {}), index):
+                    pass
+                case _:
+                    return None
+
+            stream = streams.get(stream_op, None)
+            if not _is_simple_range(stream):
+                return None
+            assert isinstance(stream, range)
+
+            reverse = cmp_op in (jnp.greater_equal, jnp.greater)
+            n = len(stream)
+            pos_value = monoid.reduce(
+                monoid.delta((stream_op(),), value), {stream_op: stream}
+            )
+            # inclusive prefix (or suffix, when reverse) scan over the stream
+            inclusive = lax.associative_scan(monoid.plus, pos_value, reverse=reverse)
+            # The strict comparisons (`<`, `>`) need an *exclusive* scan: pad
+            # an identity element on the appropriate side and shift the result
+            # so that scan_val[k] aggregates only the positions satisfying the
+            # comparison against k. The non-strict comparisons (`<=`, `>=`) use
+            # the inclusive scan directly.
+            match cmp_op:
+                case jnp.less:
+                    scan_val = jnp.pad(
+                        inclusive,
+                        (1, 0),
+                        mode="constant",
+                        constant_values=monoid.identity,
+                    )[:n]
+                case jnp.greater:
+                    scan_val = jnp.pad(
+                        inclusive,
+                        (0, 1),
+                        mode="constant",
+                        constant_values=monoid.identity,
+                    )[1:]
+                case _:
+                    scan_val = inclusive
+
+            tail_body = monoid.mask(
+                jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
+            )
+            tail_streams = {k: v for (k, v) in streams.items() if k != stream_op}
+            if tail_streams:
+                return monoid.reduce(tail_body, tail_streams)
+            return tail_body
+
+        mask_elems = _conjuncts(mask)
+        for i, elem in enumerate(mask_elems):
+            tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
+            match elem:
+                case Term(
+                    (
+                        jnp.less_equal | jnp.greater_equal | jnp.less | jnp.greater
+                    ) as cmp_op,
+                    args,
+                    {},
+                ):
+                    ret = _inequality_to_scan(
+                        cmp_op, args, tail_mask_elems
+                    ) or _inequality_to_scan(
+                        complement.of(cmp_op), tuple(reversed(args)), tail_mask_elems
+                    )
+                    if ret is not None:
+                        return ret
         return fwd()
 
 
@@ -302,7 +399,7 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
 
     @implements(Monoid.reduce)
     def _(self, monoid: Monoid, body, streams: Streams):
-        if not (isinstance(body, Term) and body.op == delta):
+        if not (isinstance(body, Term) and body.op == monoid.delta):
             return fwd()
 
         index, weight = body.args
@@ -369,125 +466,15 @@ class ReduceDeltaSimpleRange(ObjectInterpretation):
         gathered_weight = handler(gather_subst)(evaluate)(sliced_weight)
         gathered_streams = handler(gather_subst)(evaluate)(sliced_streams)
 
+        gathered_body = (
+            monoid.delta(tail_index, gathered_weight) if tail_index else gathered_weight
+        )
         inner = (
-            monoid.reduce(delta(tail_index, gathered_weight), gathered_streams)
+            monoid.reduce(gathered_body, gathered_streams)
             if gathered_streams
             else gathered_weight
         )
         return bind_dims(inner, fresh_op)
-
-
-class ReduceDependentRangeMask(ObjectInterpretation):
-    """Eliminate a dependent range by masking.
-
-    reduce(M, streams ∪ {u: range(N), v: range(u())}, body)
-    ═══════════════════════════════════════════════════════════════════════════
-    reduce(M, streams ∪ {u: range(N), v: range(N)}, where(v() < u(), body, M.identity))
-
-    Currently recognises only the lower-triangular form ``v: range(u())``:
-    constant start of 0, dependent stop equal to a bare call of another
-    stream var.
-
-    Not yet supported:
-
-    - **Upper-triangular** (``v: range(u(), N)`` — constant stop, dependent
-      start): bbox becomes ``range(0, N)`` (or ``range(0, bbox_N)``), guard
-      becomes ``v() >= u()``. Same shape of rewrite as lower-tri; differs
-      only in which side of the range carries the stream-var reference and
-      in the predicate direction.
-    - **Banded** (``v: range(u() - k, u() + k + 1)`` — two-sided dependent
-      bounds with constant width): bbox is ``range(0, N + k)`` (or similar
-      bounded by both endpoints' extents), guard is
-      ``(v() >= u() - k) & (v() < u() + k + 1)``. Needs both-sides
-      affine-bound recognition.
-    - **Strided dependent** (``v: range(0, u(), k)`` for ``k != 1``): bbox
-      stays ``range(0, N)`` and guard becomes
-      ``(v() < u()) & (v() % k == 0)`` (or equivalent), or alternatively
-      embed in a smaller bbox ``range(0, ceil(N/k))`` and remap the index.
-    - **Affine bounds** (``v: range(a*u() + b, c*u() + d)`` for affine
-      coefficients): bbox computed from ``ub(c*u() + d)`` over ``u``'s
-      range; guard is the conjunction of the two affine constraints. This
-      subsumes the upper/banded/strided cases under one affine recogniser.
-    - **Multi-stream-var dependent** (``v: range(u() + w())`` referencing
-      more than one outer stream var): bbox is the affine combination over
-      both referents' ranges; guard threads through all dependencies.
-    - **Reverse-order dependent ranges**: e.g. ``v: range(u(), 0, -1)``;
-      needs to handle negative step and the corresponding reverse
-      enumeration.
-    """
-
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        stream_vars = set(streams.keys())
-
-        # streams of the form k: range(X)
-        simple_ranges = {
-            k: v
-            for (k, v) in streams.items()
-            if isinstance(v, range) and v.start == 0 and v.step == 1
-        }
-        for u, u_stream in simple_ranges.items():
-            if fvsof(u_stream) & stream_vars:
-                continue
-
-            for v, v_stream in streams.items():
-                if (
-                    isinstance(v_stream, Term)
-                    and v_stream.op == jnp.arange
-                    and isinstance(_range_stop(v_stream), Term)
-                    and _range_stop(v_stream).op == u
-                ):
-                    fresh_streams = {
-                        a: (u_stream if a == v else b) for (a, b) in streams.items()
-                    }
-
-                    # there are other commuting rules for delta that we do not
-                    # currently include
-                    if isinstance(body, Term) and body.op == delta:
-                        fresh_body = delta(
-                            body.args[0],
-                            jnp.where(v() < u(), body.args[1], monoid.identity),  # type: ignore[arg-type]
-                        )
-                    else:
-                        fresh_body = jnp.where(v() < u(), body, monoid.identity)
-
-                    return monoid.reduce(fresh_body, fresh_streams)
-
-        return fwd()
-
-
-# Cross-cutting delta rules not yet implemented:
-#
-# - **Delta-commuting** (DC-hoist): for any pure op ``f`` (no Scoped binders
-#   that intersect a delta's index ops), push delta outward:
-#       f(args..., delta(idx, body), args...)
-#       ≡ delta(idx, f(args..., body, args...))
-#   This normalizes delta to the outermost position so the reduce rules can
-#   pattern-match ``isinstance(body, Term) and body.op == delta`` cleanly.
-#   The soundness condition is mechanical via ``op.__fvs_rule__``: refuse to
-#   commute when a non-delta arg's scope binds any op in the delta's idx.
-#
-# - **Delta-merging** (DC-merge): under a pure binary op ``f`` (or
-#   generalized n-ary), merge multiple deltas when their index tuples are
-#   subsequence-compatible:
-#       f(delta(idx_a, v), delta(idx_b, w)) ≡ delta(idx_max, f(v, w))
-#   where ``idx_max`` is the longer of ``idx_a``, ``idx_b`` and ``idx_a`` is
-#   a subsequence of ``idx_b`` (or vice versa). Refuse to fire when neither
-#   is a subsequence of the other, since that would silently insert an
-#   outer-product broadcast.
-
-
-class ContractLongestArrayStream(ObjectInterpretation):
-    @implements(choose_contraction)
-    def _(self, factors, streams):
-        lengths = {
-            k: v.shape[0] if isinstance(v, jax.Array) and v.shape else 0
-            for (k, v) in streams.items()
-        }
-        longest = max(lengths.values())
-        return fwd(
-            factors, {k: v for (k, v) in streams.items() if lengths[k] == longest}
-        )
 
 
 class ReduceSumProductContraction(ObjectInterpretation):
@@ -520,70 +507,306 @@ class ReduceSumProductContraction(ObjectInterpretation):
             return fwd()
 
         # create leading reduction dimensions
-        delta_key = tuple(k() for k in streams)
-        pos_lhs = Sum.reduce(delta(delta_key, lhs), streams)
-        pos_rhs = Sum.reduce(delta(delta_key, rhs), streams)
+        index = tuple(k() for k in streams)
+        pos_lhs = Sum.reduce(Sum.delta(index, lhs), streams)
+        pos_rhs = Sum.reduce(Sum.delta(index, rhs), streams)
 
         dims = "".join(get_symbol(i) for i in range(len(streams)))
         contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)
         return contraction
 
 
-@jax.jit(static_argnums=(0,))
-def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
-    """Evaluate an einsum expression using monoid reductions."""
-    if not operands:
-        raise ValueError("einsum requires at least one operand")
+@dataclass
+class Node:
+    ordinal: frozenset[str]
+    children: list["Node"]
+    factors: list[int]
 
-    in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
-        [subscripts, *(op.shape for op in operands)], shapes=True
-    )
-    in_specs = in_spec.split(",")
 
-    all_letters = set(out_spec) | {c for s in in_specs for c in s}
-    ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
+class _EinsumBuilder:
+    in_specs: Sequence[str]
+    out_spec: str
+    plates: frozenset[str]
+    operands: Sequence[jax.Array]
 
-    sizes: dict[str, int] = {}
-    for spec, op in zip(in_specs, operands, strict=True):
-        for l, s in zip(spec, op.shape, strict=True):
-            if l in sizes and sizes[l] != s:
-                raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
+    def __init__(
+        self, subscripts: str, /, *operands: jax.Array, plates: str | None = None
+    ):
+        if not operands:
+            raise ValueError("einsum requires at least one operand")
+
+        in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
+            [subscripts, *(op.shape for op in operands)], shapes=True
+        )
+        in_specs = in_spec.split(",")
+
+        self.in_specs = in_specs
+        self.out_spec = out_spec
+        self.plates = frozenset(plates or "")
+        self.operands = operands
+
+        # check that the output spec preserves required plates
+        out_spec_set = frozenset(self.out_spec)
+        out_plates = out_spec_set & self.plates
+        for c in out_spec_set - self.plates:
+            missing_plates = self.ordinal[c] - out_plates
+            if missing_plates:
+                raise ValueError(
+                    "It is nonsensical to preserve a plated dim without preserving "
+                    f"all of that dim's plates, but found {c!r} without "
+                    f"{','.join(sorted(missing_plates))!r}"
+                )
+
+    @functools.cached_property
+    def sizes(self) -> Mapping[str, int]:
+        """`sizes[d]` is the length of a dimension `d`."""
+        sizes: dict[str, int] = {}
+        for spec, op in zip(self.in_specs, self.operands, strict=True):
+            for l, s in zip(spec, op.shape, strict=True):
+                if l in sizes and sizes[l] != s:
+                    raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
+                else:
+                    sizes[l] = s
+        for c in self.out_spec:
+            if c not in sizes:
+                raise ValueError(f"einsum: output index {c!r} not present in any input")
+        return sizes
+
+    @functools.cached_property
+    def ordinal(self) -> Mapping[str, frozenset[str]]:
+        """`ordinal[d]` is the plate context of a dimension `d`."""
+        ordinal: dict[str, frozenset[str]] = defaultdict(lambda: self.plates)
+        for spec in self.in_specs:
+            spec_set = frozenset(spec)
+            for c in spec_set - self.plates:
+                ordinal[c] &= spec_set
+        return ordinal
+
+    @functools.cached_property
+    def plate_tree(self) -> Node:
+        # 1. ordinal (plate context) of each factor
+        factor_ordinal = {
+            k: frozenset(spec) & self.plates for k, spec in enumerate(self.in_specs)
+        }
+
+        # 2. node set: every factor ordinal, the global root ∅, and every pairwise
+        #    intersection. The intersection of two ordinals is the deepest context
+        #    that contains both, i.e. their common ancestor -- a shared plate MUST
+        #    have a node to live at, or containment can't be a tree. Closing under
+        #    ∩ materializes those frame nodes (finite lattice, so it terminates).
+        ordinals: set[frozenset[str]] = set(factor_ordinal.values()) | {frozenset()}
+        changed = True
+        while changed:
+            changed = False
+            for A in list(ordinals):
+                for B in list(ordinals):
+                    if (A & B) not in ordinals:
+                        ordinals.add(A & B)
+                        changed = True
+
+        nodes = {o: Node(ordinal=o, children=[], factors=[]) for o in ordinals}
+
+        # 3. parent of o = the largest ordinal strictly inside o ("next context out").
+        #    Validity: that maximum must dominate EVERY other strict subset, i.e. the
+        #    strict subsets form a chain. Two incomparable maximal subsets means o is a
+        #    join over two separate branches -- not a tree -> raise.
+        for o in ordinals:
+            if not o:  # root ∅ has no parent
+                continue
+            subs = [p for p in ordinals if p < o]  # strict subsets, present as nodes
+            parent = max(subs, key=len)
+            offenders = [s for s in subs if not (s <= parent)]
+            if offenders:
+                raise ValueError(
+                    f"factors do not form a plate tree: context {set(o)} sits above "
+                    f"incomparable sub-plates {[set(s) for s in offenders]} (a join, not a nest)"
+                )
+            nodes[parent].children.append(nodes[o])
+
+        # 4. hang each factor on its ordinal's node
+        for k, o in factor_ordinal.items():
+            nodes[o].factors.append(k)
+
+        return nodes[frozenset()]  # the root
+
+    def dim_type(self, dim: str) -> type:
+        return (
+            int
+            if dim in self.plates
+            else Mapping[tuple, int]
+            if self.ordinal[dim]
+            else int
+        )
+
+    @functools.cached_property
+    def dim_op(self) -> Mapping[str, Operation]:
+        return {
+            dim: Operation.define(self.dim_type(dim), name=dim)
+            for dim in set("".join(self.in_specs))
+        }
+
+    @functools.cached_property
+    def out_vars(self) -> Mapping[str, Operation]:
+        return {c: Operation.define(jax.Array, name=f"out_{c}") for c in self.out_spec}
+
+    @functools.cached_property
+    def global_enums(self) -> frozenset[str]:
+        return frozenset(c for c, o in self.ordinal.items() if not o)
+
+    @functools.cached_property
+    def arrays(self) -> list[Term]:
+        return [Operation.define(jax.Array)() for _ in self.operands]
+
+    def dim_index(self, dim: str) -> Expr:
+        out_globals = self.global_enums & set(self.out_spec)
+
+        return (
+            self.out_vars[dim]()
+            if dim in out_globals
+            else self.dim_op[dim]()
+            if dim in self.plates or not self.ordinal[dim]
+            else self.dim_op[dim]()[
+                tuple(self.dim_op[p]() for p in sorted(self.ordinal[dim]))
+            ]
+        )
+
+    def out_mask(self, vars):
+        eqs = tuple(self.dim_index(p) == self.out_vars[p]() for p in vars)
+        return And.plus(*eqs)
+
+    def _build_plate_reductions(
+        self, plate_tree: Node, parent_plates: frozenset[str] = frozenset()
+    ) -> Expr[jax.Array]:
+
+        masked_factors = []
+        for factor_idx in plate_tree.factors:
+            spec = self.in_specs[factor_idx]
+            factor = jax_getitem(
+                self.arrays[factor_idx], tuple(self.dim_index(d) for d in spec)
+            )
+            # Only plated output dims are delta'd per factor. Global output dims are
+            # delta'd once by the outer ``out_mask`` in ``_einsum_expr``; masking
+            # them here too would check the same equality (e.g. ``out_b == b``) in
+            # every factor that mentions the dim as well as the outer mask.
+            factor_out_dims = frozenset(
+                d
+                for d in set(spec) & set(self.out_vars) - self.plates
+                if self.ordinal[d]
+            )
+
+            if factor_out_dims:
+                # Preserving a plated output dim requires preserving all its plates,
+                # as checked in ``__init__``.
+                factor_out_plates = plate_tree.ordinal & set(self.out_vars)
+                masked_factors.append(
+                    ite(
+                        self.out_mask(factor_out_plates),
+                        Sum.mask(factor, self.out_mask(factor_out_dims)),
+                        factor,
+                    )
+                )
             else:
-                sizes[l] = s
-    for c in out_spec:
-        if c not in sizes:
-            raise ValueError(f"einsum: output index {c!r} not present in any input")
+                masked_factors.append(factor)
 
-    arrays = [Operation.define(jax.Array) for _ in operands]
-    factors = [
-        unbind_dims(arr(), *(ops[c] for c in spec))
-        for arr, spec in zip(arrays, in_specs, strict=True)
-    ]
-    body = Product.plus(*factors)
+        child_reductions = (
+            self._build_plate_reductions(n, parent_plates | plate_tree.ordinal)
+            for n in plate_tree.children
+        )
+        product = Product.plus(*masked_factors, *child_reductions)
+        if plate_tree.ordinal:
+            plate_streams = {
+                self.dim_index(p).op: range(self.sizes[p])
+                for p in sorted(plate_tree.ordinal - parent_plates)
+            }
+            return Product.reduce(product, plate_streams)
+        return product
 
-    out_tuple = tuple(ops[c]() for c in out_spec)
-    streams = {op: range(sizes[c]) for c, op in ops.items()}
+    @functools.cached_property
+    def term(self) -> Expr[Callable]:
+        # one stream of per-plate-assignment rows for each plated sum dim
+        rows = {}
+        plated_enums = {c: o for c, o in self.ordinal.items() if o}
+        for c, o in plated_enums.items():
+            ps = [(p, self.dim_op[p]) for p in sorted(o)]
+            delta_idx = tuple(op() for (_, op) in ps)
+            c_streams = {op: range(self.sizes[p]) for (p, op) in ps}
+            v = Operation.define(int, name=f"{c}_v")
+            rows[c] = CartesianProduct.reduce(
+                UnionM.reduce([as_dict((delta_idx, v()))], {v: range(self.sizes[c])}),
+                c_streams,
+            )
+
+        streams: Streams = {
+            self.dim_op[c]: range(self.sizes[c])
+            for c in self.global_enums
+            if c not in self.out_spec
+        } | {self.dim_op[c]: r for c, r in rows.items()}
+
+        dims = [(self.out_vars[c], self.sizes[c]) for c in self.out_spec]
+
+        reductions = self._build_plate_reductions(self.plate_tree)
+        reduction = Sum.reduce(reductions, streams) if streams else reductions
+        return deffn(
+            bind_dims(
+                deffn(reduction, *(self.out_vars[c] for c in self.out_spec))(
+                    *(unbind_dims(jnp.arange(d), v) for (v, d) in dims)
+                ),
+                *(v for (v, _) in dims),
+            ),
+            *(a.op for a in self.arrays),
+        )
+
+
+@jax.jit(static_argnums=(0,), static_argnames=("plates",))
+def einsum(
+    subscripts: str, /, *operands: jax.Array, plates: str | None = None
+) -> jax.Array:
+    """Evaluate an einsum expression using monoid reductions.
+
+    Generalizes :func:`jax.numpy.einsum` with plated dimensions in the style of
+    :func:`pyro.ops.contract.einsum`: indices in ``plates`` are plate
+    dimensions, and reductions along plates are product reductions. A sum
+    dimension that always appears together with a plate denotes a distinct
+    variable for each slice of that plate; its plate context (ordinal) is the
+    intersection of the plate sets of the inputs that mention it. When such a
+    dimension appears in the output it must be accompanied by all of its
+    plates.
+
+    The expression is represented naively: each plated sum dimension ranges
+    over a :data:`CartesianProduct` stream of per-plate-assignment rows, and
+    each plated input is a :data:`Product` reduction over its plates.
+    """
+    expr = _EinsumBuilder(subscripts, *operands, plates=plates).term
+
     with handler(NormalizeIntp):
-        norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
-        result = norm(*operands)
-        assert isinstance(result, jax.Array)
+        norm_expr = evaluate(expr)
+
+    assert CartesianProduct.reduce not in fvsof(norm_expr), (
+        "failed to eliminate cartesian products"
+    )
+
+    with handler(EvaluateIntp), handler(NormalizeIntp):
+        assert callable(norm_expr)
+        result = norm_expr(*operands)
+        assert isinstance(result, jax.Array), "failed to fully evaluate"
         return result
 
 
-NormalizeIntp.extend(
-    ReduceArray(),
-    ReduceSumProductContraction(),
-    ReduceArrayGather(),
-    ReduceDeltaSimpleRange(),
-    ReduceDependentRangeMask(),
-    DeltaEmpty(),
-    DeltaFusion(),
+EvaluateIntp.extend(
     SumPlusJax(),
     ProductPlusJax(),
     MinPlusJax(),
     MaxPlusJax(),
     LogSumExpPlusJax(),
-    CartesianProductPlusJax(),
-    ContractLongestArrayStream(),
-    PlusJaxUpcast(),
+    AndPlusJax(),
+    OrPlusJax(),
+    IteJax(),
+    MaskJax(),
+    ReduceSumProductContraction(),
+    ReduceArray(),
+    ReduceDeltaSimpleRange(),
+    ReduceArrayScan(),
+    PlusCastArray(),
 )
+
+NormalizeIntp.extend(ReduceArrayGather())
