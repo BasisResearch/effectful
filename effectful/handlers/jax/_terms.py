@@ -1,5 +1,6 @@
 import functools
 import operator
+import typing
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ from effectful.handlers.jax._handlers import (
     IndexElement,
     _register_jax_op,
     bind_dims,
+    is_eager_array,
     jax_getitem,
     unbind_dims,
 )
@@ -461,10 +463,10 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
         return t
 
     # ensure that the result is a jax_getitem with an array as the first argument
-    if not (t.op is jax_getitem and isinstance(t.args[0], jax.Array)):
+    if not (t.op is jax_getitem and is_eager_array(t)):
         raise NotHandled
 
-    array = t.args[0]
+    array = typing.cast(jax.Array, t.args[0])
     dims = t.args[1]
     assert isinstance(dims, Sequence)
     ndim = len(array.shape)

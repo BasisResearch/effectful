@@ -10,6 +10,7 @@ from opt_einsum.parser import parse_einsum_input
 
 try:
     import jax
+    import jax.core
     import jax.numpy as jnp
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
@@ -29,6 +30,9 @@ from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
+
+
+class JaxOperation[**P, T](Operation[P, T]): ...
 
 
 def is_eager_array(x):
@@ -141,7 +145,7 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
-    @defop
+    @JaxOperation.define
     def _jax_op(*args, **kwargs) -> jax.Array:
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
@@ -158,6 +162,8 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             )
         ):
             raise NotHandled
+        elif _jax_op is jax_getitem and not args[1]:
+            return args[0]
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
             # note: this cast is a lie. partial_eval can return non-arrays, as
             # can jax_fn. for example, some jax functions return tuples,
@@ -229,7 +235,7 @@ def _einsum_named(subscripts, *operands, **kwargs) -> jax.Array:
         return jax.numpy.einsum(subscripts, *operands, **kwargs)
 
     # forward if any operand has a symbolic (Term) shape
-    if any(isinstance(arr.shape, Term) for arr in operands):
+    if any(isinstance(arr, Term) and not is_eager_array(arr) for arr in operands):
         raise NotHandled
 
     named = [_named_dims(op) for op in operands]
@@ -315,11 +321,18 @@ def bind_dims[T, A, B](
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
+    if not names:
+        return value
     if isinstance(value, Term) and value.op == bind_dims:
         return bind_dims(value.args[0], *(names + tuple(value.args[1:])))
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: bind_dims(v, *names), value)
+
+
+@bind_dims.register(object)  # type: ignore[attr-defined]
+def _(*args, **kwargs):
+    raise NotHandled
 
 
 @defop
@@ -330,9 +343,16 @@ def unbind_dims[T, A, B](
     *names: Annotated[Operation[[], jax.Array], Scoped[B]],
 ) -> Annotated[T, Scoped[A | B]]:
     """Convert positional dimensions to named dimensions."""
+    if not names:
+        return value
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: unbind_dims(v, *names), value)
+
+
+@unbind_dims.register(object)  # type: ignore[attr-defined]
+def _(*args, **kwargs):
+    raise NotHandled
 
 
 def jit(f, *args, **kwargs):
@@ -388,7 +408,18 @@ def _(x: jax.Array, other) -> bool:
     )
 
 
-@syntactic_hash.register(jax.Array)
+@syntactic_eq.register
+def _(x: jax.core.Tracer, other) -> bool:
+    return isinstance(other, jax.core.Tracer) and id(x) == id(other)
+
+
+@syntactic_hash.register
 def _(x: jax.Array) -> int:
     # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
-    return hash(("jax.Array", x.shape, str(x.dtype), bytes(jax.numpy.asarray(x))))
+    return hash(("jax.Array", x.shape, str(x.dtype), x.tobytes()))
+
+
+@syntactic_hash.register
+def _(x: jax.core.Tracer) -> int:
+    # Concrete arrays aren't hashable; hash by shape, dtype, and bytes.
+    return hash(("jax.core.Tracer", id(x)))

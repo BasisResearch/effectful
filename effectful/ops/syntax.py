@@ -5,7 +5,7 @@ import inspect
 import numbers
 import operator
 import typing
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, KeysView, Mapping, ValuesView
 from typing import Annotated, Any
 
 from effectful.ops.types import (
@@ -593,11 +593,6 @@ class _BaseTerm[T](Term[T]):
         self._args = args
         self._kwargs = kwargs
 
-    def __eq__(self, other) -> bool:
-        from effectful.ops.syntax import syntactic_eq
-
-        return syntactic_eq(self, other)
-
     @property
     def op(self):
         return self._op
@@ -777,6 +772,111 @@ iter_ = _IterableTerm.__iter__
 next_ = _IteratorTerm.__next__
 
 
+@defdata.register(collections.abc.Collection)
+class _CollectionTerm[T](_IterableTerm[T], collections.abc.Collection[T]):
+    @defop
+    def __contains__(self: collections.abc.Collection[T], x: T) -> bool:
+        if not isinstance(self, Term) and not isinstance(x, Term):
+            return x in self
+        else:
+            raise NotHandled
+
+    @defop
+    def __len__(self: collections.abc.Collection[T]) -> int:
+        if not isinstance(self, Term):
+            return len(self)
+        else:
+            raise NotHandled
+
+
+@defdata.register(collections.abc.Sequence)
+class _SequenceTerm[T](_CollectionTerm[T], collections.abc.Sequence[T]):
+    @Operation.define
+    def __getitem__(self: collections.abc.Sequence[T], key: int) -> T:
+        if not isinstance(self, Term) and not isinstance(key, Term):
+            return self[key]
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def __reversed__(self: collections.abc.Sequence[T]) -> collections.abc.Iterator[T]:
+        if not isinstance(self, Term):
+            return reversed(self)
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def index(self: collections.abc.Sequence[T], *args, **kwargs) -> int:
+        from effectful.ops.semantics import fvsof
+
+        if not fvsof((self, *args, *kwargs.values())):
+            return self.index(*args, **kwargs)
+        else:
+            raise NotHandled
+
+    @Operation.define
+    def count(self: collections.abc.Sequence[T], value: T) -> int:
+        from effectful.ops.semantics import fvsof
+
+        if not fvsof((self, value)):
+            return self.count(value)
+        else:
+            raise NotHandled
+
+
+@defdata.register(collections.abc.Mapping)
+class _MappingTerm[K, V](_CollectionTerm[K]):
+    @defop
+    def __getitem__(self: collections.abc.Mapping[K, V], key: K) -> V:
+        from effectful.ops.semantics import fvsof
+
+        if not isinstance(self, Term) and not fvsof(key):
+            return self[key]
+        else:
+            raise NotHandled
+
+    @defop
+    def get(
+        self: collections.abc.Mapping[K, V], key: K, default: V | None = None
+    ) -> V | None:
+        from effectful.ops.semantics import fvsof
+
+        if not isinstance(self, Term) and not fvsof(key):
+            return self.get(key, default)
+        else:
+            raise NotHandled
+
+    @defop
+    def keys(self: collections.abc.Mapping[K, V]) -> KeysView[K]:
+        if not isinstance(self, Term):
+            return self.keys()
+        else:
+            raise NotHandled
+
+    @defop
+    def values(self: collections.abc.Mapping[K, V]) -> ValuesView[V]:
+        if not isinstance(self, Term):
+            return self.values()
+        else:
+            raise NotHandled
+
+    @defop
+    def __eq__(self: collections.abc.Mapping[K, V], other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self == other
+        else:
+            raise NotHandled
+
+
+@Operation.define
+def as_dict[K, V](*args: tuple[K, V]) -> Mapping[K, V]:
+    from effectful.ops.semantics import fvsof
+
+    if not fvsof(args):
+        return dict(args)
+    raise NotHandled
+
+
 @_CustomSingleDispatchCallable
 def syntactic_eq(
     __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
@@ -840,7 +940,8 @@ def _(x: collections.abc.Sequence, other) -> bool:
         )
     else:
         return (
-            isinstance(other, collections.abc.Sequence)
+            not isinstance(other, Term)
+            and isinstance(other, collections.abc.Sequence)
             and len(x) == len(other)
             and all(syntactic_eq(a, b) for a, b in zip(x, other))
         )
@@ -1176,36 +1277,61 @@ class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
     def __eq__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__eq__(other)
-        else:
-            return syntactic_eq(self, other)
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
+
+    @defop
+    def __ne__(self, other) -> bool:
+        if not isinstance(self, Term) and not isinstance(other, Term):
+            return self.__ne__(other)
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __lt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__lt__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __gt__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__gt__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __le__(self, other) -> bool:
         if not isinstance(self, Term) and not isinstance(other, Term):
             return self.__le__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __ge__(self, other) -> bool:
-        if not isinstance(self, Term) and not isinstance(other, Term):
+        if not isinstance(self, _NumberTerm) and not isinstance(other, _NumberTerm):
             return self.__ge__(other)
-        else:
-            raise NotHandled
+
+        if not isinstance(other, numbers.Number):
+            return NotImplemented
+
+        raise NotHandled
 
     @defop
     def __add__(self, other: T) -> T:
@@ -1415,3 +1541,50 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+@Operation.define
+def ite[T](cond, then: T, else_: T) -> T:
+    """If-then-else operation."""
+    # Note: cond is specifically not annotated to allow this operation to take
+    # non-bool arguments (like boolean arrays).
+    if not isinstance(cond, Term):
+        return then if cond else else_
+    raise NotHandled
+
+
+@Operation.define
+def range_(stop: int, *args: int) -> range:
+    if any(isinstance(x, Term) for x in (stop, *args)):
+        raise NotHandled
+    return range(stop, *args)
+
+
+@defdata.register(range)
+class _RangeTerm(_SequenceTerm[int]):
+    @property
+    @Operation.define
+    def start(self) -> int:
+        if not isinstance(self, Term):
+            return self.start
+        if self.op == range_:
+            return 0 if len(self.args) < 2 else self.args[0]
+        raise NotHandled
+
+    @property
+    @Operation.define
+    def stop(self) -> int:
+        if not isinstance(self, Term):
+            return self.stop
+        if self.op == range_:
+            return self.args[0] if len(self.args) < 2 else self.args[1]
+        raise NotHandled
+
+    @property
+    @Operation.define
+    def step(self) -> int:
+        if not isinstance(self, Term):
+            return self.step
+        if self.op == range_:
+            return 1 if len(self.args) < 3 else self.args[2]
+        raise NotHandled
