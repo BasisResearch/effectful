@@ -11,6 +11,7 @@ import linecache
 import logging
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import typing
@@ -18,7 +19,6 @@ from collections.abc import MutableMapping
 from types import CodeType
 from typing import Any
 
-from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
     Guards,
@@ -30,6 +30,7 @@ from RestrictedPython.PrintCollector import PrintCollector
 
 from effectful.handlers.llm.template import Tool
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.types import Operation
 
 
 @defop
@@ -48,7 +49,13 @@ def parse(source: str, filename: str) -> ast.Module:
 
 
 @defop
-def type_check(source: str, lo: int | None = None, hi: int | None = None) -> None:
+def type_check(
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    *,
+    lenient: bool = False,
+) -> None:
     """
     Type check a module source, reporting only diagnostics inside a line region.
 
@@ -58,6 +65,10 @@ def type_check(source: str, lo: int | None = None, hi: int | None = None) -> Non
     lo, hi: Inclusive line range within ``source`` to report errors from; when
         omitted, the whole source is in scope. Errors outside the region are
         ignored so unrelated pre-existing code never blocks synthesis.
+    lenient: when True, relax mypy for incrementally-built REPL code spliced into a
+        Template body -- allow redefinition (a cell may rebind or redefine a name)
+        and don't require the body to satisfy the Template's return type. Off (strict)
+        for synthesized ``Callable`` bodies, which must honor their signature.
 
     Returns None, raises TypeError on an in-region failure.
     """
@@ -109,17 +120,20 @@ def scan_non_nestable(generated: ast.Module) -> None:
     ``from ... import *`` and ``from __future__ import ...`` are both ``SyntaxError``s
     inside a function body, but mypy *accepts* a nested star import silently, so the
     splice would slip an illegal construct past the type check and fail later at
-    ``compile``/``exec``. Detect them explicitly and raise before splicing.
+    ``compile``/``exec``. Detect them explicitly and raise before splicing. Raises
+    ``ValueError`` (this is rejecting invalid generated *source*, not signaling a type
+    error), so a decoder can catch it alongside ``SyntaxError`` without swallowing a real
+    ``TypeError`` from a broken provider.
     """
     for stmt in generated.body:
         if isinstance(stmt, ast.ImportFrom):
             if stmt.module == "__future__":
-                raise TypeError(
+                raise ValueError(
                     "generated code uses `from __future__ import ...`, which is "
                     "illegal once spliced into a function body"
                 )
             if any(alias.name == "*" for alias in stmt.names):
-                raise TypeError(
+                raise ValueError(
                     "generated code uses a star import (`from ... import *`), which "
                     "is illegal once spliced into a function body"
                 )
@@ -206,28 +220,10 @@ def splice_into_source(
         )
     target_name = last.name
 
-    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
-    # Recover the module source via fn's own filename -- a real path or a
-    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
-    # notebook templates; linecache.getlines reads real files from disk too.
-    try:
-        source_file = inspect.getsourcefile(fn)
-    except TypeError:
-        source_file = None
-    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
-    if not module_source:
-        logger.warning("skipping type check: cannot recover source for %r", fn)
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
         return None
-    module_ast = ast.parse(module_source)
-
-    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
-    if template_def is None:
-        # The source drifted from what fn was compiled from (e.g. the file was edited after
-        # import).
-        raise RuntimeError(
-            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
-            f"source (source drifted since import?)"
-        )
+    module_ast, template_def = recovered
 
     # Splice in place: replace the body with the generated body and bind the
     # target against the (source) return annotation via `return`. Decorators are
@@ -261,8 +257,91 @@ def splice_into_source(
     return checked_source, lo, hi
 
 
+def _recover_template_def(
+    anchor: Any,
+) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """Locate the anchor Template's own ``def`` in its real module source.
+
+    Returns the parsed module AST and the def node, or ``None`` when the source can't
+    be recovered (REPL/exec/notebook Template with no linecache entry -- the caller
+    skips rather than guesses). Raises ``RuntimeError`` on source drift (source
+    recovered but the def no longer sits where ``fn`` was compiled from).
+    """
+    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
+    # Recover the module source via fn's own filename -- a real path or a
+    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
+    # notebook templates; linecache.getlines reads real files from disk too.
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except TypeError:
+        source_file = None
+    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    if not module_source:
+        logger.warning("skipping type check: cannot recover source for %r", fn)
+        return None
+    module_ast = ast.parse(module_source)
+    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
+    if template_def is None:
+        raise RuntimeError(
+            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
+            f"source (source drifted since import?)"
+        )
+    return module_ast, template_def
+
+
+def _splice_repl(
+    prior: list[str], snippet: str, anchor: Any
+) -> tuple[str, int, int] | None:
+    """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
+    ``snippet`` -- into the anchor Template's body, in its real module source, and return
+    the modified source with the ``[lo, hi]`` line span of the *current* snippet.
+
+    The REPL code becomes the Template function's body at its real (possibly nested)
+    position, so the Template's parameters and enclosing scope -- i.e. the session's seed
+    env -- are in scope, and each snippet sees the ones before it (they are function
+    locals). No ``return`` is appended; the REPL code doesn't produce the Template's
+    declared type, and that contract is waived by ``lenient`` type checking. Every prior
+    snippet stays in the body so its bindings resolve (matching the runtime, which ran
+    them), but only the current snippet's lines are reported, so an earlier cell's error
+    isn't re-reported on every later call.
+
+    Returns ``None`` when the current snippet has no statements to check, or when the
+    Template's source can't be recovered -- a Template defined at a REPL, in a notebook, or
+    via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
+    as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
+    only on source *drift* (source recovered but the def no longer sits where it was
+    compiled from), which ``_recover_template_def`` surfaces.
+    """
+    # An empty or comment-only snippet parses to zero statements: nothing to check.
+    n_current = len(ast.parse(snippet).body)
+    if n_current == 0:
+        return None
+    # None means the Template's source can't be recovered (REPL/exec/notebook-defined) --
+    # skip, like the Callable path, rather than break the tool; `_recover_template_def`
+    # raises on source drift, which is a real error and propagates.
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
+    template_def.body = ast.parse(cumulative).body
+
+    # mypy reports line numbers in the coordinates of the unparsed source; the current
+    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps def
+    # order, so the template def is at the same walk index after the round-trip.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.body[-n_current].lineno
+    hi = spliced.body[-1].end_lineno or lo
+    return checked_source, lo, hi
+
+
 def _mypy_check_region(
-    source: str, lo: int | None = None, hi: int | None = None
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    lenient: bool = False,
 ) -> None:
     """Run mypy on `source` and raise ``TypeError`` if any error diagnostic falls
     within ``[lo, hi]``; raise ``RuntimeError`` if mypy itself fails to run.
@@ -270,17 +349,38 @@ def _mypy_check_region(
     Applies mypy to whatever source it's given -- spliced or otherwise -- and
     reports only the region's errors (the whole source when the region is
     omitted), so pre-existing errors elsewhere in `source` never block synthesis.
+
+    When ``lenient`` (for REPL code spliced into a Template body): allow a variable to be
+    redefined with a new type across cells (``--allow-redefinition``), a def/class/import
+    to be redefined (``no-redef``), and the body not to return the Template's declared type
+    (``return``/``empty-body``). All normal for an incrementally-built REPL, not real errors.
     """
-    # Run mypy on the source as a temp file (not --command: it hits an argv
-    # length limit on large modules). Each call gets an isolated temp dir + cache
-    # so parallel decodes don't share -- and deadlock on -- mypy's SQLite cache.
+    lenient_flags = (
+        [
+            "--allow-redefinition",
+            "--disable-error-code=no-redef",
+            "--disable-error-code=return",
+            "--disable-error-code=empty-body",
+        ]
+        if lenient
+        else []
+    )
+    # Run mypy as a subprocess, not the in-process `mypy.api.run`: the API builds
+    # typeshed and a full module graph inside this process and never returns that
+    # memory, so under a test/agent session doing many checks it accumulates to many
+    # GB (OOM). A subprocess reclaims all of it on exit. Pass a file (not --command:
+    # it hits an argv length limit on large modules); each call gets an isolated temp
+    # dir + cache so parallel decodes don't share -- and deadlock on -- mypy's cache.
     tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
     try:
         tf_path = os.path.join(tmpdir, "_synthesized.py")
         with open(tf_path, "w", encoding="utf-8") as f:
             f.write(source)
-        stdout, stderr, status = mypy_api.run(
+        proc = subprocess.run(
             [
+                sys.executable,
+                "-m",
+                "mypy",
                 tf_path,
                 "--cache-dir",
                 os.path.join(tmpdir, "cache"),
@@ -288,8 +388,12 @@ def _mypy_check_region(
                 "--output=json",
                 "--ignore-missing-imports",
                 "--disable-error-code=import-untyped",
-            ]
+                *lenient_flags,
+            ],
+            capture_output=True,
+            text=True,
         )
+        stdout, stderr, status = proc.stdout, proc.stderr, proc.returncode
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
     # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
@@ -315,9 +419,14 @@ class UnsafeEvalProvider(ObjectInterpretation):
 
     @implements(type_check)
     def type_check(
-        self, source: str, lo: int | None = None, hi: int | None = None
+        self,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        _mypy_check_region(source, lo, hi)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -381,9 +490,14 @@ class RestrictedEvalProvider(ObjectInterpretation):
 
     @implements(type_check)
     def type_check(
-        self, source: str, lo: int | None = None, hi: int | None = None
+        self,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        _mypy_check_region(source, lo, hi)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -516,6 +630,13 @@ class ReplSession(code.InteractiveInterpreter):
         self.compile = _OpCommandCompiler()
         self.stdout = io.StringIO()
         self.stderr = io.StringIO()
+        self._prior_snippets: list[str] = []
+
+    @property
+    def prior_snippets(self) -> list[str]:
+        """Sources of the actual error-free executed snippets, in order -- the type-check
+        context the `Encodable[CodeType]` decoder splices before the current snippet."""
+        return self._prior_snippets
 
     def runcode(self, code: CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
@@ -554,9 +675,31 @@ class ReplSession(code.InteractiveInterpreter):
         """
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
+        # Record this snippet's source so the *next* snippet's decode-time type check can
+        # splice the accumulated session code into the Template body. The type check itself
+        # lives in the `Encodable[CodeType]` decoder (as it does for synthesized Callables),
+        # not here -- this session only runs code.
+        self._prior_snippets.append("".join(linecache.getlines(code.co_filename)))
         with (
             contextlib.redirect_stdout(self.stdout),
             contextlib.redirect_stderr(self.stderr),
         ):
             self.runcode(code)
         return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
+
+
+@Operation.define
+def _repl_session(env: MutableMapping[str, Any]) -> "ReplSession":
+    """Return the REPL session for the current Template call, seeded from `env`.
+
+    `PythonRepl` (in completions.py) installs a fresh handler for this inside each
+    `Template.__apply__` (mirroring how `__history__` is managed), giving the session a
+    lifetime of exactly one Template call. Outside such a scope there is no managed
+    session, so this falls back to a fresh one -- e.g. when tools are listed outside a
+    Template call, or when a code object is decoded with no REPL in scope.
+
+    Defined here (not with `PythonRepl`) so the `Encodable[CodeType]` decoder can reach the
+    session -- and its accumulated `prior_snippets` -- at decode time without importing
+    `completions` (which would be a cycle).
+    """
+    return ReplSession(env)
