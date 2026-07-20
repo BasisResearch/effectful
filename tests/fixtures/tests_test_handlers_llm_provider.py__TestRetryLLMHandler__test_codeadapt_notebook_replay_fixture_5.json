@@ -1,0 +1,46 @@
+{
+  "id": "chatcmpl-DSqmg2qU2araPrVisYe94OwFYqbNb",
+  "created": 1775768458,
+  "model": "gpt-4o-2024-08-06",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_8706f899b3",
+  "choices": [
+    {
+      "finish_reason": "stop",
+      "index": 0,
+      "message": {
+        "content": "{\"value\":{\"module_code\":\"def generate_paragraph() -> str:\\n    return 'The sun rose gently over the horizon as Emily decided to take a morning walk. Along the path, a small squirrel caught her attention as it practiced its art of tumbling. Further down, she crossed paths with an old friend, reminding her that life often brings the joy of rediscovery in one form or another. As she returned home, the playful antics of the neighborhood cat reminded her of the exuberance of a young lunatic.'\"}}",
+        "role": "assistant",
+        "tool_calls": null,
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null
+        },
+        "annotations": []
+      },
+      "provider_specific_fields": {}
+    }
+  ],
+  "usage": {
+    "completion_tokens": 112,
+    "prompt_tokens": 2267,
+    "total_tokens": 2379,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": 0,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": 0,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cached_tokens": 1792,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": null
+    }
+  },
+  "service_tier": "default"
+}

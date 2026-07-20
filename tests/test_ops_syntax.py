@@ -25,7 +25,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
     trace,
 )
-from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -1263,3 +1263,46 @@ def test_defop_forward_ref_mutual_recursion():
     exp_term = tangent.exp()
     assert isinstance(exp_term, Term)
     assert typeof(exp_term) is _Coordinate
+
+
+def test_bench_term_construction(benchmark):
+    """Benchmark polymorphic type checking during term construction."""
+
+    @defop
+    def _benchmark_identity[T](value: T) -> T:
+        raise NotHandled
+
+    @defop
+    def _benchmark_keep_left[T, U](value: T, metadata: U) -> T:
+        raise NotHandled
+
+    @defop
+    def _benchmark_lookup[K, V](values: Mapping[K, V], key: K) -> V:
+        raise NotHandled
+
+    @defop
+    def _benchmark_first[T](values: collections.abc.Sequence[T]) -> T:
+        raise NotHandled
+
+    _BENCHMARK_OPERATIONS: tuple[Callable[[Expr[int], int], Expr[int]], ...] = (
+        lambda value, _: _benchmark_identity(value),
+        lambda value, index: _benchmark_keep_left(value, ("node", index)),
+        lambda value, _: _benchmark_lookup({"value": value}, "value"),
+        lambda value, _: _benchmark_first([value]),
+    )
+
+    def _make_benchmark_term(size: int) -> Term[int]:
+        """Construct a linear term containing exactly ``size`` applications."""
+        if size < 1:
+            raise ValueError("term size must be positive")
+
+        value: Expr[int] = 0
+        for index in range(size):
+            operation = _BENCHMARK_OPERATIONS[index % len(_BENCHMARK_OPERATIONS)]
+            value = operation(value, index)
+
+        assert isinstance(value, Term)
+        return value
+
+    result = benchmark(_make_benchmark_term, 25)
+    assert isinstance(result, Term)

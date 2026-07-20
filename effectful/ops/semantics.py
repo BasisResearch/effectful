@@ -89,76 +89,18 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     res = dict(intp)
     for op, i2 in intp2.items():
-        if op is fwd or op is _get_args:
+        if op in {fwd, _get_args}:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
-            i1 = intp.get(op, op.__default_rule__)
-
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+            i1 = intp.get(op)
+            res[op] = (
+                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+                if i1 is not None
+                else _save_args(i2)
+            )
 
     return res
-
-
-def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
-    """The product of two interpretations handles any effect that is handled by
-    ``intp2``. Handlers in ``intp2`` may override handlers in ``intp``, but
-    those changes are not visible to the handlers in ``intp``. In this way,
-    ``intp`` is isolated from ``intp2``.
-
-    **Example usage**:
-
-    In this example, ``i1`` has a ``param`` effect that defines some hyperparameter and
-    an effect ``f1`` that uses it. ``i2`` redefines ``param`` and uses it in a new effect
-    ``f2``, which calls ``f1``.
-
-    >>> param, f1, f2 = defop(int), defop(dict), defop(dict)
-    >>> i1 = {param: lambda: 1, f1: lambda: {'inner': param()}}
-    >>> i2 = {param: lambda: 2, f2: lambda: f1() | {'outer': param()}}
-
-    Using :func:`product`, ``i2``'s override of ``param`` is not visible to ``i1``.
-
-    >>> with handler(product(i1, i2)):
-    ...     print(f2())
-    {'inner': 1, 'outer': 2}
-
-    However, if we use :func:`coproduct`, ``i1`` is not isolated from ``i2``.
-
-    >>> with handler(coproduct(i1, i2)):
-    ...     print(f2())
-    {'inner': 2, 'outer': 2}
-
-    **References**
-
-    [1] Ahman, D., & Bauer, A. (2020, April). Runners in action. In European
-    Symposium on Programming (pp. 29-55). Cham: Springer International
-    Publishing.
-
-    """
-    if any(op in intp for op in intp2):  # alpha-rename
-        renaming: Interpretation = {op: defop(op) for op in intp2 if op in intp}
-        intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-        return product(intp_fresh, intp2)
-    else:
-        refls2 = {op: op.__default_rule__ for op in intp2}
-        intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
-        return {op: runner(intp_)(intp2[op]) for op in intp2}
-
-
-@contextlib.contextmanager
-def runner(intp: Interpretation):
-    """Install an interpretation by taking a product with the current
-    interpretation.
-
-    """
-    from effectful.internals.runtime import get_interpretation, interpreter
-
-    @interpreter(get_interpretation())
-    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
-        return op(*args, **kwargs)
-
-    with interpreter({apply: _reapply, **intp}):
-        yield intp
 
 
 @contextlib.contextmanager

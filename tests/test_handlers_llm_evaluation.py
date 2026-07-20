@@ -2,1396 +2,353 @@
 
 import ast
 import builtins
-import inspect
-import textwrap
+import contextlib
+import importlib.util
+import io
+import sys
 import types
-import typing
 from collections import ChainMap
-from collections.abc import Callable, Mapping
-from dataclasses import dataclass
-from typing import Annotated, Any, TypedDict
+from collections.abc import Callable
+from typing import Any
 
 import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
-from effectful.handlers.llm.evaluation import (
-    RestrictedEvalProvider,
-    collect_imports,
-    collect_runtime_type_stubs,
-    collect_variable_declarations,
-    mypy_type_check,
-    type_to_ast,
+from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
+    Encodable,
+    SynthesizedFunction,
 )
-from effectful.internals.unification import nested_type
+from effectful.handlers.llm.evaluation import (
+    ReplSession,
+    RestrictedEvalProvider,
+    UnsafeEvalProvider,
+    _splice_repl,
+    scan_non_nestable,
+    splice_into_source,
+    type_check,
+)
+from effectful.handlers.llm.evaluation import compile as compile_op
+from effectful.handlers.llm.evaluation import exec as exec_op
+from effectful.handlers.llm.evaluation import parse as parse_op
 from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
-from effectful.ops.types import NotHandled
 
+# ============================================================================
+# Splice-based type checking (splice_into_source + type_check)
+#
+# The type checker splices LLM-generated code into the real source of the
+# Template's module -- at the template function's own (possibly nested)
+# position -- and runs mypy on the whole module, raising only on diagnostics
+# inside the spliced region. These tests exercise that contract against real
+# anchor functions.
+# ============================================================================
 
-def get_context() -> Mapping[str, Any]:
-    """Get the lexical context at the callsite.
 
-    Returns a ChainMap containing locals and globals from the calling context.
-    """
-    frame = inspect.currentframe()
-    assert frame is not None
-    frame = frame.f_back
-    assert frame is not None
+# Module-level "Template" anchors. Their bodies are placeholders; the type
+# checker replaces them with the generated code. ``count_a`` deliberately shares
+# a name with the function the model is asked to synthesize (issue #542).
+count_a: Callable[[str], int] = lambda s: 0  # noqa: E731
 
-    # Check if we're in a class definition by looking for __qualname__
-    qualname = frame.f_locals.get("__qualname__")
-    n_frames = 1
-    if qualname is not None:
-        name_components = qualname.split(".")
-        for name in reversed(name_components):
-            if name == "<locals>":
-                break
-            n_frames += 1
 
-    contexts = []
-    for offset in range(n_frames):
-        assert frame is not None
-        locals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-            frame.f_locals
-        )
-        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
-            frame.f_globals
-        )
-        contexts.append(locals_proxy)
-        frame = frame.f_back
+class _Ctx:
+    x: int = 0
 
-    contexts.append(globals_proxy)
-    context: Mapping[str, Any] = {
-        k: v
-        for context in contexts
-        for k, v in context.items()
-        if not (
-            (
-                isinstance(v, types.ModuleType)
-                and v.__name__.startswith("tests.test_handlers_llm_evaluation")
-            )
-            or (
-                hasattr(v, "__module__")
-                and (
-                    v.__module__.startswith("tests.test_handlers_llm_evaluation")
-                    or v.__module__.startswith("_pytest")
-                )
-                and inspect.isclass(v)
-                and k.startswith("Test")
-            )
-            or k == "self"
-            or k == "__loader__"
-        )
-    }
-    return context
 
+def _count_char(char: str) -> Callable[[str], int]:
+    raise NotImplementedError
 
-class TestTypeToAstBasicTypes:
-    """Test type_to_ast with basic Python types."""
 
-    @pytest.mark.parametrize(
-        "typ,expected",
-        [
-            (int, "int"),
-            (str, "str"),
-            (float, "float"),
-            (bool, "bool"),
-            (type(None), "None"),
-        ],
-    )
-    def test_basic_types(self, typ, expected):
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == expected
+def _takes_ctx() -> Callable[[_Ctx], int]:
+    raise NotImplementedError
 
 
-class TestTypeToAstTypingTypes:
-    """Test type_to_ast with typing module types."""
+def _loose() -> Callable[..., object]:
+    raise NotImplementedError
 
-    def test_typing_any(self):
-        import typing
 
-        result = type_to_ast(typing.Any)
-        assert ast.unparse(result) == "typing.Any"
+def _make_counter(helper_const: int) -> Callable[[int], int]:
+    def templ(a: int) -> Callable[[int], int]:
+        raise NotImplementedError
 
+    return templ  # type: ignore[return-value]
 
-class TestCollectImports:
-    """Test collect_imports function."""
 
-    def test_collects_module_imports(self):
-        """Test that modules in context are collected as imports."""
-        import math
-        import os
-
-        ctx = {"math": math, "os": os, "x": 42}
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert any("math" in s and "import" in s for s in unparsed)
-        assert any("os" in s and "import" in s for s in unparsed)
-
-
-class TestCollectImportsStress:
-    """Stress test collect_imports with get_context: imports, aliases, external symbols."""
-
-    def test_from_import_symbol_no_module_in_context(self):
-        """Context has symbol (e.g. Any) but no module (typing); we still emit from-import."""
-        from typing import Any  # noqa: F401 - captured by get_context
-
-        ctx = get_context()
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert unparsed[-1].startswith("from typing import") and "Any" in unparsed[-1]
-
-    def test_plain_import_via_get_context(self):
-        """Plain imports (import math) show up in import statements."""
-        import math  # noqa: F401 - captured by get_context
-
-        ctx = get_context()
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert any(s.startswith("import ") and " math, " in s for s in unparsed)
-
-    def test_import_alias_via_get_context(self):
-        """Import aliases (import os as myos) show up as import os as myos."""
-        import os as myos  # noqa: F401 - captured by get_context
-
-        ctx = get_context()
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert any("os as myos" in s for s in unparsed)
-
-    def test_from_import_alias(self):
-        """from typing import List as L: mapping has L, we emit from typing import List as L."""
-        from typing import List as L  # noqa: F401, UP035 - captured by get_context
-
-        ctx = get_context()
-        assert "L" in ctx
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert any("List as L" in s for s in unparsed)
-
-    def test_mixed_imports_and_symbols(self):
-        """Mixed: from typing import Any, import math, import collections as coll."""
-        import collections as coll  # noqa: F401
-        import math  # noqa: F401
-        from typing import Any  # noqa: F401
-
-        ctx = get_context()
-        result = collect_imports(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert any(s.startswith("from") and "Any" in s for s in unparsed), unparsed
-        assert any("math" in s and "import" in s for s in unparsed), unparsed
-        assert any("collections" in s and "coll" in s for s in unparsed), unparsed
-
-
-class TestCollectVariableDeclarations:
-    """Test collect_variable_declarations end-to-end."""
-
-    def test_basic_context(self):
-        ctx = {"x": 42, "y": "hello"}
-        result = collect_variable_declarations(ctx)
-        # Should produce type-annotated variable declarations
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        assert "x: int" in unparsed
-        assert "y: str" in unparsed
-
-
-class TestTypeToAstFunctionTypes:
-    """Test type_to_ast with function types."""
-
-    def test_function_type_becomes_callable(self):
-        """types.FunctionType should become Callable (mypy-compatible)."""
-        result = type_to_ast(types.FunctionType)
-        assert ast.unparse(result) == "collections.abc.Callable"
-
-
-class TestTypeToAstGenericTypes:
-    """Test type_to_ast with generic types."""
-
-    def test_callable_with_args(self):
-        """Callable[[int], str] should be rendered correctly."""
-        import collections.abc
-
-        typ = collections.abc.Callable[[int], str]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Callable[[int], str]"
-
-    def test_callable_varargs(self):
-        """Callable[..., str] (varargs) should be rendered correctly."""
-        import collections.abc
-
-        typ = collections.abc.Callable[..., str]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Callable[..., str]"
-
-    def test_callable_multiple_args(self):
-        """Callable[[int, str], bool] should be rendered correctly."""
-        import collections.abc
-
-        typ = collections.abc.Callable[[int, str], bool]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Callable[[int, str], bool]"
-
-    def test_callable_no_args(self):
-        """Callable[[], int] (no args) should be rendered correctly."""
-        import collections.abc
-
-        typ = collections.abc.Callable[[], int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Callable[[], int]"
-
-    def test_mutable_sequence_int(self):
-        """MutableSequence[int] from nested_type([1,2,3])."""
-        typ = nested_type([1, 2, 3]).value
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.MutableSequence[int]"
-
-    def test_mutable_mapping_str_int(self):
-        """MutableMapping[str, int] from nested_type({'a': 1})."""
-        typ = nested_type({"a": 1}).value
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.MutableMapping[str, int]"
-
-    def test_mutable_set_int(self):
-        """MutableSet[int] from nested_type({1, 2, 3})."""
-        typ = nested_type({1, 2, 3}).value
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.MutableSet[int]"
-
-
-class TestTypeToAstUnionTypes:
-    """Test type_to_ast with union types."""
-
-    def test_union_int_str(self):
-        """int | str union type."""
-        typ = int | str
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "int | str"
-
-    def test_union_with_none(self):
-        """int | None (Optional[int])."""
-        typ = int | None
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "int | None"
-
-
-class TestTypeToAstTypingAnnotations:
-    """Test type_to_ast with common typing module annotations."""
-
-    def test_optional_int(self):
-        """typing.Optional[int] renders as typing.Union[int, None]."""
-        import typing
-
-        typ = typing.Optional[int]  # noqa: UP045 - intentionally testing old syntax
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "typing.Union[int, None]"
-
-    def test_typing_dict(self):
-        """typing.Dict[str, int]."""
-        import typing
-
-        typ = typing.Dict[str, int]  # noqa: UP006 - intentionally testing old syntax
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "dict[str, int]"
-
-    def test_typing_list(self):
-        """typing.List[int]."""
-        import typing
-
-        typ = typing.List[int]  # noqa: UP006 - intentionally testing old syntax
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "list[int]"
-
-    def test_typing_set(self):
-        """typing.Set[int]."""
-        import typing
-
-        typ = typing.Set[int]  # noqa: UP006 - intentionally testing old syntax
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "set[int]"
-
-    def test_typing_mapping(self):
-        """typing.Mapping[str, int]."""
-        import typing
-
-        typ = typing.Mapping[str, int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Mapping[str, int]"
-
-    def test_typing_sequence(self):
-        """typing.Sequence[int]."""
-        import typing
-
-        typ = typing.Sequence[int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "collections.abc.Sequence[int]"
-
-
-class TestTypeToAstAnnotated:
-    """Test type_to_ast with typing.Annotated (strips to inner type for typecheck stubs)."""
-
-    def test_annotated_strips_to_inner_type(self):
-        """Annotated[int, "meta"] renders as int."""
-        typ = Annotated[int, "meta"]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "int"
-
-    def test_annotated_with_multiple_metadata(self):
-        """Annotated[str, "a", "b"] strips to str."""
-        typ = Annotated[str, "a", "b"]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "str"
-
-    def test_annotated_generic(self):
-        """Annotated[list[int], "tag"] strips to list[int]."""
-        typ = Annotated[list[int], "tag"]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "list[int]"
-
-
-class TestTypeToAstBuiltinAnnotations:
-    """Test type_to_ast with builtin generic annotations (Python 3.9+)."""
-
-    def test_builtin_list(self):
-        """list[int] builtin annotation."""
-        typ = list[int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "list[int]"
-
-    def test_builtin_dict(self):
-        """dict[str, int] builtin annotation."""
-        typ = dict[str, int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "dict[str, int]"
-
-    def test_builtin_set(self):
-        """set[int] builtin annotation."""
-        typ = set[int]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "set[int]"
-
-    def test_builtin_tuple(self):
-        """tuple[int, str] builtin annotation."""
-        typ = tuple[int, str]
-        result = type_to_ast(typ)
-        assert ast.unparse(result) == "tuple[int, str]"
-
-
-class TestGetContextStress:
-    """Stress test with get_context - exercises real lexical contexts."""
-
-    def test_get_context_with_local_variables(self):
-        """Test that we can handle variables from get_context."""
-        x = 42  # noqa: F841 - intentionally captured by get_context
-        y = "hello"  # noqa: F841 - intentionally captured by get_context
-        z = [1, 2, 3]  # noqa: F841 - intentionally captured by get_context
-        ctx = get_context()
-        result = collect_variable_declarations(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        print("\n".join(unparsed))
-        assert "x: int" in unparsed
-        assert "y: str" in unparsed
-
-    def test_functions_with_annotations(self):
-        """Test that annotated functions use Callable[[...], ...] from __annotations__."""
-
-        def annotated_func(x: int) -> str:
-            return str(x)
-
-        ctx = get_context()
-        result = collect_variable_declarations(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        # annotated_func should have Callable[[int], str]
-        assert "annotated_func: collections.abc.Callable[[int], str]" in unparsed
-
-    def test_functions_without_annotations(self):
-        """Test that unannotated functions get Callable type."""
-
-        def unannotated_func(x):
-            return x
-
-        ctx = get_context()
-        result = collect_variable_declarations(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        # unannotated_func should get Callable type
-        assert "unannotated_func: collections.abc.Callable" in unparsed
-
-    def test_operations_in_context(self):
-        """Test that Operations get correct type annotations."""
-
-        @defop
-        def my_op(x: int) -> str:  # noqa: F841 - captured by get_context
-            raise NotHandled
-
-        ctx = get_context()
-        result = collect_variable_declarations(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        # Operation should have exact annotation
-        assert "my_op: effectful.ops.types.Operation[[int], str]" in unparsed
-
-    def test_custom_exception_in_context(self):
-        """Test that custom exceptions get correct type annotations without __main__."""
-
-        class MyError(Exception):  # noqa: F841 - captured by get_context
-            pass
-
-        err = MyError("test")  # noqa: F841 - captured by get_context
-        ctx = get_context()
-        result = collect_variable_declarations(ctx)
-        unparsed = [ast.unparse(stmt) for stmt in result]
-        print("\n".join(unparsed))
-        # The exception instance should have the exception class type without __main__
-        assert "err: MyError" in unparsed
-
-
-class TestTypeToAstOperations:
-    """Test type_to_ast with effectful Operation types."""
-
-    def test_operation_type(self):
-        """Operation type from nested_type."""
-
-        @defop
-        def my_op(x: int) -> str:
-            raise NotHandled
-
-        typ = nested_type(my_op).value
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Check exact structure
-        assert unparsed == "effectful.ops.types.Operation[[int], str]"
-
-
-class TestTypeToAstPolymorphicTypes:
-    """Test type_to_ast with polymorphic (generic) types."""
-
-    def test_callable_with_typevar(self):
-        """Callable with TypeVar: Callable[[T], T]."""
-        import typing
-
-        T = typing.TypeVar("T")  # noqa: PLC0132
-        typ = typing.Callable[[T], T]
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Check exact structure: collections.abc.Callable[[T], T]
-        assert unparsed == "collections.abc.Callable[[T], T]"
-
-    def test_callable_with_bounded_typevar(self):
-        """Callable with bounded TypeVar: Callable[[T], T] where T: int."""
-        import typing
-
-        T_bounded = typing.TypeVar("T_bounded", bound=int)  # noqa: PLC0132
-        typ = typing.Callable[[T_bounded], T_bounded]
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Bounded TypeVar still uses its name
-        assert unparsed == "collections.abc.Callable[[T_bounded], T_bounded]"
-
-    def test_operation_with_typevar(self):
-        """Operation with TypeVar: Operation[[T], T]."""
-
-        @defop
-        def identity[T](x: T) -> T:
-            raise NotHandled
-
-        typ = nested_type(identity).value
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Check exact structure
-        assert unparsed == "effectful.ops.types.Operation[[T], T]"
-
-    def test_operation_with_bounded_typevar_312_syntax(self):
-        """Operation with bounded TypeVar using Python 3.12+ [T: int] syntax."""
-
-        @defop
-        def bounded_op[T: int](x: T) -> T:
-            raise NotHandled
-
-        typ = nested_type(bounded_op).value
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Check that the bounded TypeVar is preserved
-        assert unparsed == "effectful.ops.types.Operation[[T], T]"
-
-    def test_generic_class(self):
-        """Generic class: list[T]."""
-        import typing
-
-        T = typing.TypeVar("T")  # noqa: PLC0132
-        typ = list[T]
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # Check exact structure
-        assert unparsed == "list[T]"
-
-    def test_callable_with_paramspec(self):
-        """Callable with ParamSpec: Callable[P, int]."""
-        import typing
-
-        P = typing.ParamSpec("P")  # noqa: PLC0132
-        typ = typing.Callable[P, int]
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # ParamSpec is rendered by name
-        assert unparsed == "collections.abc.Callable[P, int]"
-
-    def test_tuple_with_typevartuple(self):
-        """tuple with TypeVarTuple: tuple[*Ts]."""
-
-        Ts = typing.TypeVarTuple("Ts")  # noqa: PLC0132
-        typ = tuple[*Ts]
-        result = type_to_ast(typ)
-        unparsed = ast.unparse(result)
-        # TypeVarTuple with Unpack
-        assert "tuple" in unparsed
-        assert "Ts" in unparsed
-
-
-class TestCollectRuntimeTypeStubs:
-    """Test collect_runtime_type_stubs for generating class stubs."""
-
-    def test_exception_subclass_stub(self):
-        """Test that runtime exception classes get proper stubs with inheritance."""
-
-        class MyError(Exception):
-            pass
-
-        ctx = {"MyError": MyError}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class MyError(Exception):" in unparsed
-
-    def test_class_with_callable_method(self):
-        """Test that classes with callable methods get typed stubs."""
-
-        class MyClass:
-            def my_method(self, x: int) -> str:
-                return str(x)
-
-        ctx = {"MyClass": MyClass}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class MyClass:" in unparsed
-        assert "def my_method(self, x: int) -> str:" in unparsed
-
-    def test_class_with_typed_attribute(self):
-        """Test that classes with __annotations__ get typed stubs."""
-
-        class MyClass:
-            x: int
-            y: str
-
-        ctx = {"MyClass": MyClass}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class MyClass:" in unparsed
-        assert "x: int" in unparsed
-        assert "y: str" in unparsed
-
-    def test_exception_chain_inheritance(self):
-        """Test exception with multiple levels of inheritance."""
-
-        class BaseError(Exception):
-            pass
-
-        class SpecificError(BaseError):
-            pass
-
-        ctx = {"BaseError": BaseError, "SpecificError": SpecificError}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class BaseError(Exception):" in unparsed
-        assert "class SpecificError(BaseError):" in unparsed
-
-    def test_exception_with_attributes(self):
-        """Test exception class with typed attributes."""
-
-        class ValidationError(Exception):
-            field: str
-            message: str
-
-        ctx = {"ValidationError": ValidationError}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class ValidationError(Exception):" in unparsed
-        assert "field: str" in unparsed
-        assert "message: str" in unparsed
-
-    def test_exception_with_init(self):
-        """Test exception class with __init__ method."""
-
-        class CustomError(Exception):
-            def __init__(self, code: int, message: str) -> None:
-                super().__init__(message)
-                self.code = code
-
-        ctx = {"CustomError": CustomError}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class CustomError(Exception):" in unparsed
-        assert "def __init__(self, code: int, message: str):" in unparsed
-
-    def test_dataclass_like_with_fields(self):
-        """Test class with multiple typed fields like a dataclass."""
-
-        class Person:
-            name: str
-            age: int
-            email: str | None
-
-        ctx = {"Person": Person}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class Person:" in unparsed
-        assert "name: str" in unparsed
-        assert "age: int" in unparsed
-        assert "email: str | None" in unparsed
-
-    def test_method_with_generic_types(self):
-        """Test method with generic type annotations."""
-
-        class Container:
-            def get_items(self) -> list[str]:
-                return []
-
-            def set_mapping(self, data: dict[str, int]) -> None:
-                pass
-
-        ctx = {"Container": Container}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "def get_items(self) -> list[str]:" in unparsed
-        assert "def set_mapping(self, data: dict[str, int]) -> None:" in unparsed
-
-    def test_field_with_generic_types(self):
-        """Test fields with generic type annotations."""
-
-        class DataStore:
-            items: list[int]
-            cache: dict[str, Any]
-
-        ctx = {"DataStore": DataStore}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "items: list[int]" in unparsed
-        assert "cache: dict[str, typing.Any]" in unparsed
-
-    def test_generic_superclass(self):
-        """Test class inheriting from generic type."""
-
-        class StringList(list[str]):
-            pass
-
-        ctx = {"StringList": StringList}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class StringList(list[str]):" in unparsed
-
-    def test_generic_class_with_type_params(self):
-        """Test generic class with its own type parameters: class Foo[T](list[T])."""
-
-        class Container[T](list[T]):
-            def get_first(self) -> T:
-                return self[0]
-
-        ctx = {"Container": Container}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        print(unparsed)
-        # Should include generic base class
-        assert "class Container(list[T], typing.Generic[T]):" in unparsed, unparsed
-        assert "def get_first(self) -> T:" in unparsed
-
-    def test_multiple_inheritance(self):
-        """Test class with multiple base classes."""
-
-        class Mixin:
-            pass
-
-        class Base:
-            pass
-
-        class Combined(Base, Mixin):
-            pass
-
-        ctx = {"Base": Base, "Mixin": Mixin, "Combined": Combined}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class Base:" in unparsed
-        assert "class Mixin:" in unparsed
-        assert "class Combined(Base, Mixin):" in unparsed
-
-    def test_method_with_optional_params(self):
-        """Test method with optional/default parameters."""
-
-        class Config:
-            def setup(self, name: str, debug: bool = False) -> None:
-                pass
-
-        ctx = {"Config": Config}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "def setup(self, name: str, debug: bool) -> None:" in unparsed
-
-    def test_class_with_classmethod_and_staticmethod(self):
-        """Test class with classmethod and staticmethod (should not appear as regular methods)."""
-
-        class Factory:
-            @classmethod
-            def create(cls) -> "Factory":
-                return cls()
-
-            @staticmethod
-            def validate(x: int) -> bool:
-                return x > 0
-
-            def instance_method(self) -> str:
-                return "hello"
-
-        ctx = {"Factory": Factory}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        # instance_method should be present
-        assert "def instance_method(self) -> str:" in unparsed
-
-    def test_method_with_callable_param(self):
-        """Test method with Callable parameter type."""
-
-        class Handler:
-            def register(self, callback: Callable[[int], str]) -> None:
-                pass
-
-        ctx = {"Handler": Handler}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert (
-            "def register(self, callback: collections.abc.Callable[[int], str]) -> None:"
-            in unparsed
-        )
-
-    def test_nested_generic_types(self):
-        """Test deeply nested generic types."""
-
-        class NestedData:
-            matrix: list[list[int]]
-            lookup: dict[str, list[tuple[int, str]]]
-
-        ctx = {"NestedData": NestedData}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "matrix: list[list[int]]" in unparsed
-        assert "lookup: dict[str, list[tuple[int, str]]]" in unparsed
-
-    def test_union_types_in_method(self):
-        """Test method with union type annotations."""
-
-        class Parser:
-            def parse(self, data: str | bytes) -> int | None:
-                return None
-
-        ctx = {"Parser": Parser}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "def parse(self, data: str | bytes) -> int | None:" in unparsed
-
-    def test_dataclasses(self):
-        """Test method with dataclasses annotations."""
-
-        @dataclass
-        class Point:
-            x: int
-            y: int
-
-        ctx = {"Point": Point}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class Point:\n    x: int\n    y: int" in unparsed
-
-    def test_typed_dicts(self):
-        """Test method subclassing typed dict."""
-
-        class TypedPoint(TypedDict):
-            x: int
-            y: int
-
-        ctx = {"TypedPoint": TypedPoint}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert "class TypedPoint:\n    x: int\n    y: int" in unparsed
-
-    def test_pydantic_base_models(self):
-        """Test method subclassing pydantic base models."""
-
-        class BasePoint(pydantic.BaseModel):
-            x: int
-            y: int
-
-        ctx = {"Point": BasePoint}
-        result = collect_runtime_type_stubs(ctx)
-        unparsed = "\n".join(ast.unparse(stmt) for stmt in result)
-        assert (
-            "class Point(pydantic.main.BaseModel):\n    x: int\n    y: int" in unparsed
-        )
-
-
-class TestTypeAliases:
-    """Test type_to_ast with type aliases."""
-
-    def test_simple_type_alias(self):
-        """Test simple type alias."""
-
-        type IntList = list[int]
-        result = type_to_ast(IntList)
-        unparsed = ast.unparse(result)
-        assert unparsed == "IntList"
-
-    def test_generic_type_alias(self):
-        """Test generic type alias with TypeVar using Python 3.12+ syntax."""
-        type MyList[T] = list[T]  # noqa: PLC0132 - T is defined by the type syntax
-        result = type_to_ast(MyList)
-        unparsed = ast.unparse(result)
-        assert unparsed == "MyList"
-
-
-class TestMypyTypeCheckE2E:
-    """End-to-end stress tests for mypy_type_check with get_context and ast.parse. Never empty context."""
-
-    def test_simple_function_with_get_context(self):
-        """One function; ctx from get_context(); typecheck passes."""
-        _ = 1  # noqa: F841 - in context
-        source = "def f(x: int, s: str) -> bool:\n    return len(s) > x"
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int, str], bool)
-
-    def test_simple_function_no_params_with_get_context(self):
-        """Function with no params, returns int; get_context()."""
-        _ = 1  # noqa: F841
-        source = "def g() -> int:\n    return 42"
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), None, int)
-
-    def test_module_with_multiple_statements_then_function(self):
-        """Module has assignments then the function we check; get_context()."""
-        _ = 1  # noqa: F841
-        source = """
-a = 1
-b = "x"
-def h(n: int) -> str:
-    return str(n)
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int], str)
-
-    def test_with_get_context_and_typed_values(self):
-        """Use get_context(); function signature matches expected; passes."""
-        x = 42  # noqa: F841
-        s = "hello"  # noqa: F841
-
-        ctx = get_context()
-        source = "def add_one(n: int) -> int:\n    return n + 1"
-        module = ast.parse(source)
-        mypy_type_check(module, ctx, [int], int)
-
-    def test_nested_function_module_last_is_outer(self):
-        """Module body has def outer with nested def inner; we check outer; get_context()."""
-        _ = 1  # noqa: F841
-        source = """
-def outer(x: int) -> str:
-    def inner(y: int) -> int:
-        return y + 1
-    return str(inner(x))
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int], str)
-
-    def test_local_class_in_context_and_module(self):
-        """Runtime-only class in ctx; module has class + function using it; stubs generated."""
-
-        class LocalKlass:
-            def method(self) -> int:
-                return 0
-
-        source = """
-def use_it(obj: LocalKlass) -> int:
-    return obj.method()
-"""
-        module = ast.parse(source)
-        ctx = ChainMap({"LocalKlass": LocalKlass}, get_context())
-        mypy_type_check(module, ctx, [LocalKlass], int)
-
-    def test_decorated_function(self):
-        """Function has a decorator; last stmt is still the function; get_context()."""
-        _ = 1  # noqa: F841
-        source = """
-def dec(f):
-    return f
-@dec
-def decorated(x: int) -> bool:
-    return x > 0
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int], bool)
-
-    def test_module_uses_typing_from_context(self):
-        """Context provides List from get_context; module uses list[int]; typecheck passes."""
-
-        _ = list  # noqa: F841 - in context
-        source = """
-def sum_list(nums: list[int]) -> int:
-    return sum(nums)
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [list], int)
-
-    def test_typecheck_passes_with_fully_annotated_function(self):
-        """Typechecking passes when the module has full type annotations (params + return) matching expected."""
-        _ = 1  # noqa: F841
-        source = """
-def add(x: int, y: int) -> int:
-    return x + y
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int, int], int)
-
-    def test_typecheck_passes_with_annotated_generics(self):
-        """Typechecking passes when the function uses generic annotations (list, dict) in params."""
-        _ = list  # noqa: F841
-        _ = dict  # noqa: F841
-        source = """
-def process(nums: list[int], mapping: dict[str, int]) -> int:
-    return len(nums) + len(mapping)
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [list, dict], int)
-
-    def test_typecheck_passes_when_module_uses_typing_annotated(self):
-        """Typechecking passes when the function uses typing.Annotated in params and return."""
-        from typing import Annotated  # noqa: F401 - in context for get_context
-
-        source = """
-def f(x: Annotated[int, "positive"], y: Annotated[str, "name"]) -> Annotated[bool, "ok"]:
-    return len(y) > x
-"""
-        module = ast.parse(source)
-        mypy_type_check(module, get_context(), [int, str], bool)
-
-    def test_typecheck_passes_with_expected_annotated(self):
-        """Typechecking passes when expected params/return use Annotated (stripped for stub)."""
-        _ = 1  # noqa: F841
-        source = "def g(x: int) -> int:\n    return x"
-        module = ast.parse(source)
-        mypy_type_check(
-            module,
-            get_context(),
-            [Annotated[int, "value"]],
-            Annotated[int, "result"],
-        )
-
-    def test_typecheck_symbol_in_annotated_metadata_does_not_crash_mypy(self):
-        """A symbol (type/class) in Annotated metadata is resolved from context and does not crash mypy."""
-
-        class Tag:
-            """Metadata marker class in context."""
-
-        source = """
-def f(x: Annotated[int, Tag]) -> int:
-    return x
-"""
-        module = ast.parse(source)
-        ctx = get_context()
-        mypy_type_check(module, ctx, [int], int)
-
-
-class TestMypyTypeCheckFailures:
-    """Failure cases: mypy_type_check must raise TypeError with mypy report. All use get_context()."""
-
-    def test_wrong_return_type_raises(self):
-        """Function returns int but expected return is str; mypy fails."""
-        _ = 1  # noqa: F841
-        source = "def f(x: int) -> str:\n    return x"
-        module = ast.parse(source)
-        with pytest.raises(TypeError) as exc_info:
-            mypy_type_check(module, get_context(), [int], str)
-        assert (
-            "mypy" in str(exc_info.value).lower()
-            or "error" in str(exc_info.value).lower()
-        )
-
-    def test_wrong_param_count_raises(self):
-        """Expected (int, str) but function takes (int); fails."""
-        _ = 1  # noqa: F841
-        source = "def g(x: int) -> bool:\n    return True"
-        module = ast.parse(source)
-        with pytest.raises(TypeError) as exc_info:
-            mypy_type_check(module, get_context(), [int, str], bool)
-        assert exc_info.type is TypeError
-
-    def test_incompatible_param_type_raises(self):
-        """Function annotates param as str, we expect int; mismatch."""
-        _ = 1  # noqa: F841
-        source = "def h(s: str) -> int:\n    return len(s)"
-        module = ast.parse(source)
-        with pytest.raises(TypeError):
-            mypy_type_check(module, get_context(), [int], int)
-
-    def test_empty_module_raises(self):
-        """Empty module.body raises TypeError before mypy."""
-        _ = 1  # noqa: F841
-        module = ast.Module(body=[], type_ignores=[])
-        with pytest.raises(TypeError, match="empty"):
-            mypy_type_check(module, get_context(), None, int)
-
-    def test_last_statement_not_function_raises(self):
-        """Last stmt is an expression, not a function def."""
-        _ = 1  # noqa: F841
-        source = "x = 1"
-        module = ast.parse(source)
-        with pytest.raises(TypeError, match="function"):
-            mypy_type_check(module, get_context(), [], int)
-
-    def test_assign_then_expr_no_function_raises(self):
-        """Module has only assignments/expressions; no function def."""
-        _ = 1  # noqa: F841
-        source = "a = 1\na + 1"
-        module = ast.parse(source)
-        with pytest.raises(TypeError, match="function"):
-            mypy_type_check(module, get_context(), [], int)
-
-    def test_failure_dataclass_wrong_return(self):
-        """Dataclass in context; function returns wrong type; get_context()."""
-
-        @dataclass
-        class Box:
-            value: int
-
-        source = """
-def bad(b: Box) -> Box:
-    return b.value
-"""
-        module = ast.parse(source)
-        ctx = ChainMap({"Box": Box}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [Box], Box)
-
-    def test_failure_dataclass_wrong_param_type(self):
-        """Dataclass; expected param int, function takes Box; get_context()."""
-
-        @dataclass
-        class Box:
-            value: int
-
-        source = "def use(b: Box) -> int:\n    return b.value"
-        module = ast.parse(source)
-        ctx = ChainMap({"Box": Box}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [int], int)
-
-    def test_failure_plain_class_wrong_return(self):
-        """Plain class in context; function returns wrong type; get_context()."""
-
-        class Node:
-            def __init__(self, x: int) -> None:
-                self.x = x
-
-        source = "def make() -> Node:\n    return 42"
-        module = ast.parse(source)
-        ctx = ChainMap({"Node": Node}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], Node)
-
-    def test_failure_plain_class_param_mismatch(self):
-        """Plain class; expected (Node, Node), function takes (Node); get_context()."""
-
-        class Node:
-            pass
-
-        source = "def add(a: Node) -> Node:\n    return a"
-        module = ast.parse(source)
-        ctx = ChainMap({"Node": Node}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [Node, Node], Node)
-
-    def test_failure_local_class_wrong_return(self):
-        """Runtime local class; function annotated to return class but returns int; get_context()."""
-
-        class LocalKlass:
-            pass
-
-        source = """
-class LocalKlass:
-    pass
-def f() -> LocalKlass:
-    return 1
-"""
-        module = ast.parse(source)
-        ctx = ChainMap({"LocalKlass": LocalKlass}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], LocalKlass)
-
-    def test_failure_runtime_local_class_param_wrong_type(self):
-        """Runtime local class; we expect (int,), function takes (LocalKlass,); get_context()."""
-
-        class LocalKlass:
-            pass
-
-        source = """
-class LocalKlass:
-    pass
-def g(obj: LocalKlass) -> int:
-    return 0
-"""
-        module = ast.parse(source)
-        ctx = ChainMap({"LocalKlass": LocalKlass}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [int], int)
-
-    def test_failure_nested_function_outer_wrong_return(self):
-        """Nested function: outer declared -> str but returns int; get_context()."""
-        _ = 1  # noqa: F841
-        source = """
-def outer(x: int) -> str:
-    def inner() -> int:
-        return 1
-    return inner()
-"""
-        module = ast.parse(source)
-        with pytest.raises(TypeError):
-            mypy_type_check(module, get_context(), [int], str)
-
-    def test_failure_nested_function_expected_wrong_param_count(self):
-        """Nested: we expect (int, str), outer takes (int); get_context()."""
-        _ = 1  # noqa: F841
-        source = """
-def outer(x: int) -> bool:
-    def inner() -> bool:
+def _raises(generated_src: str, anchor: Any) -> bool:
+    # Splice then type-check as separate steps (the decode path's shape), under a
+    # provider so the `type_check` op resolves.
+    try:
+        with handler(UnsafeEvalProvider()):
+            spliced = splice_into_source(ast.parse(generated_src), anchor)
+            if spliced is not None:
+                type_check(*spliced)
+        return False
+    except TypeError:
         return True
-    return inner()
-"""
-        module = ast.parse(source)
-        with pytest.raises(TypeError):
-            mypy_type_check(module, get_context(), [int, str], bool)
-
-    def test_failure_typeddict_wrong_return(self):
-        """TypedDict in context; function returns wrong type; get_context()."""
-
-        class Point(TypedDict):
-            x: int
-            y: int
-
-        source = "def origin() -> Point:\n    return 0"
-        module = ast.parse(source)
-        ctx = ChainMap({"Point": Point}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], Point)
-
-    def test_failure_typeddict_param_mismatch(self):
-        """TypedDict; we expect (Point, int), function takes (Point,); get_context()."""
-
-        class Point(TypedDict):
-            x: int
-            y: int
-
-        source = "def get_x(p: Point) -> int:\n    return p['x']"
-        module = ast.parse(source)
-        ctx = ChainMap({"Point": Point}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [Point, int], int)
-
-    def test_failure_pydantic_model_wrong_return(self):
-        """Pydantic BaseModel in context; function returns wrong type; get_context()."""
-
-        class Item(pydantic.BaseModel):
-            name: str
-
-        source = "def make() -> Item:\n    return 1"
-        module = ast.parse(source)
-        ctx = ChainMap({"Item": Item}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], Item)
-
-    def test_failure_pydantic_model_param_wrong(self):
-        """Pydantic model; we expect (str,), function takes (Item,); get_context()."""
-
-        class Item(pydantic.BaseModel):
-            name: str
-
-        source = "def get_name(i: Item) -> str:\n    return i.name"
-        module = ast.parse(source)
-        ctx = ChainMap({"Item": Item}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [str], str)
-
-    def test_failure_custom_class_wrong_return(self):
-        """Custom class; function declares return type but returns other; get_context()."""
-
-        class Custom:
-            def run(self) -> int:
-                return 0
-
-        source = "def get_custom() -> Custom:\n    return 1"
-        module = ast.parse(source)
-        ctx = ChainMap({"Custom": Custom}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], Custom)
-
-    def test_failure_custom_class_param_expected_mismatch(self):
-        """Custom class; expected (Custom, str), function (Custom,) -> str; get_context()."""
-
-        class Custom:
-            pass
-
-        source = "def greet(c: Custom) -> str:\n    return 'hi'"
-        module = ast.parse(source)
-        ctx = ChainMap({"Custom": Custom}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [Custom, str], str)
-
-    def test_failure_callable_wrong_return(self):
-        """Callable type: we expect Callable[[int], str], function returns Callable[[int], int]; get_context()."""
-        _ = 1  # noqa: F841
-        source = "def f() -> Callable[[int], int]:\n    return lambda x: x"
-        module = ast.parse(source)
-        with pytest.raises(TypeError):
-            mypy_type_check(module, get_context(), [], Callable[[int], str])
-
-    def test_failure_optional_return_wrong(self):
-        """Optional/union: function returns int, we expect str | None; get_context()."""
-        _ = 1  # noqa: F841
-        source = "def f(x: int) -> int:\n    return x"
-        module = ast.parse(source)
-        with pytest.raises(TypeError):
-            mypy_type_check(module, get_context(), [int], str | None)
-
-    def test_failure_exception_class_wrong_base(self):
-        """Custom exception class; function returns int but expected return MyErr; get_context()."""
-
-        class MyErr(Exception):
-            pass
-
-        source = "def raise_it() -> MyErr:\n    return 1"
-        module = ast.parse(source)
-        ctx = ChainMap({"MyErr": MyErr}, get_context())
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [], MyErr)
 
 
-class TestMypyTypeCheckNameCollision:
-    """Tests that mypy_type_check renames synthesized functions whose names
-    collide with variable declarations or class stubs from the context."""
+def _import_fixture(tmp_path, source: str, modname: str):
+    p = tmp_path / f"{modname}.py"
+    p.write_text(source)
+    spec = importlib.util.spec_from_file_location(modname, str(p))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[modname] = mod
+    spec.loader.exec_module(mod)
+    return mod
 
-    def test_single_function_collides_with_variable(self):
-        """Function name matches a variable in context; should still pass type-check."""
-        count_char = lambda s: s.count("a")  # noqa: E731, F841
 
-        source = textwrap.dedent("""\
-            def count_char(s: str) -> int:
-                return s.count('a')
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        # Should NOT raise — the collision is handled by renaming
-        mypy_type_check(module, ctx, [str], int)
+def _anchor_from_source(tmp_path, source: str, attr: str, modname: str) -> Any:
+    return getattr(_import_fixture(tmp_path, source, modname), attr)
 
-    def test_colliding_function_still_detects_type_errors(self):
-        """Even after renaming, real type errors are still caught."""
-        count_char = lambda s: s.count("a")  # noqa: E731, F841
 
-        source = textwrap.dedent("""\
-            def count_char(s: str) -> int:
-                return s  # wrong return type
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        with pytest.raises(TypeError):
-            mypy_type_check(module, ctx, [str], int)
+def test_good_function_typechecks():
+    assert not _raises(
+        "def count_a(s: str) -> int:\n    return s.count('a')\n", _count_char
+    )
 
-    def test_no_collision_passes_normally(self):
-        """No name collision — normal type-check should work as before."""
-        x = 42  # noqa: F841
 
-        source = textwrap.dedent("""\
-            def some_unique_func(s: str) -> int:
-                return len(s)
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        mypy_type_check(module, ctx, [str], int)
+def test_wrong_return_type_raises():
+    assert _raises("def count_a(s: str) -> str:\n    return s\n", _count_char)
 
-    def test_multiple_functions_one_collides(self):
-        """Module has helper + main function; only main collides with context."""
-        process = "some_value"  # noqa: F841
 
-        source = textwrap.dedent("""\
-            def helper(x: int) -> str:
-                return str(x)
-            def process(items: list[int]) -> list[str]:
-                return [helper(i) for i in items]
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        mypy_type_check(module, ctx, [list[int]], list[str])
+def test_synthesized_name_collides_with_context_var_issue_542():
+    # The synthesized ``count_a`` collides with the module-level ``count_a``
+    # binding. Nested as a local it *shadows* it (no ``[no-redef]``), where the
+    # old flat-stub mechanism raised and had to rename around the collision.
+    assert not _raises(
+        "def count_a(s: str) -> int:\n    return s.count('a')\n", _count_char
+    )
 
-    def test_multiple_functions_both_collide(self):
-        """Both helper and main function names collide with context variables."""
-        helper = lambda: None  # noqa: E731, F841
-        compute = 123  # noqa: F841
 
-        source = textwrap.dedent("""\
-            def helper(x: int) -> str:
-                return str(x)
-            def compute(n: int) -> str:
-                return helper(n)
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        mypy_type_check(module, ctx, [int], str)
+def test_helpers_alongside_target_are_checked():
+    src = (
+        "def helper(y: int) -> int:\n    return y * 2\n"
+        "def count_a(s: str) -> int:\n    return helper(len(s))\n"
+    )
+    assert not _raises(src, _count_char)
 
-    def test_collision_with_class_stub(self):
-        """Function name collides with a runtime class stub in context."""
 
-        class MyModel:
-            value: int
+def test_closure_template_sees_enclosing_local():
+    anchor = _make_counter(5)  # nested ``templ``, whose factory binds helper_const
+    assert not _raises("def f(z: int) -> int:\n    return z + helper_const\n", anchor)
 
-        # Also define a function named MyModel in synthesized code
-        source = textwrap.dedent("""\
-            def MyModel(x: int) -> int:
-                return x * 2
-        """)
-        module = ast.parse(source)
-        ctx = ChainMap({"MyModel": MyModel}, get_context())
-        mypy_type_check(module, ctx, [int], int)
 
-    def test_collision_does_not_mutate_original_ast(self):
-        """Renaming should not modify the original module AST."""
-        count_char = lambda s: s.count("a")  # noqa: E731, F841
+def test_unannotated_container_is_not_a_false_positive():
+    # Heterogeneous list via ``append`` runs fine; with ``--check-untyped-defs``
+    # off mypy skips the unannotated body, so it must not be rejected.
+    src = "def cf(z):\n    acc = []\n    acc.append(1)\n    acc.append('x')\n    return acc\n"
+    assert not _raises(src, _loose)
 
-        source = textwrap.dedent("""\
-            def count_char(s: str) -> int:
-                return s.count('a')
-        """)
-        module = ast.parse(source)
-        original_name = module.body[-1].name
 
-        ctx = get_context()
-        mypy_type_check(module, ctx, [str], int)
+def test_star_import_raises():
+    with pytest.raises(ValueError):
+        scan_non_nestable(
+            ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
+        )
 
-        # Original AST must be untouched
-        assert module.body[-1].name == original_name
 
-    def test_helper_reference_updated_after_rename(self):
-        """When a helper function is renamed, calls to it inside other
-        functions are also updated so mypy still sees valid code."""
-        validate = True  # noqa: F841 — collides with helper name
+def test_future_import_raises():
+    with pytest.raises(ValueError):
+        scan_non_nestable(
+            ast.parse(
+                "from __future__ import annotations\n"
+                "def g(s: str) -> int:\n    return 0\n"
+            )
+        )
 
-        source = textwrap.dedent("""\
-            def validate(x: int) -> bool:
-                return x > 0
-            def run(x: int) -> bool:
-                return validate(x)
-        """)
-        module = ast.parse(source)
-        ctx = get_context()
-        mypy_type_check(module, ctx, [int], bool)
+
+def test_annotation_collision_with_context_type_raises():
+    # A helper named like the context type ``_Ctx`` and used as a body annotation
+    # is shadowed -> rejected (fail-closed; matches runtime, where the helper
+    # wins). The old rename pass rejected this identically; not a regression.
+    src = "def _Ctx(q):\n    return q\ndef f(z: _Ctx) -> int:\n    return z.x\n"
+    assert _raises(src, _takes_ctx)
+
+
+def test_unrecoverable_source_skips():
+    # An ``exec``-defined function has no recoverable source -> skip, never raise.
+    ns: dict[str, Any] = {}
+    exec("def t(c: str):\n    raise NotImplementedError", ns)
+    assert not _raises(
+        "def count_a(s: str) -> int:\n    return s.count('a')\n", ns["t"]
+    )
+
+
+def test_empty_module_raises():
+    assert _raises("", _count_char)
+
+
+def test_last_statement_not_function_raises():
+    assert _raises("x = 1\n", _count_char)
+
+
+def test_gate_unrelated_module_error_does_not_block(tmp_path):
+    # The anchor's module contains an UNRELATED type error; a correct synthesis
+    # must still pass, because region-scoping ignores out-of-region diagnostics.
+    source = (
+        "from collections.abc import Callable\n\n\n"
+        "def unrelated() -> int:\n    return 'boom'\n\n\n"
+        "def templ(char: str) -> Callable[[str], int]:\n    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_gate_fixture")
+    assert not _raises("def count_a(s: str) -> int:\n    return s.count('a')\n", anchor)
+
+
+def test_method_templates_all_flavors(tmp_path):
+    # staticmethod/classmethod/instance templates all type-check: the splice leaves
+    # decorators untouched, so the method kind (self/cls semantics) is preserved and
+    # mypy never spuriously demands a missing ``self``. ``template.__default__`` is
+    # the static/classmethod *wrapper* (or the plain function for an instance
+    # method), exactly as ``Template.define`` stores it.
+    source = (
+        "from collections.abc import Callable\n\n\n"
+        "class C:\n"
+        "    @staticmethod\n"
+        "    def sm(char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n\n"
+        "    @classmethod\n"
+        "    def cm(cls, char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n\n"
+        "    def im(self, char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n"
+    )
+    cls = _import_fixture(tmp_path, source, "splice_method_fixture").C
+    good = "def count_a(s: str) -> int:\n    return s.count('a')\n"
+    bad = "def count_a(s: str) -> str:\n    return s\n"
+    for name in ("sm", "cm", "im"):
+        anchor = cls.__dict__[name]  # the wrapper for static/classmethod
+        assert not _raises(good, anchor), f"{name}: correct body should pass"
+        assert _raises(bad, anchor), f"{name}: wrong return type should raise"
+
+
+def test_context_enum_and_dataclass_are_checked(tmp_path):
+    # The PR's headline value (issue #576): an Enum / dataclass in the template's
+    # module is reachable through its real import, where the old quotation
+    # mechanism mishandled such types. A correct generated function passes; a
+    # misuse is still caught -- all without synthesizing any type stub.
+    source = (
+        "import dataclasses\n"
+        "import enum\n"
+        "from collections.abc import Callable\n\n\n"
+        "class Color(enum.Enum):\n"
+        "    RED = 1\n"
+        "    GREEN = 2\n\n\n"
+        "@dataclasses.dataclass\n"
+        "class Point:\n"
+        "    x: int\n"
+        "    y: int\n\n\n"
+        "def templ() -> Callable[[Color, Point], int]:\n"
+        "    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_enum_fixture")
+    good = (
+        "def f(c: Color, p: Point) -> int:\n    return p.x if c is Color.RED else p.y\n"
+    )
+    bad = "def f(c: Color, p: Point) -> int:\n    return p.nonexistent\n"
+    assert not _raises(good, anchor)
+    assert _raises(bad, anchor)
+
+
+def test_generated_reference_to_unsourced_name_raises():
+    # A name present only at runtime (injected into the env, absent from the
+    # template's source) is unrecoverable -> mypy [name-defined] in-region ->
+    # raise. The fail-closed case-3 / injected-name narrowing.
+    assert _raises(
+        "def count_a(s: str) -> int:\n    return _definitely_not_in_scope(s)\n",
+        _count_char,
+    )
+
+
+def test_linecache_backed_template_is_checked():
+    # REPL/``exec``-defined templates have no file; their source lives in
+    # ``linecache`` (the #690 path). Recovery must read it, so the check runs.
+    import linecache
+
+    fname = "<synthesis:splice-linecache-test>"
+    src = (
+        "from collections.abc import Callable\n\n\n"
+        "def templ(char: str) -> Callable[[str], int]:\n"
+        "    raise NotImplementedError\n"
+    )
+    linecache.cache[fname] = (len(src), None, src.splitlines(keepends=True), fname)
+    ns: dict[str, Any] = {}
+    exec(compile(src, fname, "exec"), ns)
+    anchor = ns["templ"]  # __code__.co_filename == fname; source only in linecache
+    assert not _raises("def count_a(s: str) -> int:\n    return s.count('a')\n", anchor)
+    assert _raises("def count_a(s: str) -> str:\n    return s\n", anchor)
+
+
+# --- End-to-end: decode through ``Encodable[Callable]`` with the anchor in
+# the (result) decode context. The argument path has no anchor and is skipped.
+
+
+def test_decode_with_anchor_typechecks_and_runs():
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(
+                module_code="def count_a(s: str) -> int:\n    return s.count('a')"
+            ),
+            context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+        )
+        assert fn("banana") == 3
+
+
+def test_decode_with_anchor_rejects_bad_code():
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        with pytest.raises(Exception):
+            ta.validate_python(
+                SynthesizedFunction(
+                    module_code="def count_a(s: str) -> str:\n    return s"
+                ),
+                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+            )
+
+
+def test_decode_without_anchor_skips_typecheck():
+    # Argument-path decoding carries no anchor -> the type check is skipped, so
+    # even ill-typed code decodes (it is out of scope for this stage).
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(
+                module_code="def count_a(s: str) -> str:\n    return s"
+            ),
+            context={},
+        )
+        assert callable(fn)
+
+
+def test_decode_with_anchor_rejects_non_nestable():
+    # The non-nestable scan is a decode-time precondition of the splice: with an
+    # anchor, a star import (illegal once nested in the Template body) is rejected
+    # before type checking.
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        with pytest.raises(Exception):
+            ta.validate_python(
+                SynthesizedFunction(
+                    module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+                ),
+                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+            )
+
+
+def test_decode_without_anchor_allows_non_nestable():
+    # No anchor -> no splice -> the scan is skipped, and the star import is legal at
+    # the module level where the code is exec'd. So it decodes and runs fine.
+    with handler(UnsafeEvalProvider()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(
+                module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+            ),
+            context={},
+        )
+        assert callable(fn)
 
 
 # ============================================================================
@@ -1401,7 +358,6 @@ class TestMypyTypeCheckNameCollision:
 
 def test_restricted_blocks_private_attribute_access():
     """RestrictedPython blocks access to underscore-prefixed attributes by default."""
-    encodable = Encodable.define(Callable[[str], int], {})
     source = SynthesizedFunction(
         module_code="""def get_private(s: str) -> int:
     return s.__class__.__name__"""
@@ -1409,7 +365,9 @@ def test_restricted_blocks_private_attribute_access():
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
         with handler(RestrictedEvalProvider()):
-            fn = encodable.decode(source)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
+                source, context={}
+            )
             fn("test")
 
 
@@ -1420,13 +378,14 @@ def test_restricted_with_custom_policy():
     class CustomPolicy(RestrictingNodeTransformer):
         pass
 
-    encodable = Encodable.define(Callable[[int, int], int], {})
     source = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider(policy=CustomPolicy)):
-        fn = encodable.decode(source)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source, context={}
+        )
     assert fn(2, 3) == 5
 
 
@@ -1443,18 +402,18 @@ def test_builtins_in_env_does_not_bypass_security():
     dangerous_ctx = {"__builtins__": builtins.__dict__}
 
     # Test 1: open() should not be usable even with __builtins__ in context
-    encodable_open = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_open = SynthesizedFunction(
         module_code="""def read_file(path: str) -> str:
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
         with handler(RestrictedEvalProvider()):
-            fn = encodable_open.decode(source_open)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_open, context=dangerous_ctx
+            )
             fn("/etc/passwd")
 
     # Test 2: __import__ should not be usable
-    encodable_import = Encodable.define(Callable[[], str], dangerous_ctx)
     source_import = SynthesizedFunction(
         module_code="""def get_os_name() -> str:
     os = __import__('os')
@@ -1462,26 +421,404 @@ def test_builtins_in_env_does_not_bypass_security():
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_import.decode(source_import)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
+                source_import, context=dangerous_ctx
+            )
             fn()
 
     # Test 3: Verify safe code still works with dangerous context
-    encodable_safe = Encodable.define(Callable[[int, int], int], dangerous_ctx)
     source_safe = SynthesizedFunction(
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(RestrictedEvalProvider()):
-        fn = encodable_safe.decode(source_safe)
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source_safe, context=dangerous_ctx
+        )
         assert fn(2, 3) == 5, "Safe code should still work"
 
     # Test 4: Private attribute access should still be blocked
-    encodable_private = Encodable.define(Callable[[str], str], dangerous_ctx)
     source_private = SynthesizedFunction(
         module_code="""def get_class(s: str) -> str:
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
         with handler(RestrictedEvalProvider()):
-            fn = encodable_private.decode(source_private)
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_private, context=dangerous_ctx
+            )
             fn("test")
+
+
+# ============================================================================
+# ReplSession (#678)
+# ============================================================================
+
+
+def _code(source: str) -> types.CodeType:
+    """Compile `source` to a code object the way the `exec_code` tool boundary
+    does -- through `Encodable[CodeType]`, which routes the active eval
+    provider's `parse`/`compile` ops (so a handler must be installed)."""
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(source)
+
+
+def test_repl_seeds_from_lexical_context():
+    """Names in the seed context are usable in executed code."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [10, 20, 30]})
+        assert session.exec_code(_code("print(sum(readings))")) == "60\n"
+
+
+def test_repl_persists_bindings_across_calls():
+    """A binding created in one call is visible in the next."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("total = 41"))
+        assert session.exec_code(_code("print(total)")) == "41\n"
+
+
+def test_repl_rebinds_across_calls():
+    """A seeded/prior name can be rebound using its prior value."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_runs_complete_multistatement_block():
+    """A complete `def` + call in one snippet runs in one shot (the case
+    `single`-mode compilation would reject)."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(
+            _code("def double(n):\n    return n * 2\nprint(double(21))")
+        )
+        assert out == "42\n"
+
+
+def test_repl_captures_print():
+    with handler(UnsafeEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+def test_repl_rejects_invalid_source_at_construction():
+    """Invalid source is rejected when it is decoded to a code object -- before it
+    ever reaches the session -- and valid code in the same provider still runs."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("def f(:")
+        assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
+
+
+def test_repl_exception_is_isolated():
+    """A runtime exception is reported in the call's output; the session survives
+    and retains prior state."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("kept = 7"))
+        out = session.exec_code(_code("print(1 / 0)"))
+        assert "ZeroDivisionError" in out
+        assert session.exec_code(_code("print(kept)")) == "7\n"
+
+
+def test_repl_system_exit_propagates():
+    """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
+    other exception (including `KeyboardInterrupt`) is caught and surfaced as
+    output rather than escaping the call."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        with pytest.raises(SystemExit):
+            session.exec_code(_code("raise SystemExit"))
+        out = session.exec_code(_code("raise KeyboardInterrupt"))
+        assert "KeyboardInterrupt" in out
+
+
+def test_repl_cross_snippet_traceback_shows_correct_source():
+    """A function defined in an earlier call that raises in a later call formats
+    with its *own* source line, not the later call's source -- the per-snippet
+    filename keeps each cell's source in linecache."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        session.exec_code(_code("def boom():\n    return 1 / 0"))
+        out = session.exec_code(_code("boom()"))
+        assert "return 1 / 0" in out  # boom's real source
+
+
+def test_repl_new_binding_does_not_leak_into_seed_context():
+    """A binding created in executed code stays in the session; the seed mapping
+    the session was created from is not mutated."""
+    with handler(UnsafeEvalProvider()):
+        seed = {"base": 10}
+        session = ReplSession(seed)
+        session.exec_code(_code("derived = base + 5"))
+        assert session.exec_code(_code("print(derived)")) == "15\n"
+        assert "derived" not in seed  # the lexical seed is untouched
+
+
+def test_repl_binding_is_visible_to_the_rest_of_the_call():
+    """Seeded from the per-call `ChainMap`, a binding the REPL makes lands in a
+    shared shadow layer of that chain -- so the rest of the Template call sees it
+    -- while the read-only lexical layer underneath does not, keeping it scoped to
+    the call (mirroring `exec`)."""
+    with handler(UnsafeEvalProvider()):
+        lexical = {"base": 10}
+        env: ChainMap[str, Any] = ChainMap({}, lexical)
+        ReplSession(env).exec_code(_code("shared = base + 5"))
+        assert env["shared"] == 15  # visible to the rest of the call via the chain
+        assert "shared" not in lexical  # but not leaked into the lexical context
+
+
+def test_repl_keeps_stdout_and_stderr_separate():
+    """stdout (print output) and stderr (tracebacks) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        out = session.exec_code(_code("print('hi')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\n"
+        assert "ZeroDivisionError" in session.stderr.getvalue()
+        assert "hi" not in session.stderr.getvalue()  # the streams don't mix
+        assert out == "hi\n" + session.stderr.getvalue()  # returned: stdout then stderr
+
+
+def test_repl_runsource_routes_through_ops():
+    """`runsource` compiles through the `parse`/`compile` ops (so it needs an
+    installed provider), keeping it self-consistent with `runcode`/`exec_code`
+    rather than falling back to the native single-mode compiler."""
+    with pytest.raises(NotImplementedError):
+        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({})
+        assert session.runsource("kept = 7") is False  # complete: compiled + ran
+        assert session.locals["kept"] == 7
+
+
+# ----------------------------------------------------------------------------
+# ReplSession under RestrictedEvalProvider (state + print fixed in #686)
+# ----------------------------------------------------------------------------
+
+
+def test_repl_rebinds_across_calls_restricted():
+    with handler(RestrictedEvalProvider()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_captures_print_restricted():
+    with handler(RestrictedEvalProvider()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+# ============================================================================
+# RestrictedEvalProvider state-retention and print (#685)
+# ============================================================================
+
+
+def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
+    """Run one snippet through the parse/compile/exec ops under
+    RestrictedEvalProvider, optionally capturing stdout."""
+    with handler(RestrictedEvalProvider()):
+        code = compile_op(parse_op(source, "<f>"), "<f>")
+        if capture:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exec_op(code, ns)
+            return buf.getvalue()
+        exec_op(code, ns)
+        return None
+
+
+def test_restricted_exec_copies_back_rebound_seed():
+    """#685: rebinding a name already present in the namespace writes the new
+    value back, not just never-before-seen names."""
+    ns = {"x": 1}
+    _restricted_run("x = 99", ns)
+    assert ns["x"] == 99
+
+
+def test_restricted_exec_copies_back_rebound_new_key():
+    """#685: a key that becomes a 'seed' after its first definition is still
+    rebindable on subsequent calls."""
+    ns: dict = {}
+    _restricted_run("y = 1", ns)
+    _restricted_run("y = 2", ns)
+    assert ns["y"] == 2
+
+
+def test_restricted_exec_persists_and_rebinds_across_calls():
+    """#685: the namespace is a real REPL session — a binding from one call is
+    usable in the next, and rebinding it using its prior value works."""
+    ns: dict = {}
+    _restricted_run("x = 10", ns)
+    _restricted_run("x = x + 1", ns)
+    assert ns["x"] == 11
+
+
+def test_restricted_exec_print_captured_to_stdout():
+    """#685: RestrictedPython's `print` is routed to the real stdout so
+    output-capturing callers see it (rather than NameError on `_print_`)."""
+    out = _restricted_run("print('hi')", {}, capture=True)
+    assert out == "hi\n"
+
+
+# ============================================================================
+# REPL code type-checking (issue #690)
+#
+# `exec_code` type-checks the cumulative session code -- prior snippets plus the
+# current one -- spliced into the enclosing Template's body (`_splice_repl` + the
+# `type_check` op, `lenient=True`), so names resolve in their real execution
+# context. These tests drive that pipeline against a real anchor and assert the
+# contract by exception type / runtime effect -- never by matching a mypy message
+# or a filename.
+# ============================================================================
+
+
+def _repl_anchor(readings: list[int]) -> int:
+    """A module-level stand-in for a Template function: the REPL splice target. Its
+    real source is recoverable (it lives in this test module) and its parameter
+    `readings` stands in for a name from the session's seed env."""
+    raise NotImplementedError
+
+
+def _repl_raises(prior: list[str], snippet: str) -> bool:
+    """type_check the cumulative REPL code spliced into `_repl_anchor`'s body; True
+    if it reports an in-region error."""
+    checked = _splice_repl(prior, snippet, _repl_anchor)
+    assert checked is not None
+    with handler(UnsafeEvalProvider()):
+        try:
+            type_check(*checked, lenient=True)
+            return False
+        except TypeError:
+            return True
+
+
+# --- Type-check semantics: checked in the Template body, leniently ---
+
+
+def test_repl_seed_env_read_is_checked():
+    """A snippet reading a seed name (a Template parameter) resolves in the spliced
+    body and is checked -- the case the old module-scope gate could only decline.
+    A correct use is clean; misusing the seed's type is a real error."""
+    assert not _repl_raises([], "total = sum(readings)\nprint(total)")
+    assert _repl_raises([], "bad: str = sum(readings)\nprint(bad)")
+
+
+def test_repl_cross_snippet_names_resolve():
+    """A helper defined in an earlier cell resolves when a later cell uses it (the
+    cumulative splice); calling it with the wrong type is caught."""
+    prior = ["def helper(n: int) -> int:\n    return n + 1"]
+    assert not _repl_raises(prior, "print(helper(3))")
+    assert _repl_raises(prior, "print(helper('bad'))")
+
+
+def test_repl_rebind_across_cells_is_lenient():
+    """A cell may rebind a name to a new type and use it -- normal REPL editing,
+    allowed by `--allow-redefinition`, not a type error."""
+    assert not _repl_raises(["x = 1"], "x = 'now a string'\nprint(x.upper())")
+
+
+def test_repl_body_need_not_return_template_type():
+    """REPL code isn't a function returning the Template's declared type; the return
+    contract is waived (``--disable-error-code=return``), so a body with no matching
+    return is clean."""
+    assert not _repl_raises([], "y = sum(readings)\nprint(y)")
+
+
+def test_repl_global_and_nonlocal_are_not_false_positives():
+    """`global`/`nonlocal` are legal REPL code; spliced into the Template body they do
+    not produce a spurious diagnostic."""
+    assert not _repl_raises(
+        ["counter = 0"], "def bump():\n    global counter\n    counter += 1\nbump()"
+    )
+
+
+def test_repl_read_of_cross_cell_rebound_name_is_lenient():
+    """A name rebound to a new type across cells, then read, is clean -- mypy narrows to
+    the latest binding under `--allow-redefinition`, so no spurious error on the read.
+    (The old module-scope gate had to decline this explicitly.)"""
+    assert not _repl_raises(['x = "s"', "x = 5"], "print(x + 1)")
+
+
+def test_repl_illtyped_but_runnable_snippet_is_caught():
+    """An ill-typed snippet that would execute with no runtime error is reported --
+    plain execution never catches it."""
+    assert _repl_raises([], "n: int = 'oops'\nprint(n)")
+
+
+def test_repl_check_reports_only_the_current_snippet():
+    """Only the current snippet's lines are reported: an error in the current cell raises,
+    but the same error confined to an earlier cell is out of region (not re-reported) --
+    while that earlier cell stays in the body so its bindings still resolve."""
+    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell -> reported
+    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")  # earlier -> not
+    assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
+
+
+def test_repl_splice_skips_sourceless_anchor():
+    """A Template with no recoverable source (defined via exec/REPL/notebook) skips the
+    check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
+    Callable anchor. Only source *drift* raises."""
+    ns: dict[str, Any] = {}
+    exec("def t(readings):\n    raise NotImplementedError", ns)
+    assert _splice_repl([], "x = 1", ns["t"]) is None
+
+
+# --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
+
+
+def _decode(source: str, *, anchor: bool) -> types.CodeType:
+    """Decode `source` to a code object the way the `exec_code` tool argument does -- with
+    the Template type-check anchor in the decode context (``anchor=True``, as a managed
+    Template call supplies) or without it."""
+    ctx = {REPL_ANCHOR_KEY: _repl_anchor} if anchor else None
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
+        source, context=ctx
+    )
+
+
+def test_repl_decode_rejects_illtyped_snippet():
+    """With the Template anchor in the decode context, an ill-typed-but-runnable snippet is
+    type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
+    fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
+    to a code object."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises((pydantic.ValidationError, TypeError)):
+            _decode("n: int = 'oops'\nprint(n)", anchor=True)
+        assert isinstance(
+            _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
+        )
+
+
+def test_repl_decode_without_anchor_skips_typecheck():
+    """Outside a managed Template call there is no anchor in the decode context, so an
+    ill-typed snippet decodes without a type check (it can still run)."""
+    with handler(UnsafeEvalProvider()):
+        assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
+
+
+def test_repl_exec_code_runs_and_records_history():
+    """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
+    records each snippet's source so a later decode can splice the accumulated session."""
+    with handler(UnsafeEvalProvider()):
+        session = ReplSession({"readings": [1, 2, 3]})
+        assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
+        assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
+
+
+# --- decode boundary: non-nestable constructs rejected at Encodable[CodeType] ---
+
+
+def test_encodable_code_rejects_future_import():
+    """`from __future__ import ...` is illegal once nested in a function body, so it
+    is rejected when the code object is decoded, before it can run."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from __future__ import annotations\nx = 1")
+
+
+def test_encodable_code_rejects_star_import():
+    """A star import is likewise rejected at decode."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from os import *\nx = 1")

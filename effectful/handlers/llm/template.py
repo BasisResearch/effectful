@@ -215,35 +215,18 @@ class Template[**P, T](Tool[P, T]):
 
     @property
     def tools(self) -> Mapping[str, Tool]:
-        """Operations and Templates available as tools. Auto-capture from lexical context."""
-        result = {}
-        is_recursive = _is_recursive_signature(self.__signature__)
+        """Operations and Templates available as tools, plus synthetic
+        readers for other lexical symbols. Auto-captured from lexical context."""
+        from effectful.handlers.llm.completions import collect_tools
 
-        for name, obj in self.__context__.items():
-            # Collect tools directly in context
-            if isinstance(obj, Tool):
-                result[name] = obj
+        result = dict(collect_tools(self.__context__))
 
-            # Collect tools as methods on Agent instances in context
-            elif isinstance(obj, Agent):
-                for cls in type(obj).__mro__:
-                    for attr_name in vars(cls):
-                        if isinstance(getattr(obj, attr_name), Tool):
-                            result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
-
-        # Deduplicate by tool identity and remove self-references.
-        #
-        # The same Tool can appear under multiple names when it is both
-        # visible in the enclosing scope *and* discovered via an Agent
-        # instance's MRO.  Since Tools are hashable Operations and
-        # instance-method Tools are cached per instance, we keep only
-        # the last name for each unique tool object.  We also remove
-        # the template itself from the tool map unless it is explicitly
+        # We remove the template itself from the tool map unless it is explicitly
         # marked as recursive (see test_template_method, test_template_method_nested_class).
-        tool2name = {tool: name for name, tool in sorted(result.items())}
-        for name, tool in tuple(result.items()):
-            if tool2name[tool] != name or (tool is self and not is_recursive):
-                del result[name]
+        if not _is_recursive_signature(self.__signature__):
+            for name, tool in tuple(result.items()):
+                if tool is self:
+                    del result[name]
 
         return result
 
@@ -329,7 +312,7 @@ class Template[**P, T](Tool[P, T]):
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
         mod = inspect.getmodule(_fn)
-        op.__system_prompt__ = inspect.getdoc(mod) if mod is not None else ""  # type: ignore[attr-defined]
+        op.__system_prompt__ = inspect.getdoc(mod) or ""  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (

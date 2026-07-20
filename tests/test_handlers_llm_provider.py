@@ -13,8 +13,10 @@ import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from types import CodeType
 
 import litellm
+import pydantic
 import pytest
 import tenacity
 from litellm import ChatCompletionMessageToolCall
@@ -27,7 +29,9 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
+    LexicalReaders,
     LiteLLMProvider,
+    PythonRepl,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -36,9 +40,10 @@ from effectful.handlers.llm.completions import (
     _get_history,
     call_assistant,
     call_tool,
+    collect_tools,
     completion,
 )
-from effectful.handlers.llm.encoding import Encodable, SynthesizedFunction
+from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -516,8 +521,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -546,8 +551,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -578,8 +583,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -605,8 +610,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -632,17 +637,15 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
     def test_retry_handler_valid_tool_call_passes_through(self):
         """Test that valid tool calls are decoded and returned."""
         responses = [
-            make_tool_call_response(
-                "add_numbers", '{"a": {"value": 1}, "b": {"value": 2}}'
-            ),
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
         ]
 
         mock_handler = MockCompletionHandler(responses)
@@ -657,8 +660,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -731,8 +734,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={},
-                response_format=Encodable.define(int),
+                env={},
+                response_type=int,
                 model="test-model",
             )
 
@@ -763,8 +766,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
-                    response_format=Encodable.define(int),
+                    env={},
+                    response_type=int,
                     model="test-model",
                 )
 
@@ -790,8 +793,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={"add_numbers": add_numbers},
-                    response_format=Encodable.define(str),
+                    env={"add_numbers": add_numbers},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -820,8 +823,8 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    tools={},
-                    response_format=Encodable.define(int),
+                    env={},
+                    response_type=int,
                     model="test-model",
                 )
 
@@ -848,8 +851,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -878,8 +881,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -908,8 +911,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -939,8 +942,8 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                tools={"add_numbers": add_numbers},
-                response_format=Encodable.define(str),
+                env={"add_numbers": add_numbers},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1027,7 +1030,7 @@ class TestToolExecutionErrorHandling:
         # First call: valid tool call that will fail at runtime
         # Second call: successful text response
         responses = [
-            make_tool_call_response("failing_tool", '{"x": {"value": 42}}'),
+            make_tool_call_response("failing_tool", '{"x": 42}'),
             make_text_response("handled the error"),
         ]
 
@@ -1040,8 +1043,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, tools, response_format, model, **kwargs):
-                return fwd(tools, response_format, model, **kwargs)
+            def _call_assistant(self, env, response_type, model, **kwargs):
+                return fwd(env, response_type, model, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1050,8 +1053,8 @@ class TestToolExecutionErrorHandling:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                tools={"failing_tool": failing_tool},
-                response_format=Encodable.define(str),
+                env={"failing_tool": failing_tool},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1186,6 +1189,20 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
     raise NotHandled
 
 
+class _MethodSynthesizer:
+    """A class whose *method* is a Template returning a Callable, so its synthesis
+    anchor is a bound-method ``__default__`` (eb8680: bound-method Templates)."""
+
+    @Template.define
+    def make_adder(self) -> Callable[[int, int], int]:
+        """Generate a Python function that adds two integers together.
+
+        The function should take two integer parameters and return their sum.
+        Return a code block whose last definition is the function.
+        """
+        raise NotHandled
+
+
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
@@ -1201,6 +1218,23 @@ class TestCallableSynthesis:
             assert callable(add_func)
             assert add_func(2, 3) == 5
             assert add_func(0, 0) == 0
+            assert add_func(-1, 1) == 0
+            assert add_func(100, 200) == 300
+
+    def test_synthesize_via_bound_method(self, request):
+        """A *method* Template synthesizes a callable end-to-end -- exercising the
+        bound-method `__default__` anchor through the real splice type-check
+        (RetryLLMHandler lets the model recover from a malformed first draft)."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(4))),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            add_func = _MethodSynthesizer().make_adder()
+
+            assert callable(add_func)
+            assert add_func(2, 3) == 5
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 
@@ -1247,13 +1281,13 @@ class TestCallableSynthesis:
             assert callable(add_func)
 
             # Encode it back to SynthesizedFunction
-            encodable = Encodable.define(Callable[[int, int], int], {})
-            encoded = encodable.encode(add_func)
-            assert isinstance(encoded, SynthesizedFunction)
-            assert "def " in encoded.module_code
+            adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
+            encoded = adapter.dump_python(add_func, mode="json")
+            assert isinstance(encoded, dict)
+            assert "def " in encoded["module_code"]
 
             # Decode it again and verify it still works
-            decoded = encodable.decode(encoded)
+            decoded = adapter.validate_python(encoded)
             assert callable(decoded)
             assert decoded(5, 7) == 12
 
@@ -1377,8 +1411,8 @@ class TestMessageSequence:
             handler({_get_history: lambda: message_sequence}),
         ):
             call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1419,14 +1453,14 @@ class TestMessageSequence:
         ):
             # First call: input is the latest message (msg_user)
             resp1, _, _ = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
             # Second call: input is the first response
             resp2, _, _ = call_assistant(
-                tools={},
-                response_format=Encodable.define(str),
+                env={},
+                response_type=str,
                 model="test-model",
             )
 
@@ -1458,8 +1492,8 @@ class TestMessageSequence:
             ):
                 call_assistant(
                     messages=[msg],
-                    tools={},
-                    response_format=Encodable.define(str),
+                    env={},
+                    response_type=str,
                     model="test-model",
                 )
 
@@ -1553,6 +1587,32 @@ def type_error_tool(x: int) -> str:
     raise TypeError(f"bad type for {x}")
 
 
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop, handing
+    `body` the call's `exec_code` tool so it runs against one REPL session (the
+    supported way to reach a session).  Install any outer handlers (e.g.
+    `RetryLLMHandler`) around the call.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
 class TestCallToolWrapsExecutionError:
     """call_tool should wrap runtime tool errors in ToolCallExecutionError."""
 
@@ -1590,6 +1650,23 @@ class TestCallToolWrapsExecutionError:
         result = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
+
+    def test_call_tool_returns_exec_code_error_in_output(self):
+        """An `exec_code` runtime error is reported in the returned tool message's
+        content (the traceback), not raised as a `ToolCallExecutionError`, so the
+        assistant loop continues with it as feedback."""
+
+        def body(exec_code):
+            bound_args = inspect.signature(exec_code).bind(
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
+            )
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            return call_tool(tc)
+
+        msg = _drive_repl(body)
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_exec"
+        assert "ZeroDivisionError" in str(msg["content"])
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
@@ -1669,7 +1746,7 @@ class TestLiteLLMProviderMessagePruning:
         """When a tool error propagates, all messages from that call are pruned."""
         # LLM says "call flaky_tool", then tool raises unhandled error
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -1718,7 +1795,7 @@ class TestLiteLLMProviderMessagePruning:
     def test_pre_existing_messages_preserved_on_error(self):
         """Pre-existing messages in the sequence are not pruned when a call fails."""
         responses = [
-            make_tool_call_response("flaky_tool", '{"x": {"value": 1}}'),
+            make_tool_call_response("flaky_tool", '{"x": 1}'),
         ]
         mock_handler = MockCompletionHandler(responses)
 
@@ -2159,3 +2236,136 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ---------------------------------------------------------------------------
+# Synthetic readers — integration (PR #545 finish-up)
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticReaderIntegration:
+    """The LLM can read lexical context through synthetic reader tools."""
+
+    @requires_llm
+    def test_llm_reads_lexical_value(self, request):
+        """Template asks LLM to inspect _known_data and report its sum.
+        The synthetic reader for _known_data is available in the tools
+        array; the LLM should call it, see [10,20,30,40,50], and report
+        the sum (150)."""
+        _known_data = [10, 20, 30, 40, 50]
+
+        @Template.define
+        def report_sum() -> int:
+            """Use the `_known_data` tool to read the list of numbers,
+            then return their sum as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalReaders()),
+        ):
+            result = report_sum()
+
+        assert isinstance(result, int)
+        assert result == sum(_known_data)  # 150
+
+    @requires_llm
+    def test_template_synthesis_uses_lexical_reader(self, request):
+        """A Template that synthesizes a callable grounds its output
+        in a lexical value exposed as a synthetic reader.
+
+        The Template asks the LLM to write a lambda comparing its
+        argument against `threshold`; the LLM must call the `threshold`
+        reader to inspect the value before emitting code.
+        """
+        threshold = 0.85
+
+        @Template.define
+        def make_above_threshold() -> Callable[[float], bool]:
+            """Use the `threshold` reader tool to inspect its current
+            float value, then emit a single Python function definition:
+
+                def above(x: float) -> bool:
+                    return x > <the value you read>
+
+            The function definition MUST be the last and only statement.
+            Do not emit any other code, no trailing assignment, no
+            imports, no comments after the function."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+            handler(LexicalReaders()),
+        ):
+            fn = make_above_threshold()
+
+        assert fn(0.9) is True
+        assert fn(0.5) is False
+        assert fn(threshold) is False
+
+    def test_template_exposes_lexical_classes(self):
+        """When `LexicalReaders` is installed, classes in the defining
+        scope are exposed as readers via the broad `Encodable[Callable]`
+        handler — the `Hand`/`Finger`/`generate_arm` motivating example
+        from #497.  Without the handler the readers are gated off; this
+        test pins both contracts.
+        """
+
+        class Finger:
+            def wiggle(self) -> str:
+                return "wiggle"
+
+        class Hand:
+            fingers: list[Finger]
+
+        @Template.define
+        def describe_hand_action() -> str:
+            """Doc."""
+            raise NotImplementedError
+
+        # Off by default.
+        assert "Finger" not in describe_hand_action.tools
+        assert "Hand" not in describe_hand_action.tools
+
+        # On under the handler.
+        with handler(LexicalReaders()):
+            tools = describe_hand_action.tools
+            assert "Finger" in tools
+            assert "Hand" in tools
+
+
+class TestPythonReplIntegration:
+    """The LLM can run code in a persistent session through `exec_code`."""
+
+    @requires_llm
+    def test_llm_computes_via_exec_code(self, request):
+        """A Template seeds a list in lexical scope and asks the LLM to
+        compute a derived statistic by running code.  The LLM uses the
+        `exec_code` tool (possibly across several rounds, with state
+        persisting) and returns the typed result."""
+        readings = [12, 19, 23, 31, 8, 27]
+
+        @Template.define
+        def outlier_count() -> int:
+            """Use the `exec_code` tool to compute how many values in the
+            `readings` list lie strictly more than one population standard
+            deviation from the mean.  `readings` is available in scope.
+            Return that count as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LexicalReaders()),
+            handler(PythonRepl()),
+        ):
+            result = outlier_count()
+
+        import statistics
+
+        m = statistics.mean(readings)
+        s = statistics.pstdev(readings)
+        expected = sum(1 for r in readings if abs(r - m) > s)
+        assert result == expected

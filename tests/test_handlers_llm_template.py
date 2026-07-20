@@ -559,9 +559,7 @@ class TestAgentWithToolCalls:
 
         mock = MockCompletionHandler(
             [
-                make_tool_call_response(
-                    "add", '{"a": {"value": 2}, "b": {"value": 3}}'
-                ),
+                make_tool_call_response("add", '{"a": 2, "b": 3}'),
                 make_text_response("The answer is 5"),
             ]
         )
@@ -780,7 +778,6 @@ def test_template_method():
     assert a.random in a.f.tools.values()
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert a.f not in a.f.tools.values()
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
     assert any(t() == 4 for t in a.f.tools.values() if t is a.random)
 
     class B(A):
@@ -797,7 +794,6 @@ def test_template_method():
     assert isinstance(b.f, Template)
     assert b.random in b.f.tools.values()
     assert b.reverse in b.f.tools.values()
-    assert "local_variable" in b.f.__context__ and "local_variable" not in a.f.tools
 
 
 def test_template_method_nested_class():
@@ -828,7 +824,6 @@ def test_template_method_nested_class():
     assert "random" in a.f.tools
     # f is the template itself — found via self but correctly removed (non-recursive)
     assert "f" not in a.f.tools
-    assert "local_variable" in a.f.__context__ and "local_variable" not in a.f.tools
     assert a.f.tools["random"]() == 4
 
 
@@ -1226,7 +1221,7 @@ def test_template_formatting_scoped():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1341,7 +1336,7 @@ def test_staticmethod_lexical_scope_formatting():
     with handler(TemplateStringIntp()):
         assert (
             convert(7920)
-            == 'How many miles is {"value":7920} feet? There are {"value":5280} feet per mile.'
+            == "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1533,3 +1528,296 @@ def test_tool_forward_ref():
     sig = inspect.signature(_tool_forward_ref)
     assert sig.parameters["x"].annotation is int
     assert sig.return_annotation is str
+
+
+# ---------------------------------------------------------------------------
+# Synthetic readers for lexical context (PR #545 finish-up)
+# ---------------------------------------------------------------------------
+
+import re
+import typing
+from pathlib import Path
+from types import CodeType
+
+import pydantic
+
+from effectful.handlers.llm.completions import (
+    LexicalReaders,
+    PythonRepl,
+    _LexicalVariableTool,
+    collect_tools,
+)
+from effectful.handlers.llm.encoding import Encodable
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+
+
+# Helpers for the test matrix
+@dataclasses.dataclass
+class _SimpleDataclass:
+    x: int
+    y: str
+
+
+class _SimpleModel(pydantic.BaseModel):
+    """Pydantic model used in encodable-probe matrix tests."""
+
+    x: int
+    y: str
+
+
+class _OpaqueNoEncoder:
+    """Plain user class with no Pydantic encoder."""
+
+    pass
+
+
+def _example_unannotated(x):
+    """Unannotated function for the skip-via-catch tests."""
+    return x
+
+
+def _example_annotated(x: int) -> int:
+    """Annotated function returning x."""
+    return x
+
+
+def test_synthetic_reader_returns_captured_value():
+    """The reader closes over the value snapshot taken at construction
+    time.  In-place mutation of a mutable captured value is visible
+    (same object reference); rebinding the source name is not."""
+    captured: list[int] = [1, 2, 3]
+    tool = _LexicalVariableTool.define(captured, name="x")
+    assert tool() == [1, 2, 3]
+    captured.append(4)
+    assert tool() == [1, 2, 3, 4]
+
+
+def test_synthetic_reader_snapshot_survives_rebind():
+    """Tools are constructed fresh each `call_assistant` invocation,
+    so rebinding the source name between construction and invocation
+    has no effect on the captured value."""
+    env: dict = {"x": 42}
+    tool = _LexicalVariableTool.define(env["x"], name="x")
+    env["x"] = 99
+    assert tool() == 42
+
+
+def test_synthetic_reader_snapshot_survives_deletion():
+    """The closure holds the value directly, so deleting the source
+    name does not invalidate the reader."""
+    env: dict = {"x": 42}
+    tool = _LexicalVariableTool.define(env["x"], name="x")
+    del env["x"]
+    assert tool() == 42
+
+
+_PROBE_OK_CASES: list[tuple[str, typing.Any]] = [
+    ("primitive_int", 42),
+    ("primitive_str", "hello"),
+    ("list_of_int", [1, 2, 3]),
+    ("dict_value", {"a": 1}),
+    ("dataclass_simple", _SimpleDataclass(x=1, y="hello")),
+    ("pydantic_model", _SimpleModel(x=1, y="hello")),
+    # `re.Pattern` and `pathlib.PosixPath` are encodable in the matrix.
+    ("re_pattern", re.compile(r"x")),
+    ("pathlib_path", Path("/tmp")),
+]
+
+
+@pytest.mark.parametrize(
+    "name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None
+)
+def test_lexical_variable_tool_returns_value(name, value):
+    """`_LexicalVariableTool` builds a Tool when `Encodable[T]`
+    schema generates; calling it returns the captured value."""
+    tool = _LexicalVariableTool.define(value, name=name)
+    assert tool() is value
+
+
+# ---- Encodable-passthrough exposure (annotated callables, classes,
+# builtins, methods) ----
+
+
+def _example_method_owner_unannotated():
+    class _C:
+        def m(self):
+            return 1
+
+    return _C().m
+
+
+def _example_method_owner_annotated():
+    class _C:
+        def m(self) -> int:
+            return 1
+
+    return _C().m
+
+
+_EXPOSED_THROUGH_ENCODABLE: list[tuple[str, typing.Callable[[], typing.Any]]] = [
+    # Annotated function: nested_type → Callable[[int], int]; _pydantic_callable schema.
+    ("annotated_fn", lambda: _example_annotated),
+    # Unannotated function: nested_type → function; _pydantic_callable schema.
+    ("unannotated_fn", lambda: _example_unannotated),
+    # Plain class: nested_type → type; _pydantic_callable schema.
+    ("plain_class", lambda: type("Plain", (), {})),
+    # Builtin function.
+    ("builtin_fn", lambda: len),
+    # Bound method, annotated and unannotated.
+    ("annotated_method", _example_method_owner_annotated),
+    ("unannotated_method", _example_method_owner_unannotated),
+]
+
+
+@pytest.mark.parametrize(
+    "name,make_value",
+    _EXPOSED_THROUGH_ENCODABLE,
+    ids=lambda x: x[0] if isinstance(x, tuple) else None,
+)
+def test_collect_tools_exposes_callable_shaped_values(name, make_value):
+    """With `LexicalReaders` installed, annotated callables, classes,
+    builtins, and methods flow through Encodable's broad Callable
+    handler and become synthesis-shaped tools."""
+    value = make_value()
+    env = {name: value}
+    with handler(LexicalReaders()):
+        assert name in collect_tools(env)
+
+
+def test_lexical_reader_exposes_data_values():
+    """Data-shaped values are exposed as readers (positive contract).
+    Readers snapshot the value, so calling one returns the *same*
+    object that was in env at construction time."""
+    env = {
+        "x": 1,
+        "s": "hello",
+        "lst": [1, 2, 3],
+        "d": {"k": 1},
+        "model": _SimpleModel(x=1, y="hi"),
+    }
+    with handler(LexicalReaders()):
+        result = collect_tools(env)
+    assert {"x", "s", "lst", "d", "model"} <= set(result)
+    for k, v in env.items():
+        assert result[k]() is v
+
+
+def test_template_tools_includes_synthetic_readers_for_locals():
+    """The Template.tools property includes synthetic readers for
+    plain values in lexical scope when `LexicalReaders` is installed."""
+    _test_data = [10, 20, 30]
+
+    @Template.define
+    def t() -> int:
+        """Doc."""
+        raise NotHandled
+
+    with handler(LexicalReaders()):
+        tools = t.tools
+        assert "_test_data" in tools
+        assert tools["_test_data"]() == [10, 20, 30]
+
+
+def test_lexical_readers_handler_enables_collection():
+    """Installing `LexicalReaders` flips the gate; the same values are
+    exposed as zero-arg reader tools."""
+    env = {"x": 42, "s": "hello"}
+    with handler(LexicalReaders()):
+        result = collect_tools(env)
+    assert result["x"]() == 42
+    assert result["s"]() == "hello"
+
+
+# ---------------------------------------------------------------------------
+# PythonRepl handler (#678)
+# ---------------------------------------------------------------------------
+
+
+def test_python_repl_off_by_default():
+    """Without `PythonRepl`, `exec_code` is not collected."""
+    assert "exec_code" not in collect_tools({"x": 1})
+
+
+def test_python_repl_exposes_exec_code():
+    """With `PythonRepl` installed, `exec_code` is collected alongside the
+    base tools."""
+    with handler(PythonRepl()):
+        assert "exec_code" in collect_tools({"x": 1})
+
+
+def test_python_repl_composes_with_lexical_readers():
+    """Readers and the REPL tool coexist when both handlers are installed."""
+    with handler(LexicalReaders()), handler(PythonRepl()):
+        result = collect_tools({"data": [1, 2, 3]})
+    assert "exec_code" in result
+    assert "data" in result
+
+
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop: it collects
+    the tools for a single call and hands `body` that call's `exec_code` tool, so
+    `body` sees exactly one REPL session for its duration.  This is the supported
+    way to reach a session -- `PythonRepl` introduces it per call, mirroring
+    `__history__`.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            exec_code = collect_tools(collections.ChainMap({}))["exec_code"]
+            # Bodies pass source strings; decode them to code objects as the LLM
+            # tool boundary would (`Encodable[CodeType]` compiles the source).
+            decode = pydantic.TypeAdapter(Encodable[CodeType]).validate_python
+            box.append(body(lambda src: exec_code(decode(src))))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
+def test_python_repl_state_persists_within_one_call():
+    """Within one Template call, `exec_code` state carries across calls: a
+    binding made in one snippet is visible in the next."""
+
+    def body(exec_code):
+        exec_code("kept = 5")
+        return exec_code("print(kept)")
+
+    assert _drive_repl(body) == "5\n"
+
+
+def test_python_repl_distinct_calls_get_isolated_sessions():
+    """Each Template call gets its own session: a binding made in one call is
+    not visible in a separate call."""
+    _drive_repl(lambda exec_code: exec_code("leaked = 1"))
+    assert (
+        _drive_repl(lambda exec_code: exec_code("print('leaked' in dir())"))
+        == "False\n"
+    )
+
+
+def test_python_repl_nested_call_is_isolated_and_outer_survives():
+    """A nested Template call introduces its own session by construction: the
+    inner body cannot see the outer's bindings, and the outer session keeps its
+    state across the nested call."""
+
+    def outer(exec_code):
+        exec_code("outer_var = 1")
+        inner_sees_outer = _drive_repl(  # a fully nested Template call
+            lambda inner: inner("print('outer_var' in dir())")
+        )
+        outer_after = exec_code("print(outer_var, 'outer_var' in dir())")
+        return inner_sees_outer, outer_after
+
+    inner_sees_outer, outer_after = _drive_repl(outer)
+    assert inner_sees_outer == "False\n"  # the nested session is isolated
+    assert outer_after == "1 True\n"  # the outer session survived the nested call

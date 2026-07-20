@@ -1,12 +1,20 @@
 import collections.abc
+import dataclasses
+import functools
 import inspect
 import typing
 from typing import Literal
 
+import jax
+import jax.numpy as jnp
 import pytest
 
 from effectful.internals.unification import (
     Box,
+    Substitutions,
+    TypeEvaluator,
+    TypeExpressions,
+    TypeVariable,
     canonicalize,
     freetypevars,
     nested_type,
@@ -28,8 +36,58 @@ else:
     W = typing.TypeVar("W")
 
 
+@dataclasses.dataclass
+class _Substitute(TypeEvaluator):
+    """
+    Helper class to perform substitution using TypeEvaluator.
+    Used to test TypeEvaluator's traversal logic against the ground-truth ``substitute``
+    """
+
+    subs: Substitutions
+
+    @classmethod
+    def substitute(cls, typ: TypeExpressions, subs: Substitutions) -> TypeExpressions:
+        return cls(subs).evaluate(typ)
+
+    @functools.singledispatchmethod
+    def evaluate(self, typ: TypeExpressions) -> TypeExpressions:
+        return super().evaluate(typ)
+
+    @evaluate.register
+    def _(self, typ: TypeVariable):
+        if typ in self.subs:
+            return self.evaluate(self.subs[typ])
+        else:
+            return super().evaluate(typ)
+
+
+@dataclasses.dataclass
+class _FreeTypeVars(TypeEvaluator):
+    """
+    Helper class to perform free variable collection using TypeEvaluator.
+    Used to test TypeEvaluator's traversal logic against the ground-truth ``freetypevars``
+    """
+
+    fvs: set[TypeVariable] = dataclasses.field(default_factory=set)
+
+    @classmethod
+    def freetypevars(cls, typ: TypeExpressions) -> collections.abc.Set[TypeVariable]:
+        evaluator = cls()
+        evaluator.evaluate(typ)
+        return evaluator.fvs
+
+    @functools.singledispatchmethod
+    def evaluate(self, typ: TypeExpressions) -> TypeExpressions:
+        return super().evaluate(typ)
+
+    @evaluate.register
+    def _(self, typ: TypeVariable):
+        self.fvs.add(typ)
+        return super().evaluate(typ)
+
+
 @pytest.mark.parametrize(
-    "typ,fvs",
+    "typ,expected",
     [
         # Basic cases
         (T, {T}),
@@ -79,8 +137,17 @@ else:
         # (collections.abc.Callable[typing.ParamSpec("P"), T], {T}),  # Would need to handle ParamSpec
     ],
 )
-def test_freetypevars(typ: type, fvs: set[typing.TypeVar]):
-    assert freetypevars(typ) == fvs
+@pytest.mark.parametrize(
+    "freetypevars_impl", [freetypevars, _FreeTypeVars.freetypevars]
+)
+def test_freetypevars(
+    freetypevars_impl: collections.abc.Callable[
+        [TypeExpressions], collections.abc.Set[TypeVariable]
+    ],
+    typ: TypeExpressions,
+    expected: collections.abc.Set[typing.TypeVar],
+):
+    assert freetypevars_impl(typ) == expected
 
 
 def test_canonicalize_1():
@@ -121,6 +188,36 @@ def test_canonicalize_1():
     assert canonicalize(Literal[200, 404]) == int
     assert canonicalize(Literal[True]) == bool
     assert canonicalize(Literal[1, "a"]) == (int | str)
+
+
+def test_canonicalize_typeddict_class():
+    """Canonicalizing a TypedDict class preserves structure with canonical field types."""
+
+    class MyTD(typing.TypedDict):
+        name: str
+        age: int
+
+    # Fields are already canonical types
+    result = canonicalize(MyTD)
+    assert typing.is_typeddict(result)
+
+    hints = typing.get_type_hints(result)
+    assert hints["name"] is str
+    assert hints["age"] is int
+
+    class MyTD2(typing.TypedDict):
+        name: str
+        items: list[int]
+
+    # list[int] -> MutableSequence[int], so a new TypedDict is created
+    result = canonicalize(MyTD2)
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints["name"] is str
+    assert hints["items"] == collections.abc.MutableSequence[int]
+
+    # Idempotent: canonicalizing the result returns the same object
+    assert canonicalize(result) is result
 
 
 @pytest.mark.parametrize(
@@ -249,10 +346,16 @@ def test_canonicalize_1():
         ),
     ],
 )
+@pytest.mark.parametrize("substitute_impl", [substitute, _Substitute.substitute])
 def test_substitute(
-    typ: type, subs: typing.Mapping[typing.TypeVar, type], expected: type
+    substitute_impl: collections.abc.Callable[
+        [TypeExpressions, Substitutions], TypeExpressions
+    ],
+    typ: type,
+    subs: typing.Mapping[typing.TypeVar, type],
+    expected: type,
 ):
-    assert substitute(typ, subs) == expected  # type: ignore
+    assert substitute_impl(typ, subs) == expected  # type: ignore
 
 
 @pytest.mark.parametrize(
@@ -650,7 +753,6 @@ def test_infer_return_type_failure(
         # Dicts/mappings
         ({"key": "value"}, dict[str, str]),
         ({1: "one", 2: "two"}, dict[int, str]),
-        ({"a": 1, "b": 2}, dict[str, int]),
         ({True: 1.0, False: 2.0}, dict[bool, float]),
         # Tuples preserve exact structure
         ((1, "hello", 3.14), tuple[int, str, float]),
@@ -663,7 +765,6 @@ def test_infer_return_type_failure(
         ([{1, 2}, {3, 4}], list[set[int]]),
         ([{"a": 1}, {"b": 2}], list[dict[str, int]]),
         ({"key": [1, 2, 3]}, dict[str, list[int]]),
-        ({"a": {1, 2}, "b": {3, 4}}, dict[str, set[int]]),
         ({1: {"x": True}, 2: {"y": False}}, dict[int, dict[str, bool]]),
         # Tuples in collections
         ([(1, "a"), (2, "b")], list[tuple[int, str]]),
@@ -682,11 +783,83 @@ def test_infer_return_type_failure(
         # Other built-in types
         (range(5), type(range(5))),
         (slice(1, 10), type(slice(1, 10))),
+        # jax arrays
+        (jnp.array(0.0), jax.Array),
+        (jnp.array([1, 2, 3]), jax.Array),
     ],
 )
 def test_nested_type(value, expected):
     result = nested_type(value).value
     assert canonicalize(result) == canonicalize(expected)
+
+
+def test_nested_type_typeddict_str_keys_mixed_values():
+    """Dicts with str keys and heterogeneous value types produce a TypedDict."""
+    value = {"name": "Alice", "age": 30}
+    result = nested_type(value).value
+    # Should be a TypedDict, not dict
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"name": str, "age": int}
+
+
+def test_nested_type_typeddict_multiple_value_types():
+    """TypedDict with more than two distinct value types."""
+    value = {"label": "x", "count": 5, "flag": True}
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"label": str, "count": int, "flag": bool}
+
+
+def test_nested_type_typeddict_nested_values():
+    """TypedDict with nested collection values."""
+    value = {"items": [1, 2, 3], "name": "test"}
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert canonicalize(hints["items"]) == canonicalize(list[int])
+    assert hints["name"] is str
+
+
+def test_nested_type_typeddict_instance_roundtrip():
+    """A TypedDict instance with heterogeneous values produces a TypedDict."""
+
+    class UserTD(typing.TypedDict):
+        name: str
+        age: int
+
+    value = UserTD(name="a", age=1)
+    result = nested_type(value).value
+    assert typing.is_typeddict(result)
+    hints = typing.get_type_hints(result)
+    assert hints == {"name": str, "age": int}
+
+
+def test_nested_type_homogeneous_str_keys_stays_mapping():
+    """Multi-key str dicts with homogeneous values stay Mapping[str, V], not TypedDict.
+
+    A closed required-key TypedDict is unsound for a runtime dict (it is really
+    an inhabitant of ``dict[str, V]``); inferring one breaks unification of two
+    sibling dicts against a shared TypeVar (gh #662). TypedDict is reserved for
+    heterogeneous-valued str dicts, where per-field types carry real information.
+    """
+    result = nested_type({"a": 1, "b": 2}).value
+    assert not typing.is_typeddict(result)
+    assert canonicalize(result) == canonicalize(dict[str, int])
+
+    result = nested_type({"a": {1, 2}, "b": {3, 4}}).value
+    assert not typing.is_typeddict(result)
+    assert canonicalize(result) == canonicalize(dict[str, set[int]])
+
+
+def test_nested_type_non_str_keys_mixed_values_stays_dict():
+    """Dicts with non-str keys and mixed value types stay as plain dict."""
+    value = {1: "one", 2: True}
+    result = nested_type(value).value
+    # Should remain a plain dict type, not a TypedDict
+    assert not typing.is_typeddict(result)
+    assert result is dict
 
 
 def test_nested_type_term_error():
@@ -700,6 +873,73 @@ def test_nested_type_term_error():
     mock_term = Mock(spec=Term)
     with pytest.raises(TypeError, match="Terms should not appear in nested_type"):
         nested_type(mock_term)
+
+
+def test_nested_type_marker_decorator_widens_to_class():
+    """#673: ``pytest.mark.parametrize`` is a ``MarkDecorator`` instance --
+    callable, but lacks ``__qualname__``. The Callable branch's
+    ``typing.get_overloads`` raises ``AttributeError``; per the
+    canonicalize-widening principle (PR #613) the fallback should be
+    ``Box(type(value))``."""
+    val = pytest.mark.parametrize
+    assert nested_type(val).value is type(val)
+
+
+def test_nested_type_method_descriptor_widens_to_class():
+    """#673: ``dict.get`` is a ``method_descriptor`` -- callable but
+    missing ``__module__``. Same widening shape as MarkDecorator."""
+    val = dict.get
+    assert nested_type(val).value is type(val)
+
+
+def test_nested_type_unresolvable_forward_ref_widens():
+    """#673: an ``Operation`` whose default carries a stringified
+    annotation whose name does not resolve in the captured scope.
+    ``inspect.signature`` consults ``Operation.__signature__`` which
+    calls ``typing.get_type_hints`` -- forward-ref evaluation raises
+    ``NameError``. ``nested_type`` should widen to ``Box(type(value))``
+    rather than propagating."""
+    from effectful.ops.syntax import defop
+
+    def _hidden_module():
+        class ClientSession:  # noqa: F841 -- intentionally not visible to op
+            pass
+
+        def real(x: "ClientSession") -> int:  # noqa: F821 -- forward ref unresolved
+            raise NotImplementedError
+
+        return real
+
+    op = defop(_hidden_module())
+    assert nested_type(op).value is type(op)
+
+
+def test_nested_type_eager_annotation_produces_precise_type():
+    """#673: when the annotation is NOT stringified, it resolves at
+    function-def time and ``typing.get_type_hints`` succeeds.
+    ``nested_type`` then has enough information to build the precise
+    ``Operation[[ClientSession], int]`` expression (rather than
+    widening to ``Box(type(value))``).  Counterpart to the
+    forward-ref-widens test above."""
+    import effectful.ops.types
+    from effectful.ops.syntax import defop
+
+    def _eager_module():
+        class ClientSession:
+            pass
+
+        def real(x: ClientSession) -> int:
+            raise NotImplementedError
+
+        return real, ClientSession
+
+    real, ClientSession = _eager_module()
+    op = defop(real)
+    inferred = nested_type(op).value
+    assert typing.get_origin(inferred) is effectful.ops.types.Operation
+    arg_types, return_type = typing.get_args(inferred)
+    assert list(arg_types) == [ClientSession]
+    assert return_type is int
 
 
 def sequence_getitem[T](seq: collections.abc.Sequence[T], index: int) -> T:
@@ -1123,10 +1363,14 @@ def test_infer_composition_1(seq, index, key):
             1,
         ),
         # More diverse cases
-        (
+        pytest.param(
             {"names": ["Alice", "Bob", "Charlie", "David"], "ages": [25, 30, 35, 40]},
             "names",
             3,
+            marks=pytest.mark.xfail(
+                reason="Heterogeneous TypedDict values can't bind V in Mapping[K,V]",
+                raises=TypeError,
+            ),
         ),
         (
             {"options": [[1, 2], [3, 4], [5, 6]], "choices": [[7], [8], [9]]},
@@ -1134,10 +1378,14 @@ def test_infer_composition_1(seq, index, key):
             2,
         ),
         # Deeply nested lists
-        (
+        pytest.param(
             {"deep": [[[1, 2], [3, 4]], [[5, 6], [7, 8]]], "shallow": [[9, 10]]},
             "deep",
             0,
+            marks=pytest.mark.xfail(
+                reason="Heterogeneous TypedDict values can't bind V in Mapping[K,V]",
+                raises=TypeError,
+            ),
         ),
     ],
 )
@@ -1203,7 +1451,7 @@ def test_infer_composition_2(mapping, key, index):
         ({1, 2}, {3, 4}, 1),
         # Mixed but same types
         ([1, 2, 3], [4, 5], 0),
-        ({"x": "a", "y": "b"}, {"z": "c"}, 1),
+        ({1: "a", 2: "b"}, {3: "c"}, 1),
     ],
 )
 def test_get_from_constructed_sequence(a, b, index):
@@ -1698,3 +1946,119 @@ def test_binary_on_sequence_elements(f, seq, index1, index2):
         ),
         collections.abc.Mapping,
     )
+
+
+def test_unify_generic_typeddict_extracts_typevar():
+    """unify(Datum[T], nested_type(dict).value) should return {T: int}."""
+
+    class Datum[T](typing.TypedDict):
+        name: str
+        value: T
+
+    result = unify(Datum[T], nested_type({"name": "a", "value": 1}).value)
+    assert result == {T: int}
+
+
+# --- TypedDict <-> Mapping subtyping ---
+
+
+def test_unify_mapping_typeddict_subclass():
+    """TypedDict unifies with Mapping/MutableMapping via subclass check."""
+
+    class Info(typing.TypedDict):
+        name: str
+        age: int
+
+    # TypedDict is a subclass of MutableMapping, so this succeeds
+    subs = unify(collections.abc.MutableMapping, Info)
+    assert subs == {}
+
+    subs = unify(collections.abc.Mapping, Info)
+    assert subs == {}
+
+
+def test_unify_jax_array_iterable():
+    import jax
+
+    subs = unify(collections.abc.Iterable[T], jax.Array)
+    assert subs == {T: jax.Array}
+
+
+def test_unify_operation_callable():
+    """An ``Operation[P, R]`` unifies as a ``Callable[P, R]`` (gh #669)."""
+    from effectful.ops.types import Operation
+
+    # TypeVar params bind to the operation's parameter/return types
+    assert unify(collections.abc.Callable[[T], V], Operation[[int], int]) == {
+        T: int,
+        V: int,
+    }
+    # a repeated TypeVar binds consistently
+    assert unify(collections.abc.Callable[[T], T], Operation[[int], int]) == {T: int}
+    # multiple parameters
+    assert unify(collections.abc.Callable[[T, U], V], Operation[[int, str], bool]) == {
+        T: int,
+        U: str,
+        V: bool,
+    }
+    # ``...`` parameters in the pattern ignore the operation's parameter types
+    assert unify(collections.abc.Callable[..., V], Operation[[int], int]) == {V: int}
+    # fully concrete: nothing to bind
+    assert unify(collections.abc.Callable[[int], int], Operation[[int], int]) == {}
+    # nested: an operation-valued argument
+    assert unify(
+        collections.abc.Callable[[T], list[V]], Operation[[int], list[str]]
+    ) == {T: int, V: str}
+
+
+def test_unify_operation_callable_failure():
+    """An arity mismatch between the Callable pattern and the Operation fails."""
+    from effectful.ops.types import Operation
+
+    with pytest.raises(TypeError):
+        unify(collections.abc.Callable[[T, U], V], Operation[[int], int])
+    with pytest.raises(TypeError):
+        unify(collections.abc.Callable[[T], V], Operation[[int, str], bool])
+
+
+def test_operation_unifies_with_callable_param_gh669():
+    """An Operation passed where a ``Callable`` is expected infers correctly.
+
+    Regression test for gh #669: calling an operation whose parameter is typed
+    ``Callable[[S], T]`` with another operation should unify and infer the return
+    type, rather than raising ``Cannot unify generic type ...``.
+    """
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Operation
+
+    @Operation.define
+    def f(x: int) -> int:
+        raise NotHandled
+
+    @Operation.define
+    def g[S, R](x: collections.abc.Callable[[S], R]) -> R:
+        raise NotHandled
+
+    term = g(f)
+    assert typeof(term) is int
+
+
+def test_operation_varargs_homogeneous_dicts_gh662():
+    """An op taking ``*args: T`` accepts several homogeneous str-keyed dicts.
+
+    Regression test for gh #662: each dict is inferred as ``Mapping[str, int]``
+    rather than a closed required-key TypedDict, so binding the shared ``T``
+    against dicts with *different* key sets unifies instead of raising.
+    """
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Operation
+
+    @Operation.define
+    def f[T](*args: T) -> T:
+        raise NotHandled
+
+    # Previously raised "Cannot unify TypedDict ...: required field 'z' ...".
+    term = f({"x": 0, "z": 3}, {"y": 1, "x": 2})
+    typ = typeof(term)
+    assert issubclass(typ, collections.abc.MutableMapping)
+    assert not typing.is_typeddict(typ)

@@ -80,11 +80,19 @@ class Operation[**Q, V]:
 
     def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
+        # update_wrapper copies the wrapped callable's __dict__. Do not retain a
+        # signature cached by another Operation, since `default` may now be a
+        # bound version of that operation.
+        self.__dict__.pop("_signature", None)
         self.__default__ = default
         self.__name__ = name or default.__name__
 
     @property
     def __signature__(self):
+        return self._signature
+
+    @functools.cached_property
+    def _signature(self):
         # Resolve forward references (e.g. -> "MyClass") using the
         # default function's __globals__.  This handles module-level
         # forward refs; local forward refs will raise NameError.
@@ -451,7 +459,9 @@ class Operation[**Q, V]:
     def __set_name__[T](self, owner: type[T], name: str) -> None:
         if not issubclass(owner, Term):
             assert not hasattr(self, "_name_on_instance"), "should only be called once"
-            self._name_on_instance: str = f"{INSTANCE_OP_PREFIX}_{name}"
+            self._name_on_instance: str = (
+                f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
+            )
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
@@ -495,13 +505,20 @@ class Operation[**Q, V]:
             return self
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
+        from effectful.internals.runtime import _restore_args, get_interpretation
+        from effectful.ops.semantics import fwd, handler
 
         intp = get_interpretation()
 
         self_handler = intp.get(self)
         if self_handler is not None:
-            return self_handler(*args, **kwargs)
+            # ensure that fwd is bound to the default rule. if this handler has
+            # a bound fwd, it will override this binding
+            fwd_intp = typing.cast(
+                Interpretation, {fwd: _restore_args(self.__default_rule__)}
+            )
+            with handler(fwd_intp):
+                return self_handler(*args, **kwargs)
         elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
             # Prevent infinite recursion when calling self.apply directly
             return self.__default__(*args, **kwargs)

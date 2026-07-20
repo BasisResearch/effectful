@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.13"]
+        python-version: ["3.13", "3.14"]
         model: ["gpt-4o-mini"]
     steps:
       - uses: actions/checkout@v4
@@ -37,4 +37,4 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          uv run pytest tests/test_handlers_llm_provider.py tests/test_handlers_llm_tool_calling_poem.py tests/test_handlers_llm_tool_calling_book.py -v --tb=short
+          uv run pytest tests/test_handlers_llm_provider.py tests/test_handlers_llm_tool_calling_poem.py tests/test_handlers_llm_tool_calling_book.py tests/test_handlers_llm_encoding.py -v --tb=short
