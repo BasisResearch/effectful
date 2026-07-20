@@ -80,11 +80,19 @@ class Operation[**Q, V]:
 
     def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
+        # update_wrapper copies the wrapped callable's __dict__. Do not retain a
+        # signature cached by another Operation, since `default` may now be a
+        # bound version of that operation.
+        self.__dict__.pop("_signature", None)
         self.__default__ = default
         self.__name__ = name or default.__name__
 
     @property
     def __signature__(self):
+        return self._signature
+
+    @functools.cached_property
+    def _signature(self):
         # Resolve forward references (e.g. -> "MyClass") using the
         # default function's __globals__.  This handles module-level
         # forward refs; local forward refs will raise NameError.
