@@ -34,7 +34,7 @@ from openai.types.chat import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Template, Tool
+from effectful.handlers.llm.template import Encodable, Template, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.types import Operation, Term
@@ -199,40 +199,6 @@ class DecodedToolCall[T]:
     @property
     def result_type(self) -> type[T]:
         return inspect.signature(self.tool).return_annotation
-
-
-if typing.TYPE_CHECKING:
-    type Encodable[T] = typing.Annotated[T, "encoded"]
-else:
-
-    class Encodable:
-        """The type-driven JSON bridge between Python values and the LLM.
-
-        `Encodable[T]` maps a Python type `T` to a Pydantic-compatible type
-        whose JSON schema and (de)serialization the harness uses to move
-        values across the model boundary in both directions:
-
-        - **Encoding (Python -> model):** argument and tool-result *values*
-          spliced into prompts are serialized to JSON via `Encodable[type]`,
-          so the model sees a faithful, schema-shaped rendering of each value
-          (including non-text values such as images, emitted as content
-          blocks).
-        - **Decoding (model -> Python):** a `Template`'s structured return
-          value and the arguments of every tool call are validated and
-          decoded from the model's JSON back into real Python objects through
-          the same `Encodable[type]` schema, so the value handed to your code
-          already has the declared type.
-
-        Custom types register their JSON representation with
-        `TypeToPydanticType`; see
-        `effectful.handlers.llm.encoding.type_to_encodable_type`. Because the
-        encoding is derived from the *type*, it is the single source of truth
-        for both the schema shown to the model and the validation applied to
-        its output.
-        """
-
-        def __class_getitem__(cls, item):
-            return TypeToPydanticType().evaluate(item)
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -654,7 +620,7 @@ def _create_typed_synthesized_function(
 def _validate_signature_callable(
     func: Callable,
     expected_params: list[type] | None,
-    expected_return: type,
+    expected_return: type | None,
 ) -> None:
     """Validate the function signature from runtime callable after execution.
 
@@ -727,7 +693,7 @@ def _pydantic_callable(
 
         ctx = info.context or {}
         filename = f"<synthesis:{id(encoded)}>"
-        module: ast.AST = evaluation.parse(encoded.module_code, filename)
+        module: ast.Module = evaluation.parse(encoded.module_code, filename)
 
         # The anchor (Template's underlying function) rides in the decoding context
         # under TYPE_CHECK_ANCHOR_KEY; absent for tool-argument decoding, whose

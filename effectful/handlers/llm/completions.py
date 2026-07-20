@@ -41,7 +41,6 @@ from effectful.handlers.llm.encoding import (
     _TOOLS_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    Encodable,
     _callable_type_from_signature,
     _SynthesisSpec,
     format_as_content_blocks,
@@ -50,6 +49,7 @@ from effectful.handlers.llm.encoding import (
 from effectful.handlers.llm.evaluation import ReplSession
 from effectful.handlers.llm.template import (
     Agent,
+    Encodable,
     FinalTool,
     Template,
     Tool,

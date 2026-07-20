@@ -1664,8 +1664,8 @@ import pydantic
 from effectful.handlers.llm.completions import (
     PythonRepl,
 )
-from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.template import Encodable
 from tests.conftest import offered_tools, template_tools
 
 

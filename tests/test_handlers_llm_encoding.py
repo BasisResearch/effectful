@@ -25,7 +25,6 @@ from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    Encodable,
     SynthesizedFunction,
     to_content_blocks,
 )
@@ -33,7 +32,7 @@ from effectful.handlers.llm.evaluation import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term

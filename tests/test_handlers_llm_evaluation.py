@@ -17,7 +17,6 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.encoding import (
     TYPE_CHECK_ANCHOR_KEY,
-    Encodable,
     SynthesizedFunction,
 )
 from effectful.handlers.llm.evaluation import (
@@ -32,6 +31,7 @@ from effectful.handlers.llm.evaluation import (
 from effectful.handlers.llm.evaluation import compile as compile_op
 from effectful.handlers.llm.evaluation import exec as exec_op
 from effectful.handlers.llm.evaluation import parse as parse_op
+from effectful.handlers.llm.template import Encodable
 from effectful.ops.semantics import handler
 
 # ============================================================================

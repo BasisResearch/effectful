@@ -431,3 +431,39 @@ class Agent(abc.ABC):
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
         return collections.OrderedDict()
+
+
+if typing.TYPE_CHECKING:
+    type Encodable[T] = typing.Annotated[T, "encoded"]
+else:
+
+    class Encodable:
+        """The type-driven JSON bridge between Python values and the LLM.
+
+        `Encodable[T]` maps a Python type `T` to a Pydantic-compatible type
+        whose JSON schema and (de)serialization the harness uses to move
+        values across the model boundary in both directions:
+
+        - **Encoding (Python -> model):** argument and tool-result *values*
+            spliced into prompts are serialized to JSON via `Encodable[type]`,
+            so the model sees a faithful, schema-shaped rendering of each value
+            (including non-text values such as images, emitted as content
+            blocks).
+        - **Decoding (model -> Python):** a `Template`'s structured return
+            value and the arguments of every tool call are validated and
+            decoded from the model's JSON back into real Python objects through
+            the same `Encodable[type]` schema, so the value handed to your code
+            already has the declared type.
+
+        Custom types register their JSON representation with
+        `TypeToPydanticType`; see
+        `effectful.handlers.llm.encoding.type_to_encodable_type`. Because the
+        encoding is derived from the *type*, it is the single source of truth
+        for both the schema shown to the model and the validation applied to
+        its output.
+        """
+
+        def __class_getitem__(cls, item):
+            from effectful.handlers.llm.encoding import TypeToPydanticType
+
+            return TypeToPydanticType().evaluate(item)
