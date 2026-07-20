@@ -12,8 +12,13 @@ from hypothesis.strategies import SearchStrategy
 
 import effectful.handlers.jax.numpy as _jnp
 from effectful.internals.runtime import interpreter
-from effectful.ops.monoid import NormalizeIntp, Stream, _is_monoid_weighted
-from effectful.ops.semantics import apply, evaluate, fvsof, handler
+from effectful.ops.monoid import (
+    EvaluateIntp,
+    NormalizeIntp,
+    Stream,
+    _is_monoid_weighted,
+)
+from effectful.ops.semantics import apply, coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 
@@ -40,9 +45,9 @@ def syntactic_eq_alpha(x, y) -> bool:
         if idx in _op_cache:
             return _op_cache[idx]
 
-        op = Operation.define(op, name=f"__cv_{idx}")
-        _op_cache[idx] = op
-        return op
+        canon_op = Operation.define(op, name=f"__cv_{idx}")
+        _op_cache[idx] = canon_op
+        return canon_op
 
     cx = _canonicalize(x, _canonical_op)
     cy = _canonicalize(y, _canonical_op)
@@ -195,15 +200,14 @@ class Backend(ABC):
         return tuple(self._fresh_op(n, **kwargs) for n in names)
 
     def check_rewrite(
-        self,
-        lhs,
-        rhs,
-        rule,
-        *,
-        max_examples: int = 25,
-        deadline=None,
-        normalize=NormalizeIntp,
+        self, lhs, rhs, rule, *, max_examples: int = 25, deadline=None, normalize=None
     ) -> None:
+        normalize = (
+            normalize
+            if normalize is not None
+            else coproduct(EvaluateIntp, NormalizeIntp)
+        )
+
         with handler(rule):
             norm = evaluate(lhs)
         assert syntactic_eq_alpha(norm, rhs)

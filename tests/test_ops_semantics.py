@@ -24,6 +24,7 @@ from effectful.ops.syntax import (
     deffn,
     defop,
     implements,
+    syntactic_eq,
 )
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
@@ -469,7 +470,9 @@ def test_evaluate():
     t = Nested([{"a": y()}, x(), (x(), y())], x(), arg1={"b": x()})
 
     with handler({x: lambda: 1, y: lambda: 2}):
-        assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
+        assert syntactic_eq(
+            evaluate(t), Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
+        )
 
 
 def test_memoized_interpretation():

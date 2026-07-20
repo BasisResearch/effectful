@@ -1,3 +1,4 @@
+import typing
 from types import NoneType
 from typing import TYPE_CHECKING
 
@@ -32,11 +33,24 @@ for name in _REDUCTION:
     op = globals()[name]
     globals()[name] = handler({op: _reduce_named})(op)
 
-# einsum = effectful.handlers.jax._handlers.einsum
-# tensordot = handler({tensordot: _tensordot_named})(tensordot)
-
 
 einsum = Operation.define(_einsum_named)
+
+
+@Operation.define
+def asarray(a, **kwargs) -> jax.Array:
+    import jax.core
+
+    from effectful.ops.semantics import typeof
+    from effectful.ops.types import NotHandled, Term
+
+    if isinstance(a, Term):
+        if issubclass(typeof(a), jax.Array | jax.core.Tracer) and not kwargs:
+            return typing.cast(jax.Array, a)
+        else:
+            raise NotHandled
+    return jax.numpy.asarray(a, **kwargs)
+
 
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
