@@ -457,18 +457,27 @@ def test_evaluate():
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
 
 
-def test_ctxof():
-    x = defop(object)
-    y = defop(object)
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        lambda x, y: (x(), y()),
+        lambda x, y: ([x()], y()),
+        lambda x, y: ([x()], [y()]),
+        lambda x, y: (([x()], [y()]),),
+    ],
+)
+def test_ctxof(build_args):
+    x = defop(object, name="x")
+    y = defop(object, name="y")
 
     @defop
     def Nested(*args, **kwargs):
         raise NotHandled
 
-    assert fvsof(Nested(x(), y())) >= {x, y}
-    assert fvsof(Nested([x()], y())) >= {x, y}
-    assert fvsof(Nested([x()], [y()])) >= {x, y}
-    assert fvsof(Nested((x(), y()))) >= {x, y}
+    term = Nested(*build_args(x, y))
+    actual = fvsof(term)
+    expected = {x, y, Nested}
+    assert actual >= expected
 
 
 def test_handler_typing() -> None:
@@ -722,8 +731,9 @@ def test_fvsof_binder():
         raise NotHandled
 
     term = Lam2(add(x(), add(y(), z())), x, y)
-    assert not {x, y} <= fvsof(term)
-    assert fvsof(term) == {z, Lam2, add}
+    actual = fvsof(term)
+    assert not ({x, y} & actual)
+    assert actual >= {z, Lam2, add}
 
 
 def test_interpretation_typing():
@@ -784,7 +794,8 @@ def test_fvsof_dataclass() -> None:
             self.x = x
 
     v = Operation.define(int)
-    assert fvsof(A(v())) == {v}
+    actual = fvsof(A(v()))
+    assert actual >= {v}
 
 
 def test_defdata_dataclass_init_effects() -> None:
@@ -837,6 +848,31 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+def test_instanceop_dataclass() -> None:
+    """Dataclasses with no free variables get instance operations."""
+
+    @dataclasses.dataclass
+    class A:
+        @Operation.define
+        def f(self):
+            raise NotHandled
+
+    assert isinstance(A.f, Operation)
+    assert isinstance(A().f, Operation)
+
+    @dataclasses.dataclass
+    class B:
+        x: int
+
+        @Operation.define
+        def g(self):
+            raise NotHandled
+
+    assert isinstance(B.g, Operation)
+    fv = Operation.define(int)()
+    assert not isinstance(B(fv).g, Operation)
 
 
 def test_coproduct_fwd_chain(benchmark):

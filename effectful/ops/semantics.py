@@ -10,6 +10,7 @@ from typing import Any
 
 from effectful.ops.syntax import (
     CollectionConstrOperation,
+    _BaseTerm,
     _CustomSingleDispatchCallable,
     as_list,
     as_set,
@@ -234,7 +235,9 @@ def _evaluate_tuple(expr, **kwargs):
 
 @evaluate.register(collections.abc.Sequence)
 def _evaluate_sequence(expr, **kwargs):
-    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr)))
+    seq = as_list(*(evaluate(item) for item in expr))
+    cast = _as_type(type(expr))
+    return cast(seq)
 
 
 @evaluate.register(collections.abc.ItemsView)
@@ -307,6 +310,40 @@ def typeof[T](term: Expr[T]) -> type[T]:
         return typing.cast(type[T], type(type_or_value))
 
 
+# def _binders_apply(op, *args, **kwargs):
+#     return frozenset()
+
+
+# def _binders_collection_apply(op, *args, **kwargs):
+#     return frozenset().union(
+#         *(
+#             x
+#             if isinstance(x, frozenset)
+#             else {x}
+#             if isinstance(x, Operation)
+#             else set()
+#             for x in args
+#         )
+#     )
+
+
+# _BINDERS_INTP = {
+#     apply: _binders_apply,
+#     CollectionConstrOperation.__apply__: _binders_collection_apply,
+# }
+
+
+# def binders(term: Expr[S]) -> collections.abc.Set[Operation]:
+#     with interpreter(_BINDERS_INTP):
+#         bs = evaluate(term)
+#     if isinstance(bs, frozenset):
+#         return bs
+#     elif isinstance(bs, Operation):
+#         return {bs}
+#     else:
+#         return frozenset()
+
+
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """Return the free variables of an expression.
 
@@ -319,25 +356,65 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert f in fvs
     >>> assert len(fvs) == 1
     """
+    from effectful.internals.product_n import _unpack, productN
     from effectful.internals.runtime import interpreter
 
-    def _apply(op, *args, **kwargs):
-        free_vars = set().union(
+    # Analysis for type computation and term reconstruction
+    _fvsof_fvs = defop(object, name="fvsof_fvs")
+    _fvsof_binders = defop(object, name="fvsof_binders")
+
+    def _apply_collection_binders(op, *args, **kwargs):
+        return frozenset().union(
+            *(
+                {x}
+                if isinstance(x, Operation)
+                else x
+                if isinstance(x, frozenset)
+                else set()
+                for x in (*args, *kwargs.values())
+            )
+        )
+
+    def _apply_binders(op, *args, **kwargs):
+        args = tuple(frozenset() if isinstance(x, Term) else x for x in args)
+        kwargs = {
+            k: frozenset() if isinstance(v, Term) else v for (k, v) in kwargs.items()
+        }
+        return _BaseTerm(op, *args, **kwargs)
+
+    def _apply_fvs(op, *args, **kwargs):
+        term = _fvsof_binders()
+
+        if isinstance(term, Term):
+            bindings = op.__fvs_rule__(*term.args, **term.kwargs)
+            binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
+        else:
+            binders = frozenset()
+
+        fvs = frozenset().union(
             {op},
             *(
-                {x} if isinstance(x, Operation) else x
+                x if isinstance(x, frozenset) else frozenset()
                 for x in (*args, *kwargs.values())
             ),
         )
-        bindings = op.__fvs_rule__(*args, **kwargs)
-        bound_vars = set().union(*bindings.args, *bindings.kwargs.values())
-        return free_vars - bound_vars
+        fvs -= binders
+        return fvs
 
-    with interpreter({apply: _apply}):
-        fvs = evaluate(term)
+    _fvsof_intp = productN(
+        {
+            _fvsof_fvs: {apply: _apply_fvs},
+            _fvsof_binders: {
+                CollectionConstrOperation.__apply__: _apply_collection_binders,
+                apply: _apply_binders,
+            },
+        }
+    )
 
-    return {
-        op
-        for op in fvs
-        if not isinstance(op, DataclassConstrOperation | CollectionConstrOperation)
-    }
+    with interpreter(_fvsof_intp):
+        result = evaluate(term)
+
+    fvs = _unpack(result, _fvsof_fvs)
+    if not isinstance(fvs, frozenset):
+        return frozenset()
+    return fvs
