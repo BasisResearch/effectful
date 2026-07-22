@@ -321,7 +321,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert f in fvs
     >>> assert len(fvs) == 1
     """
-    from effectful.internals.product_n import _unpack, productN
+    from effectful.internals.product_n import _unpack, argsof, productN
     from effectful.internals.runtime import interpreter
 
     # Analysis for type computation and term reconstruction
@@ -341,11 +341,9 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         )
 
     def _apply_binders(op, *args, **kwargs):
-        args = tuple(frozenset() if isinstance(x, Term) else x for x in args)
-        kwargs = {
-            k: frozenset() if isinstance(v, Term) else v for (k, v) in kwargs.items()
-        }
-        return _BaseTerm(op, *args, **kwargs)
+        # Parent operations only need to know that this child is a term. Its
+        # arguments are available through argsof while this node is analyzed.
+        return _BaseTerm(op)
 
     def _apply_collection_fvs(op, *args, **kwargs):
         return frozenset().union(
@@ -357,13 +355,19 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         )
 
     def _apply_fvs(op, *args, **kwargs):
-        term = _fvsof_binders()
-
-        if isinstance(term, Term):
-            bindings = op.__fvs_rule__(*term.args, **term.kwargs)
-            binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
-        else:
-            binders = frozenset()
+        binder_args, binder_kwargs = argsof(_fvsof_binders)
+        # This rule handles Operation.__apply__ directly, so its first argument
+        # is the operation being applied rather than an argument to that
+        # operation.
+        binder_args = tuple(
+            frozenset() if isinstance(x, Term) else x for x in binder_args[1:]
+        )
+        binder_kwargs = {
+            k: frozenset() if isinstance(v, Term) else v
+            for k, v in binder_kwargs.items()
+        }
+        bindings = op.__fvs_rule__(*binder_args, **binder_kwargs)
+        binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
 
         fvs = frozenset().union(
             {op},
