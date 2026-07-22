@@ -705,10 +705,18 @@ def _serialize_tool(
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
     assert value.__default__.__doc__ is not None
-    # Advertise the tool under the same name it is keyed by in the tool
-    # context (e.g. an Agent method tool is collected as "self__remember").
-    # Tool-call decoding looks the name up in that context, so advertising
-    # value.__name__ ("remember") would make every method tool undecodable.
+    # Advertise the tool under the name it is keyed by in the serialization
+    # context, because tool-call decoding resolves the call by that same name
+    # (`_validate_tool`); advertising value.__name__ ("remember") would make an
+    # Agent method tool (collected as "self__remember") undecodable.
+    #
+    # The context is a name->tool mapping whose shape depends on the caller, so
+    # both the identity scan and the `__name__` default are load-bearing:
+    #   * a single {k: t} when advertising one tool (`call_assistant`);
+    #   * the full lexical env when a tool is embedded in a prompt field, so the
+    #     scan is needed to find *this* tool's key among many; and
+    #   * empty/absent for standalone serialization, where the plain __name__ is
+    #     correct (a non-method tool is keyed by its own __name__ anyway).
     tool_name = value.__name__
     context = info.context
     if isinstance(context, Mapping):
