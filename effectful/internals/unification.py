@@ -1129,8 +1129,8 @@ def nested_type(value) -> Box[TypeExpression]:  # type: ignore[no-redef]
         _nested_type_state.depth = depth
 
 
-nested_type.register = _nested_type_dispatch.register  # type: ignore[attr-defined]
-nested_type.dispatch = _nested_type_dispatch.dispatch  # type: ignore[attr-defined]
+nested_type.register = _nested_type_dispatch.register  # type: ignore
+nested_type.dispatch = _nested_type_dispatch.dispatch  # type: ignore
 
 
 def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
