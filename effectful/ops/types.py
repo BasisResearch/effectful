@@ -471,11 +471,12 @@ class Operation[**Q, V]:
                 fvsof,
             )
 
+            instance_type: type = type(instance)
             if self._name_on_instance in instance.__dict__:
                 return instance.__dict__[self._name_on_instance]
             elif isinstance(instance, Term) or (
                 fvsof(instance)
-                - {_as_type(owner, operation_type=DataclassConstrOperation)}
+                - {_as_type(instance_type, operation_type=DataclassConstrOperation)}
             ):
                 return types.MethodType(self, instance)
             else:

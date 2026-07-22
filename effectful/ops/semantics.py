@@ -127,9 +127,9 @@ class DataclassConstrOperation(Operation): ...
 
 
 @functools.cache
-def _as_type(typ, operation_type=CollectionConstrOperation):
+def _as_type(typ: type, operation_type=CollectionConstrOperation):
     @operation_type.define
-    def _as_typ(*args, **kwargs) -> typ:
+    def _as_typ(*args, **kwargs) -> typ:  # type: ignore[valid-type]
         return typ(*args, **kwargs)
 
     return _as_typ
@@ -178,7 +178,8 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 
 
 def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
-    dataclass_op = _as_type(type(expr), operation_type=DataclassConstrOperation)
+    typ: type = type(expr)
+    dataclass_op = _as_type(typ, operation_type=DataclassConstrOperation)
     subst = {
         field.name: evaluate(getattr(expr, field.name))
         for field in dataclasses.fields(expr)  # type: ignore[arg-type]
@@ -347,11 +348,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
 
     def _apply_collection_fvs(op, *args, **kwargs):
         return frozenset().union(
-            *(
-                x
-                for x in (*args, *kwargs.values())
-                if isinstance(x, frozenset)
-            )
+            *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
         )
 
     def _apply_fvs(op, *args, **kwargs):
