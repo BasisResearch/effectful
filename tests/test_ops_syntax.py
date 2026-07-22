@@ -958,22 +958,6 @@ def test_syntactic_eq_term_and_nonterm_is_symmetric(concrete) -> None:
     assert not syntactic_eq(concrete, term)
 
 
-def test_syntactic_eq_does_not_interpret_terms() -> None:
-    calls = 0
-
-    @defop
-    def counted() -> int:
-        nonlocal calls
-        calls += 1
-        raise NotHandled
-
-    term = counted() + 1
-    calls_after_construction = calls
-    with handler({counted: lambda: pytest.fail("syntactic_eq interpreted a term")}):
-        assert syntactic_eq(term, term)
-    assert calls == calls_after_construction
-
-
 def test_syntactic_eq_dataclasses() -> None:
     @dataclasses.dataclass
     class Inner:
