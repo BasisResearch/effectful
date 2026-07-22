@@ -56,14 +56,16 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
     >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    from effectful.internals.product_n import _unpack, productN
+    from effectful.internals.product_n import _unpack, argsof, productN
 
     # Analysis for type computation and term reconstruction
     _sizes = defop(object, name="sizes")
     _getitem_term = defop(object, name="getitem_args")
 
     def _retain(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
+        # Non-getitem subterms are opaque to this analysis. Keeping their
+        # arguments would retain the entire input term unnecessarily.
+        return _BaseTerm(op)
 
     def _retain_getitem(*args, **kwargs):
         return defdata(jax_getitem, *args, **kwargs)
@@ -83,9 +85,10 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
         return functools.reduce(_merge, analyses, {})
 
     def _getitem(arr, index):
-        term = _getitem_term()
-        assert isinstance(term, Term)
-        term_arr, term_index = term.args
+        # Inspect this getitem's arguments in the term projection without
+        # forcing that projection to retain the getitem result.
+        term_args, _ = argsof(_getitem_term)
+        term_arr, term_index = term_args
 
         arg_sizes = (x for x in (arr, index) if isinstance(x, dict))
         if not is_eager_array(term_arr):
