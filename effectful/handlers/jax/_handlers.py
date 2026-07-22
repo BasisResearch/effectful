@@ -63,7 +63,10 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
     _getitem_term = defop(object, name="getitem_args")
 
     def _retain(op, *args, **kwargs):
-        return _BaseTerm(op, *args, **kwargs)
+        return defdata(op, *args, **kwargs)
+
+    def _retain_getitem(*args, **kwargs):
+        return defdata(jax_getitem, *args, **kwargs)
 
     def _merge(s1, s2):
         s3 = s1.copy()
@@ -85,7 +88,7 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
         term_arr, term_index = term.args
 
         arg_sizes = (x for x in (arr, index) if isinstance(x, dict))
-        if isinstance(term_arr, Term):
+        if not is_eager_array(term_arr):
             return functools.reduce(_merge, arg_sizes, {})
 
         sizes = (
@@ -100,6 +103,7 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
             _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
             _getitem_term: {
                 apply: _retain,
+                jax_getitem: _retain_getitem,
                 CollectionConstrOperation.__apply__: apply.__default_rule__,
             },
         }
