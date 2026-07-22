@@ -690,7 +690,9 @@ def _validate_tool(
         raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
 
-def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+def _serialize_tool(
+    value: Tool, info: pydantic.SerializationInfo
+) -> ChatCompletionToolParam:
     fields: dict[str, Any] = {
         name: TypeToPydanticType().evaluate(param.annotation)
         for name, param in inspect.signature(value).parameters.items()
@@ -703,11 +705,19 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
     assert value.__default__.__doc__ is not None
+    # Advertise under the context key, since decode (`_validate_tool`) resolves the call by that name.
+    tool_name = value.__name__
+    context = info.context
+    if isinstance(context, Mapping):
+        for key, tool in context.items():
+            if tool is value:
+                tool_name = key
+                break
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
             "function": {
-                "name": value.__name__,
+                "name": tool_name,
                 "description": textwrap.dedent(value.__default__.__doc__),
                 "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
