@@ -736,6 +736,12 @@ def test_fvsof_binder():
     assert actual >= {z, Lam2, add}
 
 
+def test_fvsof_collection_does_not_include_apply():
+    x = defop(int, name="x")
+
+    assert fvsof((x(),)) == {x}
+
+
 def test_interpretation_typing():
     @defop
     def f[T](m: Mapping[Operation, T], x: T) -> T:

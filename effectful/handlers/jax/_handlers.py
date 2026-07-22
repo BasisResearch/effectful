@@ -76,9 +76,7 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
         return s3
 
     def _apply_sizes(op, *args, **kwargs):
-        analyses = (
-            x for x in (*args, *kwargs.values()) if isinstance(x, dict)
-        )
+        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
         return functools.reduce(_merge, analyses, {})
 
     def _getitem(arr, index):

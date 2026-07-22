@@ -347,6 +347,15 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         }
         return _BaseTerm(op, *args, **kwargs)
 
+    def _apply_collection_fvs(op, *args, **kwargs):
+        return frozenset().union(
+            *(
+                x
+                for x in (*args, *kwargs.values())
+                if isinstance(x, frozenset)
+            )
+        )
+
     def _apply_fvs(op, *args, **kwargs):
         term = _fvsof_binders()
 
@@ -368,7 +377,10 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
 
     _fvsof_intp = productN(
         {
-            _fvsof_fvs: {apply: _apply_fvs},
+            _fvsof_fvs: {
+                apply: _apply_fvs,
+                CollectionConstrOperation.__apply__: _apply_collection_fvs,
+            },
             _fvsof_binders: {
                 CollectionConstrOperation.__apply__: _apply_collection_binders,
                 apply: _apply_binders,
