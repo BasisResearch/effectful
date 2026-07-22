@@ -713,8 +713,9 @@ def _serialize_tool(
     # The context is a name->tool mapping whose shape depends on the caller, so
     # both the identity scan and the `__name__` default are load-bearing:
     #   * a single {k: t} when advertising one tool (`call_assistant`);
-    #   * the full lexical env when a tool is embedded in a prompt field, so the
-    #     scan is needed to find *this* tool's key among many; and
+    #   * the full lexical env when a tool is reached while serializing a
+    #     prompt-field object (e.g. a Tool inside a list/dataclass field passed
+    #     to `call_user`), so the scan finds *this* tool's key among many; and
     #   * empty/absent for standalone serialization, where the plain __name__ is
     #     correct (a non-method tool is keyed by its own __name__ anyway).
     tool_name = value.__name__
