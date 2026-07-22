@@ -781,17 +781,47 @@ next_ = _IteratorTerm.__next__
 def syntactic_eq(
     __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
 ) -> bool:
-    """Syntactic equality, ignoring the interpretation of the terms.
+    """Compare values structurally, without interpreting any terms they contain.
 
-    :param x: A term.
-    :param other: Another term.
-    :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
+    Two :class:`Term` objects are syntactically equal when they use the same
+    (identity-compared) operation, have recursively equal positional arguments in
+    the same order, and have recursively equal keyword arguments. Keyword insertion
+    order is ignored.
+
+    Dataclass instances and named tuples are compared recursively by field and must
+    have the same concrete type. Other mappings are compared recursively by key and
+    value without regard to mapping type or iteration order. Other sequences are
+    compared recursively in order without requiring the same sequence type; strings
+    and bytes are treated as atomic values. Values not covered by one of these cases
+    use their ordinary Python ``==`` behavior.
+
+    Registered backend values follow the same structural intent. In particular,
+    JAX arrays and PyTorch tensors compare by shape and values; dtype is not part of
+    syntactic equality, and NaNs compare unequal as they do with ordinary ``==``.
+
+    No operation defaults or installed interpretations are invoked during the
+    comparison.
+
+    >>> x = defop(int, name="x")
+    >>> syntactic_eq(x() + 1, x() + 1)
+    True
+    >>> y = defop(int, name="y")
+    >>> syntactic_eq(x() + 1, y() + 1)
+    False
+    >>> syntactic_eq({"items": [x(), 2]}, {"items": (x(), 2)})
+    True
+
+    :param x: A value, possibly containing terms.
+    :param other: Another value.
+    :returns: ``True`` if the values are syntactically equal and ``False`` otherwise.
     """
     if (
         dataclasses.is_dataclass(x)
         and not isinstance(x, type)
+        and not isinstance(x, Term)
         and dataclasses.is_dataclass(other)
         and not isinstance(other, type)
+        and not isinstance(other, Term)
     ):
         return type(x) == type(other) and syntactic_eq(
             {field.name: getattr(x, field.name) for field in dataclasses.fields(x)},
@@ -830,13 +860,21 @@ def _(x: collections.abc.Mapping, other) -> bool:
 
 @syntactic_eq.register
 def _(x: collections.abc.Sequence, other) -> bool:
-    if (
+    x_fields = getattr(x, "_fields", ())
+    other_fields = getattr(other, "_fields", ())
+    x_is_namedtuple = (
         isinstance(x, tuple)
         and hasattr(x, "_fields")
-        and all(hasattr(x, f) for f in x._fields)
-    ):
+        and all(hasattr(x, f) for f in x_fields)
+    )
+    other_is_namedtuple = (
+        isinstance(other, tuple)
+        and hasattr(other, "_fields")
+        and all(hasattr(other, f) for f in other_fields)
+    )
+    if x_is_namedtuple or other_is_namedtuple:
         return type(other) == type(x) and all(
-            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields
+            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x_fields
         )
     else:
         return (
