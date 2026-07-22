@@ -705,6 +705,7 @@ def _serialize_tool(
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
     assert value.__default__.__doc__ is not None
+    # Advertise under the context key, since decode (`_validate_tool`) resolves the call by that name.
     tool_name = value.__name__
     context = info.context
     if isinstance(context, Mapping):
