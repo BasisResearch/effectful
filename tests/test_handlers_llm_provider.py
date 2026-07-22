@@ -2604,3 +2604,200 @@ def test_sqlite_persistence_db_integrity_after_compaction_integration(tmp_path):
     history = json.loads(row[0])
     first_msg = history[0]
     assert "CONTEXT SUMMARY" in first_msg["content"]
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: Multi-agent choreography (based on multi_agent_example.py)
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_multi_agent_choreography_integration(tmp_path):
+    """Multi-agent choreography: architect plans, coder implements, reviewer reviews.
+
+    Based on docs/source/multi_agent_example.py but with constrained scope
+    (one module, capped LLM calls) so the test completes quickly.
+    """
+    from typing import Literal, TypedDict
+
+    from effectful.handlers.llm.multi import Choreography, scatter
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class ModuleSpec(TypedDict):
+        module_path: str
+        description: str
+
+    class PlanResult(TypedDict):
+        modules: list[ModuleSpec]
+
+    class ReviewResult(TypedDict):
+        verdict: Literal["PASS", "NEEDS_FIXES"]
+        feedback: str
+
+    class Architect(PersistentAgent):
+        """You are a software architect. Given a project spec, output a plan
+        with a 'modules' list. Each module has module_path and description.
+        Output exactly ONE module."""
+
+        @Template.define
+        def plan_modules(self, project_spec: str) -> PlanResult:
+            """Plan modules for: {project_spec}. Return exactly one module."""
+            raise NotHandled
+
+    class Coder(PersistentAgent):
+        """You are a Python developer. Write clean code. Reply with ONLY
+        the Python source code, no markdown."""
+
+        @Template.define
+        def implement_module(self, module_spec: str) -> str:
+            """Implement: {module_spec}"""
+            raise NotHandled
+
+    class Reviewer(PersistentAgent):
+        """You are a code reviewer. Review for correctness and style."""
+
+        @Template.define
+        def review_code(self, code: str) -> ReviewResult:
+            """Review this code. Return verdict PASS or NEEDS_FIXES: {code}"""
+            raise NotHandled
+
+    MAX_REVIEW_ROUNDS = 3
+
+    def build_project(
+        project_spec: str,
+        architect: Architect,
+        coders: list[Coder],
+        reviewer: Reviewer,
+    ) -> list[ReviewResult]:
+        # Step 1: Architect plans modules
+        plan = architect.plan_modules(project_spec)
+
+        # Step 2: Scatter implementation across coders
+        codes = scatter(
+            plan["modules"],
+            coders,
+            lambda coder, mod: coder.implement_module(str(mod)),
+        )
+
+        # Step 3: Review each module; if NEEDS_FIXES, re-implement with feedback
+        reviews: list[ReviewResult] = []
+        for mod, code in zip(plan["modules"], codes):
+            for _round in range(MAX_REVIEW_ROUNDS):
+                review = reviewer.review_code(code)
+                if review["verdict"] == "PASS":
+                    break
+                # Re-implement with reviewer feedback
+                fix_spec = f"{mod}\nFix feedback: {review['feedback']}"
+                code = coders[0].implement_module(fix_spec)
+            reviews.append(review)
+
+        return reviews
+
+    architect = Architect(agent_id="architect")
+    coder1 = Coder(agent_id="coder-1")
+    reviewer = Reviewer(agent_id="reviewer")
+
+    from effectful.handlers.llm.multi import PersistentTaskQueue
+
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    choreo = Choreography(
+        build_project,
+        agents=[architect, coder1, reviewer],
+        queue=PersistentTaskQueue(state_dir / "task_queue.db"),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=200),
+            LimitLLMCallsHandler(max_calls=8),
+            PersistenceHandler(state_dir / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+
+    reviews = choreo.run(
+        project_spec="Build a single-function module: slugify(text) -> str",
+        architect=architect,
+        coders=[coder1],
+        reviewer=reviewer,
+    )
+
+    assert isinstance(reviews, list)
+    assert len(reviews) >= 1
+    for r in reviews:
+        assert r["verdict"] in ("PASS", "NEEDS_FIXES")
+        assert isinstance(r["feedback"], str)
+
+
+# ---------------------------------------------------------------------------
+# Integration tests: SQLite task queue crash tolerance
+# ---------------------------------------------------------------------------
+
+
+@requires_openai
+def test_sqlite_task_queue_crash_recovery_integration(tmp_path):
+    """Choreography with SQLite queue: completed steps survive restart."""
+    from effectful.handlers.llm.multi import Choreography, PersistentTaskQueue
+    from effectful.handlers.llm.persistence import PersistenceHandler, PersistentAgent
+
+    class Bot(PersistentAgent):
+        """You are a concise assistant. Reply in at most 10 words."""
+
+        @Template.define
+        def step1(self, q: str) -> str:
+            """Answer briefly: {q}"""
+            raise NotHandled
+
+        @Template.define
+        def step2(self, context: str) -> str:
+            """Given context, reply in one word: {context}"""
+            raise NotHandled
+
+    bot = Bot(agent_id="crash-q-bot")
+
+    db_path = tmp_path / "task_queue.db"
+
+    # Run 1: complete full choreography
+    def two_step(bot):
+        r1 = bot.step1("What is 2+2?")
+        return bot.step2(r1)
+
+    choreo1 = Choreography(
+        two_step,
+        agents=[bot],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=3),
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result1 = choreo1.run(bot=bot)
+    assert isinstance(result1, str)
+
+    # Verify SQLite DB exists and has task data
+    conn = sqlite3.connect(str(db_path))
+    integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+    assert integrity == "ok"
+    done_count = conn.execute(
+        "SELECT COUNT(*) FROM tasks WHERE status = 'done'"
+    ).fetchone()[0]
+    conn.close()
+    assert done_count == 2  # step-0000 and step-0001
+
+    # Run 2: new Choreography on same DB — steps return cached results
+    bot2 = Bot(agent_id="crash-q-bot")
+    choreo2 = Choreography(
+        two_step,
+        agents=[bot2],
+        queue=PersistentTaskQueue(db_path),
+        handlers=[
+            LiteLLMProvider(model="gpt-4o-mini", max_tokens=30),
+            RetryLLMHandler(),
+            LimitLLMCallsHandler(max_calls=0),  # no LLM calls allowed — must use cache
+            PersistenceHandler(tmp_path / "checkpoints.db"),
+        ],
+        poll_interval=0.05,
+    )
+    result2 = choreo2.run(bot=bot2)
+    assert result2 == result1  # exact same cached result
