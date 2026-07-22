@@ -15,7 +15,6 @@ from effectful.ops.syntax import (
     as_list,
     as_set,
     as_tuple,
-    defdata,
     defop,
 )
 from effectful.ops.types import (
@@ -308,40 +307,6 @@ def typeof[T](term: Expr[T]) -> type[T]:
         if isinstance(type_or_value, Box):
             return _simple_type(type_or_value.value)
         return typing.cast(type[T], type(type_or_value))
-
-
-# def _binders_apply(op, *args, **kwargs):
-#     return frozenset()
-
-
-# def _binders_collection_apply(op, *args, **kwargs):
-#     return frozenset().union(
-#         *(
-#             x
-#             if isinstance(x, frozenset)
-#             else {x}
-#             if isinstance(x, Operation)
-#             else set()
-#             for x in args
-#         )
-#     )
-
-
-# _BINDERS_INTP = {
-#     apply: _binders_apply,
-#     CollectionConstrOperation.__apply__: _binders_collection_apply,
-# }
-
-
-# def binders(term: Expr[S]) -> collections.abc.Set[Operation]:
-#     with interpreter(_BINDERS_INTP):
-#         bs = evaluate(term)
-#     if isinstance(bs, frozenset):
-#         return bs
-#     elif isinstance(bs, Operation):
-#         return {bs}
-#     else:
-#         return frozenset()
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
