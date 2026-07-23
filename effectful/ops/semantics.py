@@ -311,16 +311,30 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
-    """Return the free variables of an expression.
+    """Return the free operations in a term.
+
+    An operation belongs to `fvsof(t)` when it appears free in the term `t`.
+    This excludes operations like `apply` or collection constructors that are
+    raised during `evaluate` but do not appear in `t`. It also excludes
+    operations that are bound by a `Scoped` operation. However, it is not
+    restricted to the nullary operations in `t`.
 
     **Example usage**:
 
+    `fvsof` includes all unbound operations in a term:
+
+    >>> a = defop(int)
     >>> @defop
     ... def f(x: int, y: int) -> int:
     ...     raise NotHandled
-    >>> fvs = fvsof(f(1, 2))
-    >>> assert f in fvs
-    >>> assert len(fvs) == 1
+    >>> fvs = fvsof(f(a(), 1))
+    >>> assert fvs >= {f, a}
+
+    `fvsof` accepts the same values as `evaluate`, including collections:
+
+    >>> fvs = fvsof([a(), {'k': f(0, 1)}])
+    >>> assert fvs >= {f, a}
+
     """
     from effectful.internals.product_n import _unpack, argsof, productN
     from effectful.internals.runtime import interpreter
