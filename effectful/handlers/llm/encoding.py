@@ -15,7 +15,6 @@ import uuid
 from collections.abc import (
     Callable,
     Mapping,
-    MutableMapping,
 )
 
 import litellm
@@ -584,7 +583,6 @@ class SynthesizedFunction(pydantic.BaseModel):
                 f"got {type(last_stmt).__name__}"
             )
 
-        # Check that the function has type annotations for all parameters
         for arg in last_stmt.args.args:
             if arg.annotation is None:
                 raise ValueError(
@@ -592,20 +590,17 @@ class SynthesizedFunction(pydantic.BaseModel):
                     f"parameter '{arg.arg}' is missing an annotation"
                 )
 
-        # Check that the function has a return type annotation
         if last_stmt.returns is None:
             raise ValueError(
                 "decode() requires the function to have a return type annotation"
             )
 
-        # no __future__ imports are allowed
         for stmt in module.body:
             if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
                 raise ValueError(
                     "decode() does not allow __future__ imports in the module code"
                 )
 
-        # no star imports are allowed
         for stmt in module.body:
             if isinstance(stmt, ast.ImportFrom) and stmt.names:
                 for alias in stmt.names:
@@ -616,51 +611,52 @@ class SynthesizedFunction(pydantic.BaseModel):
 
         return value
 
+    @classmethod
+    def _create_typed_synthesized_function(
+        cls, callable_type: type[Callable]
+    ) -> type[typing.Self]:
+        """Create a SynthesizedFunction subclass with type signature in the model description.
 
-def _create_typed_synthesized_function(
-    callable_type: type[Callable],
-) -> type[SynthesizedFunction]:
-    """Create a SynthesizedFunction subclass with type signature in the model description.
+        Uses pydantic.create_model to ensure the description is included in the JSON schema
+        sent to the LLM, informing it of the expected function signature.
+        """
+        if not typing.get_args(callable_type):
+            type_signature = "Callable"
+        # Callable[[arg1, arg2, ...], return_type]
+        elif len(typing.get_args(callable_type)) >= 2:
+            param_types = typing.get_args(callable_type)[0]
+            return_type = typing.get_args(callable_type)[-1]
 
-    Uses pydantic.create_model to ensure the description is included in the JSON schema
-    sent to the LLM, informing it of the expected function signature.
-    """
-    if not typing.get_args(callable_type):
-        type_signature = "Callable"
-    # Callable[[arg1, arg2, ...], return_type]
-    elif len(typing.get_args(callable_type)) >= 2:
-        param_types = typing.get_args(callable_type)[0]
-        return_type = typing.get_args(callable_type)[-1]
+            if param_types is ...:
+                params_str = "..."
+            elif isinstance(param_types, list | tuple):
+                params_str = ", ".join(
+                    getattr(t, "__name__", str(t)) for t in param_types
+                )
+            else:
+                params_str = str(param_types)
 
-        if param_types is ...:
-            params_str = "..."
-        elif isinstance(param_types, list | tuple):
-            params_str = ", ".join(getattr(t, "__name__", str(t)) for t in param_types)
+            return_str = getattr(return_type, "__name__", str(return_type))
+            type_signature = f"Callable[[{params_str}], {return_str}]"
         else:
-            params_str = str(param_types)
+            type_signature = str(callable_type)
 
-        return_str = getattr(return_type, "__name__", str(return_type))
-        type_signature = f"Callable[[{params_str}], {return_str}]"
-    else:
-        type_signature = str(callable_type)
-
-    return pydantic.create_model(
-        "TypedSynthesizedFunction",
-        __base__=SynthesizedFunction,
-        __doc__=f"""Python function with signature <signature>{type_signature}</signature>""",
-    )
+        return pydantic.create_model(
+            "TypedSynthesizedFunction",
+            __base__=cls,
+            __doc__=f"""Python function with signature <signature>{type_signature}</signature>""",
+        )
 
 
-def _validate_signature_callable(
-    func: Callable,
-    expected_params: list[type] | None,
-    expected_return: type | None,
-) -> None:
+def _validate_signature_callable(func: Callable, ty: type[Callable]) -> None:
     """Validate the function signature from runtime callable after execution.
 
     The synthesized function must have type annotations for parameters and return type.
     """
     sig = inspect.signature(func)
+    type_args = typing.get_args(ty)
+    expected_params = type_args[0] if type_args else None
+    expected_return = type_args[-1] if type_args else None
 
     if expected_params is not None:
         actual_params = list(sig.parameters.values())
@@ -684,62 +680,23 @@ def _validate_signature_callable(
 
 @TypeToPydanticType.register(Callable)
 def _pydantic_callable(
-    callable_type: typing.Any, metadata: _SynthesisSpec | None = None
+    ty: typing.Any, metadata: _SynthesisSpec | None = None
 ) -> typing.Any:
-    """Create a Pydantic-compatible Annotated type for a parameterized Callable.
+    """Create a Pydantic-compatible Annotated type for a parameterized Callable."""
 
-    Usage: PydanticCallable(Callable[[int, str], bool])
-    """
-    type_args = typing.get_args(callable_type)
+    typed_enc = SynthesizedFunction._create_typed_synthesized_function(
+        Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
+    )
 
-    if not type_args:
-        typed_enc = _create_typed_synthesized_function(Callable[..., typing.Any])  # type: ignore[arg-type]
-        expected_params = None
-        expected_return = None
-    else:
-        if len(type_args) < 2:
-            raise pydantic.errors.PydanticSchemaGenerationError(
-                f"Callable type signature incomplete: {callable_type}. "
-                "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
-            )
-        if type_args[1] is None:
-            raise pydantic.errors.PydanticSchemaGenerationError(
-                "Cannot decode/synthesize callable without a concrete type signature. "
-                "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
-                "with a concrete return type (not Any)."
-            )
-        param_types, expected_return = type_args[0], type_args[1]
-        typed_enc = _create_typed_synthesized_function(callable_type)
-        if param_types is not ... and isinstance(param_types, list | tuple):
-            expected_params = list(param_types)
-        else:
-            expected_params = None
-
-    def _validate(value: typing.Any, info: pydantic.ValidationInfo) -> Callable:
-        if callable(value) and not isinstance(value, dict):
-            return value
-        if isinstance(value, SynthesizedFunction):
-            encoded = value
-        elif isinstance(value, dict):
-            encoded = typed_enc.model_validate(value)
-        elif isinstance(value, str):
-            encoded = typed_enc.model_validate_json(value)
-        else:
-            raise ValueError(
-                f"Expected callable, SynthesizedFunction dict, or JSON string, "
-                f"got {type(value)}"
-            )
-
+    def _validate(
+        value: SynthesizedFunction | dict, info: pydantic.ValidationInfo
+    ) -> Callable:
+        if isinstance(value, dict):
+            value = typed_enc.model_validate(value)
         ctx = info.context or {}
-        filename = f"<synthesis:{id(encoded)}>"
-        module: ast.Module = evaluation.parse(encoded.module_code, filename)
+        filename = f"<synthesis:{id(value)}>"
+        module: ast.Module = evaluation.parse(value.module_code, filename)
 
-        # The anchor (Template's underlying function) rides in the decoding context
-        # under TYPE_CHECK_ANCHOR_KEY; absent for tool-argument decoding, whose
-        # synthesized Callables are contracted by the tool param's type, not the
-        # Template's return type, so the Template anchor doesn't apply. When
-        # present, the code is spliced into the Template body, so first reject
-        # constructs illegal once nested (star / `__future__` imports), then check.
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
             evaluation.scan_non_nestable(module)
@@ -747,14 +704,13 @@ def _pydantic_callable(
             if spliced is not None:
                 evaluation.type_check(*spliced)
 
-        g: MutableMapping[str, typing.Any] = {}
-        g.update({k: v for k, v in ctx.items() if k.isidentifier()})
-
         bytecode: types.CodeType = evaluation.compile(module, filename)
+
+        g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
         evaluation.exec(bytecode, g)
 
         result = g[module.body[-1].name]  # type: ignore
-        _validate_signature_callable(result, expected_params, expected_return)
+        _validate_signature_callable(result, ty)
 
         if metadata is not None:
             if metadata._class_template is not None:
@@ -791,9 +747,6 @@ def _pydantic_callable(
             return result
 
     def _serialize(value: Callable) -> dict:
-        if not callable(value):
-            raise TypeError(f"Expected callable, got {type(value)}")
-
         try:
             source = inspect.getsource(value)
         except (OSError, TypeError):
@@ -822,7 +775,7 @@ def _pydantic_callable(
         return typed_enc(module_code=stub_code).model_dump()
 
     return typing.Annotated[
-        callable_type,
+        ty,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
         # Distinct schemas per direction. Validation (the model *produces* a
