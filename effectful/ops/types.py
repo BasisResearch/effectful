@@ -450,6 +450,29 @@ class Operation[**Q, V]:
 
         return result_sig
 
+    @typing.final
+    def __uses_rule__(self) -> "frozenset[Operation]":
+        """Returns the effect row this operation contributes *itself*: its declared
+        ``Uses[...]`` if the return type is annotated, else ``{self}`` (the operation
+        performs itself).
+
+        The ``ε`` sibling of :meth:`__type_rule__` — where ``__type_rule__`` reads the
+        result *type* off the return annotation, ``__uses_rule__`` reads the declared
+        effect *row* off the same annotation's :class:`~effectful.ops.syntax.Uses`
+        metadata. Used by :func:`effectful.ops.semantics.usesof` to accumulate a term's
+        row over :func:`evaluate`, exactly as ``__fvs_rule__`` is used by :func:`fvsof`.
+
+        Like the other rule methods this is ``@final`` and annotation-driven: a subclass
+        such as ``Tool`` declares its row by annotating its return type ``Uses[...]``, not
+        by overriding this method. The row is arg-independent (a composite op declares the
+        ops it performs, not which it performs per call); the arg-dependent part — folding
+        the effects of ``Computation`` callback arguments — is handled by ``usesof``.
+        """
+        from effectful.ops.syntax import Uses
+
+        declared = Uses.declared(self.__signature__)
+        return declared if declared is not None else frozenset({self})
+
     def __repr__(self):
         return f"{self.__class__.__name__}({self.__name__}, {self.__signature__})"
 
