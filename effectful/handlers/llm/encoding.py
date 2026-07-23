@@ -304,7 +304,9 @@ def _pydantic_type_code(ty):
     `linecache`, which carries everything the source string did.
     """
 
-    def validate(value: object, info: pydantic.ValidationInfo) -> types.CodeType:
+    def validate(
+        value: types.CodeType | str, info: pydantic.ValidationInfo
+    ) -> types.CodeType:
         if isinstance(value, types.CodeType):
             return value
         if not isinstance(value, str):
@@ -648,36 +650,6 @@ class SynthesizedFunction(pydantic.BaseModel):
         )
 
 
-def _validate_signature_callable(func: Callable, ty: type[Callable]) -> None:
-    """Validate the function signature from runtime callable after execution.
-
-    The synthesized function must have type annotations for parameters and return type.
-    """
-    sig = inspect.signature(func)
-    type_args = typing.get_args(ty)
-    expected_params = type_args[0] if type_args else None
-    expected_return = type_args[-1] if type_args else None
-
-    if expected_params is not None:
-        actual_params = list(sig.parameters.values())
-        if len(actual_params) != len(expected_params):
-            params_str = ", ".join(
-                getattr(t, "__name__", str(t)) for t in expected_params
-            )
-            return_str = getattr(expected_return, "__name__", str(expected_return))
-            raise ValueError(
-                f"synthesized function must match Callable[[{params_str}], {return_str}] "
-                f"-- exactly {len(expected_params)} parameter(s) -- "
-                f"but got {len(actual_params)}"
-            )
-
-    actual_return = sig.return_annotation
-    if actual_return is inspect.Parameter.empty:
-        raise ValueError(
-            "decode() requires synthesized function to have a return type annotation"
-        )
-
-
 @TypeToPydanticType.register(Callable)
 def _pydantic_callable(
     ty: typing.Any, metadata: _SynthesisSpec | None = None
@@ -697,20 +669,22 @@ def _pydantic_callable(
         filename = f"<synthesis:{id(value)}>"
         module: ast.Module = evaluation.parse(value.module_code, filename)
 
-        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY)
-        if anchor is not None:
-            evaluation.scan_non_nestable(module)
-            spliced = evaluation.splice_into_source(module, anchor)
+        if ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
+            spliced = evaluation.splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
             if spliced is not None:
                 evaluation.type_check(*spliced)
+        elif ctx.get(REPL_ANCHOR_KEY) is not None:
+            spliced = evaluation._splice_repl(
+                [], value.module_code, ctx[REPL_ANCHOR_KEY]
+            )
+            if spliced is not None:
+                evaluation.type_check(*spliced, lenient=True)
 
         bytecode: types.CodeType = evaluation.compile(module, filename)
 
         g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
         evaluation.exec(bytecode, g)
-
         result = g[module.body[-1].name]  # type: ignore
-        _validate_signature_callable(result, ty)
 
         if metadata is not None:
             if metadata._class_template is not None:
