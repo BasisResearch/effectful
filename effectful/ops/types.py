@@ -4,7 +4,6 @@ import functools
 import inspect
 import types
 import typing
-import weakref
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
@@ -676,10 +675,6 @@ class Term[T](abc.ABC):
     def kwargs(self) -> Mapping[str, "Expr[Any]"]:
         """Abstract property for the keyword arguments."""
         raise NotImplementedError
-
-    @functools.cached_property
-    def _term_cache(self) -> weakref.WeakKeyDictionary[PureInterpretation, Any]:
-        return weakref.WeakKeyDictionary()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.op!r}, {self.args!r}, {self.kwargs!r})"

@@ -5,6 +5,7 @@ import functools
 import operator
 import types
 import typing
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -172,14 +173,34 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
+_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
+
+
+def _term_cache(
+    expr: Term,
+) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
+    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
+    try:
+        return getattr(expr, _EVALUATION_CACHE_ATTR)
+    except AttributeError:
+        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+        try:
+            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return None
+        return cache
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
     from effectful.internals.runtime import get_interpretation
 
     current_intp = get_interpretation()
     if isinstance(current_intp, PureInterpretation):
-        cache = expr._term_cache
-        if current_intp in cache:
+        cache = _term_cache(expr)
+        if cache is not None and current_intp in cache:
             return cache[current_intp]
     else:
         cache = None
