@@ -1,4 +1,5 @@
 import functools
+import itertools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
@@ -13,7 +14,9 @@ except ImportError:
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
+    CollectionConstrOperation,
     Scoped,
+    _BaseTerm,
     _CustomSingleDispatchCallable,
     defdata,
     deffn,
@@ -39,7 +42,7 @@ def is_eager_array(x):
     )
 
 
-def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
+def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
     """Return the sizes of named dimensions in an array expression.
 
     Sizes are inferred from the array shape.
@@ -53,30 +56,69 @@ def sizesof(value) -> Mapping[Operation[[], jax.Array], int]:
     >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    sizes: dict[Operation[[], jax.Array], int] = {}
+    from effectful.internals.product_n import _unpack, argsof, productN
 
-    def update_sizes(sizes, op, size):
-        old_size = sizes.get(op)
-        if old_size is not None and size != old_size:
-            raise ValueError(
-                f"Named index {op} used in incompatible dimensions of size {old_size} and {size}"
-            )
-        sizes[op] = size
+    # Analysis for type computation and term reconstruction
+    _sizes = defop(object, name="sizes")
+    _getitem_term = defop(object, name="getitem_args")
 
-    def _getitem_sizeof(x: jax.Array, key: tuple[Expr[IndexElement], ...]):
-        if is_eager_array(x):
-            for i, k in enumerate(key):
-                if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
-                    update_sizes(sizes, k.op, x.shape[i])
-        return defdata(jax_getitem, x, key)
+    def _retain(op, *args, **kwargs):
+        # Non-getitem subterms are opaque to this analysis. Keeping their
+        # arguments would retain the entire input term unnecessarily.
+        return _BaseTerm(op)
 
-    def _apply(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
+    def _retain_getitem(*args, **kwargs):
+        return defdata(jax_getitem, *args, **kwargs)
 
-    with interpreter({jax_getitem: _getitem_sizeof, apply: _apply}):
-        evaluate(value)
+    def _merge(s1, s2):
+        s3 = s1.copy()
+        for k, v in s2.items():
+            if k in s3 and s3[k] != v:
+                raise ValueError(
+                    f"Named index {k} used in incompatible dimensions of size {s3[k]} and {v}"
+                )
+            s3[k] = v
+        return s3
 
-    return sizes
+    def _apply_sizes(op, *args, **kwargs):
+        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
+        return functools.reduce(_merge, analyses, {})
+
+    def _getitem(arr, index):
+        # Inspect this getitem's arguments in the term projection without
+        # forcing that projection to retain the getitem result.
+        term_args, _ = argsof(_getitem_term)
+        term_arr, term_index = term_args
+
+        arg_sizes = (x for x in (arr, index) if isinstance(x, dict))
+        if not is_eager_array(term_arr):
+            return functools.reduce(_merge, arg_sizes, {})
+
+        sizes = (
+            {k.op: term_arr.shape[i]}
+            for i, k in enumerate(term_index)
+            if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0
+        )
+        return functools.reduce(_merge, itertools.chain(arg_sizes, sizes), {})
+
+    _intp = productN(
+        {
+            _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
+            _getitem_term: {
+                apply: _retain,
+                jax_getitem: _retain_getitem,
+                CollectionConstrOperation.__apply__: apply.__default_rule__,
+            },
+        }
+    )
+
+    with interpreter(_intp):
+        result = evaluate(term)
+
+    fvs = _unpack(result, _sizes)
+    if not isinstance(fvs, dict):
+        return {}
+    return fvs
 
 
 def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
