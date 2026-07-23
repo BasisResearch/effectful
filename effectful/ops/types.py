@@ -596,8 +596,7 @@ class _InterpretationMeta(_ProtocolMeta):
     def __instancecheck__(cls, instance):
         if cls is Interpretation:
             return isinstance(instance, collections.abc.Mapping) and all(
-                isinstance(k, Operation) and callable(v)
-                for k, v in instance.items()
+                isinstance(k, Operation) and callable(v) for k, v in instance.items()
             )
 
         # Let Protocol perform the structural check for refined interpretation
