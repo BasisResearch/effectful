@@ -25,7 +25,7 @@ from effectful.ops.syntax import (
     syntactic_eq,
     trace,
 )
-from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
 
@@ -875,17 +875,168 @@ def test_evaluate_2():
         assert evaluate(t) == 3
 
 
-def test_syntactic_eq() -> None:
-    l = defop(list[int])()
-    assert syntactic_eq("test", "test")
-    assert syntactic_eq([1, 2, 3], [1, 2, 3])
-    assert syntactic_eq(set([1, 2, 3]), set([1, 2, 3]))
-    assert syntactic_eq({"a": 1, "b": 2}, {"b": 2, "a": 1})
-    assert syntactic_eq(l, l)
-    assert not syntactic_eq(1, defop(int)())
-    assert not syntactic_eq(defop(int)(), 1)
-    assert not syntactic_eq([], l)
-    assert not syntactic_eq(1, [])
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        (None, None, True),
+        ("test", "test", True),
+        ("test", "other", False),
+        (b"test", b"test", True),
+        (b"test", b"other", False),
+        (1, 1, True),
+        (1, 2, False),
+        ({1, 2, 3}, {3, 2, 1}, True),
+        ({1, 2}, {1, 3}, False),
+    ],
+)
+def test_syntactic_eq_atomic_values(left, right, expected: bool) -> None:
+    assert syntactic_eq(left, right) is expected
+
+
+def test_syntactic_eq_fallback_objects() -> None:
+    value = object()
+    assert syntactic_eq(value, value)
+    assert not syntactic_eq(object(), object())
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "expected"),
+    [
+        ([], (), True),
+        ([1, 2, 3], (1, 2, 3), True),
+        ([1, [2, 3]], (1, (2, 3)), True),
+        ([1, 2], [1, 2, 3], False),
+        ([1, 2], [2, 1], False),
+        ([1, [2]], [1, [3]], False),
+        ([], 1, False),
+    ],
+)
+def test_syntactic_eq_sequences(left, right, expected: bool) -> None:
+    assert syntactic_eq(left, right) is expected
+    assert syntactic_eq(right, left) is expected
+
+
+def test_syntactic_eq_mappings() -> None:
+    x = defop(int, name="x")
+    left = {"a": [1, x()], "b": {"nested": 2}}
+    reordered = collections.UserDict({"b": {"nested": 2}, "a": (1, x())})
+
+    assert syntactic_eq(left, reordered)
+    assert syntactic_eq(reordered, left)
+    assert not syntactic_eq(left, {"a": [1, x()]})
+    assert not syntactic_eq(left, {**left, "extra": 3})
+    assert not syntactic_eq(left, {"a": [1, x()], "b": {"nested": 4}})
+
+
+def test_syntactic_eq_terms() -> None:
+    @defop
+    def variadic(*args: object, **kwargs: object) -> object:
+        raise NotHandled
+
+    @defop
+    def another_variadic(*args: object, **kwargs: object) -> object:
+        raise NotHandled
+
+    x = defop(int, name="x")
+    equal = variadic(x(), [1, {"nested": x()}], left=2, right=[3])
+
+    assert syntactic_eq(equal, variadic(x(), [1, {"nested": x()}], right=[3], left=2))
+    assert not syntactic_eq(
+        equal, another_variadic(x(), [1, {"nested": x()}], left=2, right=[3])
+    )
+    assert not syntactic_eq(variadic(1), variadic(1, 2))
+    assert not syntactic_eq(variadic(1, 2), variadic(2, 1))
+    assert not syntactic_eq(variadic(value=1), variadic(other=1))
+    assert not syntactic_eq(variadic(value=1), variadic(value=2))
+    assert not syntactic_eq(variadic(x()), variadic(defop(int, name="x")()))
+
+
+@pytest.mark.parametrize("concrete", [1, [], {}])
+def test_syntactic_eq_term_and_nonterm_is_symmetric(concrete) -> None:
+    term = defop(int, name="x")()
+    assert not syntactic_eq(term, concrete)
+    assert not syntactic_eq(concrete, term)
+
+
+def test_syntactic_eq_dataclasses() -> None:
+    @dataclasses.dataclass
+    class Inner:
+        value: object
+
+    @dataclasses.dataclass
+    class Outer:
+        inner: Inner
+        items: object
+
+    @dataclasses.dataclass
+    class OtherOuter:
+        inner: Inner
+        items: object
+
+    x = defop(int, name="x")
+    left = Outer(Inner(x()), [1, {"value": x()}])
+    equal = Outer(Inner(x()), (1, {"value": x()}))
+
+    assert syntactic_eq(left, equal)
+    assert not syntactic_eq(left, Outer(Inner(x()), [1, {"value": 2}]))
+    assert not syntactic_eq(left, OtherOuter(Inner(x()), [1, {"value": x()}]))
+    as_mapping = {"inner": left.inner, "items": left.items}
+    assert not syntactic_eq(left, as_mapping)
+    assert not syntactic_eq(as_mapping, left)
+    assert syntactic_eq(Outer, Outer)
+    assert not syntactic_eq(Outer, OtherOuter)
+
+
+def test_syntactic_eq_dataclass_terms() -> None:
+    @dataclasses.dataclass
+    class Value:
+        x: int
+
+    @defop
+    def value(x: int) -> Value:
+        raise NotHandled
+
+    assert syntactic_eq(value(1), value(1))
+    assert not syntactic_eq(value(1), value(2))
+
+
+def test_syntactic_eq_named_tuples() -> None:
+    class Pair(typing.NamedTuple):
+        left: object
+        right: object
+
+    class OtherPair(typing.NamedTuple):
+        left: object
+        right: object
+
+    x = defop(int, name="x")
+    pair = Pair(x(), [1, 2])
+
+    assert syntactic_eq(pair, Pair(x(), (1, 2)))
+    assert not syntactic_eq(pair, Pair(x(), [1, 3]))
+    other_pair = OtherPair(x(), [1, 2])
+    ordinary_tuple = (x(), [1, 2])
+    assert not syntactic_eq(pair, other_pair)
+    assert not syntactic_eq(other_pair, pair)
+    assert not syntactic_eq(pair, ordinary_tuple)
+    assert not syntactic_eq(ordinary_tuple, pair)
+
+
+def test_syntactic_eq_equivalence_laws() -> None:
+    x = defop(int, name="x")
+    triples = [
+        (1, 1, 1),
+        ([1, 2], (1, 2), collections.UserList([1, 2])),
+        ({"x": [x()]}, collections.UserDict({"x": (x(),)}), {"x": [x()]}),
+        (x() + 1, x() + 1, x() + 1),
+    ]
+
+    for left, middle, right in triples:
+        assert syntactic_eq(left, left)
+        assert syntactic_eq(left, middle) == syntactic_eq(middle, left)
+        assert syntactic_eq(left, middle)
+        assert syntactic_eq(middle, right)
+        assert syntactic_eq(left, right)
 
 
 def test_arg_positioning():
@@ -1263,3 +1414,46 @@ def test_defop_forward_ref_mutual_recursion():
     exp_term = tangent.exp()
     assert isinstance(exp_term, Term)
     assert typeof(exp_term) is _Coordinate
+
+
+def test_bench_term_construction(benchmark):
+    """Benchmark polymorphic type checking during term construction."""
+
+    @defop
+    def _benchmark_identity[T](value: T) -> T:
+        raise NotHandled
+
+    @defop
+    def _benchmark_keep_left[T, U](value: T, metadata: U) -> T:
+        raise NotHandled
+
+    @defop
+    def _benchmark_lookup[K, V](values: Mapping[K, V], key: K) -> V:
+        raise NotHandled
+
+    @defop
+    def _benchmark_first[T](values: collections.abc.Sequence[T]) -> T:
+        raise NotHandled
+
+    _BENCHMARK_OPERATIONS: tuple[Callable[[Expr[int], int], Expr[int]], ...] = (
+        lambda value, _: _benchmark_identity(value),
+        lambda value, index: _benchmark_keep_left(value, ("node", index)),
+        lambda value, _: _benchmark_lookup({"value": value}, "value"),
+        lambda value, _: _benchmark_first([value]),
+    )
+
+    def _make_benchmark_term(size: int) -> Term[int]:
+        """Construct a linear term containing exactly ``size`` applications."""
+        if size < 1:
+            raise ValueError("term size must be positive")
+
+        value: Expr[int] = 0
+        for index in range(size):
+            operation = _BENCHMARK_OPERATIONS[index % len(_BENCHMARK_OPERATIONS)]
+            value = operation(value, index)
+
+        assert isinstance(value, Term)
+        return value
+
+    result = benchmark(_make_benchmark_term, 25)
+    assert isinstance(result, Term)

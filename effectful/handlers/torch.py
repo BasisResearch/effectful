@@ -724,4 +724,8 @@ def vmap(func, *args, **kwargs):
 
 @syntactic_eq.register
 def _(x: torch.Tensor, other) -> bool:
-    return isinstance(other, torch.Tensor) and bool((x == other).all())
+    return (
+        isinstance(other, torch.Tensor)
+        and x.shape == other.shape
+        and bool((x == other).all())
+    )
