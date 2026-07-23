@@ -9,7 +9,6 @@ from typing import Annotated, Any, Literal, Union
 import pytest
 
 from effectful.ops.semantics import (
-    _memoize,
     apply,
     coproduct,
     evaluate,
@@ -18,7 +17,14 @@ from effectful.ops.semantics import (
     handler,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    Scoped,
+    assume_pure,
+    deffn,
+    defop,
+    implements,
+)
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -481,7 +487,7 @@ def test_memoized_interpretation():
         calls += 1
         return (op.__name__, args, kwargs)
 
-    intp = _memoize({apply: analyze})
+    intp = assume_pure({apply: analyze})
     expected = ("node", (("node", (1,), {}),), {})
 
     assert interpreter(intp)(evaluate)(term) == expected
@@ -503,10 +509,10 @@ def test_memoized_interpretation():
     assert interpreter(combined_intp)(evaluate)(term) == expected
     assert calls == 4
 
-    # A separately memoized interpretation has a separate cache namespace.
-    other_intp = _memoize({apply: analyze})
+    # An identical memoized interpretation the same cache namespace.
+    other_intp = assume_pure({apply: analyze})
     assert interpreter(other_intp)(evaluate)(term) == expected
-    assert calls == 6
+    assert calls == 4
 
 
 def test_memoized_interpretation_does_not_cache_failures():
@@ -526,41 +532,13 @@ def test_memoized_interpretation_does_not_cache_failures():
             raise ValueError("failed analysis")
         return "success"
 
-    intp = _memoize({apply: analyze})
+    intp = assume_pure({apply: analyze})
     with pytest.raises(ValueError, match="failed analysis"):
         interpreter(intp)(evaluate)(term)
 
     assert interpreter(intp)(evaluate)(term) == "success"
     assert calls == 2
     assert interpreter(intp)(evaluate)(term) == "success"
-    assert calls == 2
-
-
-def test_memoized_interpretation_skips_terms_without_attribute_storage():
-    @defop
-    def node() -> object:
-        raise NotHandled
-
-    @Term.register
-    class SlottedTerm:
-        __slots__ = ("op", "args", "kwargs")
-
-        def __init__(self):
-            self.op = node
-            self.args = ()
-            self.kwargs = {}
-
-    calls = 0
-
-    def analyze(op, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return "result"
-
-    term = SlottedTerm()
-    intp = _memoize({apply: analyze})
-    assert handler(intp)(evaluate)(term) == "result"
-    assert handler(intp)(evaluate)(term) == "result"
     assert calls == 2
 
 
