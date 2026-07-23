@@ -10,6 +10,7 @@ from typing import Any
 
 from effectful.ops.syntax import (
     _CustomSingleDispatchCallable,
+    assume_pure,
     defdata,
     defop,
 )
@@ -18,27 +19,11 @@ from effectful.ops.types import (
     Interpretation,
     NotHandled,  # noqa: F401
     Operation,
+    PureInterpretation,
     Term,
 )
 
 apply = Operation.__apply__
-
-
-@defop
-def _is_memoized() -> bool:
-    """Return whether evaluation under the current interpretation is memoized."""
-    return False
-
-
-def _memoize(intp: Interpretation) -> Interpretation:
-    """Flag ``intp`` for term-local memoization.
-
-    A fresh operation identifies each resulting interpretation and is used as
-    the key in term-local caches. The interpretation must be deterministic and
-    independent of enclosing handlers for cached evaluation to preserve its
-    semantics.
-    """
-    return coproduct(intp, {_is_memoized: lambda: True})
 
 
 @defop
@@ -187,46 +172,23 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
-_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
-
-
-def _current_interpretation_cache_id() -> object | None:
-    """Return the current memoized interpretation's object identity."""
-    from effectful.internals.runtime import get_interpretation
-
-    intp = get_interpretation()
-    if _is_memoized not in intp:
-        return None
-    return frozenset(intp.items())
-
-
-def _term_cache(expr: Term) -> dict[object, object] | None:
-    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
-    try:
-        return getattr(expr, _EVALUATION_CACHE_ATTR)
-    except AttributeError:
-        cache: dict[object, object] = {}
-        try:
-            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
-        except (AttributeError, TypeError):
-            return None
-        return cache
-
-
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    cache = None
-    cache_id = _current_interpretation_cache_id()
-    if cache_id is not None:
-        cache = _term_cache(expr)
-        if cache is not None and cache_id in cache:
-            return cache[cache_id]
+    from effectful.internals.runtime import get_interpretation
+
+    current_intp = get_interpretation()
+    if isinstance(current_intp, PureInterpretation):
+        cache = expr._term_cache
+        if current_intp in cache:
+            return cache[current_intp]
+    else:
+        cache = None
 
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
     result = expr.op(*args, **kwargs)
-    if cache is not None and cache_id is not None:
-        cache[cache_id] = result
+    if cache is not None:
+        cache[current_intp] = result
     return result
 
 
@@ -311,7 +273,7 @@ def _typeof_apply(op, *args, **kwargs):
     return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTERPRETATION = _memoize({apply: _typeof_apply})
+_TYPEOF_INTERPRETATION = assume_pure({apply: _typeof_apply})
 
 
 def _typeof(term: Expr):

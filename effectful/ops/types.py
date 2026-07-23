@@ -4,10 +4,12 @@ import functools
 import inspect
 import types
 import typing
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
     Concatenate,
+    Literal,
     Protocol,
     _ProtocolMeta,
     overload,
@@ -590,6 +592,58 @@ if typing.TYPE_CHECKING:
     assert isinstance(Operation.define, _OperationDefine)
 
 
+class _InterpretationMeta(_ProtocolMeta):
+    def __instancecheck__(cls, instance):
+        return isinstance(instance, collections.abc.Mapping) and all(
+            isinstance(k, Operation) and callable(v) for k, v in instance.items()
+        )
+
+
+@runtime_checkable
+class Interpretation[T, V](typing.Protocol, metaclass=_InterpretationMeta):
+    """An interpretation is a mapping from operations to their implementations."""
+
+    def keys(self):
+        raise NotImplementedError
+
+    def values(self):
+        raise NotImplementedError
+
+    def items(self):
+        raise NotImplementedError
+
+    @overload
+    def get(self, key: Operation[..., T], /) -> Callable[..., V] | None:
+        raise NotImplementedError
+
+    @overload
+    def get(
+        self, key: Operation[..., T], default: Callable[..., V], /
+    ) -> Callable[..., V]:
+        raise NotImplementedError
+
+    @overload
+    def get[S](self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
+        raise NotImplementedError
+
+    def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
+        raise NotImplementedError
+
+    def __contains__(self, key: Operation[..., T]) -> bool:
+        raise NotImplementedError
+
+    def __iter__(self):
+        raise NotImplementedError
+
+    def __len__(self) -> int:
+        raise NotImplementedError
+
+
+@runtime_checkable
+class PureInterpretation[T, V](Interpretation[T, V], typing.Protocol):
+    __effectful_pure__: Literal[True]
+
+
 class Term[T](abc.ABC):
     """A term in an effectful computation is a is a tree of :class:`Operation`
     applied to values.
@@ -615,6 +669,10 @@ class Term[T](abc.ABC):
     def kwargs(self) -> Mapping[str, "Expr[Any]"]:
         """Abstract property for the keyword arguments."""
         raise NotImplementedError
+
+    @functools.cached_property
+    def _term_cache(self) -> weakref.WeakKeyDictionary[PureInterpretation, Any]:
+        return weakref.WeakKeyDictionary()
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self.op!r}, {self.args!r}, {self.kwargs!r})"
@@ -700,53 +758,6 @@ except ImportError:
 
 #: An expression is either a value or a term.
 type Expr[T] = T | Term[T]
-
-
-class _InterpretationMeta(_ProtocolMeta):
-    def __instancecheck__(cls, instance):
-        return isinstance(instance, collections.abc.Mapping) and all(
-            isinstance(k, Operation) and callable(v) for k, v in instance.items()
-        )
-
-
-@runtime_checkable
-class Interpretation[T, V](typing.Protocol, metaclass=_InterpretationMeta):
-    """An interpretation is a mapping from operations to their implementations."""
-
-    def keys(self):
-        raise NotImplementedError
-
-    def values(self):
-        raise NotImplementedError
-
-    def items(self):
-        raise NotImplementedError
-
-    @overload
-    def get(self, key: Operation[..., T], /) -> Callable[..., V] | None:
-        raise NotImplementedError
-
-    @overload
-    def get(
-        self, key: Operation[..., T], default: Callable[..., V], /
-    ) -> Callable[..., V]:
-        raise NotImplementedError
-
-    @overload
-    def get[S](self, key: Operation[..., T], default: S, /) -> Callable[..., V] | S:
-        raise NotImplementedError
-
-    def __getitem__(self, key: Operation[..., T]) -> Callable[..., V]:
-        raise NotImplementedError
-
-    def __contains__(self, key: Operation[..., T]) -> bool:
-        raise NotImplementedError
-
-    def __iter__(self):
-        raise NotImplementedError
-
-    def __len__(self) -> int:
-        raise NotImplementedError
 
 
 class Annotation(abc.ABC):
