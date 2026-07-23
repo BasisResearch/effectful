@@ -469,7 +469,7 @@ class Operation[**Q, V]:
 
             if self._name_on_instance in instance.__dict__:
                 return instance.__dict__[self._name_on_instance]
-            elif isinstance(instance, Term) or (fvsof(instance)):
+            elif isinstance(instance, Term) or fvsof(instance):
                 return types.MethodType(self, instance)
             else:
 
