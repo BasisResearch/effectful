@@ -465,19 +465,11 @@ class Operation[**Q, V]:
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
-            from effectful.ops.semantics import (
-                DataclassConstrOperation,
-                _as_type,
-                fvsof,
-            )
+            from effectful.ops.semantics import fvsof
 
-            instance_type: type = type(instance)
             if self._name_on_instance in instance.__dict__:
                 return instance.__dict__[self._name_on_instance]
-            elif isinstance(instance, Term) or (
-                fvsof(instance)
-                - {_as_type(instance_type, operation_type=DataclassConstrOperation)}
-            ):
+            elif isinstance(instance, Term) or (fvsof(instance)):
                 return types.MethodType(self, instance)
             else:
 

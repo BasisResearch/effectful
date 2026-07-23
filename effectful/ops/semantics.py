@@ -360,7 +360,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         # arguments are available through argsof while this node is analyzed.
         return _BaseTerm(op)
 
-    def _apply_collection_fvs(op, *args, **kwargs):
+    def _apply_passthrough_fvs(op, *args, **kwargs):
         return frozenset().union(
             *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
         )
@@ -394,7 +394,8 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         {
             _fvsof_fvs: {
                 apply: _apply_fvs,
-                CollectionConstrOperation.__apply__: _apply_collection_fvs,
+                CollectionConstrOperation.__apply__: _apply_passthrough_fvs,
+                DataclassConstrOperation.__apply__: _apply_passthrough_fvs,
             },
             _fvsof_binders: {
                 CollectionConstrOperation.__apply__: _apply_collection_binders,

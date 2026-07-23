@@ -801,7 +801,7 @@ def test_fvsof_dataclass() -> None:
 
     v = Operation.define(int)
     actual = fvsof(A(v()))
-    assert actual >= {v}
+    assert actual == {v}
 
 
 def test_defdata_dataclass_init_effects() -> None:
