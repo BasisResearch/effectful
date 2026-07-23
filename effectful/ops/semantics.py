@@ -5,15 +5,22 @@ import functools
 import operator
 import types
 import typing
+import weakref
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
+from effectful.ops.syntax import (
+    _CustomSingleDispatchCallable,
+    assume_pure,
+    defdata,
+    defop,
+)
 from effectful.ops.types import (
     Expr,
     Interpretation,
     NotHandled,  # noqa: F401
     Operation,
+    PureInterpretation,
     Term,
 )
 
@@ -166,11 +173,44 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
     return expr
 
 
+_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
+
+
+def _term_cache(
+    expr: Term,
+) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
+    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
+    try:
+        return getattr(expr, _EVALUATION_CACHE_ATTR)
+    except AttributeError:
+        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+        try:
+            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return None
+        return cache
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
+    from effectful.internals.runtime import get_interpretation
+
+    current_intp = get_interpretation()
+    if isinstance(current_intp, PureInterpretation):
+        cache = _term_cache(expr)
+        if cache is not None and current_intp in cache:
+            return cache[current_intp]
+    else:
+        cache = None
+
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    return expr.op(*args, **kwargs)
+    result = expr.op(*args, **kwargs)
+    if cache is not None:
+        cache[current_intp] = result
+    return result
 
 
 @evaluate.register(Operation)
@@ -248,6 +288,20 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
+def _typeof_apply(op, *args, **kwargs):
+    from effectful.internals.unification import Box
+
+    return Box(op.__type_rule__(*args, **kwargs))
+
+
+_TYPEOF_INTERPRETATION = assume_pure({apply: _typeof_apply})
+
+
+def _typeof(term: Expr):
+    """Evaluate the cached type analysis without unwrapping its result."""
+    return evaluate(term, intp=_TYPEOF_INTERPRETATION)
+
+
 def typeof[T](term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
@@ -270,17 +324,12 @@ def typeof[T](term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    from effectful.internals.runtime import interpreter
     from effectful.internals.unification import Box
 
-    def _apply(op, *args, **kwargs):
-        return Box(op.__type_rule__(*args, **kwargs))
-
-    with interpreter({apply: _apply}):
-        type_or_value = evaluate(term)
-        if isinstance(type_or_value, Box):
-            return _simple_type(type_or_value.value)
-        return typing.cast(type[T], type(type_or_value))
+    type_or_value = _typeof(term)
+    if isinstance(type_or_value, Box):
+        return _simple_type(type_or_value.value)
+    return typing.cast(type[T], type(type_or_value))
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:

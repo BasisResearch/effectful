@@ -3,7 +3,7 @@ import typing
 
 from effectful.ops.semantics import typeof
 from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, NotHandled
+from effectful.ops.types import Interpretation, NotHandled, PureInterpretation
 
 
 def test_interpretation_isinstance():
@@ -14,6 +14,40 @@ def test_interpretation_isinstance():
     assert not isinstance({a: 0, b: "hello"}, Interpretation)
     assert not isinstance([a, b], Interpretation)
     assert not isinstance({"a": lambda: 0, "b": lambda: "hello"}, Interpretation)
+
+
+def test_pure_interpretation_isinstance_requires_marker():
+    a = defop(int)
+    intp = {a: lambda: 0}
+
+    assert isinstance(intp, Interpretation)
+    assert not isinstance(intp, PureInterpretation)
+
+    class PureDict(dict):
+        __effectful_pure__: typing.Literal[True] = True
+
+    pure_intp = PureDict(intp)
+    assert isinstance(pure_intp, Interpretation)
+    assert isinstance(pure_intp, PureInterpretation)
+
+    assert not isinstance(PureDict({"not-an-operation": lambda: 0}), PureInterpretation)
+
+
+def test_interpretation_refinement_isinstance_checks_new_members():
+    @typing.runtime_checkable
+    class NamedInterpretation[T, V](Interpretation[T, V], typing.Protocol):
+        interpretation_name: str
+
+    op = defop(int)
+
+    class NamedDict(dict):
+        interpretation_name = "test"
+
+    assert not isinstance({op: lambda: 0}, NamedInterpretation)
+    assert isinstance(NamedDict({op: lambda: 0}), NamedInterpretation)
+    assert not isinstance(
+        NamedDict({"not-an-operation": lambda: 0}), NamedInterpretation
+    )
 
 
 def test_instance_method_signature_excludes_self():

@@ -8,8 +8,23 @@ from typing import Annotated, Any, Literal, Union
 
 import pytest
 
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
-from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
+from effectful.ops.semantics import (
+    apply,
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    typeof,
+)
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    Scoped,
+    assume_pure,
+    deffn,
+    defop,
+    implements,
+)
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -455,6 +470,76 @@ def test_evaluate():
 
     with handler({x: lambda: 1, y: lambda: 2}):
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
+
+
+def test_memoized_interpretation():
+    from effectful.internals.runtime import interpreter
+
+    @defop
+    def node(x: object) -> object:
+        raise NotHandled
+
+    term = node(node(1))
+    calls = 0
+
+    def analyze(op, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return (op.__name__, args, kwargs)
+
+    intp = assume_pure({apply: analyze})
+    expected = ("node", (("node", (1,), {}),), {})
+
+    assert interpreter(intp)(evaluate)(term) == expected
+    assert calls == 2
+
+    # The root cache is checked before its children are traversed, including
+    # when evaluation is expressed directly through a handler.
+    with interpreter(intp):
+        assert evaluate(term) == expected
+    assert calls == 2
+
+    # Child results are cached independently and can be reused directly.
+    assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
+    assert calls == 2
+
+    # A composition has a distinct identity even when its added handler is not
+    # used while evaluating this term.
+    combined_intp = coproduct(intp, {plus_1: lambda x: x})
+    assert interpreter(combined_intp)(evaluate)(term) == expected
+    assert calls == 4
+
+    # An identical memoized interpretation the same cache namespace.
+    other_intp = assume_pure({apply: analyze})
+    assert interpreter(other_intp)(evaluate)(term) == expected
+    assert calls == 4
+
+
+def test_memoized_interpretation_does_not_cache_failures():
+    from effectful.internals.runtime import interpreter
+
+    @defop
+    def node() -> object:
+        raise NotHandled
+
+    term = node()
+    calls = 0
+
+    def analyze(op, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ValueError("failed analysis")
+        return "success"
+
+    intp = assume_pure({apply: analyze})
+    with pytest.raises(ValueError, match="failed analysis"):
+        interpreter(intp)(evaluate)(term)
+
+    assert interpreter(intp)(evaluate)(term) == "success"
+    assert calls == 2
+    assert interpreter(intp)(evaluate)(term) == "success"
+    assert calls == 2
 
 
 def test_ctxof():

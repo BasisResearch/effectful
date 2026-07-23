@@ -27,7 +27,7 @@ def interpreter(intp: "Interpretation"):
     r = get_runtime()
     old_intp = r.interpretation
     try:
-        old_intp, r.interpretation = r.interpretation, dict(intp)
+        old_intp, r.interpretation = r.interpretation, intp
         yield intp
     finally:
         r.interpretation = old_intp
