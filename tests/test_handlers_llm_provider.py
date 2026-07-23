@@ -29,22 +29,24 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
+    FinalTool,
     LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
     ResultDecodingError,
     RetryLLMHandler,
+    SynthesizeAndCall,
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
     _get_history,
+    _tools_in_scope,
     call_assistant,
     call_tool,
-    collect_tools,
     completion,
 )
-from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.template import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -243,11 +245,11 @@ class TestLiteLLMProvider:
 def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
     template = agent.ask
-    tools = template.tools
-    expected_helper_tool_name = f"self__{agent.helper.__name__}"
+    tools = _tools_in_scope(template.__context__)
+    names = {t.__name__ for t in tools}
     assert tools
-    assert expected_helper_tool_name in tools
-    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in tools)
+    assert agent.helper.__name__ in names
+    assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in names)
 
     # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
     with (
@@ -429,7 +431,7 @@ class MockCompletionHandler(ObjectInterpretation):
         self.received_messages: list = []
 
     @implements(completion)
-    def _completion(self, model, messages=None, **kwargs):
+    def _completion(self, messages=None, **kwargs):
         self.received_messages.append(list(messages) if messages else [])
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
@@ -470,6 +472,37 @@ def make_tool_call_response(
                             "type": "function",
                             "function": {"name": tool_name, "arguments": tool_args},
                         }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        model="test-model",
+    )
+
+
+def make_multi_tool_call_response(
+    calls: list[tuple[str, str, str]],
+) -> ModelResponse:
+    """Create a ModelResponse with several tool calls in one assistant turn.
+
+    Each entry is ``(tool_name, arguments_json, tool_call_id)``.
+    """
+    return ModelResponse(
+        id="test",
+        choices=[
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": cid,
+                            "type": "function",
+                            "function": {"name": name, "arguments": args},
+                        }
+                        for name, args, cid in calls
                     ],
                 },
                 "finish_reason": "tool_calls",
@@ -523,7 +556,6 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         assert mock_handler.call_count == 1
@@ -553,7 +585,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 2
@@ -585,7 +617,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 2
@@ -612,7 +644,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
         # Should have attempted 3 times (1 initial + 2 retries)
@@ -639,7 +671,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
     def test_retry_handler_valid_tool_call_passes_through(self):
@@ -662,7 +694,7 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         assert mock_handler.call_count == 1
@@ -736,7 +768,6 @@ class TestRetryLLMHandler:
             message, tool_calls, result = call_assistant(
                 env={},
                 response_type=int,
-                model="test-model",
             )
 
         assert mock_handler.call_count == 2
@@ -768,7 +799,6 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={},
                     response_type=int,
-                    model="test-model",
                 )
 
         # Should have attempted 3 times (1 initial + 2 retries)
@@ -795,7 +825,7 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={"add_numbers": add_numbers},
                     response_type=str,
-                    model="test-model",
+                    tools={add_numbers},
                 )
 
         error = exc_info.value
@@ -825,7 +855,6 @@ class TestRetryLLMHandler:
                 call_assistant(
                     env={},
                     response_type=int,
-                    model="test-model",
                 )
 
         error = exc_info.value
@@ -853,7 +882,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback in the second call mentions the tool name
@@ -883,7 +912,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback mentions the unknown tool
@@ -913,7 +942,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback includes traceback
@@ -944,7 +973,7 @@ class TestRetryLLMHandler:
             call_assistant(
                 env={"add_numbers": add_numbers},
                 response_type=str,
-                model="test-model",
+                tools={add_numbers},
             )
 
         # Check that the error feedback does not include traceback
@@ -983,7 +1012,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(failing_tool, bound_args, "call_1", "failing_tool")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         # The result should be an error message, not an exception
         assert result["role"] == "tool"
@@ -1000,7 +1029,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(divide_tool, bound_args, "call_div", "divide_tool")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_div"
@@ -1015,7 +1044,7 @@ class TestToolExecutionErrorHandling:
         tool_call = DecodedToolCall(add_numbers, bound_args, "call_add", "add_numbers")
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tool_call)
+            result, _, _ = call_tool(tool_call)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_add"
@@ -1043,8 +1072,8 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, env, response_type, model, **kwargs):
-                return fwd(env, response_type, model, **kwargs)
+            def _call_assistant(self, env, response_type, tools=frozenset(), **kwargs):
+                return fwd(env, response_type, tools, **kwargs)
 
         with (
             handler(RetryLLMHandler()),
@@ -1055,7 +1084,7 @@ class TestToolExecutionErrorHandling:
             message, tool_calls, result = call_assistant(
                 env={"failing_tool": failing_tool},
                 response_type=str,
-                model="test-model",
+                tools={failing_tool},
             )
 
         # First call should succeed (tool call is valid)
@@ -1333,6 +1362,383 @@ class TestCallableSynthesis:
             assert multiply_three(5, 0, 10) == 0
 
 
+@FinalTool.define
+def final_int(x: int) -> int:
+    """Finalize the answer with an int."""
+    return x
+
+
+@FinalTool.define
+def final_str(x: int) -> str:
+    """Finalize the answer with a str (deliberately mismatched return type)."""
+    return str(x)
+
+
+class TestFinalToolInvariants:
+    """`call_assistant` enforces that a FinalTool call is unambiguous: it must be
+    the only call this turn and its return type must match `response_type`.
+    Violations fail like any malformed tool call (`ToolCallDecodingError`)."""
+
+    def _run(self, response: ModelResponse, env, response_type):
+        mock = MockCompletionHandler([response])
+        message_sequence = collections.OrderedDict(
+            id1={"id": "id1", "role": "user", "content": "go"},
+        )
+        with (
+            handler(mock),
+            handler({_get_history: lambda: message_sequence}),
+        ):
+            return call_assistant(
+                env=env,
+                response_type=response_type,
+                tools=_tools_in_scope(env),
+            )
+
+    def test_lone_matching_final_call_is_accepted(self):
+        _, tool_calls, result = self._run(
+            make_tool_call_response("final_int", '{"x": 5}', "c1"),
+            env={"final_int": final_int},
+            response_type=int,
+        )
+        assert len(tool_calls) == 1
+        assert isinstance(tool_calls[0].tool, FinalTool)
+        assert result is None  # call_assistant does not execute tools
+
+    def test_final_mixed_with_normal_is_rejected(self):
+        with pytest.raises(ToolCallDecodingError):
+            self._run(
+                make_multi_tool_call_response(
+                    [
+                        ("add_numbers", '{"a": 1, "b": 2}', "c1"),
+                        ("final_int", '{"x": 5}', "c2"),
+                    ]
+                ),
+                env={"add_numbers": add_numbers, "final_int": final_int},
+                response_type=int,
+            )
+
+    def test_multiple_final_calls_are_rejected(self):
+        with pytest.raises(ToolCallDecodingError):
+            self._run(
+                make_multi_tool_call_response(
+                    [("final_int", '{"x": 5}', "c1"), ("final_int", '{"x": 6}', "c2")]
+                ),
+                env={"final_int": final_int},
+                response_type=int,
+            )
+
+    def test_final_return_type_mismatch_is_rejected(self):
+        with pytest.raises(ToolCallDecodingError):
+            self._run(
+                make_tool_call_response("final_str", '{"x": 5}', "c1"),
+                env={"final_str": final_str},
+                response_type=int,
+            )
+
+
+def make_submit_solution_response(
+    module_code: str, tool_call_id: str = "call_1"
+) -> ModelResponse:
+    """A tool-call response in which the model finalizes by calling the
+    synthesis ``submit_solution`` FinalTool with a function it wrote."""
+    return make_tool_call_response(
+        "submit_solution",
+        json.dumps({"implementation": {"module_code": module_code}}),
+        tool_call_id=tool_call_id,
+    )
+
+
+@Template.define
+def double_it(x: int) -> int:
+    """Return double the integer {x}."""
+    raise NotHandled
+
+
+class _Doubler(Agent):
+    @Template.define
+    def double(self, x: int) -> int:
+        """Return double the integer {x}."""
+        raise NotHandled
+
+
+class TestSynthesizeAndCall:
+    """Tests for the SynthesizeAndCall handler, which answers a Template by
+    exposing a FinalTool that the model calls with a synthesized function; the
+    function is applied to the original arguments and its value is the result."""
+
+    def test_returns_called_result(self):
+        """The Template result is the value of applying the synthesized function
+        to the original arguments, not the function itself."""
+        mock = MockCompletionHandler(
+            [
+                make_submit_solution_response(
+                    "def double_it(x: int) -> int:\n    return x * 2\n"
+                )
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = double_it(21)
+
+        assert result == 42
+        assert mock.call_count == 1
+
+    def test_value_recorded_as_tool_message(self):
+        """The computed value enters history as a tool result, and is never
+        fabricated as assistant content."""
+        agent = _Doubler()
+        mock = MockCompletionHandler(
+            [
+                make_submit_solution_response(
+                    "def double(self, x: int) -> int:\n    return x * 2\n"
+                )
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = agent.double(21)
+
+        assert result == 42
+        messages = list(agent.__history__.values())
+        tool_messages = [m for m in messages if m["role"] == "tool"]
+        assert tool_messages, "computed value should be recorded as a tool result"
+        assert "42" in str(tool_messages[-1]["content"])
+        # The model never generated the value itself.
+        assistant_messages = [m for m in messages if m["role"] == "assistant"]
+        assert all("42" not in str(m.get("content") or "") for m in assistant_messages)
+
+    def test_direct_structured_answer_is_allowed(self):
+        """The synthesis tool is offered alongside, not instead of, direct
+        structured output: the model may answer the return type directly."""
+        mock = MockCompletionHandler([make_text_response(json.dumps({"value": 99}))])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = double_it(21)
+
+        assert result == 99
+        assert mock.call_count == 1
+
+    def test_retries_on_runtime_error(self):
+        """A synthesized function that raises when applied to the inputs surfaces
+        as a ToolCallExecutionError; RetryLLMHandler feeds the error back and the
+        loop continues so the model can revise."""
+        mock = MockCompletionHandler(
+            [
+                make_submit_solution_response(
+                    "def double_it(x: int) -> int:\n    return x // 0\n",
+                    tool_call_id="call_bad",
+                ),
+                make_submit_solution_response(
+                    "def double_it(x: int) -> int:\n    return x * 2\n",
+                    tool_call_id="call_good",
+                ),
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+            handler(RetryLLMHandler()),
+        ):
+            result = double_it(21)
+
+        assert result == 42
+        assert mock.call_count == 2
+
+    def test_normal_tool_calls_do_not_terminate(self):
+        """A non-final tool call is fed back and the loop continues; only the
+        FinalTool call terminates."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+                make_submit_solution_response(
+                    "def double_it(x: int) -> int:\n    return x * 2\n"
+                ),
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            # add_numbers is in scope as a lexical tool
+            result = double_it(21)
+
+        assert result == 42
+        assert mock.call_count == 2
+
+    def test_rejects_variadic_parameters(self):
+        """A signature with *args/**kwargs cannot be expressed as a Callable type,
+        so building the synthesis tool for it is rejected."""
+
+        @Template.define
+        def variadic(*args: int) -> int:
+            """Sum the arguments."""
+            raise NotHandled
+
+        with pytest.raises(NotImplementedError, match="variadic"):
+            SynthesizeAndCall._SynthesisFinalTool.define(
+                variadic, variadic.__signature__.bind()
+            )
+
+
+class TestSynthesizeAndCallDoctests:
+    """SynthesizeAndCall validates the synthesized function against the
+    Template's own docstring doctests (#433), rerouting Template calls in the
+    doctests to the synthesized function so they never re-synthesize.
+
+    The doctest-bearing Templates are defined *inside* each test rather than at
+    module scope so pytest's ``--doctest-modules`` collection does not try to run
+    them (they reference a Template that needs an LLM to resolve)."""
+
+    def test_passes_when_synthesized_function_meets_template_doctests(self):
+        # The Template's docstring carries the doctests; the synthesized
+        # function's OWN docstring is deliberately wrong to prove the Template's
+        # docstring is what gets run.
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}.
+
+            >>> triple_it(2)
+            6
+            >>> triple_it(0)
+            0
+            """
+            raise NotHandled
+
+        good = (
+            "def impl(x: int) -> int:\n"
+            '    """>>> triple_it(2)\n'
+            "    999\n"
+            '    """\n'
+            "    return x * 3\n"
+        )
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        # A single completion: the doctest's `triple_it(...)` calls dispatched to
+        # the synthesized function, never re-entering synthesis.
+        assert mock.call_count == 1
+
+    def test_rejects_then_retries_when_doctests_fail(self):
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}.
+
+            >>> triple_it(2)
+            6
+            """
+            raise NotHandled
+
+        bad = "def impl(x: int) -> int:\n    return x * 2\n"  # doubles, not triples
+        good = "def impl(x: int) -> int:\n    return x * 3\n"
+        mock = MockCompletionHandler(
+            [
+                make_submit_solution_response(bad, tool_call_id="bad"),
+                make_submit_solution_response(good, tool_call_id="good"),
+            ]
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+            handler(RetryLLMHandler()),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        assert mock.call_count == 2
+
+    def test_template_without_doctests_synthesizes_normally(self):
+        @Template.define
+        def triple_it(x: int) -> int:
+            """Return triple the integer {x}."""
+            raise NotHandled
+
+        good = "def impl(x: int) -> int:\n    return x * 3\n"
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = triple_it(2)
+
+        assert result == 6
+        assert mock.call_count == 1
+
+    def test_agent_method_doctests_route_to_synthesized_function(self):
+        """An Agent-method Template's doctests build their own instances
+        (``agent = Doubler()``), so each ``agent.double(...)`` call dispatches a
+        *fresh* per-instance op -- distinct from the one that triggered
+        synthesis.  Matching on the shared class-level template reroutes every
+        such call to the synthesized function (with the instance passed as
+        ``self``), so the doctests validate the synthesized code instead of
+        re-synthesizing or hitting the LLM."""
+
+        class Doubler(Agent):
+            @Template.define
+            def double(self, x: int) -> int:
+                """Return double the integer {x}.
+
+                >>> agent = Doubler()
+                >>> agent.double(2)
+                4
+                >>> agent.double(0)
+                0
+                """
+                raise NotHandled
+
+        # A drop-in syntactic replacement for the method body keeps `self` in the
+        # signature; the synthesized function's OWN docstring is deliberately
+        # wrong to prove the Template's docstring is what gets run.
+        good = (
+            "def double(self, x: int) -> int:\n"
+            '    """>>> never\n'
+            "    run\n"
+            '    """\n'
+            "    return x * 2\n"
+        )
+        agent = Doubler()
+        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(SynthesizeAndCall()),
+            handler(UnsafeEvalProvider()),
+            handler(mock),
+        ):
+            result = agent.double(21)
+
+        assert result == 42
+        # A single completion: the doctest's `agent.double(...)` calls on a fresh
+        # instance were answered by the synthesized function, never re-entering
+        # synthesis.
+        assert mock.call_count == 1
+
+
 class TestMessageSequence:
     """Tests for MessageSequence message sequence tracking."""
 
@@ -1394,7 +1800,7 @@ class TestMessageSequence:
 
         class InnerAssistantHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self_, model, messages, *args, **kwargs):
+            def _completion(self_, messages=None, *args, **kwargs):
                 captured_messages.extend(list(messages))
                 response = {
                     "id": "response_1",
@@ -1413,7 +1819,6 @@ class TestMessageSequence:
             call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         # Forwarded messages should be [msg_a (prefix), msg_b (input)] — no duplicates
@@ -1433,7 +1838,7 @@ class TestMessageSequence:
             call_count = 0
 
             @implements(completion)
-            def _completion(self_, model, messages, *args, **kwargs):
+            def _completion(self_, messages=None, *args, **kwargs):
                 call_log.append([m["id"] for m in messages])
                 self_.call_count += 1
                 response = {
@@ -1455,13 +1860,11 @@ class TestMessageSequence:
             resp1, _, _ = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
             # Second call: input is the first response
             resp2, _, _ = call_assistant(
                 env={},
                 response_type=str,
-                model="test-model",
             )
 
         # First call: prefix=[] + input=[msg_user]
@@ -1479,10 +1882,9 @@ class TestMessageSequence:
 
         class FailingAssistantHandler(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self_, messages, *args, **kwargs):
+            def _call_assistant(self_, *args, **kwargs):
                 raise RuntimeError("LLM call failed")
 
-        msg = {"id": "input_msg", "role": "user", "content": "hello"}
         frame_snapshot = dict(message_sequence)
 
         with pytest.raises(RuntimeError, match="LLM call failed"):
@@ -1491,10 +1893,8 @@ class TestMessageSequence:
                 handler({_get_history: lambda: message_sequence}),
             ):
                 call_assistant(
-                    messages=[msg],
                     env={},
                     response_type=str,
-                    model="test-model",
                 )
 
         # Frame should be unchanged — no response message was saved
@@ -1596,11 +1996,12 @@ def _drive_repl(body):
     `RetryLLMHandler`) around the call.  Returns `body`'s result.
     """
     box = []
+    repl = PythonRepl()
 
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
         def _call(self, *_a, **_k):
-            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            box.append(body(repl.exec_code))
             return None
 
     @Template.define
@@ -1608,7 +2009,7 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(repl):
         _t()
     return box[0]
 
@@ -1647,7 +2048,7 @@ class TestCallToolWrapsExecutionError:
         bound_args = sig.bind(a=3, b=4)
         tc = DecodedToolCall(add_numbers, bound_args, "call_ok", "add_numbers")
 
-        result = call_tool(tc)
+        result, _, _ = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
@@ -1661,7 +2062,7 @@ class TestCallToolWrapsExecutionError:
                 pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
             )
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
-            return call_tool(tc)
+            return call_tool(tc)[0]
 
         msg = _drive_repl(body)
         assert msg["role"] == "tool"
@@ -1679,7 +2080,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         tc = DecodedToolCall(flaky_tool, bound_args, "call_match", "flaky_tool")
 
         with handler(RetryLLMHandler(catch_tool_errors=ConnectionError)):
-            result = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_match"
@@ -1708,7 +2109,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         )
 
         with handler(RetryLLMHandler()):
-            result = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]
@@ -1724,7 +2125,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
                 catch_tool_errors=(ConnectionError, ValueError),
             )
         ):
-            result = call_tool(tc)
+            result, _, _ = call_tool(tc)
 
         assert result["role"] == "tool"
         assert "Tool execution failed" in result["content"]
@@ -1893,7 +2294,7 @@ class TestAgentCrossTemplateRecovery:
 
         class TwoPhaseCompletionHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
@@ -2010,7 +2411,7 @@ class TestAgentCrossTemplateRecovery:
 
         class MultiResponseHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"reply {call_count}")
@@ -2056,7 +2457,7 @@ class TestAgentCrossTemplateRecovery:
 
         class PhaseHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:
@@ -2109,7 +2510,7 @@ class TestAgentSystemMessageDeduplication:
 
         class CountingHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"answer {call_count}")
@@ -2142,7 +2543,7 @@ class TestAgentSystemMessageDeduplication:
 
         class MultiHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"done {call_count}")
@@ -2177,7 +2578,7 @@ class TestAgentSystemMessageDeduplication:
 
         class MemoryHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 # Verify that previous messages are visible to later calls
@@ -2220,7 +2621,7 @@ class TestAgentSystemMessageDeduplication:
 
         class OrderHandler(ObjectInterpretation):
             @implements(completion)
-            def _completion(self, model, messages=None, **kwargs):
+            def _completion(self, messages=None, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 return make_text_response(f"step {call_count}")
@@ -2304,36 +2705,6 @@ class TestSyntheticReaderIntegration:
         assert fn(0.9) is True
         assert fn(0.5) is False
         assert fn(threshold) is False
-
-    def test_template_exposes_lexical_classes(self):
-        """When `LexicalReaders` is installed, classes in the defining
-        scope are exposed as readers via the broad `Encodable[Callable]`
-        handler — the `Hand`/`Finger`/`generate_arm` motivating example
-        from #497.  Without the handler the readers are gated off; this
-        test pins both contracts.
-        """
-
-        class Finger:
-            def wiggle(self) -> str:
-                return "wiggle"
-
-        class Hand:
-            fingers: list[Finger]
-
-        @Template.define
-        def describe_hand_action() -> str:
-            """Doc."""
-            raise NotImplementedError
-
-        # Off by default.
-        assert "Finger" not in describe_hand_action.tools
-        assert "Hand" not in describe_hand_action.tools
-
-        # On under the handler.
-        with handler(LexicalReaders()):
-            tools = describe_hand_action.tools
-            assert "Finger" in tools
-            assert "Hand" in tools
 
 
 class TestPythonReplIntegration:

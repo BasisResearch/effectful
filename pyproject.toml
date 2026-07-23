@@ -48,6 +48,8 @@ llm = [
   # 1.92.0 ships no wheel, so it builds from sdist; on Python 3.14 that build pulls
   # pyo3-ffi 0.23.5, which doesn't support 3.14, so `uv sync` fails the whole matrix.
   "litellm!=1.92.0",
+  "langfuse",
+  "rich",
   "tenacity",
   "mypy",
   "autoflake",
@@ -95,4 +97,5 @@ testpaths = ["./effectful", "./tests"]
 [tool.mypy]
 ignore_missing_imports = true
 warn_unused_ignores = true
+allow_empty_bodies = true
 exclude = "build|test_internals_unification_typeddict"

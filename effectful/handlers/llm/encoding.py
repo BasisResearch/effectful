@@ -1,11 +1,13 @@
 import ast
 import base64
+import collections.abc
 import dataclasses
 import functools
 import inspect
 import io
 import json
 import linecache
+import string
 import textwrap
 import types
 import typing
@@ -15,7 +17,6 @@ from collections.abc import (
     Mapping,
     MutableMapping,
 )
-from typing import Any
 
 import litellm
 import pydantic
@@ -33,12 +34,17 @@ from openai.types.chat import (
 from PIL import Image
 
 import effectful.handlers.llm.evaluation as evaluation
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Encodable, Template, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
 
+# Key under which the name->Tool mapping is stashed in the decoding context.
+# Deliberately not a valid Python identifier, so it can never collide with a
+# lexical variable name sharing the context (e.g. a reader named after its var).
+_TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
 # Reserved key under which the type-check anchor (the enclosing Template's
 # underlying function) rides in the Pydantic decoding context, alongside the
 # lexical environment. `decode` reads it to type-check a synthesized function
@@ -111,6 +117,80 @@ def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
     return blocks
 
 
+def format_as_content_blocks(
+    template: str,
+    env: collections.abc.Mapping[str, typing.Any],
+) -> list[OpenAIMessageContentListBlock]:
+    """
+    Format a template applied to arguments into a list of content blocks.
+    This is similar to str.format() but produces a list of content blocks
+    instead of a single string, so that non-text content is preserved.
+    """
+    formatter = string.Formatter()
+    parts: list[OpenAIMessageContentListBlock] = []
+
+    buf: list[str] = []
+
+    def flush_text() -> None:
+        if buf:
+            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            buf.clear()
+
+    for literal, field_name, format_spec, conversion in formatter.parse(
+        textwrap.dedent(template)
+    ):
+        if literal:
+            buf.append(literal)
+
+        if field_name is None:
+            continue
+
+        obj, _ = formatter.get_field(field_name, (), env)
+        encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+            Encodable[nested_type(obj).value]  # type: ignore[misc]
+        )
+        encoded_obj = encoder.dump_python(obj, mode="json", context=env)
+        for part in to_content_blocks(encoded_obj):
+            if part["type"] == "text":
+                text = (
+                    formatter.convert_field(part["text"], conversion)
+                    if conversion
+                    else part["text"]
+                )
+                buf.append(formatter.format_field(text, format_spec or ""))
+            else:
+                flush_text()
+                parts.append(part)
+
+    flush_text()
+
+    return parts
+
+
+def _inline_refs(schema: dict) -> dict:
+    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
+
+    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
+    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
+    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
+    causes a ``KeyError`` when the annotated type is composed into a model.
+    """
+    defs = schema.get("$defs", {})
+
+    def _resolve(obj):
+        if isinstance(obj, dict):
+            if "$ref" in obj:
+                ref_name = obj["$ref"].split("/")[-1]
+                if ref_name in defs:
+                    return _resolve(defs[ref_name])
+            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
+        if isinstance(obj, list):
+            return [_resolve(item) for item in obj]
+        return obj
+
+    return _resolve(schema)
+
+
 @dataclasses.dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
@@ -122,14 +202,9 @@ class DecodedToolCall[T]:
     id: ToolCallID
     name: str
 
-
-if typing.TYPE_CHECKING:
-    type Encodable[T] = typing.Annotated[T, "encoded"]
-else:
-
-    class Encodable:
-        def __class_getitem__(cls, item):
-            return TypeToPydanticType().evaluate(item)
+    @property
+    def result_type(self) -> type[T]:
+        return inspect.signature(self.tool).return_annotation
 
 
 class TypeToPydanticType(TypeEvaluator):
@@ -153,6 +228,14 @@ class TypeToPydanticType(TypeEvaluator):
         return cls._registry.register(*args, **kwargs)
 
     def evaluate(self, ty):
+        if typing.get_origin(ty) is typing.Annotated and any(
+            isinstance(m, _SynthesisSpec) for m in ty.__metadata__
+        ):
+            inner, *meta = typing.get_args(ty)
+            return self._registry.dispatch(typing.get_origin(inner) or inner)(
+                inner, *meta
+            )
+
         app = super().evaluate(ty)
         origin = typing.get_origin(app)
         # Only dispatch on regular types. Special forms (Literal, Annotated,
@@ -172,7 +255,7 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
 
 
 @TypeToPydanticType.register(object)
-def _pydantic_type_base(ty: type) -> Any:
+def _pydantic_type_base(ty: type) -> typing.Any:
     return ty
 
 
@@ -241,17 +324,20 @@ def _pydantic_type_code(ty):
 
         # Type-check the snippet in its execution context, exactly as a synthesized
         # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
-        # type-check anchor in the decode context, splice the accumulated REPL session (the
-        # `_repl_session` op is in scope during the response decode) plus this snippet into
-        # the Template body and check it. A type error raises here -> the tool-call decode
-        # fails -> `RetryLLMHandler` retries, so ill-typed code never reaches `runcode`.
+        # type-check anchor in the decode context, splice the accumulated REPL session
+        # (`PythonRepl.repl_history` returns the prior snippets of the session in scope)
+        # plus this snippet into the Template body and check it. A type error raises here
+        # -> the tool-call decode fails -> `RetryLLMHandler` retries, so ill-typed code
+        # never reaches `runcode`.
         ctx = info.context or {}
         anchor = ctx.get(REPL_ANCHOR_KEY)
         if anchor is not None:
-            # Pass an empty env (not `ctx`): the managed session ignores it, and a fresh
-            # fallback session must not be seeded from the decode context (which holds tool
-            # names and the anchor key). The decoder only reads `prior_snippets`.
-            prior = evaluation._repl_session({}).prior_snippets
+            # Imported lazily (not at module load) to avoid an import cycle: `completions`
+            # imports this module. `repl_history` returns the managed session's prior
+            # snippets, or `[]` when no REPL is in scope.
+            from effectful.handlers.llm.completions import PythonRepl
+
+            prior = PythonRepl.repl_history()
             checked = evaluation._splice_repl(prior, value, anchor)
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)
@@ -268,30 +354,6 @@ def _pydantic_type_code(ty):
         ),
         pydantic.WithJsonSchema({"type": "string"}),
     ]
-
-
-def _inline_refs(schema: dict) -> dict:
-    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
-
-    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
-    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
-    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
-    causes a ``KeyError`` when the annotated type is composed into a model.
-    """
-    defs = schema.get("$defs", {})
-
-    def _resolve(obj):
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref_name = obj["$ref"].split("/")[-1]
-                if ref_name in defs:
-                    return _resolve(defs[ref_name])
-            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
-        if isinstance(obj, list):
-            return [_resolve(item) for item in obj]
-        return obj
-
-    return _resolve(schema)
 
 
 @TypeToPydanticType.register(tuple)
@@ -314,6 +376,7 @@ def _pydantic_type_tuple(ty):
         nt_model = pydantic.create_model(
             ty.__name__,
             __config__={"extra": "forbid"},
+            __doc__=ty.__doc__,
             **{f: (t, ...) for f, t in zip(nt_fields, nt_types)},
         )
 
@@ -386,12 +449,16 @@ def _pydantic_type_tuple(ty):
 
 @TypeToPydanticType.register(Term)
 def _pydantic_type_term(ty: type[Term]):
-    raise TypeError("Terms cannot be converted to Pydantic types.")
+    raise pydantic.errors.PydanticSchemaGenerationError(
+        "Terms cannot be converted to Pydantic types."
+    )
 
 
 @TypeToPydanticType.register(Operation)
 def _pydantic_type_operation(ty: type[Operation]):
-    raise TypeError("Operations cannot be converted to Pydantic types.")
+    raise pydantic.errors.PydanticSchemaGenerationError(
+        "Operations cannot be converted to Pydantic types."
+    )
 
 
 @pydantic.validate_call(validate_return=False)
@@ -425,16 +492,129 @@ def _pydantic_type_image(ty: type[Image.Image]):
     ]
 
 
-class SynthesizedFunction(pydantic.BaseModel):
-    """Structured output for function synthesis.
+def _callable_type_from_signature(
+    signature: inspect.Signature,
+) -> type[types.FunctionType]:
+    """Construct a `Callable` type from a signature.
 
-    Pydantic model representing synthesized code with function name and module code.
+    Raises if the signature is recursive (e.g. a Template that returns itself)
+    or contains variadic parameters (which cannot be expressed in a `Callable`
+    type).
+    """
+    param_types = []
+    for pname, param in signature.parameters.items():
+        if param.kind in (
+            inspect.Parameter.VAR_POSITIONAL,
+            inspect.Parameter.VAR_KEYWORD,
+        ):
+            raise NotImplementedError(
+                f"Cannot synthesize a function for parameter "
+                f"'{pname}' of kind {param.kind.description}: variadic parameters "
+                "cannot be expressed as a Callable type signature."
+            )
+        param_types.append(
+            param.annotation
+            if param.annotation is not inspect.Parameter.empty
+            else typing.Any
+        )
+    return_type = signature.return_annotation
+    return collections.abc.Callable[param_types, return_type]  # type: ignore
+
+
+@dataclasses.dataclass(frozen=True)
+class _SynthesisSpec[T]:
+    template: Template[..., T]
+
+    @property
+    def _class_template(self) -> Template[..., T] | None:
+        if isinstance(self.template.__default__, types.MethodType):
+            return self.template.__default__.__func__.__wrapped__  # type: ignore[attr-defined]
+        else:
+            return None
+
+    def _method_instance(self, other: Template) -> typing.Any | None:
+        """The instance ``op`` is bound to, if ``op`` is this synthesized
+        Agent-method on *some* instance; otherwise ``None``.
+        """
+        if (
+            self._class_template is not None
+            and _SynthesisSpec(other)._class_template is self._class_template
+        ):
+            return other.__default__.__self__  # type: ignore[attr-defined]
+        else:
+            return None
+
+
+class SynthesizedFunction(pydantic.BaseModel):
+    """
+    Structured output for function synthesis.
     """
 
     module_code: str = pydantic.Field(
         ...,
-        description="Complete Python module code (no imports needed)",
+        description=textwrap.dedent("""
+        A string containing the complete Python source code for the function.
+        The code MUST satisfy the following constraints, or it will fail validation:
+
+        <constraints>
+        1. The code MUST be one complete syntactically valid Python module.
+        2. The code MUST NOT use star imports or ``__future__`` imports.
+        3. The function definition MUST be the LAST statement - do not add any code after it.
+        4. The function MUST have type annotations for all parameters and the return type.
+        5. You may include doctest examples (lines starting with >>>) inside the function's
+        docstring to demonstrate and verify its behavior; these examples are run as tests.
+        </constraints>
+        """),
     )
+
+    @pydantic.field_validator("module_code")
+    @classmethod
+    def _validate_module_code(cls, value: str) -> str:
+        module: ast.AST = ast.parse(value)
+
+        if not isinstance(module, ast.Module) or not module.body:
+            raise ValueError(
+                "decode() requires module code with at least one statement."
+            )
+
+        last_stmt = module.body[-1]
+        if not isinstance(last_stmt, ast.FunctionDef):
+            raise ValueError(
+                f"decode() requires the last statement to be a function definition, "
+                f"got {type(last_stmt).__name__}"
+            )
+
+        # Check that the function has type annotations for all parameters
+        for arg in last_stmt.args.args:
+            if arg.annotation is None:
+                raise ValueError(
+                    f"decode() requires all parameters to have type annotations, "
+                    f"parameter '{arg.arg}' is missing an annotation"
+                )
+
+        # Check that the function has a return type annotation
+        if last_stmt.returns is None:
+            raise ValueError(
+                "decode() requires the function to have a return type annotation"
+            )
+
+        # no __future__ imports are allowed
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+                raise ValueError(
+                    "decode() does not allow __future__ imports in the module code"
+                )
+
+        # no star imports are allowed
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.names:
+                for alias in stmt.names:
+                    if alias.name == "*":
+                        raise ValueError(
+                            "decode() does not allow star imports in the module code"
+                        )
+
+        return value
 
 
 def _create_typed_synthesized_function(
@@ -464,49 +644,17 @@ def _create_typed_synthesized_function(
     else:
         type_signature = str(callable_type)
 
-    description = f"""Given the specification above, generate a Python function satisfying the following specification and type signature.
-
-<signature>{type_signature}</signature>
-
-<instructions>
-1. Produce one block of Python code.
-2. The function MUST have type annotations for all parameters and the return type.
-3. The function definition must be the LAST statement - do not add any code after it.
-4. Do not include usage examples or function calls.
-</instructions>
-"""
-
-    # Use pydantic.create_model to create a proper model with the description
-    # The __doc__ becomes the model's description in the JSON schema
-    model = pydantic.create_model(
+    return pydantic.create_model(
         "TypedSynthesizedFunction",
         __base__=SynthesizedFunction,
-        __doc__=description,
+        __doc__=f"""Python function with signature <signature>{type_signature}</signature>""",
     )
-    return model
-
-
-def _validate_signature_ast(
-    func_ast: ast.FunctionDef | ast.AsyncFunctionDef,
-    expected_params: list[type] | None,
-) -> None:
-    """Validate the function signature from AST before execution."""
-    if expected_params is not None:
-        ast_params = func_ast.args.args + func_ast.args.posonlyargs
-        if len(ast_params) != len(expected_params):
-            params_str = ", ".join(
-                getattr(t, "__name__", str(t)) for t in expected_params
-            )
-            raise ValueError(
-                f"synthesized function must take exactly {len(expected_params)} "
-                f"parameter(s) ({params_str}), but got {len(ast_params)}"
-            )
 
 
 def _validate_signature_callable(
     func: Callable,
     expected_params: list[type] | None,
-    expected_return: type,
+    expected_return: type | None,
 ) -> None:
     """Validate the function signature from runtime callable after execution.
 
@@ -535,7 +683,9 @@ def _validate_signature_callable(
 
 
 @TypeToPydanticType.register(Callable)
-def _pydantic_callable(callable_type: Any) -> Any:
+def _pydantic_callable(
+    callable_type: typing.Any, metadata: _SynthesisSpec | None = None
+) -> typing.Any:
     """Create a Pydantic-compatible Annotated type for a parameterized Callable.
 
     Usage: PydanticCallable(Callable[[int, str], bool])
@@ -548,18 +698,24 @@ def _pydantic_callable(callable_type: Any) -> Any:
         expected_return = None
     else:
         if len(type_args) < 2:
-            raise TypeError(
+            raise pydantic.errors.PydanticSchemaGenerationError(
                 f"Callable type signature incomplete: {callable_type}. "
                 "Expected Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType]."
             )
-        param_types, expected_return = type_args[0], type_args[-1]
+        if type_args[1] is None:
+            raise pydantic.errors.PydanticSchemaGenerationError(
+                "Cannot decode/synthesize callable without a concrete type signature. "
+                "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
+                "with a concrete return type (not Any)."
+            )
+        param_types, expected_return = type_args[0], type_args[1]
         typed_enc = _create_typed_synthesized_function(callable_type)
         if param_types is not ... and isinstance(param_types, list | tuple):
             expected_params = list(param_types)
         else:
             expected_params = None
 
-    def _validate(value: Any, info: pydantic.ValidationInfo) -> Callable:
+    def _validate(value: typing.Any, info: pydantic.ValidationInfo) -> Callable:
         if callable(value) and not isinstance(value, dict):
             return value
         if isinstance(value, SynthesizedFunction):
@@ -574,30 +730,9 @@ def _pydantic_callable(callable_type: Any) -> Any:
                 f"got {type(value)}"
             )
 
-        if expected_return is None:
-            raise TypeError(
-                "Cannot decode/synthesize callable without a concrete type signature. "
-                "Use Callable[[ParamTypes...], ReturnType] or Callable[..., ReturnType] "
-                "with a concrete return type (not Any)."
-            )
-
         ctx = info.context or {}
         filename = f"<synthesis:{id(encoded)}>"
-        module: ast.AST = evaluation.parse(encoded.module_code, filename)
-
-        if not isinstance(module, ast.Module) or not module.body:
-            raise ValueError(
-                "decode() requires module code with at least one statement."
-            )
-
-        last_stmt = module.body[-1]
-        if not isinstance(last_stmt, ast.FunctionDef):
-            raise ValueError(
-                f"decode() requires the last statement to be a function definition, "
-                f"got {type(last_stmt).__name__}"
-            )
-
-        _validate_signature_ast(last_stmt, expected_params)
+        module: ast.Module = evaluation.parse(encoded.module_code, filename)
 
         # The anchor (Template's underlying function) rides in the decoding context
         # under TYPE_CHECK_ANCHOR_KEY; absent for tool-argument decoding, whose
@@ -612,31 +747,48 @@ def _pydantic_callable(callable_type: Any) -> Any:
             if spliced is not None:
                 evaluation.type_check(*spliced)
 
-        g: MutableMapping[str, Any] = {}
-        g.update(
-            {
-                k: v
-                for k, v in ctx.items()
-                if k.isidentifier() and k != TYPE_CHECK_ANCHOR_KEY
-            }
-        )
+        g: MutableMapping[str, typing.Any] = {}
+        g.update({k: v for k, v in ctx.items() if k.isidentifier()})
+
         bytecode: types.CodeType = evaluation.compile(module, filename)
         evaluation.exec(bytecode, g)
 
-        func_name = last_stmt.name
-        if func_name not in g:
-            raise ValueError(
-                f"decode() expected function '{func_name}' to be defined in globals"
-            )
-
-        result = g[func_name]
-        if not callable(result):
-            raise ValueError(
-                f"decode() expected '{func_name}' to be callable, got {type(result)}"
-            )
-
+        result = g[module.body[-1].name]  # type: ignore
         _validate_signature_callable(result, expected_params, expected_return)
-        return result
+
+        if metadata is not None:
+            if metadata._class_template is not None:
+                # Agent-method template: doctests build their own instances, so the
+                # method must route to `synth` on *any* instance (not just the one
+                # that triggered synthesis).  A fresh instance's call dispatches
+                # through `Template.__apply__`, which we intercept here.
+                result = functools.wraps(metadata._class_template)(result)
+
+                def _doctest_apply(op, *args, **kwargs):
+                    instance = metadata._method_instance(op)
+                    if instance is None:
+                        return fwd()
+                    return metadata._class_template(instance, *args, **kwargs)
+
+                with handler(
+                    {
+                        Template.__apply__: _doctest_apply,
+                        metadata._class_template: result,
+                    }
+                ):
+                    evaluation.run_doctests(result, g)
+                return result
+            else:
+                # Free-function template: shadow the global name the doctest calls,
+                # and route the template op back into `synth` for recursion.
+                result = functools.wraps(metadata.template)(result)
+                g.update({metadata.template.__name__: result})
+                with handler({metadata.template: result}):
+                    evaluation.run_doctests(result, g)
+                return result
+        else:
+            evaluation.run_doctests(result, g)
+            return result
 
     def _serialize(value: Callable) -> dict:
         if not callable(value):
@@ -673,8 +825,27 @@ def _pydantic_callable(callable_type: Any) -> Any:
         callable_type,
         pydantic.PlainValidator(_validate),
         pydantic.PlainSerializer(_serialize),
+        # Distinct schemas per direction. Validation (the model *produces* a
+        # function -- tool arguments, response_format) carries the synthesis
+        # instructions. Serialization (the model *reads* an encoded function --
+        # e.g. a tool's output) shows only the shape `_serialize` emits, with no
+        # synthesis prose.
         pydantic.WithJsonSchema(
-            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema())
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            mode="validation",
+        ),
+        pydantic.WithJsonSchema(
+            {
+                "type": "object",
+                "required": ["module_code"],
+                "properties": {
+                    "module_code": {
+                        "type": "string",
+                        "description": "Python source defining the function.",
+                    }
+                },
+            },
+            mode="serialization",
         ),
     ]
 
@@ -685,7 +856,7 @@ def _validate_tool(
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     try:
-        return info.context[value["function"]["name"]]
+        return info.context[_TOOLS_KEY][value["function"]["name"]]
     except KeyError as e:
         raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
@@ -693,7 +864,7 @@ def _validate_tool(
 def _serialize_tool(
     value: Tool, info: pydantic.SerializationInfo
 ) -> ChatCompletionToolParam:
-    fields: dict[str, Any] = {
+    fields: dict[str, typing.Any] = {
         name: TypeToPydanticType().evaluate(param.annotation)
         for name, param in inspect.signature(value).parameters.items()
     }
@@ -704,7 +875,6 @@ def _serialize_tool(
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
-    assert value.__default__.__doc__ is not None
     # Advertise under the context key, since decode (`_validate_tool`) resolves the call by that name.
     tool_name = value.__name__
     context = info.context
@@ -713,12 +883,20 @@ def _serialize_tool(
             if tool is value:
                 tool_name = key
                 break
+    ret_schema = pydantic.TypeAdapter(
+        Encodable[value.__signature__.return_annotation]  # type: ignore[name-defined]
+    ).json_schema(mode="serialization")
+    description = (
+        f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}"
+    )
+    description += f"\n\n{textwrap.dedent(value.__doc__ or '')}"
+    description += f"\n\nAnnotated JSON schema of return type: {json.dumps(ret_schema)}"
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
             "function": {
                 "name": tool_name,
-                "description": textwrap.dedent(value.__default__.__doc__),
+                "description": description,
                 "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
             },
@@ -746,7 +924,7 @@ def _validate_tool_call(
         value = OpenAIChatCompletionMessageToolCall.model_validate(value)
     ctx = info.context or {}
     assert value.function.name is not None
-    tool = ctx[value.function.name]
+    tool = ctx[_TOOLS_KEY][value.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
     decoded_args = {}
@@ -755,7 +933,7 @@ def _validate_tool_call(
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
         param = sig.parameters[name]
-        arg_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[param.annotation]  # type: ignore[name-defined]
         )
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
@@ -773,7 +951,7 @@ def _serialize_tool_call(
     ctx = info.context or {}
     encoded_args = {}
     for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
+        v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[nested_type(v).value]  # type: ignore[misc]
         )
         encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
@@ -782,7 +960,10 @@ def _serialize_tool_call(
             "type": "function",
             "id": value.id,
             "function": {
-                "name": value.tool.__name__,
+                # Use the name the tool was called by (possibly disambiguated by
+                # `call_assistant`), not the tool's `__name__`, so the call
+                # round-trips to the same identity the model and decoder share.
+                "name": value.name,
                 "arguments": json.dumps(encoded_args),
             },
         }

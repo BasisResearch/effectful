@@ -3,25 +3,33 @@
 import collections
 import dataclasses
 import inspect
+import re
+import typing
 from dataclasses import dataclass
+from pathlib import Path
+from types import CodeType
 
 import pydantic
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Encodable, Template, Tool
 from effectful.handlers.llm.completions import (
-    DEFAULT_SYSTEM_PROMPT,
+    LexicalReaders,
     LiteLLMProvider,
+    PythonRepl,
     RetryLLMHandler,
+    _get_history,
+    call_system,
     call_user,
-    collect_tools,
     completion,
 )
-from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
+from effectful.handlers.llm.encoding import DecodedToolCall
+from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+from tests.conftest import offered_tools, template_tools
 
 
 class TemplateStringIntp(ObjectInterpretation):
@@ -37,7 +45,7 @@ class TemplateStringIntp(ObjectInterpretation):
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
-        model_input = call_user(template.__prompt_template__, env)
+        model_input = call_user(template, env)
         template_result = model_input["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]
@@ -51,7 +59,7 @@ def test_template_formatting_simple():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert rhyme("cat", "hat") == "The cat sat in the hat."
+        assert rhyme("cat", "hat").endswith("The cat sat in the hat.")
 
 
 def test_template_formatting_method():
@@ -66,8 +74,8 @@ def test_template_formatting_method():
 
     with handler(TemplateStringIntp()):
         user = User("Bob")
-        assert (
-            user.greet("Monday") == "Greet the user 'Bob' and wish them a good Monday."
+        assert user.greet("Monday").endswith(
+            "Greet the user 'Bob' and wish them a good Monday."
         )
 
 
@@ -186,7 +194,7 @@ class MockCompletionHandler(ObjectInterpretation):
         self.received_messages: list[list] = []
 
     @implements(completion)
-    def _completion(self, model, messages=None, **kwargs):
+    def _completion(self, messages=None, **kwargs):
         self.received_messages.append(list(messages) if messages else [])
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
@@ -251,7 +259,7 @@ def test_agent_method_tool_advertised_name_matches_decode_key():
     otherwise every method tool is undecodable. This is the serialize->advertise->decode
     round-trip, no LLM required."""
     agent = _DesignerAgent()
-    tools = dict(collect_tools({"self": agent}))
+    tools = dict(offered_tools({"self": agent}))
     key = "self__nested_tool"
     tool = tools[key]
     assert tool.__name__ == "nested_tool"  # own name differs from the context key
@@ -422,7 +430,7 @@ class TestSystemPromptInvariant:
     def test_nested_agent_flow_has_one_system_message_per_round(self):
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -484,36 +492,48 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[0])
         assert_single_system_message_first(mock.received_messages[1])
 
-    def test_empty_system_prompt_uses_default_fallback(self):
+    def test_system_message_assembled_from_introspection(self):
         @Template.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
-
-        # Simulate notebook/empty-module-docstring fallback case.
-        standalone.__system_prompt__ = ""
 
         mock = MockCompletionHandler([make_text_response("ok")])
         with handler(LiteLLMProvider()), handler(mock):
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        assert mock.received_messages[0][0]["content"] == DEFAULT_SYSTEM_PROMPT
+        content = mock.received_messages[0][0]["content"]
+        # call_system is now the sole assembler: the content is a Markdown
+        # document introspected from the Template, not a stored attribute.
+        assert "### `standalone(topic: str) -> str`" in content
+        assert "Write about {topic}." in content
 
 
 class TestAgentDocstringFallback:
-    """Agent subclasses can fall back to inherited class docstrings."""
+    """Agent subclasses' class docstrings flow into the assembled system message."""
+
+    def _system_content(self, template):
+        od = collections.OrderedDict()
+        with handler({_get_history: lambda: od}):
+            call_system(template)
+        return next(iter(od.values()))["content"]
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):
-            pass
+            @Template.define
+            def act(self) -> str:
+                """Do something."""
+                raise NotHandled
 
         assert MissingDocAgent.__doc__ is None
-        prompt = MissingDocAgent().__system_prompt__
-        assert prompt
+        content = self._system_content(MissingDocAgent().act)
+        # No subclass docstring -> the Agent base-class docstring is used as the
+        # tier-3 "# Agent" section (inspect.getdoc walks the MRO).
         agent_doc = inspect.getdoc(Agent)
         assert agent_doc is not None
-        assert prompt == agent_doc
+        assert "# Agent `MissingDocAgent`" in content
+        assert agent_doc in content
 
     def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):
@@ -521,11 +541,14 @@ class TestAgentDocstringFallback:
             Your goal is to satisfy the explicit Agent docstring requirement.
             """
 
+            @Template.define
+            def act(self) -> str:
+                """Do something."""
+                raise NotHandled
+
         assert ValidDocAgent.__doc__ is not None
-        assert "You are a valid-docstring test agent." in ValidDocAgent.__doc__
-        assert (
-            "You are a valid-docstring test agent." in ValidDocAgent().__system_prompt__
-        )
+        content = self._system_content(ValidDocAgent().act)
+        assert "You are a valid-docstring test agent." in content
 
 
 class TestAgentCachedProperty:
@@ -666,7 +689,7 @@ class TestNestedTemplateCalling:
         """The scenario from issue #560 completes without error."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("check passed"),
                 make_text_response("all good"),
             ]
@@ -682,7 +705,7 @@ class TestNestedTemplateCalling:
         """Inner template's messages are absent from agent.__history__."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -706,7 +729,7 @@ class TestNestedTemplateCalling:
         not the outer template's in-flight messages."""
         mock = MockCompletionHandler(
             [
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("outer"),
             ]
@@ -730,7 +753,7 @@ class TestNestedTemplateCalling:
                 # First call: direct answer (no tool call)
                 make_text_response("first"),
                 # Second call: tool → nested → final
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("second"),
             ]
@@ -756,7 +779,7 @@ class TestNestedTemplateCalling:
         mock = MockCompletionHandler(
             [
                 # First call: tool → nested → final
-                make_tool_call_response("self__nested_tool", '{"payload": "demo"}'),
+                make_tool_call_response("nested_tool", '{"payload": "demo"}'),
                 make_text_response("inner"),
                 make_text_response("first"),
                 # Second call: direct answer
@@ -809,10 +832,10 @@ def test_template_method():
 
     a = A(0)
     assert isinstance(a.f, Template)
-    assert a.random in a.f.tools.values()
+    assert a.random in template_tools(a.f)
     # f is the template itself — found via self but correctly removed (non-recursive)
-    assert a.f not in a.f.tools.values()
-    assert any(t() == 4 for t in a.f.tools.values() if t is a.random)
+    assert a.f not in template_tools(a.f)
+    assert any(t() == 4 for t in template_tools(a.f) if t is a.random)
 
     class B(A):
         """You are a derived template-method test agent.
@@ -826,8 +849,8 @@ def test_template_method():
 
     b = B(1)
     assert isinstance(b.f, Template)
-    assert b.random in b.f.tools.values()
-    assert b.reverse in b.f.tools.values()
+    assert b.random in template_tools(b.f)
+    assert b.reverse in template_tools(b.f)
 
 
 def test_template_method_nested_class():
@@ -854,11 +877,12 @@ def test_template_method_nested_class():
 
     a = A.B(True)
     assert isinstance(a.f, Template)
+    tools = template_tools(a.f)
     # random is found via the enclosing function scope
-    assert "random" in a.f.tools
+    assert random in tools
     # f is the template itself — found via self but correctly removed (non-recursive)
-    assert "f" not in a.f.tools
-    assert a.f.tools["random"]() == 4
+    assert a.f not in tools
+    assert random() == 4
 
 
 def test_template_method_module():
@@ -930,7 +954,7 @@ class TestLexicalScopeCollection:
                 raise NotHandled
 
         bar = Bar()
-        assert "helper" in bar.ask.tools
+        assert helper in template_tools(bar.ask)
 
     def test_dynamic_caller_not_leaked(self):
         """Variables from a dynamic caller (not lexical enclosure) should not
@@ -963,9 +987,9 @@ class TestLexicalScopeCollection:
                 raise NotHandled
 
         w = Widget()
-        assert w.measure in w.describe.tools.values()
+        assert w.measure in template_tools(w.describe)
         # The template itself is not in tools (non-recursive)
-        assert w.describe not in w.describe.tools.values()
+        assert w.describe not in template_tools(w.describe)
 
     def test_inherited_tools_visible(self):
         """Tools from a base Agent class are visible through the instance."""
@@ -991,7 +1015,7 @@ class TestLexicalScopeCollection:
                 raise NotHandled
 
         d = Derived()
-        assert d.base_tool in d.ask.tools.values()
+        assert d.base_tool in template_tools(d.ask)
 
     def test_tool_in_enclosing_function_visible_through_class(self):
         """function -> class -> Template.define: tool in the function is visible."""
@@ -1007,7 +1031,7 @@ class TestLexicalScopeCollection:
                 """Ask something."""
                 raise NotHandled
 
-        assert "outer_tool" in Inner().ask.tools
+        assert outer_tool in template_tools(Inner().ask)
 
     def test_tool_in_enclosing_function_visible_through_nested_classes(self):
         """function -> class -> class -> Template.define: tool in the function
@@ -1025,7 +1049,7 @@ class TestLexicalScopeCollection:
                     """Ask something."""
                     raise NotHandled
 
-        assert "outer_tool" in Outer.Inner().ask.tools
+        assert outer_tool in template_tools(Outer.Inner().ask)
 
     def test_nested_function_then_class(self):
         """function -> function -> class -> Template.define: all enclosing
@@ -1043,11 +1067,11 @@ class TestLexicalScopeCollection:
                     """Ask."""
                     raise NotHandled
 
-            return MyClass
+            return MyClass, inner_tool
 
         outer_var = True  # noqa: F841
-        cls = _make()
-        assert "inner_tool" in cls().ask.tools
+        cls, inner_tool = _make()
+        assert inner_tool in template_tools(cls().ask)
         # The test method is a lexical encloser of _make, so its locals
         # are visible — matching Python's actual scoping rules.
         assert "outer_var" in cls().ask.__context__
@@ -1129,7 +1153,7 @@ class TestStaticAndClassMethodTemplates:
                 """Compute {x}."""
                 raise NotHandled
 
-        assert "helper" in MyClass.ask.tools
+        assert helper in template_tools(MyClass.ask)
 
     def test_staticmethod_template_excludes_class_body(self):
         """A staticmethod Template does not capture class body locals."""
@@ -1253,9 +1277,8 @@ def test_template_formatting_scoped():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert (
-            convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        assert convert(7920).endswith(
+            "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1267,7 +1290,7 @@ def test_validate_params_valid():
         """Write a {style} poem about {topic}."""
         raise NotHandled
 
-    assert poem.__prompt_template__ == "Write a {style} poem about {topic}."
+    assert poem.__default__.__doc__.endswith("Write a {style} poem about {topic}.")
 
 
 def test_validate_no_vars():
@@ -1278,7 +1301,7 @@ def test_validate_no_vars():
         """Just a plain prompt with no variables."""
         raise NotHandled
 
-    assert simple.__prompt_template__ == "Just a plain prompt with no variables."
+    assert simple.__default__.__doc__.endswith("Just a plain prompt with no variables.")
 
 
 def test_validate_undefined_var():
@@ -1315,7 +1338,9 @@ def test_validate_compound_field_name():
             """Agent '{self.name}' says hello on {day}."""
             raise NotHandled
 
-    assert Agent.greet.__prompt_template__ == "Agent '{self.name}' says hello on {day}."
+    assert Agent.greet.__default__.__doc__.endswith(
+        "Agent '{self.name}' says hello on {day}."
+    )
 
 
 def test_validate_staticmethod():
@@ -1328,7 +1353,7 @@ def test_validate_staticmethod():
         raise NotHandled
 
     # The underlying Template should exist
-    assert ok.__func__.__prompt_template__ == "Combine {a} and {b}."
+    assert ok.__func__.__default__.__doc__.endswith("Combine {a} and {b}.")
 
 
 def test_validate_staticmethod_undefined():
@@ -1368,9 +1393,8 @@ def test_staticmethod_lexical_scope_formatting():
         raise NotHandled
 
     with handler(TemplateStringIntp()):
-        assert (
-            convert(7920)
-            == "How many miles is 7920 feet? There are 5280 feet per mile."
+        assert convert(7920).endswith(
+            "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
@@ -1383,7 +1407,7 @@ def test_validate_lexical_var():
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
-    assert "feet_per_mile" in convert.__prompt_template__
+    assert "feet_per_mile" in convert.__default__.__doc__
 
 
 def test_validate_both_params_and_lexical():
@@ -1395,7 +1419,9 @@ def test_validate_both_params_and_lexical():
         """Write a poem about {topic} by {author}."""
         raise NotHandled
 
-    assert write_poem.__prompt_template__ == "Write a poem about {topic} by {author}."
+    assert write_poem.__default__.__doc__.endswith(
+        "Write a poem about {topic} by {author}."
+    )
 
 
 def test_validate_undefined_with_lexical_still_fails():
@@ -1549,6 +1575,106 @@ def test_validate_format_spec_on_undefined_var():
             raise NotHandled
 
 
+# ---------------------------------------------------------------------------
+# Doctests in a Template docstring must be constant (no spliced arguments).
+# Templates are defined *inside* each test so pytest's --doctest-modules does
+# not try to collect/run these docstring examples.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_constant_doctest_ok():
+    """A doctest with no format fields is accepted."""
+
+    @Template.define
+    def dbl(x: int) -> int:
+        """Double {x}.
+
+        >>> dbl(2)
+        4
+        """
+        raise NotHandled
+
+    assert "dbl(2)" in dbl.__default__.__doc__
+
+
+def test_validate_param_spliced_into_doctest_source_rejected():
+    """A parameter spliced into the doctest source is rejected at define time."""
+    with pytest.raises(TypeError, match="constant") as exc:
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> dbl({x})
+            4
+            """
+            raise NotHandled
+
+    assert "'x'" in str(exc.value)
+
+
+def test_validate_field_spliced_into_doctest_want_rejected():
+    """A field spliced into the expected output is rejected."""
+    with pytest.raises(TypeError, match="constant"):
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> dbl(2)
+            {x}
+            """
+            raise NotHandled
+
+
+def test_validate_bare_braces_in_doctest_rejected():
+    """A bare ``{}`` in a doctest is non-constant (str.format treats it as a
+    positional field) and is rejected."""
+    with pytest.raises(TypeError, match="constant"):
+
+        @Template.define
+        def dbl(x: int) -> int:
+            """Double {x}.
+
+            >>> d = {}
+            >>> dbl(2)
+            4
+            """
+            raise NotHandled
+
+
+def test_validate_escaped_braces_in_doctest_ok():
+    """Escaped braces ``{{``/``}}`` format to literal braces, so they are
+    constant and accepted."""
+
+    @Template.define
+    def make_dict(x: int) -> dict:
+        """Build a dict from {x}.
+
+        >>> d = {{}}
+        >>> make_dict(2)
+        {{'k': 2}}
+        """
+        raise NotHandled
+
+    assert "make_dict(2)" in make_dict.__default__.__doc__
+
+
+def test_validate_field_in_prose_with_constant_doctest_ok():
+    """Format fields are still allowed in the prose around constant doctests."""
+
+    @Template.define
+    def about(theme: str) -> int:
+        """Count words about {theme}.
+
+        >>> about("cats")
+        1
+        """
+        raise NotHandled
+
+    assert "{theme}" in about.__default__.__doc__
+
+
 # Forward ref through Tool subclass of Operation.
 # Use types Pydantic can serialize (not arbitrary classes) to avoid
 # PydanticSchemaGenerationError when other tests build tool schemas.
@@ -1567,18 +1693,6 @@ def test_tool_forward_ref():
 # ---------------------------------------------------------------------------
 # Synthetic readers for lexical context (PR #545 finish-up)
 # ---------------------------------------------------------------------------
-
-import re
-import typing
-from pathlib import Path
-from types import CodeType
-
-from effectful.handlers.llm.completions import (
-    LexicalReaders,
-    PythonRepl,
-    _LexicalVariableTool,
-)
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 
 # Helpers for the test matrix
@@ -1616,7 +1730,7 @@ def test_synthetic_reader_returns_captured_value():
     time.  In-place mutation of a mutable captured value is visible
     (same object reference); rebinding the source name is not."""
     captured: list[int] = [1, 2, 3]
-    tool = _LexicalVariableTool.define(captured, name="x")
+    tool = LexicalReaders._LexicalVariableTool.define(captured, name="x")
     assert tool() == [1, 2, 3]
     captured.append(4)
     assert tool() == [1, 2, 3, 4]
@@ -1627,7 +1741,7 @@ def test_synthetic_reader_snapshot_survives_rebind():
     so rebinding the source name between construction and invocation
     has no effect on the captured value."""
     env: dict = {"x": 42}
-    tool = _LexicalVariableTool.define(env["x"], name="x")
+    tool = LexicalReaders._LexicalVariableTool.define(env["x"], name="x")
     env["x"] = 99
     assert tool() == 42
 
@@ -1636,7 +1750,7 @@ def test_synthetic_reader_snapshot_survives_deletion():
     """The closure holds the value directly, so deleting the source
     name does not invalidate the reader."""
     env: dict = {"x": 42}
-    tool = _LexicalVariableTool.define(env["x"], name="x")
+    tool = LexicalReaders._LexicalVariableTool.define(env["x"], name="x")
     del env["x"]
     assert tool() == 42
 
@@ -1660,7 +1774,7 @@ _PROBE_OK_CASES: list[tuple[str, typing.Any]] = [
 def test_lexical_variable_tool_returns_value(name, value):
     """`_LexicalVariableTool` builds a Tool when `Encodable[T]`
     schema generates; calling it returns the captured value."""
-    tool = _LexicalVariableTool.define(value, name=name)
+    tool = LexicalReaders._LexicalVariableTool.define(value, name=name)
     assert tool() is value
 
 
@@ -1710,8 +1824,8 @@ def test_collect_tools_exposes_callable_shaped_values(name, make_value):
     handler and become synthesis-shaped tools."""
     value = make_value()
     env = {name: value}
-    with handler(LexicalReaders()):
-        assert name in collect_tools(env)
+    # The reader for `value` returns it verbatim; identify it by that value.
+    assert any(t() is value for t in offered_tools(env, LexicalReaders()))
 
 
 def test_lexical_reader_exposes_data_values():
@@ -1725,16 +1839,15 @@ def test_lexical_reader_exposes_data_values():
         "d": {"k": 1},
         "model": _SimpleModel(x=1, y="hi"),
     }
-    with handler(LexicalReaders()):
-        result = collect_tools(env)
-    assert {"x", "s", "lst", "d", "model"} <= set(result)
-    for k, v in env.items():
-        assert result[k]() is v
+    tools = offered_tools(env, LexicalReaders())
+    # Each value is exposed as a reader that returns the very same object.
+    for v in env.values():
+        assert any(t() is v for t in tools)
 
 
 def test_template_tools_includes_synthetic_readers_for_locals():
-    """The Template.tools property includes synthetic readers for
-    plain values in lexical scope when `LexicalReaders` is installed."""
+    """A template offers synthetic readers for plain values in lexical scope
+    when `LexicalReaders` is installed."""
     _test_data = [10, 20, 30]
 
     @Template.define
@@ -1742,20 +1855,21 @@ def test_template_tools_includes_synthetic_readers_for_locals():
         """Doc."""
         raise NotHandled
 
-    with handler(LexicalReaders()):
-        tools = t.tools
-        assert "_test_data" in tools
-        assert tools["_test_data"]() == [10, 20, 30]
+    # Restrict to reader tools (safe to call) rather than other in-scope tools.
+    readers = [
+        tool
+        for tool in template_tools(t, LexicalReaders())
+        if isinstance(tool, LexicalReaders._LexicalVariableTool)
+    ]
+    assert any(reader() == [10, 20, 30] for reader in readers)
 
 
 def test_lexical_readers_handler_enables_collection():
     """Installing `LexicalReaders` flips the gate; the same values are
     exposed as zero-arg reader tools."""
     env = {"x": 42, "s": "hello"}
-    with handler(LexicalReaders()):
-        result = collect_tools(env)
-    assert result["x"]() == 42
-    assert result["s"]() == "hello"
+    tools = offered_tools(env, LexicalReaders())
+    assert {t() for t in tools} == {42, "hello"}
 
 
 # ---------------------------------------------------------------------------
@@ -1765,22 +1879,23 @@ def test_lexical_readers_handler_enables_collection():
 
 def test_python_repl_off_by_default():
     """Without `PythonRepl`, `exec_code` is not collected."""
-    assert "exec_code" not in collect_tools({"x": 1})
+    assert PythonRepl().exec_code not in offered_tools({"x": 1})
 
 
 def test_python_repl_exposes_exec_code():
     """With `PythonRepl` installed, `exec_code` is collected alongside the
     base tools."""
-    with handler(PythonRepl()):
-        assert "exec_code" in collect_tools({"x": 1})
+    repl = PythonRepl()
+    assert repl.exec_code in offered_tools({"x": 1}, repl)
 
 
 def test_python_repl_composes_with_lexical_readers():
     """Readers and the REPL tool coexist when both handlers are installed."""
-    with handler(LexicalReaders()), handler(PythonRepl()):
-        result = collect_tools({"data": [1, 2, 3]})
-    assert "exec_code" in result
-    assert "data" in result
+    repl = PythonRepl()
+    tools = offered_tools({"data": [1, 2, 3]}, LexicalReaders(), repl)
+    assert repl.exec_code in tools  # the REPL tool
+    readers = [t for t in tools if isinstance(t, LexicalReaders._LexicalVariableTool)]
+    assert any(reader() == [1, 2, 3] for reader in readers)  # the data reader
 
 
 def _drive_repl(body):
@@ -1793,11 +1908,12 @@ def _drive_repl(body):
     `__history__`.  Returns `body`'s result.
     """
     box = []
+    repl = PythonRepl()
 
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
         def _call(self, *_a, **_k):
-            exec_code = collect_tools(collections.ChainMap({}))["exec_code"]
+            exec_code = repl.exec_code
             # Bodies pass source strings; decode them to code objects as the LLM
             # tool boundary would (`Encodable[CodeType]` compiles the source).
             decode = pydantic.TypeAdapter(Encodable[CodeType]).validate_python
@@ -1809,7 +1925,7 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(repl):
         _t()
     return box[0]
 
@@ -1851,3 +1967,108 @@ def test_python_repl_nested_call_is_isolated_and_outer_survives():
     inner_sees_outer, outer_after = _drive_repl(outer)
     assert inner_sees_outer == "False\n"  # the nested session is isolated
     assert outer_after == "1 True\n"  # the outer session survived the nested call
+
+
+# ---------------------------------------------------------------------------
+# Lexical-context capture and decoding (consolidated from test_handlers_llm.py)
+# ---------------------------------------------------------------------------
+
+
+@Template.define
+def primes(first_digit: int) -> int:
+    """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
+    raise NotHandled
+
+
+# Mutually recursive templates (module-level so globals are live for each other).
+@Template.define
+def mutual_a() -> str:
+    """Use mutual_a and mutual_b as tools to do task A."""
+    raise NotHandled
+
+
+@Template.define
+def mutual_b() -> str:
+    """Use mutual_a and mutual_b as tools to do task B."""
+    raise NotHandled
+
+
+# Module-level variable for the shadowing tests below.
+shadow_test_value = "global"
+
+
+def test_primes_decode_int():
+    """A non-string return type is decoded from the model's structured output."""
+    mock = MockCompletionHandler([make_text_response('{"value": 61}')])
+
+    with handler(LiteLLMProvider()), handler(mock):
+        result = primes(6)
+
+    assert result == 61
+    assert isinstance(result, int)
+
+
+def test_template_captures_other_templates_in_lexical_context():
+    """Templates defined in lexical scope are captured and offered as tools."""
+
+    @Template.define
+    def story_with_moral(topic: str) -> str:
+        """Write a story about {topic} with a moral lesson."""
+        raise NotHandled
+
+    @Template.define
+    def story_funny(topic: str) -> str:
+        """Write a funny story about {topic}."""
+        raise NotHandled
+
+    @Template.define
+    def write_story(topic: str, style: str) -> str:
+        """Write a story about {topic} in style {style}."""
+        raise NotHandled
+
+    # __context__ is a ChainMap(locals, globals) - sub-templates are visible.
+    assert write_story.__context__["story_with_moral"] is story_with_moral
+    assert write_story.__context__["story_funny"] is story_funny
+
+    # Templates in lexical context are exposed as callable tools.
+    assert story_with_moral in template_tools(write_story)
+    assert story_funny in template_tools(write_story)
+
+
+def test_mutually_recursive_templates():
+    """Module-level templates see each other (mutual recursion) via globals."""
+    assert "mutual_a" in mutual_a.__context__
+    assert "mutual_b" in mutual_a.__context__
+    assert "mutual_a" in mutual_b.__context__
+    assert "mutual_b" in mutual_b.__context__
+
+    # Each sees the other as a callable tool.
+    assert mutual_a in template_tools(mutual_b)
+    assert mutual_b in template_tools(mutual_a)
+    # A template is always dropped from its own toolset.
+    assert mutual_a not in template_tools(mutual_a)
+    assert mutual_b not in template_tools(mutual_b)
+
+
+def test_lexical_context_shadowing():
+    """Local variables shadow global variables in lexical context."""
+    shadow_test_value = "local"  # noqa: F841 - intentional shadowing
+
+    @Template.define
+    def template_with_shadowed_var() -> str:
+        """Test template."""
+        raise NotHandled
+
+    # The lexical context should see the LOCAL value, not global.
+    assert template_with_shadowed_var.__context__["shadow_test_value"] == "local"
+
+
+def test_lexical_context_sees_globals_when_no_local():
+    """Globals are visible when there's no local shadow."""
+
+    @Template.define
+    def template_sees_global() -> str:
+        """Test template."""
+        raise NotHandled
+
+    assert template_sees_global.__context__["shadow_test_value"] == "global"

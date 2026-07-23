@@ -21,18 +21,17 @@ from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
 from effectful.handlers.llm.encoding import (
+    _TOOLS_KEY,
     CONTENT_BLOCK_TYPES,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    Encodable,
-    SynthesizedFunction,
     to_content_blocks,
 )
 from effectful.handlers.llm.evaluation import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
-from effectful.handlers.llm.template import Tool
+from effectful.handlers.llm.template import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
@@ -379,63 +378,71 @@ ROUNDTRIP_CASES = [
         id="list-tuple-str-img",
     ),
     # --- Tool ---
-    pytest.param(type(_tool_add), _tool_add, {"_tool_add": _tool_add}, id="tool-add"),
     pytest.param(
-        type(_tool_greet), _tool_greet, {"_tool_greet": _tool_greet}, id="tool-greet"
+        type(_tool_add),
+        _tool_add,
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
+        id="tool-add",
+    ),
+    pytest.param(
+        type(_tool_greet),
+        _tool_greet,
+        {_TOOLS_KEY: {"_tool_greet": _tool_greet}},
+        id="tool-greet",
     ),
     pytest.param(
         type(_tool_process),
         _tool_process,
-        {"_tool_process": _tool_process},
+        {_TOOLS_KEY: {"_tool_process": _tool_process}},
         id="tool-process",
     ),
     pytest.param(
         type(_tool_get_value),
         _tool_get_value,
-        {"_tool_get_value": _tool_get_value},
+        {_TOOLS_KEY: {"_tool_get_value": _tool_get_value}},
         id="tool-no-params",
     ),
     pytest.param(
         type(_tool_distance),
         _tool_distance,
-        {"_tool_distance": _tool_distance},
+        {_TOOLS_KEY: {"_tool_distance": _tool_distance}},
         id="tool-pydantic-param",
     ),
     pytest.param(
         type(_tool_style),
         _tool_style,
-        {"_tool_style": _tool_style},
+        {_TOOLS_KEY: {"_tool_style": _tool_style}},
         id="tool-literal-param",
     ),
     # --- DecodedToolCall ---
     pytest.param(
         DecodedToolCall,
         _make_dtc(_tool_add, {"a": 3, "b": 5}, "call_1"),
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         id="dtc-add-3-5",
     ),
     pytest.param(
         DecodedToolCall,
         _make_dtc(_tool_add, {"a": 0, "b": -1}, "call_2"),
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         id="dtc-add-0-neg",
     ),
     pytest.param(
         DecodedToolCall,
         _make_dtc(_tool_greet, {"name": "Alice"}, "call_3"),
-        {"_tool_greet": _tool_greet},
+        {_TOOLS_KEY: {"_tool_greet": _tool_greet}},
         id="dtc-greet-alice",
     ),
     pytest.param(
         DecodedToolCall,
         _make_dtc(_tool_process, {"items": [1, 2, 3], "label": "total"}, "call_4"),
-        {"_tool_process": _tool_process},
+        {_TOOLS_KEY: {"_tool_process": _tool_process}},
         id="dtc-process-items",
     ),
     pytest.param(
         DecodedToolCall,
         _make_dtc(_tool_distance, {"p": _PointModel(x=3, y=4)}, "call_5"),
-        {"_tool_distance": _tool_distance},
+        {_TOOLS_KEY: {"_tool_distance": _tool_distance}},
         id="dtc-pydantic-param",
     ),
 ]
@@ -644,40 +651,44 @@ def test_dataclass_with_encodable_tuple_field_626():
 
 TOOL_CALL_ERROR_CASES = [
     pytest.param(
-        "nonexistent", "{}", {}, (KeyError, AssertionError), id="unknown-tool"
+        "nonexistent",
+        "{}",
+        {_TOOLS_KEY: {}},
+        (KeyError, AssertionError),
+        id="unknown-tool",
     ),
     pytest.param(
         "_tool_add",
         '{"a": "not_an_int", "b": 2}',
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         pydantic.ValidationError,
         id="wrong-arg-type",
     ),
     pytest.param(
         "_tool_add",
         '{"a": 1}',
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         (pydantic.ValidationError, TypeError),
         id="missing-required-arg",
     ),
     pytest.param(
         "_tool_add",
         '{"a": 1, "b": 2, "c": 3}',
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         pydantic.ValidationError,
         id="extra-arg",
     ),
     pytest.param(
         "_tool_add",
         "{not valid json}",
-        {"_tool_add": _tool_add},
+        {_TOOLS_KEY: {"_tool_add": _tool_add}},
         pydantic.ValidationError,
         id="invalid-json",
     ),
     pytest.param(
         "_tool_process",
         '{"items": ["a", "b"], "label": "total"}',
-        {"_tool_process": _tool_process},
+        {_TOOLS_KEY: {"_tool_process": _tool_process}},
         pydantic.ValidationError,
         id="wrong-list-element-type",
     ),
@@ -777,11 +788,17 @@ def _int_pair_anchor() -> Callable[[int, int], int]:
 
 
 # Callable error cases: (type, ctx, source, exc_type, anchor)
+#
+# Sources are passed as raw ``{"module_code": ...}`` dicts, not pre-built
+# ``SynthesizedFunction`` instances: structurally-invalid code (e.g. a non-function
+# last statement) is rejected by ``SynthesizedFunction``'s own field validator, so
+# building it eagerly here would raise at collection. A dict defers that validation
+# to the decoder (``model_validate``), which is the real path an LLM's JSON takes.
 CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
-        SynthesizedFunction(module_code="x = 42"),
+        {"module_code": "x = 42"},
         ValueError,
         None,
         id="non-function-last-stmt",
@@ -789,7 +806,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(module_code="def add(a: int) -> int:\n    return a"),
+        {"module_code": "def add(a: int) -> int:\n    return a"},
         ValueError,
         None,
         id="wrong-param-count",
@@ -797,9 +814,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(
-            module_code="def add(a: int, b: int) -> str:\n    return str(a + b)"
-        ),
+        {"module_code": "def add(a: int, b: int) -> str:\n    return str(a + b)"},
         TypeError,
         _int_pair_anchor,
         id="wrong-return-type",
@@ -807,7 +822,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        SynthesizedFunction(module_code="def add(a: int, b: int):\n    return a + b"),
+        {"module_code": "def add(a: int, b: int):\n    return a + b"},
         ValueError,
         None,
         id="missing-return-annotation",

@@ -1,92 +1,49 @@
 import abc
+import collections
+import doctest
 import functools
 import inspect
 import re
 import string
 import types
 import typing
-from collections import ChainMap, OrderedDict
 from collections.abc import Callable, Mapping, MutableMapping
-from typing import Annotated, Any
 
-from effectful.ops.types import Annotation, Operation
-
-
-class _IsRecursiveAnnotation(Annotation):
-    """
-    A special type annotation for return types in the signature of a
-    :class:`Template` that indicates it may make recursive calls.
-
-    .. warning::
-
-        :class:`IsRecursive` annotations are only defined to ascribe
-        return annotations, and if used in a parameter will raise a
-        :class:`TypeError` at tool construction time.
-
-
-
-    **Example usage**:
-
-    We illustrate the use of :class:`IsRecursive` below:
-
-    >>> from typing import Annotated
-    >>> from effectful.handlers.llm import Template
-    >>> from effectful.handlers.llm.template import IsRecursive
-
-    >>>
-    @Template.define
-    def factorial(n: int) -> Annotated[int, IsRecursive]:
-       \"""Compute the n factorial for n={n}. Can call itself (`factorial`) recursively, but must be on smaller arguments.\"""
-       raise NotHandled
-    """
-
-    @classmethod
-    def infer_annotations(cls, sig: inspect.Signature) -> inspect.Signature:
-        for name, ty in sig.parameters.items():
-            if not ty or not typing.get_origin(ty) is Annotated:
-                continue
-            if any(isinstance(arg, cls) for arg in typing.get_args(ty)):
-                raise TypeError(
-                    f"Illegal annotation {ty} for parameter {name}, IsRecursive must only be used to annotate return types."
-                )
-        return sig
-
-
-IsRecursive = _IsRecursiveAnnotation()
-
-
-def _is_recursive_signature(sig: inspect.Signature):
-    if typing.get_origin(sig.return_annotation) is not Annotated:
-        return False
-    annotations = typing.get_args(sig.return_annotation)
-    return any(annotation is IsRecursive for annotation in annotations)
+from effectful.ops.types import Operation
 
 
 class Tool[**P, T](Operation[P, T]):
-    """A :class:`Tool` is a function that may be called by a :class:`Template`.
+    """A `Tool` is a function that may be called by a `Template`.
 
-    **Example usage:**
+    A `Tool` wraps a normal Python callable; its signature (parameter types
+    and return type) and docstring define the schema the model sees, and the
+    model invokes it by name with JSON arguments.
 
-    Templates may call any tool that is in their lexical scope.
-    In the following example, the LLM suggests a vacation destination using the :code:`cities` and :code:`weather` tools.::
+    ## Example usage
 
-        @Tool.define
-        def cities() -> list[str]:
-            \"\"\"Return a list of cities that can be passed to `weather`.\"\"\"
-            return ["Chicago", "New York", "Barcelona"]
+    Templates may call any tool that is in their lexical scope. In the
+    following example, the LLM suggests a vacation destination using the
+    `cities` and `weather` tools:
 
-        @Tool.define
-        def weather(city: str) -> str:
-            \"\"\"Given a city name, return a description of the weather in that city.\"\"\"
-            status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
-            return status.get(city, "unknown")
+    ```python
+    @Tool.define
+    def cities() -> list[str]:
+        \"\"\"Return a list of cities that can be passed to `weather`.\"\"\"
+        return ["Chicago", "New York", "Barcelona"]
 
-        @Template.define  # cities and weather auto-captured from lexical scope
-        def vacation() -> str:
-            \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
-            raise NotHandled
+    @Tool.define
+    def weather(city: str) -> str:
+        \"\"\"Given a city name, return a description of the weather in that city.\"\"\"
+        status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
+        return status.get(city, "unknown")
 
-    Class methods may be used as templates, in which case any other methods decorated with :func:`Tool.define` will be provided as tools.
+    @Template.define  # cities and weather auto-captured from lexical scope
+    def vacation() -> str:
+        \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
+    ```
+
+    Class methods may be used as templates, in which case any other methods
+    decorated with `Tool.define` will be provided as tools.
 
     """
 
@@ -95,42 +52,77 @@ class Tool[**P, T](Operation[P, T]):
             raise ValueError("Tools must have docstrings.")
         super().__init__(default, name=name)
 
-    @property
-    def __signature__(self):
-        return IsRecursive.infer_annotations(super().__signature__)
-
     @classmethod
     def define(cls, *args, **kwargs) -> "Tool[P, T]":
         """Define a tool.
 
-        See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Tool.define`.
+        See `effectful.ops.types.Operation.define` for more information on the
+        use of `Tool.define`.
 
         """
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
+class FinalTool[**P, T](Tool[P, T]):
+    """A `Tool` whose invocation *finalizes* a `Template` call.
+
+    During completion a `Template` lets the LLM freely call any tool in
+    scope, feeding each tool's result back for another turn.  When the LLM
+    instead calls a `FinalTool`, that tool's return value becomes the
+    Template's result and the completion loop terminates -- no further model
+    turn is taken, so the value is attributed to executing the tool rather than
+    generated by the model.
+
+    This is the mechanism behind code-synthesis completion (see
+    `effectful.handlers.llm.completions.SynthesizeAndCall`): the LLM
+    "answers" by calling a final tool with a function it wrote, the harness
+    applies that function to the original inputs, and the resulting value is the
+    answer.
+
+    A finalizing call that *fails* does not terminate the loop -- the error is
+    fed back as a tool message and the model is given another turn (see
+    `effectful.handlers.llm.completions.RetryLLMHandler`).
+    """
+
+    @classmethod
+    def define(cls, *args, **kwargs) -> "FinalTool[P, T]":
+        """Define a final tool.
+
+        See `effectful.ops.types.Operation.define` for more information on
+        the use of `FinalTool.define`.
+        """
+        return typing.cast("FinalTool[P, T]", super().define(*args, **kwargs))
+
+
 class Template[**P, T](Tool[P, T]):
-    """A :class:`Template` is a function that is implemented by a large language model.
+    """A `Template` is a function that is implemented by a large language model.
 
-    **Constructing Templates:**
+    ## Constructing Templates
 
-    Templates are constructed by calling :func:`Template.define`.
-    `Template.define` should be used as a decorator on a function or method.
-    The function must be fully type-annotated and have a docstring.
-    The body of the function must contain only :code:`raise NotHandled`.
-    See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Template.define`.
+    Apply `Template.define` as a decorator to a fully type-annotated function or
+    method whose body is either empty or `raise NotHandled`. The docstring is a
+    [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
+    prompt: its `{...}` fields are filled at call time (see *Prompt assembly*
+    below) and the LLM's response is decoded to the return type.
 
-    The template docstring is a `format string <https://docs.python.org/3/library/string.html#format-string-syntax>`__, which may refer to the template arguments.
-    When the template is called, the arguments and docstring are formatted into a prompt for the LLM and the LLM's response is returned.
+    `Template.define` validates the definition and raises if:
+
+    - the function has no docstring (every `Tool` needs one);
+    - a `{...}` field names something that is neither a parameter nor a name in
+      lexical scope — every field must resolve at call time;
+    - a doctest example (`>>>`) in the docstring contains an active `{...}` field:
+      doctests must be constant, since the whole docstring is formatted into the
+      prompt at call time; escape any literal braces as `{{` and `}}`.
+
+    See `effectful.ops.types.Operation.define` for more on `Template.define`.
 
     The following template writes limericks on a given theme:
 
     >>> @Template.define
     ... def limerick(theme: str) -> str:
     ...     \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
-    **Structured output:**
+    ## Structured output
 
     Templates may return types that are not strings.
     The output from the LLM is then decoded before being returned to the user.
@@ -140,7 +132,6 @@ class Template[**P, T](Tool[P, T]):
     >>> @Template.define
     ... def primes(first_digit: int) -> int:
     ...     \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
     Structured generation is used to constrain the LLM to return values that can be decoded without error.
 
@@ -155,37 +146,113 @@ class Template[**P, T](Tool[P, T]):
     >>> @Template.define
     ... def write_joke(theme: str) -> KnockKnockJoke:
     ...     \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
-    ...     raise NotHandled
 
     Many common Python data types are decodable without additional effort.
-    To register a decoder for a custom type, see :func:`effectful.handlers.llm.encoding.type_to_encodable_type`.
+    To register a decoder for a custom type, see `effectful.handlers.llm.encoding.type_to_encodable_type`.
 
-    **Using tools:**
+    ## Using tools
 
-    Instances of :class:`Tool` that are in the lexical scope of a :class:`Template` may be called by the LLM during template completion.
-    Templates are themselves tools which enables the construction of complex agent workflows.
-    When a method is defined as a template, other methods on the class that are decorated with :func:`Tool.define` or :func:`Template.define` are provided to the template as tools.
+    Instances of `Tool` in a `Template`'s lexical scope may be called by the LLM
+    during completion, and are offered automatically. Scope follows ordinary
+    Python rules: enclosing-function locals, module globals, and — for a method
+    template — sibling `Tool`/`Template` methods on the same class. A template
+    cannot call a tool it cannot lexically see, so it should use only tools that
+    are in scope and relevant to the task. Templates are themselves tools,
+    enabling composition into agent workflows.
+
+    ## Prompt assembly
+
+    A call produces two messages. The **system message** is assembled once per
+    conversation, ordered most-constant-first so it caches well. Each section is a
+    top-level `#` heading whose contents nest beneath it; in order:
+
+    | # | Section heading | Content | Constant over |
+    | - | --------------- | ------- | ------------- |
+    | 1 | `# The effectful LLM framework` | Framework concepts — the package overview plus a `##` subsection per concept (`Template`, `Tool`, `Agent`, `Encodable`, and any handler tool blocks), sourced from these docstrings | the process |
+    | 2 | `# Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
+    | 3 | `# Agent <cls>` (or `# Template`) | Agent docstring, then a `## <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
+    | 4 | `# Imported modules` | Table of in-scope imports (name → module) | the scope |
+    | 5 | `# Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
+
+    The **user message** is the per-call part — only its changing values are
+    re-sent each turn; everything constant lives in the system message above. It
+    has two parts:
+
+    | # | Part | Content |
+    | - | ---- | ------- |
+    | 1 | Header | `<name><signature>` — identifies which template this turn calls |
+    | 2 | Body | The docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
 
     """
 
-    __context__: ChainMap[str, Any]
-    __system_prompt__: str
+    __context__: collections.ChainMap[str, typing.Any]
+
+    @classmethod
+    def _validate_doctests_constant(cls, template: "Template", doc: str) -> None:
+        """Validate that no format string variables are spliced into doctests.
+
+        The whole docstring is ``str.format``-ed into the prompt at call time,
+        so an active replacement field inside a ``>>>`` example would be
+        substituted, breaking the example. Doctests must therefore be constant:
+        the example source, expected output and exception message may contain
+        only escaped braces (``{{``/``}}``), never active fields.
+
+        :raises TypeError: If any doctest example contains an active field.
+        """
+        try:
+            parts = doctest.DocTestParser().parse(doc, template.__name__)
+        except ValueError:
+            # Malformed doctest -- not a prompt-field concern; it surfaces when
+            # the doctests are actually run, so skip the constancy check here.
+            return
+
+        formatter = string.Formatter()
+        spliced: list[str] = []
+        for part in parts:
+            if not isinstance(part, doctest.Example):
+                continue
+            for text in (part.source, part.want, part.exc_msg or ""):
+                try:
+                    spliced.extend(
+                        field_name
+                        for _, field_name, _, _ in formatter.parse(text)
+                        if field_name is not None
+                    )
+                except ValueError:
+                    # An unbalanced brace (e.g. a bare ``{`` or ``}``) is also
+                    # non-constant: ``str.format`` would reject it at call time.
+                    spliced.append("<unbalanced brace>")
+
+        if spliced:
+            # Render the auto-numbered empty field ``{}`` readably.
+            shown = sorted({f or "{}" for f in spliced})
+            raise TypeError(
+                f"Template '{template.__name__}' splices {shown} "
+                f"into a doctest example. Doctests must be constant -- they are "
+                f"formatted into the prompt at call time, so they may not contain "
+                f"format fields. Escape literal braces as '{{{{' and '}}}}'."
+            )
 
     @classmethod
     def _validate_prompt(
         cls,
         template: "Template",
-        context: ChainMap[str, Any],
+        context: collections.ChainMap[str, typing.Any],
     ) -> None:
         """Validate that all format string variables in the docstring
         refer to names resolvable at call time.
 
         Each variable must be either a parameter in the signature
-        or a name captured in the lexical context.
+        or a name captured in the lexical context. Additionally, doctest
+        examples in the docstring must be constant (see
+        :meth:`_validate_doctests_constant`).
 
-        :raises TypeError: If any format string variable cannot be resolved.
+        :raises TypeError: If any format string variable cannot be resolved, or
+            a format field is spliced into a doctest example.
         """
-        doc = template.__prompt_template__
+        assert template.__doc__ is not None
+        doc = template.__doc__
+        cls._validate_doctests_constant(template, doc)
         formatter = string.Formatter()
         param_names = set(template.__signature__.parameters.keys())
         context_keys = set(context.keys())
@@ -208,28 +275,6 @@ class Template[**P, T](Tool[P, T]):
                 f"{{{template.__signature__}}} or lexical scope."
             )
 
-    @property
-    def __prompt_template__(self) -> str:
-        assert self.__default__.__doc__ is not None
-        return self.__default__.__doc__
-
-    @property
-    def tools(self) -> Mapping[str, Tool]:
-        """Operations and Templates available as tools, plus synthetic
-        readers for other lexical symbols. Auto-captured from lexical context."""
-        from effectful.handlers.llm.completions import collect_tools
-
-        result = dict(collect_tools(self.__context__))
-
-        # We remove the template itself from the tool map unless it is explicitly
-        # marked as recursive (see test_template_method, test_template_method_nested_class).
-        if not _is_recursive_signature(self.__signature__):
-            for name, tool in tuple(result.items()):
-                if tool is self:
-                    del result[name]
-
-        return result
-
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
         if hasattr(self, "_name_on_instance") and hasattr(
             instance, self._name_on_instance
@@ -242,14 +287,6 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
-            result.__system_prompt__ = "\n\n".join(
-                part
-                for part in (
-                    getattr(result, "__system_prompt__", ""),
-                    instance.__system_prompt__,
-                )
-                if part
-            )
         return result
 
     @classmethod
@@ -258,11 +295,11 @@ class Template[**P, T](Tool[P, T]):
     ) -> "Template[Q, V]":
         """Define a prompt template.
 
-        :func:`define` takes a function and can be used as a decorator.
+        `define` takes a function and can be used as a decorator.
         The function's docstring should be a prompt, which may be templated in the function arguments.
-        The prompt will be provided with any instances of :class:`Tool` that exist in the lexical context as callable tools.
+        The prompt will be provided with any instances of `Tool` that exist in the lexical context as callable tools.
 
-        See :func:`effectful.ops.types.Operation.define` for more information on the use of :func:`Template.define`.
+        See `effectful.ops.types.Operation.define` for more information on the use of `Template.define`.
 
         """
         frame = inspect.currentframe()
@@ -294,10 +331,10 @@ class Template[**P, T](Tool[P, T]):
         ]
         enclosing_fns.reverse()  # innermost first for frame walking
 
-        globals_proxy: types.MappingProxyType[str, Any] = types.MappingProxyType(
+        globals_proxy: types.MappingProxyType[str, typing.Any] = types.MappingProxyType(
             frame.f_globals
         )
-        contexts: list[types.MappingProxyType[str, Any]] = []
+        contexts: list[types.MappingProxyType[str, typing.Any]] = []
         for fn_name in enclosing_fns:
             while frame is not None and frame.f_locals is not frame.f_globals:
                 if frame.f_code.co_name == fn_name:
@@ -306,13 +343,11 @@ class Template[**P, T](Tool[P, T]):
                     break
                 frame = frame.f_back
         contexts.append(globals_proxy)
-        context: ChainMap[str, Any] = ChainMap(
-            *typing.cast(list[MutableMapping[str, Any]], contexts)
+        context: collections.ChainMap[str, typing.Any] = collections.ChainMap(
+            *typing.cast(list[MutableMapping[str, typing.Any]], contexts)
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
-        mod = inspect.getmodule(_fn)
-        op.__system_prompt__ = inspect.getdoc(mod) or ""  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
@@ -327,52 +362,108 @@ class Template[**P, T](Tool[P, T]):
 class Agent(abc.ABC):
     """Mixin that gives each instance a persistent LLM message history.
 
-    Subclass and decorate methods with :func:`Template.define`.
+    Subclass and decorate methods with `Template.define`.
     Each instance accumulates messages across calls so the LLM sees
     prior conversation context.
 
-    Agents compose freely with :func:`dataclasses.dataclass` and other
+    Agents compose freely with `dataclasses.dataclass` and other
     base classes.  Instance attributes are available in template
-    docstrings via ``{self.attr}``.
+    docstrings via `{self.attr}`.
 
-    Example::
+    Example:
 
-        import dataclasses
-        from effectful.handlers.llm import Agent, Template
-        from effectful.handlers.llm.completions import LiteLLMProvider
-        from effectful.ops.semantics import handler
-        from effectful.ops.types import NotHandled
+    ```python
+    import dataclasses
+    from effectful.handlers.llm import Agent, Template
+    from effectful.handlers.llm.completions import LiteLLMProvider
+    from effectful.ops.semantics import handler
+    from effectful.ops.types import NotHandled
 
-        @dataclasses.dataclass
-        class ChatBot(Agent):
-            bot_name: str = dataclasses.field(default="ChatBot")
+    @dataclasses.dataclass
+    class ChatBot(Agent):
+        bot_name: str = dataclasses.field(default="ChatBot")
 
-            @Template.define
-            def send(self, user_input: str) -> str:
-                \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
-                raise NotHandled
+        @Template.define
+        def send(self, user_input: str) -> str:
+            \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
 
-        provider = LiteLLMProvider()
-        chatbot = ChatBot()
+    provider = LiteLLMProvider()
+    chatbot = ChatBot()
 
-        with handler(provider):
-            chatbot.send("Hi! How are you? I am in France.")
-            chatbot.send("Remind me again, where am I?")  # sees prior context
+    with handler(provider):
+        chatbot.send("Hi! How are you? I am in France.")
+        chatbot.send("Remind me again, where am I?")  # sees prior context
+    ```
+
+    ## Encapsulation via lexical scope
+
+    Since scope is ordinary Python scope, defining agents inside a function
+    partitions their `Template`s and `Tool`s into disjoint sets:
+
+    ```python
+    class Chatbot(Agent):
+        @Template.define
+        def respond(self, user_query: str) -> str: ...
+
+    class TravelAdvisor(Agent):
+        @Template.define
+        def recommend(self, user_query: str) -> str: ...
+        @Tool.define
+        def search_weather(self, city: str) -> str: ...
+
+    def main():
+        chatbot, advisor = Chatbot(), TravelAdvisor()
+
+        @Template.define
+        def simulate(chatbot, advisor) -> str:
+            \"""Use {chatbot} and {advisor} to simulate a conversation.\"""
+            ...
+    ```
+
+    `chatbot.respond` sees only its own methods (plus module-level definitions),
+    not `advisor`'s; `simulate` sees `chatbot` and `advisor`, but they cannot see
+    `simulate`. Inlining these definitions into module scope instead would let
+    every template see every other. Agents that need overlapping toolsets should
+    share tools through a common base class or mixin rather than redefining them.
 
     """
 
-    __history__: OrderedDict[str, Mapping[str, Any]]
-    __system_prompt__: str
+    @functools.cached_property
+    def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
+        return collections.OrderedDict()
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        if not hasattr(cls, "__history__"):
-            prop = functools.cached_property(lambda _: OrderedDict())
-            prop.__set_name__(cls, "__history__")
-            cls.__history__ = prop
-        if not hasattr(cls, "__system_prompt__"):
-            sp = functools.cached_property(
-                lambda self: inspect.getdoc(type(self)) or ""
-            )
-            sp.__set_name__(cls, "__system_prompt__")
-            cls.__system_prompt__ = sp
+
+if typing.TYPE_CHECKING:
+    type Encodable[T] = typing.Annotated[T, "encoded"]
+else:
+
+    class Encodable:
+        """The type-driven JSON bridge between Python values and the LLM.
+
+        `Encodable[T]` maps a Python type `T` to a Pydantic-compatible type
+        whose JSON schema and (de)serialization the harness uses to move
+        values across the model boundary in both directions:
+
+        - **Encoding (Python -> model):** argument and tool-result *values*
+            spliced into prompts are serialized to JSON via `Encodable[type]`,
+            so the model sees a faithful, schema-shaped rendering of each value
+            (including non-text values such as images, emitted as content
+            blocks).
+        - **Decoding (model -> Python):** a `Template`'s structured return
+            value and the arguments of every tool call are validated and
+            decoded from the model's JSON back into real Python objects through
+            the same `Encodable[type]` schema, so the value handed to your code
+            already has the declared type.
+
+        Custom types register their JSON representation with
+        `TypeToPydanticType`; see
+        `effectful.handlers.llm.encoding.type_to_encodable_type`. Because the
+        encoding is derived from the *type*, it is the single source of truth
+        for both the schema shown to the model and the validation applied to
+        its output.
+        """
+
+        def __class_getitem__(cls, item):
+            from effectful.handlers.llm.encoding import TypeToPydanticType
+
+            return TypeToPydanticType().evaluate(item)

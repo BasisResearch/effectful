@@ -4,6 +4,7 @@ import code
 import codeop
 import collections.abc
 import contextlib
+import doctest
 import inspect
 import io
 import json
@@ -14,10 +15,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import typing
-from collections.abc import MutableMapping
-from types import CodeType
-from typing import Any
 
 from RestrictedPython import (
     Eval,
@@ -28,9 +27,7 @@ from RestrictedPython import (
 )
 from RestrictedPython.PrintCollector import PrintCollector
 
-from effectful.handlers.llm.template import Tool
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
-from effectful.ops.types import Operation
 
 
 @defop
@@ -78,7 +75,27 @@ def type_check(
 
 
 @defop
-def compile(module: ast.Module, filename: str) -> CodeType:
+def run_doctests(
+    obj: collections.abc.Callable | type | types.ModuleType,
+    globs: collections.abc.Mapping[str, typing.Any],
+) -> None:
+    """Run the doctests found in a synthesized object's docstring.
+
+    obj: The synthesized object (typically a function) whose docstring may
+        contain interactive ``>>>`` examples.
+    globs: The namespace the examples execute in (typically the exec namespace,
+        which already contains the function plus its lexical context).
+
+    Returns None, raises TypeError if any doctest example fails. A docstring
+    with no examples is a no-op (passes trivially).
+    """
+    raise NotImplementedError(
+        "An eval provider must be installed in order to run doctests."
+    )
+
+
+@defop
+def compile(module: ast.Module, filename: str) -> types.CodeType:
     """
     Compile an AST into a Python code object.
 
@@ -94,8 +111,8 @@ def compile(module: ast.Module, filename: str) -> CodeType:
 
 @defop
 def exec(
-    bytecode: CodeType,
-    env: dict[str, Any],
+    bytecode: types.CodeType,
+    env: dict[str, typing.Any],
 ) -> None:
     """
     Execute a compiled code object.
@@ -170,7 +187,9 @@ def _find_def_at_lineno(
     return None
 
 
-def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str, Any]]:
+def _region_errors(
+    stdout: str, lo: int | None, hi: int | None
+) -> list[dict[str, typing.Any]]:
     """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
     line falls within ``[lo, hi]`` -- the spliced region. An open bound (``None``)
     is unbounded on that side, so ``lo=hi=None`` reports every error.
@@ -181,7 +200,7 @@ def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str
     for exit status < 2; a fatal status emits text, not JSON, and is handled by
     the caller before this runs.
     """
-    errors: list[dict[str, Any]] = []
+    errors: list[dict[str, typing.Any]] = []
     for line in stdout.splitlines():
         if not line.strip():
             continue
@@ -194,7 +213,7 @@ def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str
 
 
 def splice_into_source(
-    generated: ast.Module, anchor: Any
+    generated: ast.Module, anchor: typing.Any
 ) -> tuple[str, int, int] | None:
     """Splice `generated` into the anchor Template's own function body, in its real
     module source.
@@ -258,7 +277,7 @@ def splice_into_source(
 
 
 def _recover_template_def(
-    anchor: Any,
+    anchor: typing.Any,
 ) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
     """Locate the anchor Template's own ``def`` in its real module source.
 
@@ -290,7 +309,7 @@ def _recover_template_def(
 
 
 def _splice_repl(
-    prior: list[str], snippet: str, anchor: Any
+    prior: list[str], snippet: str, anchor: typing.Any
 ) -> tuple[str, int, int] | None:
     """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
     ``snippet`` -- into the anchor Template's body, in its real module source, and return
@@ -410,9 +429,6 @@ def _mypy_check_region(
         raise TypeError("mypy type check failed:\n" + report)
 
 
-# Eval Providers
-
-
 class UnsafeEvalProvider(ObjectInterpretation):
     """UNSAFE provider that handles parse, comple and exec operations
     by shelling out to python *without* any further checks. Only use for testing."""
@@ -442,20 +458,46 @@ class UnsafeEvalProvider(ObjectInterpretation):
         return ast.parse(source, filename=filename, mode="exec")
 
     @implements(compile)
-    def compile(self, module: ast.AST, filename: str) -> CodeType:
+    def compile(self, module: ast.AST, filename: str) -> types.CodeType:
         return builtins.compile(typing.cast(typing.Any, module), filename, "exec")
 
     @implements(exec)
     def exec(
         self,
-        bytecode: CodeType,
-        env: dict[str, Any],
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
     ) -> None:
         # Ensure builtins exist in the execution environment.
         env.setdefault("__builtins__", __builtins__)
 
         # Execute module-style so top-level defs land in `env`.
         builtins.exec(bytecode, env, env)
+
+    @implements(run_doctests)
+    def run_doctests(
+        self,
+        obj: collections.abc.Callable | type | types.ModuleType,
+        globs: collections.abc.Mapping[str, typing.Any],
+    ) -> None:
+        assert hasattr(obj, "__name__")
+        name = obj.__name__
+        finder = doctest.DocTestFinder(recurse=False)
+        runner = doctest.DocTestRunner(verbose=False)
+        # Collect each example's want/got report via `out=...` and read failure
+        # counts from `run`'s return value, avoiding `summarize`, which would print
+        # to stdout instead of returning the report.
+        output: list[str] = []
+        failed = attempted = 0
+        for test in finder.find(obj, name=name, globs=dict(globs)):
+            results = runner.run(test, out=output.append)
+            failed += results.failed
+            attempted += results.attempted
+        if failed:
+            report = "".join(output).strip()
+            if not report:
+                report = f"{failed} doctest(s) failed out of {attempted} attempted."
+            raise TypeError(f"doctest failed:\n{report}")
+        return None
 
 
 class _StdoutPrintCollector(PrintCollector):
@@ -475,7 +517,7 @@ class RestrictedEvalProvider(ObjectInterpretation):
     RestrictedPython is not a complete sandbox, but it enforces a restricted
     language subset and expects you to provide a constrained exec environment.
 
-    policy : dict[str, Any], optional
+    policy : dict[str, typing.Any], optional
         RestrictedPython compile_restricted policy for compilation
     """
 
@@ -511,7 +553,7 @@ class RestrictedEvalProvider(ObjectInterpretation):
         return ast.parse(source, filename=filename, mode="exec")
 
     @implements(compile)
-    def compile(self, module: ast.Module, filename: str) -> CodeType:
+    def compile(self, module: ast.Module, filename: str) -> types.CodeType:
         # RestrictedPython can compile from an AST directly.
         return compile_restricted(
             module,
@@ -523,11 +565,11 @@ class RestrictedEvalProvider(ObjectInterpretation):
     @implements(exec)
     def exec(
         self,
-        bytecode: CodeType,
-        env: dict[str, Any],
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
     ) -> None:
         # Build restricted globals from RestrictedPython's defaults
-        rglobals: dict[str, Any] = safe_globals.copy()
+        rglobals: dict[str, typing.Any] = safe_globals.copy()
 
         # Enable class definitions (required for Python 3)
         rglobals["__metaclass__"] = type
@@ -574,7 +616,7 @@ class _OpCommandCompiler(codeop.CommandCompiler):
 
     def __call__(
         self, source: str, filename: str = "<input>", symbol: str = "single"
-    ) -> CodeType:
+    ) -> types.CodeType:
         # `runsource` passes symbol="single"; we ignore it and compile in the
         # exec mode the ops produce, so a complete multi-statement block runs in
         # one shot.  Incomplete/invalid input raises SyntaxError, which
@@ -607,14 +649,14 @@ class ReplSession(code.InteractiveInterpreter):
     stdout: io.StringIO
     stderr: io.StringIO
 
-    def __init__(self, env: MutableMapping[str, Any]):
+    def __init__(self, env: collections.abc.MutableMapping[str, typing.Any]):
         # Run in a fresh writable dict seeded with a flat view of `env`.  This is
         # forced by `exec`: its globals must be one real dict (a ChainMap is
         # rejected), and a REPL needs a single persistent namespace so a function
         # defined in one snippet sees a name a later snippet binds.  Seeding a flat
         # copy also leaves the lexical seed untouched, so REPL assignments never
         # leak into the surrounding scope.
-        scope: dict[str, Any] = dict(env)
+        scope: dict[str, typing.Any] = dict(env)
         # When `env` is the per-call `ChainMap` (its outer layers are read-only
         # frame proxies), splice this dict in as an extra shadowing first layer so
         # the bindings are *also* visible to the rest of the Template call
@@ -638,7 +680,7 @@ class ReplSession(code.InteractiveInterpreter):
         context the `Encodable[CodeType]` decoder splices before the current snippet."""
         return self._prior_snippets
 
-    def runcode(self, code: CodeType) -> None:
+    def runcode(self, code: types.CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
         # is that `exec` here is the effect operation, so execution routes
         # through the installed eval provider.  `showtraceback` reports failures
@@ -650,8 +692,7 @@ class ReplSession(code.InteractiveInterpreter):
         except:
             self.showtraceback()
 
-    @Tool.define
-    def exec_code(self, code: CodeType) -> str:
+    def exec_code(self, code: types.CodeType) -> str:
         """Run Python in a persistent, stateful session and return its output.
 
         This is a long-lived REPL, not a one-shot sandbox: every call runs in the
@@ -686,20 +727,3 @@ class ReplSession(code.InteractiveInterpreter):
         ):
             self.runcode(code)
         return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
-
-
-@Operation.define
-def _repl_session(env: MutableMapping[str, Any]) -> "ReplSession":
-    """Return the REPL session for the current Template call, seeded from `env`.
-
-    `PythonRepl` (in completions.py) installs a fresh handler for this inside each
-    `Template.__apply__` (mirroring how `__history__` is managed), giving the session a
-    lifetime of exactly one Template call. Outside such a scope there is no managed
-    session, so this falls back to a fresh one -- e.g. when tools are listed outside a
-    Template call, or when a code object is decoded with no REPL in scope.
-
-    Defined here (not with `PythonRepl`) so the `Encodable[CodeType]` decoder can reach the
-    session -- and its accumulated `prior_snippets` -- at decode time without importing
-    `completions` (which would be a cycle).
-    """
-    return ReplSession(env)
