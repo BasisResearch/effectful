@@ -42,8 +42,9 @@ from effectful.handlers.llm.encoding import (
     REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
+    MethodTemplateBody,
+    TemplateBody,
     _callable_type_from_signature,
-    _SynthesisSpec,
     format_as_content_blocks,
     to_content_blocks,
 )
@@ -242,7 +243,7 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     tools: collections.abc.Set[Tool] = frozenset(),
-    anchor: types.FunctionType | None = None,
+    anchor: "Template | None" = None,
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
@@ -692,7 +693,7 @@ class LexicalReaders(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: types.FunctionType | None = None,
+        anchor: "Template | None" = None,
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
         taken = {t.__name__ for t in tools}
@@ -781,24 +782,25 @@ class SynthesizeAndCall(ObjectInterpretation):
             template: Template[..., T],
             bound_args: inspect.BoundArguments,
         ) -> FinalTool[[collections.abc.Callable[..., T]], T]:
-            # Synthesize a drop-in syntactic replacement for the Template body, so the
-            # function carries the Template's full signature -- including `self` for
-            # Agent-method Templates (whose `__default__` is a bound method).
             if isinstance(template.__default__, types.MethodType):
                 signature = inspect.signature(template.__default__.__func__)
                 args, kwargs = (
                     (template.__default__.__self__,) + bound_args.args,
                     bound_args.kwargs,
                 )
+                body_type = MethodTemplateBody[  # type: ignore
+                    typing.get_args(_callable_type_from_signature(signature))
+                ]
+                return_type = signature.return_annotation
             else:
                 signature = inspect.signature(template)
                 args, kwargs = bound_args.args, bound_args.kwargs
+                body_type = TemplateBody[  # type: ignore
+                    typing.get_args(_callable_type_from_signature(signature))
+                ]
+                return_type = signature.return_annotation
 
-            callable_type = _callable_type_from_signature(signature)
-            callable_type = typing.Annotated[callable_type, _SynthesisSpec(template)]  # type: ignore
-            return_type = signature.return_annotation
-
-            def submit_solution(implementation: callable_type) -> return_type:  # type: ignore
+            def submit_solution(implementation: body_type) -> return_type:  # type: ignore
                 """
                 Submit your final answer as a Python function implementing the task.
                 The function must have the required signature; it is applied to the
@@ -912,7 +914,7 @@ class PythonRepl(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: types.FunctionType | None = None,
+        anchor: "Template | None" = None,
     ) -> AssistantResult[T]:
         return fwd(
             env,
@@ -987,7 +989,7 @@ class RetryLLMHandler(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: types.FunctionType | None = None,
+        anchor: "Template | None" = None,
     ) -> AssistantResult[T]:
         _message_sequence = _get_history().copy()
 
@@ -1518,7 +1520,7 @@ class LiteLLMProvider(ObjectInterpretation):
                     env,
                     template.__signature__.return_annotation,
                     _tools_in_scope(env) - {template},
-                    anchor=template.__default__,
+                    anchor=template,
                 )
                 if tool_calls:
                     for tool_call in tool_calls:

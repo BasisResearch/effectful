@@ -24,10 +24,10 @@ from effectful.handlers.llm.evaluation import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
-    _splice_repl,
     run_doctests,
     scan_non_nestable,
     splice_into_source,
+    splice_repl_code_into_body,
     type_check,
 )
 from effectful.handlers.llm.evaluation import compile as compile_op
@@ -800,8 +800,8 @@ class TestRunDoctestsThroughCallableDecode:
 # REPL code type-checking (issue #690)
 #
 # `exec_code` type-checks the cumulative session code -- prior snippets plus the
-# current one -- spliced into the enclosing Template's body (`_splice_repl` + the
-# `type_check` op, `lenient=True`), so names resolve in their real execution
+# current one -- spliced into the enclosing Template's body (`splice_repl_code_into_body`
+# + the `type_check` op, `lenient=True`), so names resolve in their real execution
 # context. These tests drive that pipeline against a real anchor and assert the
 # contract by exception type / runtime effect -- never by matching a mypy message
 # or a filename.
@@ -818,7 +818,10 @@ def _repl_anchor(readings: list[int]) -> int:
 def _repl_raises(prior: list[str], snippet: str) -> bool:
     """type_check the cumulative REPL code spliced into `_repl_anchor`'s body; True
     if it reports an in-region error."""
-    checked = _splice_repl(prior, snippet, _repl_anchor)
+    # Prepend the already-run snippets to the current one (as the production caller
+    # does) and splice the whole cumulative module.
+    prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
+    checked = splice_repl_code_into_body(ast.parse(prior_src + snippet), _repl_anchor)
     assert checked is not None
     with handler(UnsafeEvalProvider()):
         try:
@@ -881,13 +884,17 @@ def test_repl_illtyped_but_runnable_snippet_is_caught():
     assert _repl_raises([], "n: int = 'oops'\nprint(n)")
 
 
-def test_repl_check_reports_only_the_current_snippet():
-    """Only the current snippet's lines are reported: an error in the current cell raises,
-    but the same error confined to an earlier cell is out of region (not re-reported) --
-    while that earlier cell stays in the body so its bindings still resolve."""
-    assert _repl_raises([], "bad: int = 'x'\nprint(bad)")  # current cell -> reported
-    assert not _repl_raises(["bad: int = 'x'"], "ok = 1\nprint(ok)")  # earlier -> not
-    assert not _repl_raises(["c = 3"], "print(c + 1)")  # earlier binding still resolves
+def test_repl_checks_the_cumulative_body():
+    """The whole cumulative body is checked. A production caller prepends only
+    already-run, type-clean snippets (from `repl_history`), so an error can only
+    come from the current cell; earlier cells stay in the body so their bindings
+    still resolve."""
+    assert _repl_raises(
+        [], "bad: int = 'x'\nprint(bad)"
+    )  # current cell error -> raised
+    assert not _repl_raises(
+        ["c = 3"], "print(c + 1)"
+    )  # earlier binding resolves, clean
 
 
 def test_repl_splice_skips_sourceless_anchor():
@@ -896,7 +903,7 @@ def test_repl_splice_skips_sourceless_anchor():
     Callable anchor. Only source *drift* raises."""
     ns: dict[str, Any] = {}
     exec("def t(readings):\n    raise NotImplementedError", ns)
-    assert _splice_repl([], "x = 1", ns["t"]) is None
+    assert splice_repl_code_into_body(ast.parse("x = 1"), ns["t"]) is None
 
 
 # --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---

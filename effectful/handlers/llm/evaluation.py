@@ -65,7 +65,8 @@ def type_check(
     lenient: when True, relax mypy for incrementally-built REPL code spliced into a
         Template body -- allow redefinition (a cell may rebind or redefine a name)
         and don't require the body to satisfy the Template's return type. Off (strict)
-        for synthesized ``Callable`` bodies, which must honor their signature.
+        for a synthesized ``Callable`` or ``TemplateBody``, which must honor its
+        signature and gets no redefinition slack.
 
     Returns None, raises TypeError on an in-region failure.
     """
@@ -129,6 +130,14 @@ def exec(
 
 
 logger = logging.getLogger(__name__)
+
+
+# The shared output of the three splicers (`splice_into_source`,
+# `splice_template_body`, `splice_repl_code_into_body`): the module ``source`` to
+# type-check and the inclusive ``[lo, hi]`` line span within it to report
+# diagnostics from -- exactly the leading arguments of `type_check`. ``None`` (not
+# this type) is returned when the anchor's source can't be recovered.
+type SplicedRegion = tuple[str, int, int]
 
 
 def scan_non_nestable(generated: ast.Module) -> None:
@@ -213,8 +222,8 @@ def _region_errors(
 
 
 def splice_into_source(
-    generated: ast.Module, anchor: typing.Any
-) -> tuple[str, int, int] | None:
+    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
+) -> SplicedRegion | None:
     """Splice `generated` into the anchor Template's own function body, in its real
     module source.
 
@@ -228,6 +237,33 @@ def splice_into_source(
     body of the Template's own function at its real (possibly nested) position, so
     the generated code is checked in its real lexical scope with no synthesized
     type stubs.
+
+    This is the splice for a Template whose *return type* is a callable (the model
+    writes a function and the Template returns it). Example. For the Template ::
+
+        @Template.define
+        def make_adder(n: int) -> Callable[[int], int]:
+            '''Return a function that adds {n}.'''
+
+    a model that submits this ``generated`` (its last statement is the function to
+    return) ::
+
+        def adder(x: int) -> int:
+            return x + n
+
+    becomes the whole Template body followed by ``return <its name>`` ::
+
+        @Template.define
+        def make_adder(n: int) -> Callable[[int], int]:
+            def adder(x: int) -> int:
+                return x + n
+            return adder
+
+    so mypy checks that ``adder`` satisfies ``Callable[[int], int]`` and that its
+    body may reference the Template's ``n``. Contrast `splice_template_body`, which
+    grafts the model's function *body* under the Template's own header (for a
+    Template whose body -- not return value -- is synthesized). The returned
+    ``[lo, hi]`` spans the generated statements only, not the ``def`` header.
     """
     if not generated.body:
         raise TypeError("splice: generated module is empty")
@@ -276,8 +312,99 @@ def splice_into_source(
     return checked_source, lo, hi
 
 
+def splice_template_body(
+    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
+) -> SplicedRegion | None:
+    """Splice a synthesized function in as the anchor Template's *own body*.
+
+    Unlike `splice_into_source` (which appends ``return <fn>`` and checks that the
+    Template returns the synthesized *function*), this treats the synthesized
+    function as the Template's implementation: the Template keeps its own
+    authoritative signature and its body becomes ``[<helpers/imports the model
+    wrote>, *<the synthesized function's body>]``.  mypy then checks that body
+    against the Template's declared parameter and return types -- so a body that
+    fails to return the declared type is rejected.  The synthesized function's own
+    parameter list (including any ``self``) is intentionally discarded: the
+    Template's real signature is the contract.
+
+    ``generated`` is the model's whole ``module_code`` parsed to a module; its
+    *last* statement is the implementation, any earlier statements are helper
+    definitions/imports.  For example, given the Template ::
+
+        @Template.define
+        def parity(numbers: Sequence[int]) -> bool:
+            '''True iff the sum of {numbers} is odd.
+            >>> parity([1, 2])
+            True
+            '''
+
+    a model that submits this ``generated`` (note the header on its final ``def``
+    -- ``numbers: list`` -- is discarded) ::
+
+        import math
+        def _odd(n: int) -> bool:
+            return n % 2 == 1
+        def parity(numbers: list) -> bool:
+            return _odd(sum(numbers))
+
+    is spliced into the Template's real source as ::
+
+        @Template.define
+        def parity(numbers: Sequence[int]) -> bool:   # authoritative header kept
+            import math
+            def _odd(n: int) -> bool:
+                return n % 2 == 1
+            return _odd(sum(numbers))                  # from the final def's body
+
+    so mypy checks the grafted body against ``numbers: Sequence[int]`` and
+    ``-> bool``.  The helper ``_odd`` and ``import math`` (everything before the
+    final ``def``) become locals at the top of the body; only the final ``def``'s
+    *body* is taken, under the Template's own header.
+
+    Returns the modified module source and the ``[lo, hi]`` line span from the
+    ``def`` line through the last body line, or ``None`` when the anchor's source
+    can't be recovered (REPL/notebook template -- the caller skips rather than
+    guesses). Raises ``RuntimeError`` on source drift, via `_recover_template_def`.
+    """
+    if not generated.body:
+        raise TypeError("splice: generated module is empty")
+    last = generated.body[-1]
+    if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
+        raise TypeError(
+            f"splice: last statement must be a function definition, "
+            f"got {type(last).__name__}"
+        )
+
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+
+    # Keep the Template's real header (authoritative annotations, `self` for
+    # methods); replace only its body with the model's helpers/imports followed by
+    # the synthesized function's body statements, so the declared return type is
+    # enforced. Any docstring/doctests in the recovered source are dropped.
+    template_def.body = [*generated.body[:-1], *last.body]
+
+    # Report the def line through the end of the body. Unlike `splice_into_source`,
+    # the region starts at the `def` line (not the first body statement): mypy
+    # anchors "Missing return statement"/"empty-body" there, and a body that doesn't
+    # return the Template's declared type is a real defect we want to catch. The
+    # header is the Template's own (recovered, resolvable) signature -- sourceless
+    # templates return `None` above and skip -- so including it adds no spurious
+    # signature diagnostics. Decorator lines sit above `spliced.lineno` and stay out.
+    # `template_def` is still a node in `module_ast` (only its body changed), so its
+    # walk-order index is stable across the unparse round-trip.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.lineno
+    hi = spliced.body[-1].end_lineno or lo
+    return checked_source, lo, hi
+
+
 def _recover_template_def(
-    anchor: typing.Any,
+    anchor: collections.abc.Callable[..., typing.Any],
 ) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
     """Locate the anchor Template's own ``def`` in its real module source.
 
@@ -286,7 +413,11 @@ def _recover_template_def(
     skips rather than guesses). Raises ``RuntimeError`` on source drift (source
     recovered but the def no longer sits where ``fn`` was compiled from).
     """
-    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
+    # `anchor` is the enclosing `Template` (an `Operation`), a bound method, or a
+    # plain function; `inspect.unwrap` follows the `__wrapped__` chain that
+    # `Operation`/method binding sets up, resolving all of them to the original
+    # source-backed function (staticmethod/classmethod included).
+    fn = inspect.unwrap(anchor)
     # Recover the module source via fn's own filename -- a real path or a
     # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
     # notebook templates; linecache.getlines reads real files from disk too.
@@ -308,32 +439,53 @@ def _recover_template_def(
     return module_ast, template_def
 
 
-def _splice_repl(
-    prior: list[str], snippet: str, anchor: typing.Any
-) -> tuple[str, int, int] | None:
-    """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
-    ``snippet`` -- into the anchor Template's body, in its real module source, and return
-    the modified source with the ``[lo, hi]`` line span of the *current* snippet.
+def splice_repl_code_into_body(
+    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
+) -> SplicedRegion | None:
+    """Splice REPL code -- ``generated`` -- into the anchor Template's body, in its
+    real module source, and return the modified source with the ``[lo, hi]`` line
+    span of the spliced statements.
 
-    The REPL code becomes the Template function's body at its real (possibly nested)
-    position, so the Template's parameters and enclosing scope -- i.e. the session's seed
-    env -- are in scope, and each snippet sees the ones before it (they are function
-    locals). No ``return`` is appended; the REPL code doesn't produce the Template's
-    declared type, and that contract is waived by ``lenient`` type checking. Every prior
-    snippet stays in the body so its bindings resolve (matching the runtime, which ran
-    them), but only the current snippet's lines are reported, so an earlier cell's error
-    isn't re-reported on every later call.
+    ``generated`` is the cumulative session code (any already-run snippets followed
+    by the current one; the caller prepends them). It becomes the Template function's
+    body at its real (possibly nested) position, so the Template's parameters and
+    enclosing scope -- i.e. the session's seed env -- are in scope and each statement
+    sees the ones before it (they are function locals). No ``return`` is appended;
+    the REPL code doesn't produce the Template's declared type, and that contract is
+    waived by ``lenient`` type checking. The whole spliced body is reported, but the
+    already-run snippets are type-clean (they passed this same check when *they* were
+    the current one), so only the new statements can raise.
 
-    Returns ``None`` when the current snippet has no statements to check, or when the
+    Example. For the Template ::
+
+        @Template.define
+        def analyze(data: list[int]) -> str:
+            '''Analyze {data}.'''
+
+    a ``generated`` module of accumulated session statements ::
+
+        total = sum(data)
+        print(total / len(data))
+
+    becomes the Template's body ::
+
+        @Template.define
+        def analyze(data: list[int]) -> str:
+            total = sum(data)
+            print(total / len(data))
+
+    so each statement sees the Template's ``data`` and the earlier statements'
+    bindings (here ``total``).
+
+    Returns ``None`` when ``generated`` has no statements to check, or when the
     Template's source can't be recovered -- a Template defined at a REPL, in a notebook, or
     via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
     as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
     only on source *drift* (source recovered but the def no longer sits where it was
     compiled from), which ``_recover_template_def`` surfaces.
     """
-    # An empty or comment-only snippet parses to zero statements: nothing to check.
-    n_current = len(ast.parse(snippet).body)
-    if n_current == 0:
+    # An empty or comment-only module parses to zero statements: nothing to check.
+    if not generated.body:
         return None
     # None means the Template's source can't be recovered (REPL/exec/notebook-defined) --
     # skip, like the Callable path, rather than break the tool; `_recover_template_def`
@@ -342,16 +494,14 @@ def _splice_repl(
     if recovered is None:
         return None
     module_ast, template_def = recovered
-    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
-    template_def.body = ast.parse(cumulative).body
+    template_def.body = list(generated.body)
 
-    # mypy reports line numbers in the coordinates of the unparsed source; the current
-    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps def
-    # order, so the template def is at the same walk index after the round-trip.
+    # `template_def` is still a node in `module_ast` (only its body changed), so its
+    # walk-order index is stable across the unparse round-trip.
     def_index = _def_nodes(module_ast).index(template_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo = spliced.body[-n_current].lineno
+    lo = spliced.body[0].lineno
     hi = spliced.body[-1].end_lineno or lo
     return checked_source, lo, hi
 

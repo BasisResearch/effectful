@@ -44,18 +44,21 @@ type ToolCallID = str
 # Deliberately not a valid Python identifier, so it can never collide with a
 # lexical variable name sharing the context (e.g. a reader named after its var).
 _TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
-# Reserved key under which the type-check anchor (the enclosing Template's
-# underlying function) rides in the Pydantic decoding context, alongside the
-# lexical environment. `decode` reads it to type-check a synthesized function
-# against the Template's source; absent (tool-argument decoding) means skip.
-# Deliberately not a valid identifier so `LexicalReaders` skips it (no tool leak)
-# and it can never collide with a lexical name.
+# Reserved key under which the type-check anchor -- the enclosing `Template`
+# itself -- rides in the Pydantic decoding context, alongside the lexical
+# environment. `decode` reads it to type-check a synthesized function against the
+# Template's source (recovered from the Template via `inspect.unwrap`); absent
+# (tool-argument decoding) means skip. Deliberately not a valid identifier so
+# `LexicalReaders` skips it (no tool leak) and it can never collide with a lexical
+# name.
 TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
 
-# Type-check anchor for REPL `exec_code` snippets, separate from the Callable/result
-# synthesis anchor (TYPE_CHECK_ANCHOR_KEY): the two decoders check against different
-# contracts -- a REPL snippet against the Template body, a synthesized Callable tool
-# argument against its own parameter type.
+# Anchor for REPL `exec_code` snippets and synthesized tool arguments (including a
+# `TemplateBody`), separate from the structured-output-result synthesis anchor
+# (TYPE_CHECK_ANCHOR_KEY): the two decoders check against different contracts -- a
+# REPL snippet or a `TemplateBody` against the Template body, a synthesized general
+# `Callable` tool argument against its own parameter type. Both keys carry the
+# enclosing `Template`.
 REPL_ANCHOR_KEY = "<repl_anchor>"
 
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
@@ -227,14 +230,6 @@ class TypeToPydanticType(TypeEvaluator):
         return cls._registry.register(*args, **kwargs)
 
     def evaluate(self, ty):
-        if typing.get_origin(ty) is typing.Annotated and any(
-            isinstance(m, _SynthesisSpec) for m in ty.__metadata__
-        ):
-            inner, *meta = typing.get_args(ty)
-            return self._registry.dispatch(typing.get_origin(inner) or inner)(
-                inner, *meta
-            )
-
         app = super().evaluate(ty)
         origin = typing.get_origin(app)
         # Only dispatch on regular types. Special forms (Literal, Annotated,
@@ -338,8 +333,13 @@ def _pydantic_type_code(ty):
             # snippets, or `[]` when no REPL is in scope.
             from effectful.handlers.llm.completions import PythonRepl
 
+            # Prepend the already-run (type-clean) session snippets so their bindings
+            # resolve; `value` is the current snippet. The whole cumulative body is
+            # spliced and checked.
             prior = PythonRepl.repl_history()
-            checked = evaluation._splice_repl(prior, value, anchor)
+            prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
+            session = ast.parse(prior_src + value)
+            checked = evaluation.splice_repl_code_into_body(session, anchor)
             if checked is not None:
                 evaluation.type_check(*checked, lenient=True)
         try:
@@ -522,31 +522,71 @@ def _callable_type_from_signature(
     return collections.abc.Callable[param_types, return_type]  # type: ignore
 
 
-@dataclasses.dataclass(frozen=True)
-class _SynthesisSpec[T]:
-    template: Template[..., T]
+class TemplateBody:
+    """The synthesized *body* of a `Template`, as opposed to a general `Callable`.
 
-    @property
-    def _class_template(self) -> Template[..., T] | None:
-        if isinstance(self.template.__default__, types.MethodType):
-            return self.template.__default__.__func__.__wrapped__  # type: ignore[attr-defined]
-        else:
-            return None
+    Used only as the type of `submit_solution`'s ``implementation`` parameter (see
+    `effectful.handlers.llm.completions.SynthesizeAndCall`).  A `TemplateBody[[P],
+    R]` carries the Template's parameter and return types exactly like a
+    `Callable`, but gets its own `TypeToPydanticType` case (`_pydantic_template_body`)
+    so the synthesized function is type-checked against the enclosing Template's
+    source and its doctests run with self/recursive calls routed to the synthesized
+    implementation.  The enclosing `Template` is recovered from the decode context
+    (the ``anchor``), so no state rides on the type itself.
+    """
 
-    def _method_instance(self, other: Template) -> typing.Any | None:
-        """The instance ``op`` is bound to, if ``op`` is this synthesized
-        Agent-method on *some* instance; otherwise ``None``.
-        """
-        if (
-            self._class_template is not None
-            and _SynthesisSpec(other)._class_template is self._class_template
-        ):
-            return other.__default__.__self__  # type: ignore[attr-defined]
-        else:
-            return None
+    def __class_getitem__(cls, item):
+        return types.GenericAlias(cls, item)
 
 
-class SynthesizedFunction(pydantic.BaseModel):
+class MethodTemplateBody(TemplateBody):
+    """A `TemplateBody` for an *instance-method* Template.
+
+    Carries the method/free distinction on the type's origin (context-free schema
+    generation reads it) so `submit_solution`'s description names the leading
+    receiver ``self`` and the receiver is exempt from the annotation requirement --
+    the model no longer has to reverse-engineer that the first parameter is ``self``.
+    The Template's real signature (which includes the receiver) remains the
+    type-check contract; see `splice_template_body`.
+    """
+
+
+def _class_template_of(op: typing.Any) -> typing.Any | None:
+    """The class-level `Template` underlying an Agent-method Template ``op``.
+
+    Returns ``None`` for a free-function template (whose ``__default__`` is a plain
+    function rather than a bound method).
+    """
+    default = getattr(op, "__default__", None)
+    if isinstance(default, types.MethodType):
+        return default.__func__.__wrapped__  # type: ignore[attr-defined]
+    return None
+
+
+def _method_instance(op: typing.Any, class_template: typing.Any) -> typing.Any | None:
+    """The instance ``op`` is bound to, if ``op`` is ``class_template`` on *some*
+    instance; otherwise ``None``.
+    """
+    if class_template is not None and _class_template_of(op) is class_template:
+        return op.__default__.__self__
+    return None
+
+
+# The *serialization* view of a synthesized callable: the shape the model reads
+# when a function is handed to it as a value (e.g. a tool's return) -- just the
+# source, with none of the synthesis instructions the `SynthesizedFunction` subtype
+# carries for the generation direction. Its JSON schema (docstring included, since
+# pydantic renders it as the schema `description`) is the ``mode="serialization"``
+# schema of every synthesized-callable encoding, so keep the docstring model-facing.
+class EncodedFunction(pydantic.BaseModel):
+    """A function, encoded as a string of its complete Python source."""
+
+    module_code: str = pydantic.Field(
+        ..., description="Python source defining the function."
+    )
+
+
+class SynthesizedFunction(EncodedFunction):
     """
     Structured output for function synthesis.
     """
@@ -615,12 +655,16 @@ class SynthesizedFunction(pydantic.BaseModel):
 
     @classmethod
     def _create_typed_synthesized_function(
-        cls, callable_type: type[Callable]
+        cls, callable_type: type[Callable], *, method: bool = False
     ) -> type[typing.Self]:
         """Create a SynthesizedFunction subclass with type signature in the model description.
 
         Uses pydantic.create_model to ensure the description is included in the JSON schema
         sent to the LLM, informing it of the expected function signature.
+
+        When ``method``, the leading parameter is the instance receiver: it is
+        rendered as ``self`` (rather than by its type) so the model writes it
+        explicitly, and a note records that it may be left unannotated.
         """
         if not typing.get_args(callable_type):
             type_signature = "Callable"
@@ -632,9 +676,12 @@ class SynthesizedFunction(pydantic.BaseModel):
             if param_types is ...:
                 params_str = "..."
             elif isinstance(param_types, list | tuple):
-                params_str = ", ".join(
-                    getattr(t, "__name__", str(t)) for t in param_types
-                )
+                names = [getattr(t, "__name__", str(t)) for t in param_types]
+                # The receiver's type is uninformative (it is the Agent class); name
+                # it `self` so the model reproduces the parameter instead of guessing.
+                if method and names:
+                    names[0] = "self"
+                params_str = ", ".join(names)
             else:
                 params_str = str(param_types)
 
@@ -643,19 +690,172 @@ class SynthesizedFunction(pydantic.BaseModel):
         else:
             type_signature = str(callable_type)
 
+        doc = f"Python function with signature <signature>{type_signature}</signature>"
+        if method:
+            doc += (
+                "\n\nThis implements an instance method: the first parameter is the "
+                "instance receiver `self`. Include it as the first parameter; you may "
+                "leave it unannotated."
+            )
+
         return pydantic.create_model(
             "TypedSynthesizedFunction",
             __base__=cls,
-            __doc__=f"""Python function with signature <signature>{type_signature}</signature>""",
+            __doc__=doc,
         )
 
 
-@TypeToPydanticType.register(Callable)
-def _pydantic_callable(
-    ty: typing.Any, metadata: _SynthesisSpec | None = None
-) -> typing.Any:
-    """Create a Pydantic-compatible Annotated type for a parameterized Callable."""
+class SynthesizedTemplateBody(SynthesizedFunction):
+    """Structured output for synthesizing a `Template`'s body (`submit_solution`).
 
+    Decoded through `_pydantic_template_body`: the function is type-checked against
+    the enclosing Template's source and its doctests are run with self/recursive
+    calls routed to the synthesized implementation.
+
+    Unlike `SynthesizedFunction`, the parameter and return *annotations* are not
+    required: a Template body is type-checked against the Template's own signature
+    (see `splice_template_body`), so the model may omit or vary them -- in
+    particular it need not annotate the ``self`` receiver of an instance-method
+    Template.
+    """
+
+    module_code: str = pydantic.Field(
+        ...,
+        description=textwrap.dedent("""
+        The complete Python source for the function implementing the Template.
+        Write it as a drop-in implementation with the Template's signature (shown
+        in <signature>...</signature> and in the Template spec). The code MUST
+        satisfy the following constraints, or it will fail validation:
+
+        <constraints>
+        1. The code MUST be one complete syntactically valid Python module.
+        2. The code MUST NOT use star imports or ``__future__`` imports.
+        3. The function definition MUST be the LAST statement - do not add any code after it.
+        4. Write the function with the Template's signature (see the Template spec);
+        parameter and return annotations are optional.
+        5. You may include doctest examples (lines starting with >>>) inside the function's
+        docstring to demonstrate and verify its behavior; these examples are run as tests,
+        with calls to the Template routed to this implementation.
+        </constraints>
+        """),
+    )
+
+    @pydantic.field_validator("module_code")
+    @classmethod
+    def _validate_module_code(cls, value: str) -> str:
+        # Structural checks only. Parameter/return annotations are intentionally NOT
+        # required: a TemplateBody is type-checked against the Template's real
+        # signature (`splice_template_body`), which already carries them -- so the
+        # model may omit them, and need not annotate the `self` receiver.
+        module: ast.AST = ast.parse(value)
+        if not isinstance(module, ast.Module) or not module.body:
+            raise ValueError(
+                "decode() requires module code with at least one statement."
+            )
+        last_stmt = module.body[-1]
+        if not isinstance(last_stmt, ast.FunctionDef):
+            raise ValueError(
+                f"decode() requires the last statement to be a function definition, "
+                f"got {type(last_stmt).__name__}"
+            )
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+                raise ValueError(
+                    "decode() does not allow __future__ imports in the module code"
+                )
+            if isinstance(stmt, ast.ImportFrom) and any(
+                alias.name == "*" for alias in stmt.names
+            ):
+                raise ValueError(
+                    "decode() does not allow star imports in the module code"
+                )
+        return value
+
+
+def _serialize_synthesized(
+    value: Callable, typed_enc: type[SynthesizedFunction]
+) -> dict:
+    """Encode a callable back to its ``module_code`` form (source, or a stub)."""
+    try:
+        source = inspect.getsource(value)
+    except (OSError, TypeError):
+        source = None
+
+    if source:
+        return typed_enc(module_code=textwrap.dedent(source)).model_dump()
+
+    name = getattr(value, "__name__", None)
+    docstring = inspect.getdoc(value)
+    if name is None or docstring is None:
+        raise ValueError(
+            f"Cannot encode callable {value}: no source code and no __name__ or docstring"
+        )
+
+    try:
+        sig_str = str(inspect.signature(value))
+    except (ValueError, TypeError):
+        sig_str = "(...)"
+
+    stub_code = f'''def {name}{sig_str}:
+    """{docstring}"""
+    ...
+'''
+    return typed_enc(module_code=stub_code).model_dump()
+
+
+def _synthesize_callable(
+    module_code: str,
+    ctx: Mapping,
+    *,
+    template_body: bool,
+) -> tuple[Callable, dict[str, typing.Any]]:
+    """Parse, type-check, compile and exec a synthesized module, returning the
+    function it defines and the exec namespace.
+
+    The code is type-checked against the enclosing Template's source when an
+    ``anchor`` is present in ``ctx``.  ``template_body`` selects the splice: a
+    `TemplateBody` (submit_solution) is spliced as the Template's own body; a
+    general `Callable` uses the strict result splice (`splice_into_source`) when it
+    is a structured-output result, else the lenient REPL splice.
+    """
+    filename = f"<synthesis:{id(module_code)}>"
+    module: ast.Module = evaluation.parse(module_code, filename)
+
+    if template_body:
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        if anchor is not None:
+            # Check the synthesized function *as the Template's body*, strictly: it
+            # is the final answer, so -- unlike incrementally-built REPL code -- it
+            # must honor the Template's declared types and gets no redefinition slack
+            # (no name reuse with a new type, no duplicate definitions).
+            spliced = evaluation.splice_template_body(module, anchor)
+            if spliced is not None:
+                evaluation.type_check(*spliced)
+    elif ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
+        spliced = evaluation.splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
+        if spliced is not None:
+            evaluation.type_check(*spliced)
+    elif ctx.get(REPL_ANCHOR_KEY) is not None:
+        spliced = evaluation.splice_repl_code_into_body(module, ctx[REPL_ANCHOR_KEY])
+        if spliced is not None:
+            evaluation.type_check(*spliced, lenient=True)
+
+    bytecode: types.CodeType = evaluation.compile(module, filename)
+    g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
+    evaluation.exec(bytecode, g)
+    result = g[module.body[-1].name]  # type: ignore
+    return result, g
+
+
+@TypeToPydanticType.register(Callable)
+def _pydantic_callable(ty: typing.Any) -> typing.Any:
+    """Pydantic-compatible Annotated type for a parameterized `Callable` value.
+
+    The model *produces* a function (as ``module_code``); it is synthesized,
+    type-checked in the enclosing Template's scope, and its own doctests are run.
+    Template-body synthesis (`submit_solution`) has its own encoding,
+    `_pydantic_template_body`.
+    """
     typed_enc = SynthesizedFunction._create_typed_synthesized_function(
         Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
     )
@@ -665,114 +865,144 @@ def _pydantic_callable(
     ) -> Callable:
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
-        ctx = info.context or {}
-        filename = f"<synthesis:{id(value)}>"
-        module: ast.Module = evaluation.parse(value.module_code, filename)
+        result, g = _synthesize_callable(
+            value.module_code, info.context or {}, template_body=False
+        )
+        evaluation.run_doctests(result, g)
+        return result
 
-        if ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
-            spliced = evaluation.splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
-            if spliced is not None:
-                evaluation.type_check(*spliced)
-        elif ctx.get(REPL_ANCHOR_KEY) is not None:
-            spliced = evaluation._splice_repl(
-                [], value.module_code, ctx[REPL_ANCHOR_KEY]
-            )
-            if spliced is not None:
-                evaluation.type_check(*spliced, lenient=True)
-
-        bytecode: types.CodeType = evaluation.compile(module, filename)
-
-        g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
-        evaluation.exec(bytecode, g)
-        result = g[module.body[-1].name]  # type: ignore
-
-        if metadata is not None:
-            if metadata._class_template is not None:
-                # Agent-method template: doctests build their own instances, so the
-                # method must route to `synth` on *any* instance (not just the one
-                # that triggered synthesis).  A fresh instance's call dispatches
-                # through `Template.__apply__`, which we intercept here.
-                result = functools.wraps(metadata._class_template)(result)
-
-                def _doctest_apply(op, *args, **kwargs):
-                    instance = metadata._method_instance(op)
-                    if instance is None:
-                        return fwd()
-                    return metadata._class_template(instance, *args, **kwargs)
-
-                with handler(
-                    {
-                        Template.__apply__: _doctest_apply,
-                        metadata._class_template: result,
-                    }
-                ):
-                    evaluation.run_doctests(result, g)
-                return result
-            else:
-                # Free-function template: shadow the global name the doctest calls,
-                # and route the template op back into `synth` for recursion.
-                result = functools.wraps(metadata.template)(result)
-                g.update({metadata.template.__name__: result})
-                with handler({metadata.template: result}):
-                    evaluation.run_doctests(result, g)
-                return result
-        else:
-            evaluation.run_doctests(result, g)
-            return result
-
-    def _serialize(value: Callable) -> dict:
-        try:
-            source = inspect.getsource(value)
-        except (OSError, TypeError):
-            source = None
-
-        if source:
-            return typed_enc(module_code=textwrap.dedent(source)).model_dump()
-
-        name = getattr(value, "__name__", None)
-        docstring = inspect.getdoc(value)
-        if name is None or docstring is None:
-            raise ValueError(
-                f"Cannot encode callable {value}: no source code and no __name__ or docstring"
-            )
-
-        try:
-            sig = inspect.signature(value)
-            sig_str = str(sig)
-        except (ValueError, TypeError):
-            sig_str = "(...)"
-
-        stub_code = f'''def {name}{sig_str}:
-    """{docstring}"""
-    ...
-'''
-        return typed_enc(module_code=stub_code).model_dump()
-
+    # Distinct schemas per direction: validation (the model *produces* a function)
+    # carries the synthesis instructions; serialization (the model *reads* an
+    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
+    # emits, with no synthesis prose.
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(_serialize),
-        # Distinct schemas per direction. Validation (the model *produces* a
-        # function -- tool arguments, response_format) carries the synthesis
-        # instructions. Serialization (the model *reads* an encoded function --
-        # e.g. a tool's output) shows only the shape `_serialize` emits, with no
-        # synthesis prose.
+        pydantic.PlainSerializer(
+            lambda value: _serialize_synthesized(value, typed_enc)
+        ),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
             mode="validation",
         ),
         pydantic.WithJsonSchema(
-            {
-                "type": "object",
-                "required": ["module_code"],
-                "properties": {
-                    "module_code": {
-                        "type": "string",
-                        "description": "Python source defining the function.",
-                    }
-                },
-            },
-            mode="serialization",
+            EncodedFunction.model_json_schema(), mode="serialization"
+        ),
+    ]
+
+
+@TypeToPydanticType.register(TemplateBody)
+def _pydantic_template_body(ty: typing.Any) -> typing.Any:
+    """`TypeToPydanticType` case for a free-function `Template` body.
+
+    Like `_pydantic_callable`, but the synthesized function is checked against the
+    enclosing Template's source (the ``anchor`` in the decode context) and its
+    doctests are run with the Template's own name/op routed back to the synthesized
+    implementation, so a doctest that calls the Template (including for recursion)
+    exercises the freshly synthesized code rather than re-invoking the model.
+    """
+    typed_enc = SynthesizedTemplateBody._create_typed_synthesized_function(
+        ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
+        method=False,
+    )
+
+    def _validate(
+        value: SynthesizedTemplateBody | dict, info: pydantic.ValidationInfo
+    ) -> Callable:
+        if isinstance(value, dict):
+            value = typed_enc.model_validate(value)
+        ctx = info.context or {}
+        result, g = _synthesize_callable(value.module_code, ctx, template_body=True)
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        if anchor is None:
+            evaluation.run_doctests(result, g)
+            return result
+        # Shadow the global name the doctests call and route the Template op back
+        # into the synthesized function.
+        result = functools.wraps(anchor)(result)
+        g.update({anchor.__name__: result})
+        with handler({anchor: result}):
+            evaluation.run_doctests(result, g)
+        return result
+
+    # Distinct schemas per direction: validation (the model *produces* a function)
+    # carries the synthesis instructions; serialization (the model *reads* an
+    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
+    # emits, with no synthesis prose.
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(
+            lambda value: _serialize_synthesized(value, typed_enc)
+        ),
+        pydantic.WithJsonSchema(
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            mode="validation",
+        ),
+        pydantic.WithJsonSchema(
+            EncodedFunction.model_json_schema(), mode="serialization"
+        ),
+    ]
+
+
+@TypeToPydanticType.register(MethodTemplateBody)
+def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
+    """`TypeToPydanticType` case for an instance-method `Template` body.
+
+    Registered separately from `TemplateBody` (rather than reached via subclass
+    MRO) so the method/free distinction is an explicit dispatch: it surfaces the
+    leading ``self`` receiver in the signature hint, and its doctests -- which build
+    their own instances -- route ``agent.method(...)`` on *any* instance to the
+    synthesized implementation.
+    """
+    typed_enc = SynthesizedTemplateBody._create_typed_synthesized_function(
+        ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
+        method=True,
+    )
+
+    def _validate(
+        value: SynthesizedTemplateBody | dict, info: pydantic.ValidationInfo
+    ) -> Callable:
+        if isinstance(value, dict):
+            value = typed_enc.model_validate(value)
+        ctx = info.context or {}
+        result, g = _synthesize_callable(value.module_code, ctx, template_body=True)
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        class_template = _class_template_of(anchor) if anchor is not None else None
+        if class_template is None:
+            evaluation.run_doctests(result, g)
+            return result
+        # A fresh instance's `agent.method(...)` dispatches through
+        # `Template.__apply__`, which we intercept and redirect to the synthesized
+        # implementation.
+        result = functools.wraps(class_template)(result)
+
+        def _doctest_apply(op, *args, **kwargs):
+            instance = _method_instance(op, class_template)
+            if instance is None:
+                return fwd()
+            return class_template(instance, *args, **kwargs)
+
+        with handler({Template.__apply__: _doctest_apply, class_template: result}):
+            evaluation.run_doctests(result, g)
+        return result
+
+    # Distinct schemas per direction: validation (the model *produces* a function)
+    # carries the synthesis instructions; serialization (the model *reads* an
+    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
+    # emits, with no synthesis prose.
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(
+            lambda value: _serialize_synthesized(value, typed_enc)
+        ),
+        pydantic.WithJsonSchema(
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            mode="validation",
+        ),
+        pydantic.WithJsonSchema(
+            EncodedFunction.model_json_schema(), mode="serialization"
         ),
     ]
 
