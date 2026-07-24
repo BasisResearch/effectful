@@ -22,17 +22,21 @@ script in the same context::
     python -m effectful.handlers.llm.harness <path_to_script.py> <harness_flags> <script_flags>
 
 Harness flags (``--model``, ``--num-retries``, ``--langfuse``, ``--render``,
-``--dump-system-prompt``) are consumed here; every other flag is passed through
-to the script unchanged.
+``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``, ``--pdb``)
+are consumed here; every other flag is passed through to the script unchanged.
 """
 
 import argparse
 import contextlib
+import inspect
 import os
 import pathlib
+import pdb
 import runpy
 import sys
+import typing
 
+import litellm
 import tenacity
 
 from effectful.handlers.llm.completions import (
@@ -72,6 +76,8 @@ class harness(contextlib.ContextDecorator):
         dump_system_prompt: If set, dump the assembled system prompt to this
             Markdown file.
         tool_choice: ``tool_choice`` forwarded to the provider.
+        reasoning_effort: ``reasoning_effort`` forwarded to the provider (and on
+            to ``litellm.completion``); omitted from requests when ``None``.
         api_base: API base URL forwarded to the provider.
         api_key: API key forwarded to the provider.
     """
@@ -85,6 +91,7 @@ class harness(contextlib.ContextDecorator):
         render: bool = False,
         dump_system_prompt: str | os.PathLike[str] | None = None,
         tool_choice: str = "auto",
+        reasoning_effort: str | None = None,
         api_base: str | None = None,
         api_key: str | None = None,
     ) -> None:
@@ -94,11 +101,17 @@ class harness(contextlib.ContextDecorator):
         self.render = render
         self.dump_system_prompt = dump_system_prompt
         self.tool_choice = tool_choice
+        self.reasoning_effort = reasoning_effort
         self.api_base = api_base
         self.api_key = api_key
 
     def __enter__(self) -> "harness":
         stack = contextlib.ExitStack()
+        # Only forward `reasoning_effort` when set, so we don't send
+        # `reasoning_effort=None` on every request to providers that reject it.
+        provider_config: dict[str, str] = {}
+        if self.reasoning_effort is not None:
+            provider_config["reasoning_effort"] = self.reasoning_effort
         stack.enter_context(
             handler(
                 LiteLLMProvider(
@@ -106,6 +119,7 @@ class harness(contextlib.ContextDecorator):
                     tool_choice=self.tool_choice,
                     api_base=self.api_base,
                     api_key=self.api_key,
+                    **provider_config,
                 )
             )
         )
@@ -129,6 +143,31 @@ class harness(contextlib.ContextDecorator):
 
     def __exit__(self, *exc_info) -> bool | None:
         return self._stack.__exit__(*exc_info)
+
+
+def _reasoning_effort_choices() -> list[str] | None:
+    """The ``reasoning_effort`` values ``litellm.completion`` declares.
+
+    Extracted from the ``Optional[Literal[...]]`` annotation on the live
+    signature so the CLI choices track litellm exactly across upgrades. Returns
+    ``None`` (leave the flag unrestricted) if the annotation isn't a Literal we
+    can read, so a shape change in litellm degrades to accepting any string
+    rather than breaking the launcher.
+    """
+    try:
+        annotation = inspect.signature(litellm.completion).parameters[
+            "reasoning_effort"
+        ].annotation
+        # Optional[Literal[...]] -> unwrap the Union, then read the Literal args.
+        literals = [
+            v
+            for arg in typing.get_args(annotation)
+            for v in typing.get_args(arg)
+            if isinstance(v, str)
+        ]
+        return literals or None
+    except Exception:
+        return None
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
@@ -178,6 +217,18 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         choices=["required", "auto", "none"],
         help="Whether to require, allow, or disable tool calls (none means disabled)",
     )
+    parser.add_argument(
+        "--reasoning-effort",
+        type=str,
+        default=None,
+        choices=_reasoning_effort_choices(),
+        help="Reasoning effort forwarded to litellm.completion",
+    )
+    parser.add_argument(
+        "--pdb",
+        action="store_true",
+        help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
+    )
     return parser.parse_known_args(argv)
 
 
@@ -197,6 +248,7 @@ def main(argv: list[str] | None = None) -> None:
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
         tool_choice=ns.tool_choice,
+        reasoning_effort=ns.reasoning_effort,
         api_base=os.environ.get("DS4_OPENAI_API_BASE", None)
         if ns.model == "openai/deepseek-v4-flash"
         else None,
@@ -204,7 +256,15 @@ def main(argv: list[str] | None = None) -> None:
         if ns.model == "openai/deepseek-v4-flash"
         else None,
     ):
-        runpy.run_path(ns.script, run_name="__main__")
+        if ns.pdb:
+            try:
+                runpy.run_path(ns.script, run_name="__main__")
+            except BaseException:
+                # Post-mortem while the handler stack is still installed, so live
+                # handler/session state is inspectable at the debugger prompt.
+                pdb.post_mortem()
+        else:
+            runpy.run_path(ns.script, run_name="__main__")
 
 
 if __name__ == "__main__":
