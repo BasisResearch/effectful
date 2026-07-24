@@ -10,17 +10,17 @@ from collections.abc import Callable
 from typing import Any
 
 from effectful.ops.syntax import (
+    PureInterpretation,
     _CustomSingleDispatchCallable,
-    assume_pure,
     defdata,
     defop,
+    implements,
 )
 from effectful.ops.types import (
     Expr,
     Interpretation,
     NotHandled,  # noqa: F401
     Operation,
-    PureInterpretation,
     Term,
 )
 
@@ -294,12 +294,17 @@ def _typeof_apply(op, *args, **kwargs):
     return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTERPRETATION = assume_pure({apply: _typeof_apply})
+class _TypeofIntp(PureInterpretation):
+    @implements(apply)
+    def _(self, op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
+        return Box(op.__type_rule__(*args, **kwargs))
 
 
 def _typeof(term: Expr):
     """Evaluate the cached type analysis without unwrapping its result."""
-    return evaluate(term, intp=_TYPEOF_INTERPRETATION)
+    return evaluate(term, intp=_TypeofIntp())
 
 
 def typeof[T](term: Expr[T]) -> type[T]:

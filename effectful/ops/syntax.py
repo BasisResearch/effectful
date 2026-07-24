@@ -4,7 +4,6 @@ import functools
 import inspect
 import numbers
 import operator
-import types
 import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
@@ -12,10 +11,8 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
-    Interpretation,
     NotHandled,
     Operation,
-    PureInterpretation,
     Term,
     _CustomSingleDispatchCallable,
 )
@@ -837,40 +834,6 @@ def _(x: object, other) -> bool:
     return x == other
 
 
-class _PureInterpretation[T, V](collections.abc.Mapping):
-    __effectful_pure__: typing.Literal[True] = True
-
-    def __init__(self, intp: Interpretation[T, V]):
-        self._implementations = types.MappingProxyType(dict(intp))
-
-    def __getitem__(self, op):
-        return self._implementations[op]
-
-    def __iter__(self):
-        return iter(self._implementations)
-
-    def __len__(self):
-        return len(self._implementations)
-
-    def __hash__(self):
-        return hash(frozenset(self._implementations.items()))
-
-    def __eq__(self, other):
-        return isinstance(other, PureInterpretation) and frozenset(
-            self._implementations.items()
-        ) == frozenset(other._implementations.items())
-
-
-def assume_pure[T, V](intp: Interpretation[T, V]) -> PureInterpretation[T, V]:
-    """Cast an Interpretation into a PureInterpretation.
-
-    Pure interpretations have no visible side effects. Values of terms evaluated
-    under pure interpretations are cached.
-
-    """
-    return _PureInterpretation(intp)
-
-
 class ObjectInterpretation[T, V](collections.abc.Mapping):
     """A helper superclass for defining an ``Interpretation`` of many
     :class:`~effectful.ops.types.Operation` instances with shared state or behavior.
@@ -946,6 +909,16 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
 
     def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
         return self.implementations[item].__get__(self, type(self))
+
+
+class PureInterpretation[T, V](ObjectInterpretation[T, V]):
+    def __hash__(self):
+        return hash(frozenset(self.implementations.items()))
+
+    def __eq__(self, other):
+        return isinstance(other, PureInterpretation) and frozenset(
+            self.implementations.items()
+        ) == frozenset(other.implementations.items())
 
 
 class _ImplementedOperation[**P, **Q, T, V]:
