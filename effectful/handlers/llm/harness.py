@@ -34,6 +34,7 @@ import pathlib
 import pdb
 import runpy
 import sys
+import textwrap
 import typing
 
 import litellm
@@ -155,9 +156,11 @@ def _reasoning_effort_choices() -> list[str] | None:
     rather than breaking the launcher.
     """
     try:
-        annotation = inspect.signature(litellm.completion).parameters[
-            "reasoning_effort"
-        ].annotation
+        annotation = (
+            inspect.signature(litellm.completion)
+            .parameters["reasoning_effort"]
+            .annotation
+        )
         # Optional[Literal[...]] -> unwrap the Union, then read the Literal args.
         literals = [
             v
@@ -174,11 +177,7 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     """Split ``argv`` into harness options and pass-through script flags."""
     parser = argparse.ArgumentParser(
         prog=f"python -m {__spec__.name}" if __spec__ else None,
-        description=(
-            "Run an effectful.handlers.llm script under the standard handler "
-            "stack. Flags other than the harness flags below are passed through "
-            "to the script unchanged."
-        ),
+        description=textwrap.dedent(__doc__),
     )
     parser.add_argument("script", help="Path to the script to run")
     parser.add_argument(
