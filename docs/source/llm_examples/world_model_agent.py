@@ -25,6 +25,23 @@ ARC-AGI-3 scale, where context is auto-compacted, a curated notes file stops bei
 redundant and becomes the model's "weights" -- that is the (b) variant this omits.
 """
 
+# Remaining simplifications vs. the source (beyond the (b)-variant notes store above):
+# - State grounding is given, not discovered. Schema's headline claim is that the agent
+#   invents *which pixels are objects* (Level 1) jointly with the transition rule
+#   (Level 2) in one program. Here the palette is already semantically labelled (see
+#   ``gridworlds.Color``), so the agent only maps integers to roles and infers dynamics
+#   -- closer to WorldCoder's "rule over a given state" than to Schema's joint problem.
+# - The goal predicate is hardcoded, not inferred. Schema synthesizes ``is_goal`` too;
+#   here ``plan`` tests for ``BOX_ON_TARGET`` directly, which is fair only because this
+#   game renders its goal as a visible color.
+# - Exploration is a heuristic, not a discriminating experiment. Schema keeps several
+#   candidate rules and probes the action where they *predict different outcomes*;
+#   ``explore`` instead asks the model for one "informative" action, with no ensemble
+#   to disagree.
+# - Certification is self-reported. Schema's ``run_backtest`` replays a model over the
+#   *entire* recorded history externally; here it rests on the model faithfully
+#   transcribing the "salient" transitions as doctests, which the decoder then runs.
+
 import argparse
 import collections
 import collections.abc
