@@ -288,12 +288,6 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
-def _typeof_apply(op, *args, **kwargs):
-    from effectful.internals.unification import Box
-
-    return Box(op.__type_rule__(*args, **kwargs))
-
-
 class _TypeofIntp(PureInterpretation):
     @implements(apply)
     def _(self, op, *args, **kwargs):
