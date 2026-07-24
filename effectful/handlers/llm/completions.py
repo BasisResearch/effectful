@@ -244,6 +244,7 @@ def call_assistant[T](
     response_type: type[T],
     tools: collections.abc.Set[Tool] = frozenset(),
     anchor: "Template | None" = None,
+    force_tool: bool = False,
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
@@ -255,6 +256,13 @@ def call_assistant[T](
     operation and union them into `tools` before forwarding.  Each tool's
     model-visible name is derived from its `__name__`, so collection and
     decoding agree on a single naming scheme.
+
+    `force_tool` is set when the request requires the model to call a tool (the
+    provider derives it from a ``tool_choice="required"`` config) so that a
+    response which nonetheless comes back with no tool call — some
+    OpenAI-compatible servers treat ``tool_choice`` as advisory — is reported as
+    the protocol violation it is, rather than being misdecoded as a bare
+    structured result.
 
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
@@ -297,6 +305,15 @@ def call_assistant[T](
     append_message(raw_message)
 
     raw_tool_calls = message.get("tool_calls") or []
+    if force_tool and not raw_tool_calls:
+        raise ResultDecodingError(
+            ValueError(
+                "tool_choice='required' but the model returned no tool call."
+                "**IMPORTANT: YOU MUST GENERATE A TOOL CALL IN YOUR NEXT RESPONSE.**"
+            ),
+            raw_message=raw_message,
+        )
+
     tool_calls: list[DecodedToolCall] = []
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
@@ -694,6 +711,7 @@ class LexicalReaders(ObjectInterpretation):
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
         anchor: "Template | None" = None,
+        force_tool: bool = False,
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
         taken = {t.__name__ for t in tools}
@@ -710,7 +728,7 @@ class LexicalReaders(ObjectInterpretation):
                 taken.add(name)
             except Exception:
                 continue
-        return fwd(env, response_type, readers, anchor=anchor)
+        return fwd(env, response_type, readers, anchor=anchor, force_tool=force_tool)
 
 
 class SynthesizeAndCall(ObjectInterpretation):
@@ -770,6 +788,13 @@ class SynthesizeAndCall(ObjectInterpretation):
         doctests: a solution whose doctests fail (or that errors when applied) is
         rejected and fed back to you to revise, so the answer only stands once the
         function's own doctests pass. Calling this tool terminates the completion.
+
+        This answers the *current* call only. Each call is a fresh, independent
+        task: even if you already submitted a working solution earlier in this
+        conversation, a prior submission is not a standing answer — you must call
+        `submit_solution` again to answer the current call. Never end a turn with
+        a prose summary in place of the answer; a plain message is not a valid
+        response and will be rejected.
         """
 
         __toolname__: typing.ClassVar[typing.Literal["submit_solution"]] = (
@@ -822,10 +847,14 @@ class SynthesizeAndCall(ObjectInterpretation):
         bound_args.apply_defaults()
         tool = self._SynthesisFinalTool.define(template, bound_args)
 
-        def _add_synthesis_tool(env, response_type, tools=frozenset(), anchor=None):
+        def _add_synthesis_tool(
+            env, response_type, tools=frozenset(), anchor=None, force_tool=False
+        ):
             if any(isinstance(t, self._SynthesisFinalTool) for t in tools):
                 return fwd()
-            return fwd(env, response_type, tools | {tool}, anchor=anchor)
+            return fwd(
+                env, response_type, tools | {tool}, anchor=anchor, force_tool=force_tool
+            )
 
         with handler({call_assistant: _add_synthesis_tool}):
             return fwd()
@@ -915,12 +944,14 @@ class PythonRepl(ObjectInterpretation):
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
         anchor: "Template | None" = None,
+        force_tool: bool = False,
     ) -> AssistantResult[T]:
         return fwd(
             env,
             response_type,
             tools | {self.exec_code, self.read_lexical_variable},
             anchor=anchor,
+            force_tool=force_tool,
         )
 
 
@@ -990,6 +1021,7 @@ class RetryLLMHandler(ObjectInterpretation):
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
         anchor: "Template | None" = None,
+        force_tool: bool = False,
     ) -> AssistantResult[T]:
         _message_sequence = _get_history().copy()
 
@@ -1521,6 +1553,7 @@ class LiteLLMProvider(ObjectInterpretation):
                     template.__signature__.return_annotation,
                     _tools_in_scope(env) - {template},
                     anchor=template,
+                    force_tool=self.config.get("tool_choice") == "required",
                 )
                 if tool_calls:
                     for tool_call in tool_calls:

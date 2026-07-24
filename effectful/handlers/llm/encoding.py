@@ -861,8 +861,10 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
     )
 
     def _validate(
-        value: SynthesizedFunction | dict, info: pydantic.ValidationInfo
+        value: SynthesizedFunction | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
+        if isinstance(value, str):
+            value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         result, g = _synthesize_callable(
@@ -907,8 +909,10 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
     )
 
     def _validate(
-        value: SynthesizedTemplateBody | dict, info: pydantic.ValidationInfo
+        value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
+        if isinstance(value, str):
+            value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
@@ -961,8 +965,10 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
     )
 
     def _validate(
-        value: SynthesizedTemplateBody | dict, info: pydantic.ValidationInfo
+        value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
+        if isinstance(value, str):
+            value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
