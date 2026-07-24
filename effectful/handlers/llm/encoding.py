@@ -722,20 +722,16 @@ class SynthesizedTemplateBody(SynthesizedFunction):
     module_code: str = pydantic.Field(
         ...,
         description=textwrap.dedent("""
-        The complete Python source for the function implementing the Template.
-        Write it as a drop-in implementation with the Template's signature (shown
-        in <signature>...</signature> and in the Template spec). The code MUST
-        satisfy the following constraints, or it will fail validation:
+        The complete Python source implementing the Template shown in its spec.
+        The code MUST satisfy the following constraints, or it will fail validation:
 
         <constraints>
         1. The code MUST be one complete syntactically valid Python module.
         2. The code MUST NOT use star imports or ``__future__`` imports.
         3. The function definition MUST be the LAST statement - do not add any code after it.
-        4. Write the function with the Template's signature (see the Template spec);
-        parameter and return annotations are optional.
-        5. You may include doctest examples (lines starting with >>>) inside the function's
-        docstring to demonstrate and verify its behavior; these examples are run as tests,
-        with calls to the Template routed to this implementation.
+        4. Write the function with the Template's signature; parameter and return
+        annotations are optional.
+        5. Do not include a docstring or doctests; the Template's are supplied automatically.
         </constraints>
         """),
     )

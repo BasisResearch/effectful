@@ -36,15 +36,6 @@ type via constrained/structured generation, so non-`str` return types (ints,
 dataclasses, etc.) come back as real Python values. A `FinalTool` lets the model
 "answer" by calling a tool whose return value becomes the result and terminates
 the loop.
-
-## Providers and handlers
-
-Execution is controlled by composing handlers with
-`effectful.ops.semantics.handler(...)`: a provider such as
-`effectful.handlers.llm.completions.LiteLLMProvider` implements the model calls,
-and helpers like `RetryLLMHandler` add reliability behavior. Because everything
-is an algebraic effect, behavior (model requests, tool dispatch, history) can be
-observed, logged, or overridden by installing additional handlers.
 """
 
 from .template import Agent, Encodable, Template, Tool

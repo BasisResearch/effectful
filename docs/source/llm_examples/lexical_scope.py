@@ -20,12 +20,12 @@ from effectful.handlers.llm import Agent, Template, Tool
 
 @Template.define
 def story_with_moral(topic: str) -> str:
-    """Write a short story about {topic} and end with a moral lesson."""
+    """Write a short story about {topic} and end with a moral lesson. Do not use any tools."""
 
 
 @Template.define
 def story_funny(topic: str) -> str:
-    """Write a funny, humorous story about {topic}."""
+    """Write a funny, humorous story about {topic}. Do not use any tools."""
 
 
 class TripPlanner(Agent):

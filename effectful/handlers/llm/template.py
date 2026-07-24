@@ -373,24 +373,16 @@ class Agent(abc.ABC):
     Example:
 
     ```python
-    import dataclasses
-    from effectful.handlers.llm import Agent, Template
-    from effectful.handlers.llm.completions import LiteLLMProvider
-    from effectful.ops.semantics import handler
-    from effectful.ops.types import NotHandled
-
-    @dataclasses.dataclass
+    @dataclass
     class ChatBot(Agent):
-        bot_name: str = dataclasses.field(default="ChatBot")
+        bot_name: str
 
         @Template.define
         def send(self, user_input: str) -> str:
             \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
 
-    provider = LiteLLMProvider()
-    chatbot = ChatBot()
-
-    with handler(provider):
+    def main():
+        chatbot = ChatBot()
         chatbot.send("Hi! How are you? I am in France.")
         chatbot.send("Remind me again, where am I?")  # sees prior context
     ```

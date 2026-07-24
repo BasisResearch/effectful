@@ -783,11 +783,14 @@ class SynthesizeAndCall(ObjectInterpretation):
         as a drop-in implementation of the Template. The function may reference
         names from the lexical scope (see the *Lexical scope* table).
 
-        Give the function a docstring containing `>>>` doctests that demonstrate
-        its intended behavior on examples. On submission the harness runs those
-        doctests: a solution whose doctests fail (or that errors when applied) is
-        rejected and fed back to you to revise, so the answer only stands once the
-        function's own doctests pass. Calling this tool terminates the completion.
+        You do not need to write a docstring or doctests: on submission the harness
+        attaches the Template's own docstring to your function and runs *its*
+        doctests (with recursive calls to the Template routed to your
+        implementation). A solution whose doctests fail — or that errors when
+        applied — is rejected and fed back to you to revise, so the answer only
+        stands once the Template's doctests pass. Write just the implementation;
+        any docstring you add is replaced and ignored. Calling this tool terminates
+        the completion.
 
         This answers the *current* call only. Each call is a fresh, independent
         task: even if you already submitted a working solution earlier in this
@@ -827,9 +830,9 @@ class SynthesizeAndCall(ObjectInterpretation):
 
             def submit_solution(implementation: body_type) -> return_type:  # type: ignore
                 """
-                Submit your final answer as a Python function implementing the task.
-                The function must have the required signature; it is applied to the
-                original inputs and its return value is your final answer.
+                Answer this Template by submitting a Python function that implements
+                it (see the "Code synthesis" section); its return value on the
+                original arguments becomes the answer.
                 """
                 return implementation(*args, **kwargs)  # type: ignore
 
@@ -891,6 +894,10 @@ class PythonRepl(ObjectInterpretation):
         across turns, so you may define variables, functions, and classes that are
         used in later turns. The return value of the code is returned to you as the
         result of the tool call.
+
+        Use the REPL only when running code actually helps — computing or verifying
+        a result, exploring data, or calling a tool. If you can answer directly, just
+        answer; do not route a plain text answer through `print(...)`.
         """
 
     @typing.final
