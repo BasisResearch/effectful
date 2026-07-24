@@ -1,41 +1,37 @@
-"""LLM-guided Towers of Hanoi solver with tool-based validation.
+"""LLM-based Towers of Hanoi solver with two strategies.
 
-Adapted from https://github.com/BasisResearch/effectful/pull/404
+Two solving strategies share a common ``Step`` / ``GameState`` model and are
+selected with ``--mode``:
 
-Demonstrates:
-- A static Pydantic ``Step`` model for structured output
-- ``@Tool.define`` inside a closure to expose game-state validation as a tool
-- ``RetryLLMHandler`` to retry on malformed LLM output
-- Templates defined inside a function that auto-capture closure-scoped tools
+- ``recursive`` — ask the LLM to return the full move list in one shot, using
+  the classic recursive decomposition.
+- ``iterative`` — ask the LLM for one move at a time, with tool-based
+  validation.  Adapted from https://github.com/BasisResearch/effectful/pull/404.
+  Demonstrates:
+
+  - A static ``Step`` model for structured output
+  - ``@Tool.define`` inside a closure to expose game-state validation as a tool
+  - Templates defined inside a function that auto-capture closure-scoped tools
 """
 
 import argparse
+import dataclasses
 import itertools
-from dataclasses import dataclass, field
 
 from effectful.handlers.llm import Template, Tool
 
-# ---------------------------------------------------------------------------
-# Step model
-# ---------------------------------------------------------------------------
 
-
-@dataclass
+@dataclasses.dataclass
 class Step:
     """A single move: take the top disk from tower ``start`` and place it on
     tower ``end``.  Tower indices are zero-based."""
 
     start: int
     end: int
-    explanation: str = field(default="")  # optional reasoning from the LLM
+    explanation: str = dataclasses.field(default="")  # optional reasoning from the LLM
 
 
-# ---------------------------------------------------------------------------
-# Game state
-# ---------------------------------------------------------------------------
-
-
-@dataclass
+@dataclasses.dataclass
 class GameState:
     """State of a Towers of Hanoi game.
 
@@ -48,7 +44,7 @@ class GameState:
     """
 
     size: int
-    towers: tuple[tuple[int, ...], ...] = field(default=())
+    towers: tuple[tuple[int, ...], ...] = dataclasses.field(default=())
 
     def __post_init__(self):
         if self.size > 0 and not self.towers:
@@ -96,7 +92,46 @@ class GameState:
 
 
 # ---------------------------------------------------------------------------
-# LLM move predictor
+# Recursive solver
+# ---------------------------------------------------------------------------
+
+
+def validate_solution(size: int, steps: list[Step]) -> bool:
+    """Apply all steps to the initial state and check that the puzzle is solved."""
+    state = GameState(size=size)
+    print(f"  initial: {state}")
+    for i, step in enumerate(steps):
+        try:
+            state = state.apply(step)
+            print(f"  step {i}: move {step.start} -> {step.end}  =>  {state}")
+        except ValueError as e:
+            print(f"  step {i}: INVALID move {step.start} -> {step.end}: {e}")
+            return False
+    if state.is_done():
+        print(f"  Solved in {len(steps)} moves!")
+        return True
+    else:
+        print(f"  Not solved after {len(steps)} moves. Final state: {state}")
+        return False
+
+
+def solve_recursive(state: GameState) -> None:
+
+    @Template.define
+    def solve(n_disks: int, source: int, target: int, auxiliary: int) -> list[Step]:
+        """Solve Tower of Hanoi using recursion: move {n_disks} disks from tower {source} to
+        tower {target}, using tower {auxiliary} as temporary storage.
+        """
+
+    size = state.size
+    print(f"Solving Tower of Hanoi with {size} disks...")
+    steps = solve(n_disks=size, source=0, target=size - 1, auxiliary=1)
+    print(f"\nLLM returned {len(steps)} steps. Validating...\n")
+    validate_solution(size, steps)
+
+
+# ---------------------------------------------------------------------------
+# Iterative solver
 # ---------------------------------------------------------------------------
 
 
@@ -135,12 +170,7 @@ def predict_next_step(state: GameState) -> Step:
     return predict(state)
 
 
-# ---------------------------------------------------------------------------
-# Solver loop
-# ---------------------------------------------------------------------------
-
-
-def solve_hanoi(state: GameState, max_steps: int = 30):
+def solve_iterative(state: GameState, *, max_steps: int = 30) -> None:
     """Solve Towers of Hanoi by repeatedly asking the LLM for the next move."""
     for i in itertools.count():
         print(f"step {i}: {state}")
@@ -167,6 +197,12 @@ def solve_hanoi(state: GameState, max_steps: int = 30):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--mode",
+        choices=("recursive", "iterative"),
+        default="iterative",
+        help="Solving strategy: full recursive solution or iterative one move at a time",
+    )
+    parser.add_argument(
         "--game-size",
         type=int,
         default=3,
@@ -176,11 +212,15 @@ def main() -> None:
         "--max-steps",
         type=int,
         default=30,
-        help="Maximum number of steps before giving up",
+        help="Maximum number of steps before giving up (iterative mode only)",
     )
     args = parser.parse_args()
 
-    solve_hanoi(GameState(size=args.game_size), max_steps=args.max_steps)
+    state = GameState(size=args.game_size)
+    if args.mode == "recursive":
+        solve_recursive(state)
+    else:
+        solve_iterative(state, max_steps=args.max_steps)
 
 
 if __name__ == "__main__":
