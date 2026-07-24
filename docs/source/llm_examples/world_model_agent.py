@@ -44,8 +44,33 @@ class Physicist(Agent):
     timeline: list[Transition] = dataclasses.field(default_factory=list)
 
     @Template.define
+    def explore(self, state: State) -> Action:
+        """
+        Propose an action that would be informative about the hidden dynamics,
+        given the current world state:
+
+        <state>
+        {state}
+        </state>
+
+        and the recorded transitions so far:
+
+        <timeline>
+        {self.timeline}
+        </timeline>
+
+        and the high-level hint about the game:
+
+        <hint>
+        {self.hint}
+        </hint>
+
+        Do not use any tools.
+        """
+
+    @Template.define
     def theorize(
-        self, state: State, action: Action | None = None
+        self, state: State
     ) -> collections.abc.Callable[[State, Action], State]:
         """You are reverse-engineering a 2D grid game by writing its rules as code.
         You've been given a high-level hint about the game:
@@ -66,15 +91,7 @@ class Physicist(Agent):
         {state}
         </state>
 
-        You may also have access to a prospective Action (although it may be None):
-
-        <action>
-        {action}
-        </action>
-
-        Think through the problem, using tools to explore and test hypotheses if necessary,
-        and write a pure Python function ``step(state, action)``
-        that reproduces every recorded transition exactly.
+        Write a pure function ``step(state, action)`` that reproduces every recorded transition exactly.
         The function's docstring **MUST** include all salient recorded transitions
         from the timeline as runnable doctests. If there are no recorded transitions,
         you do not need to include any doctests.
@@ -130,7 +147,7 @@ class Physicist(Agent):
             # Plan inside the certified model for free; if none, take one probing step.
             plan = self.plan(model, state)
             if not plan:
-                plan = [Action(len(self.timeline) % len(Action))]
+                plan = [self.explore(state)]
                 print(
                     f"[plan] no solution in model; probing with action {plan[0].name}"
                 )
@@ -143,7 +160,6 @@ class Physicist(Agent):
                 actual, done = env.step(action)
                 self.timeline.append(Transition(state, action, actual))
                 state = actual
-                # real_actions += 1  # removed
                 if done:
                     print(
                         f"[execute] action {action.name} -> SOLVED in {len(self.timeline)} actions"
