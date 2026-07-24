@@ -867,6 +867,33 @@ def _synthesize_callable(
     return result, g
 
 
+def _reject_param_count_mismatch(fn: Callable, ty: typing.Any) -> None:
+    """Raise ``ValueError`` if the synthesized ``fn``'s positional arity does not
+    match the expected ``Callable[[...], ret]`` type.
+
+    The mypy signature check only runs when a type-check anchor is in scope; this
+    structural check runs unconditionally, so a wrong parameter count is still
+    rejected on the anchorless argument-decoding path.
+    """
+    args = typing.get_args(ty)
+    if not args or args[0] is ...:
+        return  # bare ``Callable`` or ``Callable[..., R]``: any arity is acceptable
+    expected = len(args[0])
+    params = list(inspect.signature(fn).parameters.values())
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return  # ``*args`` accepts any number of positional arguments
+    positional = sum(
+        p.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for p in params
+    )
+    if positional != expected:
+        raise ValueError(
+            f"synthesized function takes {positional} positional parameter(s), "
+            f"but the expected signature has {expected}"
+        )
+
+
 @TypeToPydanticType.register(Callable)
 def _pydantic_callable(ty: typing.Any) -> typing.Any:
     """Pydantic-compatible Annotated type for a parameterized `Callable` value.
@@ -890,6 +917,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         result, g = _synthesize_callable(
             value.module_code, info.context or {}, template_body=False
         )
+        _reject_param_count_mismatch(result, ty)
         evaluation.run_doctests(result, g)
         return result
 

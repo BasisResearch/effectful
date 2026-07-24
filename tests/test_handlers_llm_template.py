@@ -24,7 +24,7 @@ from effectful.handlers.llm.completions import (
     call_user,
     completion,
 )
-from effectful.handlers.llm.encoding import DecodedToolCall
+from effectful.handlers.llm.encoding import _TOOLS_KEY, DecodedToolCall
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -253,23 +253,21 @@ class _DesignerAgent(Agent):
 
 
 def test_agent_method_tool_advertised_name_matches_decode_key():
-    """An Agent method tool is collected under a qualified key ("self__nested_tool") that
-    differs from its own `__name__` ("nested_tool"). It must be *advertised* to the LLM
-    under that key, because tool-call decoding resolves the call by the advertised name --
-    otherwise every method tool is undecodable. This is the serialize->advertise->decode
-    round-trip, no LLM required."""
+    """A tool is advertised to the LLM under the same name that tool-call decoding
+    resolves it by, so the serialize->advertise->decode round-trip is self-consistent.
+    `call_assistant` keys tools by `__name__` (its ``name2tool`` map); this checks that
+    an Agent method tool advertises and decodes under that key, no LLM required."""
     agent = _DesignerAgent()
-    tools = dict(offered_tools({"self": agent}))
-    key = "self__nested_tool"
-    tool = tools[key]
-    assert tool.__name__ == "nested_tool"  # own name differs from the context key
+    # The map `call_assistant` builds from the tools in scope (keyed by `__name__`).
+    name2tool = {t.__name__: t for t in offered_tools({"self": agent})}
+    tool = name2tool["nested_tool"]
 
-    # Serialize exactly as `call_assistant` advertises it: single-entry {key: tool} context.
+    # Serialize exactly as `call_assistant` advertises it: a {name: tool} context.
     spec = pydantic.TypeAdapter(Encodable[type(tool)]).dump_python(
-        tool, mode="json", context={key: tool}
+        tool, mode="json", context={tool.__name__: tool}
     )
     advertised = spec["function"]["name"]
-    assert advertised == key  # advertised under the context key, not __name__
+    assert advertised == tool.__name__  # advertised under the key decode resolves by
 
     # A tool call using the advertised name decodes back to the same tool object.
     raw_tool_call = {
@@ -278,7 +276,7 @@ def test_agent_method_tool_advertised_name_matches_decode_key():
         "function": {"name": advertised, "arguments": '{"payload": "x"}'},
     }
     decoded = pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
-        raw_tool_call, context=tools
+        raw_tool_call, context={_TOOLS_KEY: name2tool}
     )
     assert decoded.tool is tool
 
