@@ -296,9 +296,12 @@ class _TypeofIntp(PureInterpretation):
         return Box(op.__type_rule__(*args, **kwargs))
 
 
+_TYPEOF_INTP = _TypeofIntp()
+
+
 def _typeof(term: Expr):
     """Evaluate the cached type analysis without unwrapping its result."""
-    return evaluate(term, intp=_TypeofIntp())
+    return evaluate(term, intp=_TYPEOF_INTP)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
