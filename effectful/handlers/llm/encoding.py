@@ -608,6 +608,12 @@ class SynthesizedFunction(EncodedFunction):
         """),
     )
 
+    # A general `Callable` is type-checked against the requested signature, so it must
+    # be fully annotated. A Template *body* is instead checked against the enclosing
+    # Template's own signature (`splice_template_body`), which already carries the
+    # annotations -- so its subclasses waive this and may omit the `self` receiver.
+    _require_annotations: typing.ClassVar[bool] = True
+
     @pydantic.field_validator("module_code")
     @classmethod
     def _validate_module_code(cls, value: str) -> str:
@@ -625,17 +631,17 @@ class SynthesizedFunction(EncodedFunction):
                 f"got {type(last_stmt).__name__}"
             )
 
-        for arg in last_stmt.args.args:
-            if arg.annotation is None:
+        if cls._require_annotations:
+            for arg in last_stmt.args.args:
+                if arg.annotation is None:
+                    raise ValueError(
+                        f"decode() requires all parameters to have type annotations, "
+                        f"parameter '{arg.arg}' is missing an annotation"
+                    )
+            if last_stmt.returns is None:
                 raise ValueError(
-                    f"decode() requires all parameters to have type annotations, "
-                    f"parameter '{arg.arg}' is missing an annotation"
+                    "decode() requires the function to have a return type annotation"
                 )
-
-        if last_stmt.returns is None:
-            raise ValueError(
-                "decode() requires the function to have a return type annotation"
-            )
 
         for stmt in module.body:
             if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
@@ -654,55 +660,48 @@ class SynthesizedFunction(EncodedFunction):
         return value
 
     @classmethod
-    def _create_typed_synthesized_function(
-        cls, callable_type: type[Callable], *, method: bool = False
-    ) -> type[typing.Self]:
-        """Create a SynthesizedFunction subclass with type signature in the model description.
+    def _create_model_from_callable_type(cls, typ: type[Callable]) -> type[typing.Self]:
+        """Create a SynthesizedFunction subclass carrying the requested signature in
+        the model-facing description.
 
-        Uses pydantic.create_model to ensure the description is included in the JSON schema
-        sent to the LLM, informing it of the expected function signature.
-
-        When ``method``, the leading parameter is the instance receiver: it is
-        rendered as ``self`` (rather than by its type) so the model writes it
-        explicitly, and a note records that it may be left unannotated.
+        Uses ``pydantic.create_model`` so the rendered signature (and any
+        subclass-specific instructions) ride in the JSON schema ``description`` sent
+        to the model. Subclasses customize the receiver rendering via `_param_names`
+        and add guidance via `_extra_instructions`.
         """
-        if not typing.get_args(callable_type):
-            type_signature = "Callable"
-        # Callable[[arg1, arg2, ...], return_type]
-        elif len(typing.get_args(callable_type)) >= 2:
-            param_types = typing.get_args(callable_type)[0]
-            return_type = typing.get_args(callable_type)[-1]
-
-            if param_types is ...:
-                params_str = "..."
-            elif isinstance(param_types, list | tuple):
-                names = [getattr(t, "__name__", str(t)) for t in param_types]
-                # The receiver's type is uninformative (it is the Agent class); name
-                # it `self` so the model reproduces the parameter instead of guessing.
-                if method and names:
-                    names[0] = "self"
-                params_str = ", ".join(names)
-            else:
-                params_str = str(param_types)
-
-            return_str = getattr(return_type, "__name__", str(return_type))
-            type_signature = f"Callable[[{params_str}], {return_str}]"
-        else:
-            type_signature = str(callable_type)
-
-        doc = f"Python function with signature <signature>{type_signature}</signature>"
-        if method:
-            doc += (
-                "\n\nThis implements an instance method: the first parameter is the "
-                "instance receiver `self`. Include it as the first parameter; you may "
-                "leave it unannotated."
-            )
-
+        doc = (
+            f"Python function with signature "
+            f"<signature>{cls._signature_str(typ)}</signature>"
+            f"{cls._extra_instructions()}"
+        )
         return pydantic.create_model(
             "TypedSynthesizedFunction",
             __base__=cls,
             __doc__=doc,
         )
+
+    @classmethod
+    def _signature_str(cls, typ: type[Callable]) -> str:
+        """Render a ``Callable[[...], ...]`` signature by type *name* (not its
+        fully-qualified ``repr``), so the model sees ``Callable[[State], int]`` rather
+        than ``collections.abc.Callable[[pkg.mod.State], builtins.int]``."""
+        args = typing.get_args(typ)
+        if not args:
+            return "Callable"
+        param_types, return_type = args
+        params_str = (
+            "..." if param_types is ... else ", ".join(cls._param_names(param_types))
+        )
+        return_str = getattr(return_type, "__name__", str(return_type))
+        return f"Callable[[{params_str}], {return_str}]"
+
+    @classmethod
+    def _param_names(cls, param_types: typing.Iterable[typing.Any]) -> list[str]:
+        return [getattr(t, "__name__", str(t)) for t in param_types]
+
+    @classmethod
+    def _extra_instructions(cls) -> str:
+        return ""
 
 
 class SynthesizedTemplateBody(SynthesizedFunction):
@@ -736,36 +735,61 @@ class SynthesizedTemplateBody(SynthesizedFunction):
         """),
     )
 
-    @pydantic.field_validator("module_code")
+    # A Template body is checked against the Template's own (already-annotated)
+    # signature, so the synthesized body's annotations are optional.
+    _require_annotations: typing.ClassVar[bool] = False
+
+
+class SynthesizedMethodTemplateBody(SynthesizedTemplateBody):
+    """Structured output for synthesizing an *instance-method* `Template`'s body.
+
+    Decoded through `_pydantic_template_body`: the function is type-checked against
+    the enclosing Template's source and its doctests are run with self/recursive
+    calls routed to the synthesized implementation.
+
+    Unlike `SynthesizedFunction`, the parameter and return *annotations* are not
+    required: a Template body is type-checked against the Template's own signature
+    (see `splice_template_body`), so the model may omit or vary them -- in
+    particular it need not annotate the ``self`` receiver of an instance-method
+    Template.
+    """
+
+    module_code: str = pydantic.Field(
+        ...,
+        description=textwrap.dedent("""
+        The complete Python source implementing the instance-method Template shown in
+        its spec. The code MUST satisfy the following constraints, or it will fail
+        validation:
+
+        <constraints>
+        1. The code MUST be one complete syntactically valid Python module.
+        2. The code MUST NOT use star imports or ``__future__`` imports.
+        3. The function definition MUST be the LAST statement - do not add any code after it.
+        4. Write the function with the Template's signature: its FIRST parameter is the
+        instance receiver ``self`` (which you may leave unannotated); all other parameter
+        and return annotations are optional too.
+        5. Do not include a docstring or doctests; the Template's are supplied automatically.
+        </constraints>
+        """),
+    )
+
     @classmethod
-    def _validate_module_code(cls, value: str) -> str:
-        # Structural checks only. Parameter/return annotations are intentionally NOT
-        # required: a TemplateBody is type-checked against the Template's real
-        # signature (`splice_template_body`), which already carries them -- so the
-        # model may omit them, and need not annotate the `self` receiver.
-        module: ast.AST = ast.parse(value)
-        if not isinstance(module, ast.Module) or not module.body:
-            raise ValueError(
-                "decode() requires module code with at least one statement."
-            )
-        last_stmt = module.body[-1]
-        if not isinstance(last_stmt, ast.FunctionDef):
-            raise ValueError(
-                f"decode() requires the last statement to be a function definition, "
-                f"got {type(last_stmt).__name__}"
-            )
-        for stmt in module.body:
-            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
-                raise ValueError(
-                    "decode() does not allow __future__ imports in the module code"
-                )
-            if isinstance(stmt, ast.ImportFrom) and any(
-                alias.name == "*" for alias in stmt.names
-            ):
-                raise ValueError(
-                    "decode() does not allow star imports in the module code"
-                )
-        return value
+    def _param_names(cls, param_types: typing.Iterable[typing.Any]) -> list[str]:
+        # The method's callable type already carries the receiver as its first
+        # parameter (with an uninformative Agent-class type); relabel it ``self`` so
+        # the model reproduces it rather than inventing one -- do NOT prepend a receiver.
+        names = super()._param_names(param_types)
+        if names:
+            names[0] = "self"
+        return names
+
+    @classmethod
+    def _extra_instructions(cls) -> str:
+        return (
+            "\n\nThis implements an instance method: the first parameter is the "
+            "instance receiver `self`. Include it as the first parameter; you may "
+            "leave it unannotated."
+        )
 
 
 def _serialize_synthesized(
@@ -852,7 +876,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
     Template-body synthesis (`submit_solution`) has its own encoding,
     `_pydantic_template_body`.
     """
-    typed_enc = SynthesizedFunction._create_typed_synthesized_function(
+    typed_enc = SynthesizedFunction._create_model_from_callable_type(
         Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
     )
 
@@ -899,9 +923,8 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
     implementation, so a doctest that calls the Template (including for recursion)
     exercises the freshly synthesized code rather than re-invoking the model.
     """
-    typed_enc = SynthesizedTemplateBody._create_typed_synthesized_function(
+    typed_enc = SynthesizedTemplateBody._create_model_from_callable_type(
         ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
-        method=False,
     )
 
     def _validate(
@@ -955,13 +978,12 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
     their own instances -- route ``agent.method(...)`` on *any* instance to the
     synthesized implementation.
     """
-    typed_enc = SynthesizedTemplateBody._create_typed_synthesized_function(
+    typed_enc = SynthesizedMethodTemplateBody._create_model_from_callable_type(
         ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
-        method=True,
     )
 
     def _validate(
-        value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
+        value: SynthesizedMethodTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
         if isinstance(value, str):
             value = typed_enc.model_validate_json(value)
