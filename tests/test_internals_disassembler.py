@@ -1021,6 +1021,71 @@ def test_outermost_iterable_adaptors(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # A conditional expression as an inner loop's iterable. Its value is
+        # consumed by FOR_ITER rather than by the yield, so the half-built
+        # IfExp has to be pulled back out of the element slot.
+        (y for x in range(4) for y in (range(x) if x % 2 == 0 else range(x, x + 2))),
+        (y for x in range(4) for y in ([x] if x else [0])),
+        (y for x in range(4) for y in (range(x) if x > 1 else range(1))),
+        # An *empty* list literal as an arm is misread: BUILD_LIST(0) is also
+        # how an inlined list comprehension starts, and nothing later
+        # disambiguates the two here.
+        pytest.param(
+            (y for x in range(4) for y in ([x] if x else [])),
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="an empty list literal is indistinguishable from the start of a list comprehension",
+            ),
+        ),
+        ((x, y) for x in range(3) for y in ([0] if x % 2 else [1, 2])),
+        # ... with a filter on the inner loop, and nested two deep
+        (y for x in range(4) for y in (range(x) if x % 2 == 0 else [9]) if y > 0),
+        pytest.param(
+            (
+                z
+                for x in range(3)
+                for y in (range(x) if x else [0])
+                for z in ([y] if y else [7])
+            ),
+            marks=pytest.mark.xfail(
+                strict=True,
+                reason="two conditional iterables in one comprehension leave paths that do not pairwise merge",
+            ),
+        ),
+        # ... and one whose arms are comprehensions of different kinds
+        (y for x in range(3) for y in ([i for i in range(x)] if x else {8})),
+    ],
+)
+def test_conditional_expression_as_iterable(genexpr):
+    """Test a conditional expression in the iterable position of a for clause."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # An always-false filter lets the compiler drop the body entirely, so no
+        # element expression survives in the bytecode. The loop still runs.
+        (x for x in range(6) if False),
+        (x for x in range(6) if x and False),
+        (y for x in range(6) if False and (y := x)),  # noqa: F821
+        ([x] for x in range(4) if False),
+        ((x, y) for x in range(4) for y in range(3) if False),
+        (x for x in range(6) if False if x > 1),
+        ({x for x in range(3)} for _ in range(2) if False),
+    ],
+)
+def test_unreachable_comprehension_body(genexpr):
+    """A comprehension whose body the compiler proved unreachable yields nothing."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+    assert materialize(compile_and_eval(ast_node)) == []
+
+
 def test_outermost_iterable_partially_consumed_adaptor():
     """A consumed prefix is reflected in the adaptor's inner iterators."""
     zipped = zip([1, 2, 3], [4, 5, 6])

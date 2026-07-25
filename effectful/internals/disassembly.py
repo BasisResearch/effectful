@@ -253,6 +253,25 @@ class BranchIdentifier(ast.NodeVisitor):
         return self.generic_visit(node)
 
 
+@functools.cache
+def _instructions(
+    code: types.CodeType,
+) -> collections.abc.Mapping[int, dis.Instruction]:
+    """Decode a code object once; every state derived from it shares the result."""
+    return collections.OrderedDict(
+        (instr.offset, instr) for instr in dis.get_instructions(code)
+    )
+
+
+@functools.cache
+def _next_instructions(
+    code: types.CodeType,
+) -> collections.abc.Mapping[int, dis.Instruction]:
+    """Map each instruction offset to the instruction that follows it."""
+    ordered = list(_instructions(code).values())
+    return {before.offset: after for before, after in zip(ordered[:-1], ordered[1:])}
+
+
 @dataclass(frozen=True)
 class ReconstructionState:
     """State maintained during AST reconstruction from bytecode.
@@ -299,17 +318,14 @@ class ReconstructionState:
     # KW_NAMES has no stack effect, so the names cannot live on `stack`.
     kw_names: tuple[str, ...] | None = field(default=None)
 
-    @functools.cached_property
-    def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
-        """Get the bytecode instructions for the current code object."""
-        return collections.OrderedDict(
-            (instr.offset, instr) for instr in dis.get_instructions(self.code)
-        )
+    @property
+    def instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
+        """The bytecode instructions of the current code object, by offset."""
+        return _instructions(self.code)
 
-    @functools.cached_property
+    @property
     def next_instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
-        instrs_list = list(self.instructions.values())
-        return {i1.offset: i2 for i1, i2 in zip(instrs_list[:-1], instrs_list[1:])}
+        return _next_instructions(self.code)
 
 
 # Python version enum for version-specific handling
@@ -703,41 +719,21 @@ def _conjoin(conditions: list[ast.expr]) -> ast.expr | None:
         return ast.BoolOp(op=ast.And(), values=list(conditions))
 
 
-def _negates(candidate: ast.expr, condition: ast.expr) -> bool:
-    """Is ``candidate`` syntactically ``not condition``?"""
-    return (
-        isinstance(candidate, ast.UnaryOp)
-        and isinstance(candidate.op, ast.Not)
-        and ast.dump(candidate.operand) == ast.dump(condition)
-    )
-
-
-def _absorb(disjuncts: list[ast.expr]) -> list[ast.expr]:
-    """Apply ``X or (not X and Y)`` == ``X or Y`` to a list of disjuncts.
-
-    Enumerating paths records the negation of every test a path declined, so a
-    later disjunct restates the negation of an earlier one. Dropping it is not
-    merely tidier: `or` short-circuits, so the earlier disjunct has already been
-    evaluated, and leaving the negation in would evaluate it a second time --
-    visibly wrong when the condition contains an assignment expression.
-    """
-    absorbed: list[ast.expr] = []
-    for index, disjunct in enumerate(disjuncts):
-        earlier = disjuncts[:index]
-        if isinstance(disjunct, ast.BoolOp) and isinstance(disjunct.op, ast.And):
-            kept = [
-                value
-                for value in disjunct.values
-                if not any(_negates(value, other) for other in earlier)
-            ]
-            if kept and len(kept) < len(disjunct.values):
-                disjunct = _conjoin(kept)  # type: ignore[assignment]
-        absorbed.append(disjunct)
-    return absorbed
-
-
 def _disjoin(left: ast.expr, right: ast.expr) -> ast.expr:
-    """Combine two conditions with ``or``, flattening nested disjunctions."""
+    """Combine two conditions with ``or``, flattening nested disjunctions.
+
+    Two rewrites are applied while combining. Duplicate disjuncts are dropped,
+    because paths through independent filters repeat them. And ``X or (not X and
+    Y)`` becomes ``X or Y``: enumerating paths records the negation of every
+    test a path declined, so a later disjunct restates the negation of an
+    earlier one. Dropping it is not merely tidier -- `or` short-circuits, so the
+    earlier disjunct has already been evaluated, and leaving the negation in
+    would evaluate it a second time, which is visibly wrong when the condition
+    contains an assignment expression.
+
+    Conditions are keyed by ``ast.dump`` exactly once each: these lists get long
+    and the expressions large, so re-dumping per comparison dominates.
+    """
     values: list[ast.expr] = []
     for side in (left, right):
         if isinstance(side, ast.BoolOp) and isinstance(side.op, ast.Or):
@@ -745,24 +741,49 @@ def _disjoin(left: ast.expr, right: ast.expr) -> ast.expr:
         else:
             values.append(side)
 
-    # Drop duplicates; paths through independent filters repeat their disjuncts.
     unique: list[ast.expr] = []
+    seen: set[str] = set()
     for value in values:
-        if not any(ast.dump(value) == ast.dump(seen) for seen in unique):
-            unique.append(value)
+        key = ast.dump(value)
+        if key in seen:
+            continue
+        seen.add(key)
 
-    unique = _absorb(unique)
+        # Absorb the negations of the disjuncts already accepted.
+        if isinstance(value, ast.BoolOp) and isinstance(value.op, ast.And):
+            kept = [
+                conjunct
+                for conjunct in value.values
+                if not (
+                    isinstance(conjunct, ast.UnaryOp)
+                    and isinstance(conjunct.op, ast.Not)
+                    and ast.dump(conjunct.operand) in seen
+                )
+            ]
+            if kept and len(kept) < len(value.values):
+                conjoined = _conjoin(kept)
+                assert conjoined is not None
+                value = conjoined
+
+        unique.append(value)
+
     return unique[0] if len(unique) == 1 else ast.BoolOp(op=ast.Or(), values=unique)
 
 
-def _merge_filters_into(node: typing.Any, other: typing.Any) -> bool:
+def _merge_filters_into(
+    node: typing.Any, other: typing.Any, mutate: bool = True
+) -> bool:
     """Walk two results in parallel, OR-ing the filters where they disagree.
 
     Everything outside a ``comprehension.ifs`` has to match exactly; the ifs are
     where the paths are allowed to differ, and are combined rather than
     compared. Filters are not recursed into, so a nested comprehension inside a
-    filter is treated as part of that filter's condition. Mutates ``node``;
-    returns False if the two results differ somewhere they may not.
+    filter is treated as part of that filter's condition.
+
+    Returns False if the two results differ somewhere they may not. With
+    ``mutate=False`` nothing is written, which allows compatibility to be tested
+    before paying for a deep copy -- most candidate pairs do not merge, and the
+    copy dominates otherwise.
     """
     if type(node) is not type(other):
         return False
@@ -770,8 +791,10 @@ def _merge_filters_into(node: typing.Any, other: typing.Any) -> bool:
     if isinstance(node, ast.comprehension):
         if ast.dump(node.target) != ast.dump(other.target):
             return False
-        if not _merge_filters_into(node.iter, other.iter):
+        if not _merge_filters_into(node.iter, other.iter, mutate):
             return False
+        if not mutate:
+            return True
 
         guard, other_guard = _conjoin(node.ifs), _conjoin(other.ifs)
         if guard is None or other_guard is None:
@@ -792,12 +815,12 @@ def _merge_filters_into(node: typing.Any, other: typing.Any) -> bool:
                 return False
             if len(mine) != len(theirs):
                 return False
-            if not all(_merge_filters_into(a, b) for a, b in zip(mine, theirs)):
+            if not all(_merge_filters_into(a, b, mutate) for a, b in zip(mine, theirs)):
                 return False
         elif isinstance(mine, ast.AST) or isinstance(theirs, ast.AST):
             if not isinstance(mine, ast.AST) or not isinstance(theirs, ast.AST):
                 return False
-            if not _merge_filters_into(mine, theirs):
+            if not _merge_filters_into(mine, theirs, mutate):
                 return False
         elif mine != theirs:
             return False
@@ -817,6 +840,9 @@ def _merge_filters(left: ast.expr, right: ast.expr) -> ast.expr | None:
     if any(isinstance(n, Skipped) for n in ast.walk(left)):
         return None
     if any(isinstance(n, Skipped) for n in ast.walk(right)):
+        return None
+
+    if not _merge_filters_into(left, right, mutate=False):
         return None
 
     merged = copy.deepcopy(left)
@@ -846,14 +872,21 @@ def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
     # A conditional expression: each path filled in one arm and left a marker in
     # the other, so splice the two together. Sorted for determinism -- set
     # iteration order over the marker names varies with PYTHONHASHSEED.
-    merged: ast.expr = copy.deepcopy(left)
-    spliced = False
     common_keys = set(lb.branching) & set(rb.branching)
-    for key in sorted(common_keys, key=_skipped_offset):
-        if lb.branching[key].testval != rb.branching[key].testval:
-            visited = ReplaceSkipped(key, rb.branching[key].value).visit(merged)
-            assert isinstance(visited, ast.expr)
-            merged, spliced = visited, True
+    differing = [
+        key
+        for key in sorted(common_keys, key=_skipped_offset)
+        if lb.branching[key].testval != rb.branching[key].testval
+    ]
+
+    # Only copy once it is known there is something to splice; this runs for
+    # every candidate pair of paths, most of which have nothing in common.
+    merged: ast.expr = copy.deepcopy(left) if differing else left
+    for key in differing:
+        visited = ReplaceSkipped(key, rb.branching[key].value).visit(merged)
+        assert isinstance(visited, ast.expr)
+        merged = visited
+    spliced = bool(differing)
 
     # The paths may *also* have satisfied different filter conditions on the way
     # to the element, so combine those too rather than picking one arbitrarily.
@@ -1187,6 +1220,35 @@ def handle_return_value(
     return replace(state, stack=new_stack, result=new_result)
 
 
+def _unyielded_comprehension(state: ReconstructionState) -> CompExp | None:
+    """The comprehension of a body the compiler proved unreachable, if any.
+
+    An always-false filter lets the compiler drop the whole body: the loop is
+    still walked, but nothing is ever yielded or appended, so no element
+    expression survives. The partly built comprehension still carries its
+    generators, so it can be rebuilt with a filter that is never satisfied --
+    which iterates exactly as the original did and produces nothing.
+    """
+    for item in reversed(state.stack):
+        if not isinstance(item, CompExp) or not item.generators:
+            continue
+
+        element = item.value if isinstance(item, ast.DictComp) else item.elt
+        if not isinstance(element, Placeholder):
+            continue
+
+        unreachable = copy.deepcopy(item)
+        never = ast.Constant(value=None)
+        if isinstance(unreachable, ast.DictComp):
+            unreachable.key, unreachable.value = never, copy.deepcopy(never)
+        else:
+            unreachable.elt = never
+        unreachable.generators[-1].ifs = [ast.Constant(value=False)]
+        return unreachable
+
+    return None
+
+
 @register_handler("RETURN_VALUE", version=PythonVersion.PY_314)
 def handle_return_value_314(
     state: ReconstructionState, instr: dis.Instruction
@@ -1201,6 +1263,10 @@ def handle_return_value_314(
         ), "A generator may only fall off the end returning None"
         return state
 
+    unreachable = _unyielded_comprehension(state)
+    if unreachable is not None:
+        return replace(state, result=unreachable)
+
     assert len(state.stack) == 2
     new_result = ReplacePlaceholder(ensure_ast(state.stack[-1])).visit(state.stack[-2])
     return replace(state, result=new_result)
@@ -1214,6 +1280,9 @@ def handle_return_const(
     # RETURN_CONST returns a constant value (replaces some LOAD_CONST + RETURN_VALUE patterns)
     # Similar to RETURN_VALUE but with a constant
     if isinstance(state.result, Placeholder):
+        unreachable = _unyielded_comprehension(state)
+        if unreachable is not None:
+            return replace(state, result=unreachable)
         return replace(state, result=ensure_ast(instr.argval))
     else:
         assert instr.argval is None
@@ -1236,28 +1305,47 @@ def handle_for_iter(
     # The iterator should be on top of stack
     iterator: ast.expr = state.stack[-1]
 
-    # Create a new loop variable - we'll get the actual name from STORE_FAST
-    # For now, use a placeholder
-    loop_info = ast.comprehension(
-        target=TargetHole(),
-        iter=ensure_ast(iterator),
-        ifs=[],
-        is_async=0,
-    )
-
     for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-        if isinstance(item, CompExp) and isinstance(
-            getattr(item, "elt", getattr(item, "key", None)), Placeholder
+        if not isinstance(item, CompExp):
+            continue
+
+        element = item.value if isinstance(item, ast.DictComp) else item.elt
+        new_result = copy.deepcopy(item)
+
+        if isinstance(element, Placeholder):
+            loop_iter = ensure_ast(iterator)
+        elif isinstance(element, ast.IfExp) and any(
+            isinstance(x, Placeholder) for x in ast.walk(element)
         ):
-            new_result = copy.deepcopy(item)
-            new_result.generators.append(loop_info)
-            new_stack = (
-                state.stack[:pos]
-                + [new_result]
-                + state.stack[pos + 1 :]
-                + [loop_info.target]
+            # A conditional expression was being built up in the element slot,
+            # but it turned out to be this loop's iterable, as in
+            # `for y in (a if c else b)`. Move it back out and plug the value
+            # this path produced into the arm still awaiting one.
+            if isinstance(new_result, ast.DictComp):
+                new_result.key, new_result.value = Placeholder(), Placeholder()
+            else:
+                new_result.elt = Placeholder()
+
+            plugged = ReplacePlaceholder(ensure_ast(iterator)).visit(
+                copy.deepcopy(element)
             )
-            return replace(state, stack=new_stack)
+            assert isinstance(plugged, ast.expr)
+            loop_iter = plugged
+        else:
+            continue
+
+        # The loop target is not named until the STORE_* that follows.
+        loop_info = ast.comprehension(
+            target=TargetHole(), iter=loop_iter, ifs=[], is_async=0
+        )
+        new_result.generators.append(loop_info)
+        new_stack = (
+            state.stack[:pos]
+            + [new_result]
+            + state.stack[pos + 1 :]
+            + [loop_info.target]
+        )
+        return replace(state, stack=new_stack)
 
     raise TypeError("FOR_ITER did not find partial comprehension on stack")
 
