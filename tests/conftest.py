@@ -20,12 +20,12 @@ requires_vision = pytest.mark.skipif(
 )
 
 requires_openai = pytest.mark.skipif(
-    not litellm.validate_environment(model="gpt-4o-mini")["keys_in_environment"],
+    not os.environ.get("OPENAI_API_KEY"),
     reason="No API key configured for OpenAI",
 )
 
 requires_anthropic = pytest.mark.skipif(
-    not litellm.validate_environment(model="claude-opus-4-6")["keys_in_environment"],
+    not os.environ.get("ANTHROPIC_API_KEY"),
     reason="No API key configured for Anthropic",
 )
 

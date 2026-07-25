@@ -2388,6 +2388,8 @@ class TestPromptCaching:
         with handler(provider):
             result = simple_prompt("math")
         assert isinstance(result, str)
+
+
 # ---------------------------------------------------------------------------
 # Synthetic readers — integration (PR #545 finish-up)
 # ---------------------------------------------------------------------------
