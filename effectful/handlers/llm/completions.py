@@ -26,11 +26,13 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
+from effectful.handlers.llm.evaluation import ReplSession, _repl_session
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -321,19 +323,6 @@ class LexicalReaders(ObjectInterpretation):
         return result
 
 
-@Operation.define
-def _repl_session(env: collections.abc.MutableMapping[str, typing.Any]) -> ReplSession:
-    """Return the REPL session for the current Template call, seeded from `env`.
-
-    `PythonRepl` installs a fresh handler for this inside each `Template.__apply__`
-    (mirroring how `__history__` is managed), giving the session a lifetime of
-    exactly one Template call.  Outside such a scope there is no managed session,
-    so this falls back to a fresh one -- e.g. when tools are listed outside a
-    Template call.
-    """
-    return ReplSession(env)
-
-
 class PythonRepl(ObjectInterpretation):
     """Expose a persistent Python session to the LLM as an `exec_code` Tool.
 
@@ -423,6 +412,7 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    anchor = kwargs.pop("anchor", None)  # ride in kwargs; pop before the LLM call
     tools = dict(collect_tools(env))
     tool_specs = {
         k: typing.cast(
@@ -461,9 +451,15 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
+    # Thread the type-check anchor into the tool-argument context under REPL_ANCHOR_KEY, so
+    # the `Encodable[CodeType]` decoder type-checks a `code` argument (the REPL `exec_code`
+    # tool) against the Template body at decode, splicing in the accumulated REPL session.
+    tool_context = {**tools, REPL_ANCHOR_KEY: anchor} if anchor is not None else tools
     for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            tool_calls += [
+                encoding.validate_python(raw_tool_call, context=tool_context)
+            ]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -482,8 +478,12 @@ def call_assistant[T](
             result = typing.cast(T, serialized_result)
         else:
             try:
+                # Add the type-check anchor to the decode context only (not `env`,
+                # which is exposed as tools), so a synthesized result is checked
+                # against the Template's source.
                 result = response_format.model_validate(
-                    json.loads(serialized_result), context=env
+                    json.loads(serialized_result),
+                    context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
                 ).value
             except Exception as e:
                 raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -735,7 +735,10 @@ class LiteLLMProvider(ObjectInterpretation):
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    env, template.__signature__.return_annotation, **self.config
+                    env,
+                    template.__signature__.return_annotation,
+                    anchor=template.__default__,
+                    **self.config,
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)

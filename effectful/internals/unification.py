@@ -911,11 +911,11 @@ def nested_type(value) -> Box[TypeExpression]:
 
         # Empty collections return their base type
         >>> nested_type([]).value
-        <class 'list'>
+        <class 'collections.abc.MutableSequence'>
         >>> nested_type({}).value
         <class 'dict'>
         >>> nested_type(set()).value
-        <class 'set'>
+        <class 'collections.abc.MutableSet'>
 
         # Sequences become Sequence[element_type]
         >>> nested_type([1, 2, 3]).value
@@ -1058,14 +1058,20 @@ def _(value: collections.abc.Mapping):
         ktyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.keys()]
         )
-        if ktyp is str:
-            # str-keyed multi-entry dicts → always TypedDict
-            fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
-        if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
+        if type(value) is dict and ktyp is str and isinstance(vtyp, UnionType):
+            # str-keyed dicts with *heterogeneous* values → TypedDict, which
+            # captures the per-field value types that a single ``V`` cannot.
+            # Homogeneous str-keyed dicts fall through to ``Mapping[str, V]``
+            # below: a closed required-key TypedDict is unsound for a runtime
+            # value (it is really an inhabitant of ``dict[str, V]``), and two
+            # sibling dicts with different keys would otherwise fail to unify
+            # against a shared TypeVar (gh #662).
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+        elif isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
             return Box(type(value))
         else:
             return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
@@ -1073,17 +1079,24 @@ def _(value: collections.abc.Mapping):
 
 @nested_type.register
 def _(value: collections.abc.Collection):
-    if len(value) == 0:
-        return Box(type(value))
-    elif len(value) == 1:
+    typ = canonicalize(type(value))
+    if not (
+        isinstance(typ, type) and hasattr(typ, "__class_getitem__")
+    ):  # not a parameterizable type
+        return Box(typ)
+
+    l = len(value)
+    if l == 0:
+        return Box(typ)
+    elif l == 1:
         vtyp = nested_type(next(iter(value))).value
-        return Box(canonicalize(type(value))[vtyp])  # type: ignore
+        return Box(typ[vtyp])  # type: ignore
     else:
         valtyp = functools.reduce(operator.or_, [nested_type(x).value for x in value])
         if isinstance(valtyp, UnionType):
-            return Box(type(value))
+            return Box(typ)
         else:
-            return Box(canonicalize(type(value))[valtyp])  # type: ignore
+            return Box(typ[valtyp])  # type: ignore
 
 
 @nested_type.register

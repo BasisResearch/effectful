@@ -1189,6 +1189,20 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
     raise NotHandled
 
 
+class _MethodSynthesizer:
+    """A class whose *method* is a Template returning a Callable, so its synthesis
+    anchor is a bound-method ``__default__`` (eb8680: bound-method Templates)."""
+
+    @Template.define
+    def make_adder(self) -> Callable[[int, int], int]:
+        """Generate a Python function that adds two integers together.
+
+        The function should take two integer parameters and return their sum.
+        Return a code block whose last definition is the function.
+        """
+        raise NotHandled
+
+
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
@@ -1204,6 +1218,23 @@ class TestCallableSynthesis:
             assert callable(add_func)
             assert add_func(2, 3) == 5
             assert add_func(0, 0) == 0
+            assert add_func(-1, 1) == 0
+            assert add_func(100, 200) == 300
+
+    def test_synthesize_via_bound_method(self, request):
+        """A *method* Template synthesizes a callable end-to-end -- exercising the
+        bound-method `__default__` anchor through the real splice type-check
+        (RetryLLMHandler lets the model recover from a malformed first draft)."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(4))),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            add_func = _MethodSynthesizer().make_adder()
+
+            assert callable(add_func)
+            assert add_func(2, 3) == 5
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 

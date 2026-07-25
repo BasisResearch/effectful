@@ -51,4 +51,4 @@ jobs:
       - name: Run tests
         env:
           MKL_NUM_THREADS: 1
-        run: uv run pytest ${{ matrix.test-group.paths }} -n auto
+        run: uv run pytest ${{ matrix.test-group.paths }} -n logical
