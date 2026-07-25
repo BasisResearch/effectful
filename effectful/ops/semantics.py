@@ -9,12 +9,10 @@ from collections.abc import Callable
 from typing import Any
 
 from effectful.ops.syntax import (
-    CollectionConstrOperation,
+    ConstructorOperation,
+    DataclassConstructorOperation,
     _BaseTerm,
     _CustomSingleDispatchCallable,
-    as_list,
-    as_set,
-    as_tuple,
     defop,
 )
 from effectful.ops.types import (
@@ -123,18 +121,6 @@ def handler(intp: Interpretation):
         yield intp
 
 
-class DataclassConstrOperation(Operation): ...
-
-
-@functools.cache
-def _as_type(typ: type, operation_type=CollectionConstrOperation):
-    @operation_type.define
-    def _as_typ(*args, **kwargs) -> typ:  # type: ignore[valid-type]
-        return typ(*args, **kwargs)
-
-    return _as_typ
-
-
 @_CustomSingleDispatchCallable
 def evaluate[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -178,13 +164,11 @@ def _evaluate_object[T](expr: T, **kwargs) -> T:
 
 
 def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
-    typ: type = type(expr)
-    dataclass_op = _as_type(typ, operation_type=DataclassConstrOperation)
     subst = {
         field.name: evaluate(getattr(expr, field.name))
         for field in dataclasses.fields(expr)  # type: ignore[arg-type]
     }
-    return typing.cast(T, dataclass_op(**subst))
+    return typing.cast(T, DataclassConstructorOperation.define(type(expr))(**subst))
 
 
 @evaluate.register(Term)
@@ -204,19 +188,24 @@ def _evaluate_operation(expr: Operation, **kwargs) -> Operation:
 
 @evaluate.register(collections.defaultdict)
 def _evaluate_defaultdict(expr, **kwargs):
-    return _as_type(type(expr))(
-        expr.default_factory, as_list(*(evaluate(item) for item in expr.items()))
+    return ConstructorOperation.define(type(expr))(
+        expr.default_factory,
+        as_tuple(*(evaluate(item) for item in expr.items())),
     )
 
 
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
-    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr.items())))
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr.items()))
+    )
 
 
 @evaluate.register(collections.abc.Mapping)
 def _evaluate_mapping(expr, **kwargs):
-    return _as_type(type(expr))(as_list(*(evaluate(item) for item in expr.items())))
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr.items()))
+    )
 
 
 @evaluate.register(tuple)
@@ -226,29 +215,35 @@ def _evaluate_tuple(expr, **kwargs):
         and hasattr(expr, "_fields")
         and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
     ):  # namedtuple
-        return _as_type(type(expr))(
+        return ConstructorOperation.define(type(expr))(
             **{field: evaluate(getattr(expr, field)) for field in expr._fields}
         )
     else:
-        return _as_type(type(expr))(as_tuple(*(evaluate(item) for item in expr)))
+        return ConstructorOperation.define(type(expr))(
+            as_tuple(*(evaluate(item) for item in expr))
+        )
 
 
 @evaluate.register(collections.abc.Sequence)
 def _evaluate_sequence(expr, **kwargs):
-    seq = as_list(*(evaluate(item) for item in expr))
-    cast = _as_type(type(expr))
-    return cast(seq)
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 @evaluate.register(collections.abc.ItemsView)
 @evaluate.register(collections.abc.KeysView)
 def _evaluate_set_view(expr, **kwargs):
-    return as_set(*(evaluate(item) for item in expr))
+    return ConstructorOperation.define(set)(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
-    return as_list(*(evaluate(item) for item in expr))
+    return ConstructorOperation.define(list)(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 def _simple_type(tp: type) -> type:
@@ -302,7 +297,11 @@ def typeof[T](term: Expr[T]) -> type[T]:
         return Box(op.__type_rule__(*args, **kwargs))
 
     with interpreter(
-        {apply: _apply, CollectionConstrOperation.__apply__: apply.__default_rule__}
+        {
+            apply: _apply,
+            ConstructorOperation.__apply__: apply.__default_rule__,
+            DataclassConstructorOperation.__apply__: _apply,
+        }
     ):
         type_or_value = evaluate(term)
         if isinstance(type_or_value, Box):
@@ -343,7 +342,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     _fvsof_fvs = defop(object, name="fvsof_fvs")
     _fvsof_binders = defop(object, name="fvsof_binders")
 
-    def _apply_collection_binders(op, *args, **kwargs):
+    def _apply_collection_binders(*args, **kwargs):
         return frozenset().union(
             *(
                 {x}
@@ -394,13 +393,15 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         {
             _fvsof_fvs: {
                 apply: _apply_fvs,
-                CollectionConstrOperation.__apply__: _apply_passthrough_fvs,
-                DataclassConstrOperation.__apply__: _apply_passthrough_fvs,
+                ConstructorOperation.__apply__: _apply_passthrough_fvs,
             },
-            _fvsof_binders: {
-                CollectionConstrOperation.__apply__: _apply_collection_binders,
-                apply: _apply_binders,
-            },
+            _fvsof_binders: (
+                {apply: _apply_binders}
+                | {
+                    ConstructorOperation.define(t): _apply_collection_binders
+                    for t in (dict, list, set, tuple)
+                }
+            ),
         }
     )
 

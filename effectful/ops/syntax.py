@@ -518,11 +518,11 @@ def defdata[T](
         {
             typ: {
                 apply: apply_type,
-                CollectionConstrOperation.__apply__: apply.__default_rule__,
+                ConstructorOperation.__apply__: apply.__default_rule__,
             },
             cast: {
                 apply: apply_cast,
-                CollectionConstrOperation.__apply__: apply.__default_rule__,
+                ConstructorOperation.__apply__: apply.__default_rule__,
             },
         }
     )
@@ -1340,24 +1340,18 @@ class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
 
 
-class CollectionConstrOperation(Operation): ...
+class ConstructorOperation[**Q, V](Operation[Q, V]):
+    @classmethod
+    @functools.cache
+    def define[T](cls, typ: type[T]) -> "ConstructorOperation[Any, T]":
+        @Operation.define
+        def _as_typ(*args, **kwargs) -> typ:  # type: ignore[valid-type]
+            return typ(*args, **kwargs)
+
+        return _as_typ
 
 
 @CollectionConstrOperation.define
 def as_tuple(*args) -> tuple:
     return tuple(args)
-
-
-@CollectionConstrOperation.define
-def as_list[T](*args: T) -> list[T]:
-    return list(args)
-
-
-@CollectionConstrOperation.define
-def as_set[T](*args: T) -> set[T]:
-    return set(args)
-
-
-@CollectionConstrOperation.define
-def as_dict[K, V](*args: tuple[K, V]) -> dict[K, V]:
-    return dict(args)
+class DataclassConstructorOperation[**Q, V](ConstructorOperation): ...

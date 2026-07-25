@@ -14,7 +14,7 @@ except ImportError:
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
-    CollectionConstrOperation,
+    ConstructorOperation,
     Scoped,
     _BaseTerm,
     _CustomSingleDispatchCallable,
@@ -107,7 +107,7 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
             _getitem_term: {
                 apply: _retain,
                 jax_getitem: _retain_getitem,
-                CollectionConstrOperation.__apply__: apply.__default_rule__,
+                ConstructorOperation.__apply__: apply.__default_rule__,
             },
         }
     )
