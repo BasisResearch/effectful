@@ -48,7 +48,7 @@ import collections.abc
 import dataclasses
 import textwrap
 
-from docs.source.llm_examples.reasoning.gridworlds import Action, Color, Game, State, Transition
+from gridworlds import Action, Color, Game, State, Transition
 
 from effectful.handlers.llm import Agent, Template
 
