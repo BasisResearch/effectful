@@ -1,5 +1,6 @@
 import functools
 import math
+import random
 import sys
 import typing
 from collections.abc import Iterable, Mapping
@@ -1359,3 +1360,22 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
     )
     rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+@pytest.mark.parametrize("T,K", [(20, 3)])
+def test_comprehension_chain_0(T, K):
+
+    fs = [[[random.uniform(0, 1) for _ in range(K)] for _ in range(K)] for _ in range(T)]
+
+    @Operation.define
+    def phi() -> list[list[list[float]]]:
+        raise NotHandled
+
+    with handler(NormalizeIntp):
+        zf = Sum(
+            Product(phi()[t][ixs[t]][ixs[t + 1]] for t in range(T - 1))
+            for ixs in CartesianProduct(range(K) for _ in range(T))
+        )
+
+    with handler(EvaluateIntp), handler({phi: lambda: fs}):
+        zf = evaluate(zf)
