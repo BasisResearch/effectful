@@ -20,6 +20,7 @@ from effectful.ops.syntax import (
     as_dict,
     defdata,
     deffn,
+    defop,
     implements,
     ite,
     range_,
@@ -595,12 +596,19 @@ class ReduceEmpty(ObjectInterpretation):
 
 
 class ReducePartial(ObjectInterpretation):
+    unrolled: collections.abc.Set[Operation] | None
+
+    def __init__(self, unrolled: collections.abc.Set[Operation] | None = None):
+        self.unrolled = unrolled
+
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams):
         if not streams:
             return fwd()
 
         for stream_key, stream_body, streams_tail in outer_stream(streams):
+            if self.unrolled is not None and stream_key not in self.unrolled:
+                continue
             if isinstance(stream_body, Term):
                 continue
             stream_values_iter = iter(stream_body)
@@ -1061,6 +1069,202 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             result = monoid.reduce(result_body, tail_streams)
             return result
 
+        return fwd()
+
+
+class _GroundRow(collections.abc.Mapping):
+    """A cartesian-product row that mints a variable per index it is asked for.
+
+    Standing this in for a row variable passes a concrete key straight
+    to :meth:`__getitem__` here, which answers with the variable for that plate
+    assignment -- minting it, and the stream it ranges over, on first sight.
+    Asking twice for the same assignment gives the same variable, which is what
+    ties the factors of a chain together.
+
+    A key that is still symbolic never reaches here at all: the subscript stays
+    a term until the fold supplying the index is expanded, after which the same
+    traversal passes over it again with the key concrete.
+    """
+
+    variables: dict[tuple, Operation[[], typing.Any]]
+    streams: dict[Operation[[], typing.Any], collections.abc.Iterable]
+    sealed: bool
+
+    def __init__(
+        self,
+        cprod_body: collections.abc.Iterable,
+        cprod_streams: dict[Operation, collections.abc.Iterable],
+    ):
+        """cprod_body is the body and cprod_streams is ths streams of a CartesianProduct.reduce expression"""
+        (self._index, self._value), self._value_streams = self._row_shape(cprod_body)
+        self._plates = cprod_streams
+        self.variables = {}
+        self.streams = {}
+        # A subscript whose index is not concrete yet holds the row until the
+        # fold supplying that index is expanded, so while grounding is under
+        # way the row does legitimately sit inside a term.
+        self.sealed = False
+
+    def __getitem__(self, key: tuple) -> Term:
+        key = key if isinstance(key, tuple) else (key,)
+        if key not in self.variables:
+            fresh = defop(self._value.op)
+            self.streams[fresh] = self._value_streams[self._value.op]
+            self.variables[key] = fresh
+        return self.variables[key]()
+
+    @staticmethod
+    def _row_shape(cprod_body) -> tuple[tuple, Mapping] | None:
+        """The index and value of a cartesian product's rows, with the value's
+        domains, or ``None`` if the body is not a row stream.
+
+        A row stream is a union of one-entry rows: for each value its domain takes,
+        a row mapping ``idx`` to that value. The value must be a bare call of its
+        domain variable, since a key's variable is that variable renamed.
+        """
+        match cprod_body:
+            case Term(
+                Union.reduce,
+                (
+                    [Term(effectful.ops.syntax.as_dict, ((idx, value),), {})],
+                    value_streams,
+                ),
+                {},
+            ) if (
+                isinstance(idx, Sequence)
+                and all(isinstance(i, Term) and not i.args for i in idx)
+                and isinstance(value, Term)
+                and not value.args
+                and value.op in value_streams
+            ):
+                return (tuple(idx), value), value_streams
+            case _:
+                return None
+
+    def residual(self) -> Mapping | None:
+        """What is left of the row once the keys the body used are taken out.
+
+        Grounding consumes the keys the body subscripts; the rest are still
+        assigned a value by every row, so they still multiply the number of
+        rows. Rather than accounting for them, they stay in the expression --
+        the same cartesian product over the plate values no key consumed, which
+        :class:`ReduceDistributeCartesianProduct` also leaves behind when it
+        peels one plate off a product over several.
+
+        ``None`` if what is left cannot be written as a cartesian product: the
+        complement of a set of keys is only a product of plate ranges when
+        there is one plate.
+        """
+        consumed = {
+            plate: {key[position] for key in self.variables}
+            for position, plate in enumerate(i.op for i in self._index)
+        }
+        remaining = {
+            plate: [v for v in values if v not in consumed.get(plate, ())]
+            for plate, values in self._plates.items()
+        }
+        if not any(remaining.values()):
+            return {}
+        if len(self._plates) > 1:
+            return None
+        return {plate: values for (plate, values) in remaining.items() if values}
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+
+@evaluate.register
+def _(expr: _GroundRow):
+    if expr.sealed:
+        raise ValueError(f"{expr} should not have lived long enough to get here")
+    return expr
+
+
+class ReduceGroundCartesianProduct(ObjectInterpretation):
+    """Replace a cartesian-product stream with one stream per plate assignment.
+
+    reduce(M, body, {X: CartesianProduct.reduce(Union.reduce([as_dict((idx, w))], D), P)} ∪ S)
+    ═══════════════════════════════════════════════════════════════════════════
+    reduce(M, body[X[a] := w_a], {w_a: D[idx := a]} ∪ S)
+
+    where ``a`` ranges over the plate assignments the body actually subscripts.
+
+    Where the body folds over the plates uniformly,
+    :class:`ReduceDistributeCartesianProduct` inverts the reduction instead,
+    which is cheaper and leaves the plate fold intact. This rule is the fallback
+    for bodies that admit no per-plate factorization -- a chain ``X[t], X[t+1]``
+    couples adjacent plate indices, so inversion does not apply. Grounding it
+    costs one variable per assignment (``|P|`` variables over ``D``) instead of
+    enumerating the ``|D|^|P|`` rows, after which the resulting reduction over
+    ordinary range streams is an ordinary variable-elimination problem that
+    :class:`Factor` solves.
+    """
+
+    @staticmethod
+    def _plate_folds(body, monoid) -> collections.abc.Set[Operation]:
+        """The stream variables of the product folds nested in this reduction"""
+        if isinstance(body, Term) and _is_monoid_reduce(body.op):
+            inner_monoid, folds = body.op.__self__, (body,)
+        elif isinstance(body, Term) and _is_monoid_plus(body.op):
+            inner_monoid = body.op.__self__
+            folds = tuple(
+                arg
+                for arg in body.args
+                if isinstance(arg, Term) and arg.op is inner_monoid.reduce
+            )
+        else:
+            return frozenset()
+
+        if not folds or not distributes_over(inner_monoid, monoid):
+            return frozenset()
+        return {var for fold in folds for var in fold.args[1]}
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        plate_vars = self._plate_folds(body, monoid)
+        if not plate_vars:
+            return fwd()
+
+        for var, stream in streams.items():
+            if (
+                isinstance(stream, Term)
+                and stream.op is CartesianProduct.reduce
+                and _GroundRow._row_shape(stream.args[0]) is not None
+            ):
+                row = _GroundRow(stream.args[0], stream.args[1])
+            else:
+                continue
+
+            rest = {k: v for (k, v) in streams.items() if k is not var}
+            with handler(ReducePartial(plate_vars)), handler({var: lambda: row}):
+                grounded, tail = evaluate((body, rest))
+
+            # Past this point a row in the result is a subscript whose index
+            # never became concrete, which is a half-ground term rather than a
+            # step of the rewrite.
+            row.sealed = True
+            try:
+                fvsof((grounded, tail))
+            except ValueError:
+                continue
+
+            # Whatever the body did not consume stays a cartesian product over
+            # the plate values no key took, still bound to the row variable, so
+            # its multiplicity is carried by the expression rather than counted
+            # here. Nothing is left when every key was consumed, which is the
+            # ordinary case.
+            plates = row.residual()
+            if plates is None or not row.variables:
+                # Nothing was consumed, so rebinding the row would reproduce
+                # the term this rule was given.
+                continue
+            residual = (
+                {var: CartesianProduct.reduce(stream.args[0], plates)} if plates else {}
+            )
+            return monoid.reduce(grounded, {**row.streams, **residual, **tail})
         return fwd()
 
 
@@ -1778,6 +1982,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceUnion(),
     ReduceSplit(),
     Factor(),
+    ReduceGroundCartesianProduct(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
     ReduceMaskHoist(),

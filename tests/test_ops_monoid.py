@@ -1374,10 +1374,16 @@ def test_comprehension_chain_0(T, K):
         raise NotHandled
 
     with handler(NormalizeIntp):
-        zf = Sum(
+        zf_actual = Sum(
             Product(phi()[t][ixs[t]][ixs[t + 1]] for t in range(T - 1))
             for ixs in CartesianProduct(range(K) for _ in range(T))
         )
 
     with handler(EvaluateIntp), handler({phi: lambda: fs}):
-        zf = evaluate(zf)
+        zf_actual = evaluate(zf_actual)
+
+    alpha = [1.0] * K
+    for t in range(T - 1):
+        alpha = [sum(alpha[i] * fs[t][i][j] for i in range(K)) for j in range(K)]
+    zf_expected = sum(alpha)
+    assert isinstance(zf_actual, float) and math.isclose(zf_actual, zf_expected)
