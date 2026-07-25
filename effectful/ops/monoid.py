@@ -120,6 +120,30 @@ class Monoid[W]:
     def __hash__(self):
         return hash(id(self))
 
+    def __call__(self, comprehension: Generator[Any, None, None]) -> Expr[W]:
+        """Reduce a generator expression over this monoid.
+
+        ``Sum(f(x) * g(x, y) for x in xs for y in ys(x))`` reads as a
+        comprehension but means::
+
+            Sum.reduce(f(x()) * g(x(), y()), {x: xs, y: ys(x())})
+
+        where ``x`` and ``y`` are fresh :class:`Operation` s standing for an
+        element of each stream. See
+        :func:`effectful.internals.comprehension.desugar_comprehension` for how
+        the comprehension's syntax is recovered and what it may contain.
+
+        **Example usage**:
+
+        >>> term = Sum(x * 2 for x in range(4) if x != 1)
+        >>> with handler(coproduct(EvaluateIntp, NormalizeIntp)):
+        ...     evaluate(term)
+        10
+        """
+        from effectful.internals.comprehension import desugar_comprehension
+
+        return desugar_comprehension(comprehension, self)
+
     @Operation.define
     def plus(self, *args: W) -> W:
         """Monoid addition. Handlers supply per-monoid and broadcasting
@@ -1677,9 +1701,11 @@ class ReduceDisequalityMask(ObjectInterpretation):
                 continue
 
             tail_mask_elems = [e for (j, e) in enumerate(mask_elems) if i != j]
-            ret = _neq_to_plus(elem.args, tail_mask_elems) or _neq_to_plus(
-                tuple(reversed(elem.args)), tail_mask_elems
-            )
+            # `or` would ask a Term for its truthiness; take the first result
+            # that is not None, which is what the check below already expects.
+            ret = _neq_to_plus(elem.args, tail_mask_elems)
+            if ret is None:
+                ret = _neq_to_plus(tuple(reversed(elem.args)), tail_mask_elems)
             if ret is not None:
                 return ret
 
