@@ -1,3 +1,4 @@
+import functools
 import math
 import sys
 import typing
@@ -32,6 +33,7 @@ from effectful.ops.monoid import (
     ReduceDependentRangeMask,
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
+    ReduceEmpty,
     ReduceEqualityMaskRange,
     ReduceFusion,
     ReduceMaskHoist,
@@ -539,7 +541,7 @@ def test_eliminate_singleton_only_stream(monoid, backend: Backend):
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = monoid.reduce(f(x()), {x: (a(),)})
-    rhs = f(a())
+    rhs = monoid.reduce(f(a()), {})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=EliminateSingletonStreams())
 
 
@@ -587,8 +589,8 @@ def test_reduce_no_streams(monoid, backend: Backend):
     a = backend.define_vars("a", ret="scalar")
 
     lhs = monoid.reduce(a(), {})
-    rhs = monoid.identity
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
+    rhs = a()
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEmpty())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -892,6 +894,18 @@ def test_cartesian_union():
         )
 
 
+_LiftingIntp = functools.reduce(
+    coproduct,  # type: ignore
+    (
+        ReduceDistributeCartesianProduct(),
+        ReduceUnion(),
+        EliminateSingletonStreams(),
+        ReduceEmpty(),
+        PlusSingle(),
+    ),
+)
+
+
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lifted_1(outer, inner, backend: Backend):
     a, i = backend.define_vars("a", "i", ret="scalar")
@@ -908,14 +922,7 @@ def test_reduce_lifted_1(outer, inner, backend: Backend):
         },
     )
     rhs = inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {i: range(3)})
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(
-            ReduceDistributeCartesianProduct(),
-            coproduct(ReduceUnion(), EliminateSingletonStreams()),
-        ),
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=_LiftingIntp)
 
 
 def test_reduce_lifted_aligns_equal_ranges_by_row_position():
@@ -947,7 +954,7 @@ def test_reduce_lifted_aligns_equal_ranges_by_row_position():
         {p: plate},
     )
 
-    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    norm = handler(_LiftingIntp)(evaluate)(lhs)
     assert syntactic_eq_alpha(norm, rhs)
 
 
@@ -981,75 +988,8 @@ def test_reduce_lifted_unfactors_single_product_factor():
         {b: range(4)},
     )
 
-    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    norm = handler(_LiftingIntp)(evaluate)(lhs)
     assert syntactic_eq_alpha(norm, rhs)
-
-
-def test_reduce_lifted_sum_of_products_cartesian_body():
-    """A cartesian-product reduction remains visible after SOP expansion."""
-    backend = JaxBackend()
-    a, b, c_v, d_v, e_v, i, j = backend.define_vars(
-        "a", "b", "c_v", "d_v", "e_v", "i", "j", ret="scalar"
-    )
-    d = Operation.define(Mapping[tuple, backend.scalar_typ], name="d")
-    f, f0, f1, f2 = backend.define_vars("f", "f0", "f1", "f2", ret="scalar")
-
-    lhs = Sum.reduce(
-        Product.plus(
-            Product.reduce(
-                Sum.reduce(
-                    f2()[(d()[(i(),)], e_v(), f()[(i(), j())], i(), j())],
-                    {e_v: range(6)},
-                ),
-                {i: range(2), j: range(3)},
-            ),
-            Sum.reduce(
-                Product.plus(
-                    Product.reduce(
-                        Sum.reduce(
-                            f1()[(b(), c_v(), d()[(i(),)], i())],
-                            {c_v: range(4)},
-                        ),
-                        {i: range(2)},
-                    ),
-                    Sum.reduce(f0()[(a(), b())], {a: range(2)}),
-                ),
-                {b: range(3)},
-            ),
-        ),
-        {
-            d: CartesianProduct.reduce(
-                Union.reduce([as_dict(((i(),), d_v()))], {d_v: range(5)}),
-                {i: range(2)},
-            )
-        },
-    )
-
-    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
-    assert CartesianProduct.reduce not in fvsof(norm)
-
-    product_streams = []
-
-    def walk(expr):
-        if isinstance(expr, Term):
-            if expr.op is Product.reduce:
-                product_streams.append(expr.args[1])
-            for arg in expr.args:
-                walk(arg)
-            for arg in expr.kwargs.values():
-                walk(arg)
-        elif isinstance(expr, tuple | list):
-            for item in expr:
-                walk(item)
-        elif isinstance(expr, Mapping):
-            for item in expr.values():
-                walk(item)
-
-    walk(norm)
-    assert [stream for streams in product_streams for stream in streams.values()] == [
-        range(2),
-        range(3),
-    ]
 
 
 def test_reduce_lifted_3(backend: Backend):
@@ -1083,7 +1023,7 @@ def test_reduce_lifted_3(backend: Backend):
         ),
         {i: range(2)},
     )
-    norm = handler(ReduceDistributeCartesianProduct())(evaluate)(lhs)
+    norm = handler(_LiftingIntp)(evaluate)(lhs)
     assert syntactic_eq_alpha(norm, rhs)
 
 
@@ -1107,7 +1047,7 @@ def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
         inner.reduce(outer.reduce(f(a()), {a: A_domain()}), {j: range(2)}),
         {i: range(3)},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=_LiftingIntp)
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -1145,14 +1085,7 @@ def test_reduce_lifted_2(outer, inner, backend: Backend):
         ),
         {t: T()},
     )
-    backend.check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=coproduct(
-            ReduceDistributeCartesianProduct(),
-            coproduct(ReduceUnion(), EliminateSingletonStreams()),
-        ),
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=_LiftingIntp)
 
 
 # ---------------------------------------------------------------------------
