@@ -370,12 +370,23 @@ def test_jax_array():
 
 
 def test_array_eq():
-    x = defop(jax.Array)()
-    y = jnp.array([1, 2, 3])
-    assert syntactic_eq(x + y, x + y)
+    integer = jnp.array([[1, 2], [3, 4]])
+    equal = jnp.array([[1.0, 2.0], [3.0, 4.0]])
+    unequal = jnp.array([[1, 2], [3, 5]])
 
-    z = jnp.array([1, 2, 3, 4])
-    assert not syntactic_eq(x + y, x + z)
+    assert syntactic_eq(integer, equal)
+    assert syntactic_eq(equal, integer)
+    assert not syntactic_eq(integer, unequal)
+    assert not syntactic_eq(integer, jnp.array([1, 2, 3, 4]))
+    assert not syntactic_eq(jnp.empty((0,)), jnp.empty((0, 2)))
+    assert not syntactic_eq(integer, [[1, 2], [3, 4]])
+    assert not syntactic_eq(jnp.array([float("nan")]), jnp.array([float("nan")]))
+    assert syntactic_eq({"array": integer}, {"array": equal})
+
+    x = defop(jax.Array)()
+    assert syntactic_eq(x + integer, x + equal)
+    assert not syntactic_eq(x + integer, x + unequal)
+    assert not syntactic_eq(x + integer, x + jnp.array([1, 2, 3, 4]))
 
 
 def test_jax_rotation():
