@@ -19,6 +19,16 @@ requires_vision = pytest.mark.skipif(
     reason=f"Model {EFFECTFUL_LLM_MODEL} does not support vision",
 )
 
+requires_openai = pytest.mark.skipif(
+    not litellm.validate_environment(model="gpt-4o-mini")["keys_in_environment"],
+    reason="No API key configured for OpenAI",
+)
+
+requires_anthropic = pytest.mark.skipif(
+    not litellm.validate_environment(model="claude-opus-4-6")["keys_in_environment"],
+    reason="No API key configured for Anthropic",
+)
+
 UNIMPLEMENTED_SUBSTRINGS = [
     "infer.JitTrace_ELBO",
     "the event_dim arg",
