@@ -120,7 +120,7 @@ class Monoid[W]:
     def __hash__(self):
         return hash(id(self))
 
-    def __call__(self, comprehension: Generator[Any, None, None]) -> Expr[W]:
+    def __call__(self, comprehension: Generator[Any, Any, Any]) -> Expr[W]:
         """Reduce a generator expression over this monoid.
 
         ``Sum(f(x) * g(x, y) for x in xs for y in ys(x))`` reads as a

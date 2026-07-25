@@ -3220,7 +3220,10 @@ def _ensure_ast_iterator_adaptor(value: Iterator) -> ast.Call:
     back their constituent parts, each of which ``ensure_ast`` can handle in
     turn. Any already-consumed prefix is reflected in the inner iterators.
     """
-    func, args = value.__reduce__()[:2]  # type: ignore[misc]
+    reduced = value.__reduce__()
+    if isinstance(reduced, str):
+        raise TypeError(f"Cannot convert {type(value)} to AST node")
+    func, args = reduced[:2]
     return ast.Call(
         func=ast.Name(id=func.__name__, ctx=ast.Load()),
         args=[ensure_ast(arg) for arg in args],
@@ -3366,6 +3369,7 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     )
     genexpr_ast = ensure_ast(genexpr.gi_code)
     assert isinstance(genexpr_ast, CompLambda)
+    assert genexpr.gi_frame is not None, "Generator must not be exhausted"
     geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
     result = genexpr_ast.inline(geniter_ast)
     assert isinstance(result, ast.GeneratorExp)
@@ -3380,7 +3384,9 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
 # ============================================================================
 
 
-def disassemble(genexpr: Generator[typing.Any, None, None]) -> ast.Expression:
+def disassemble(
+    genexpr: Generator[typing.Any, typing.Any, typing.Any],
+) -> ast.Expression:
     """
     Reconstruct an AST from a generator expression's bytecode.
 

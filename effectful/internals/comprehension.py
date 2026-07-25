@@ -314,7 +314,9 @@ def _bound_names(target: ast.expr) -> set[str]:
 
 
 def _reserved_call(name: str, args: Sequence[ast.expr]) -> ast.Call:
-    return ast.Call(func=ast.Name(id=name, ctx=ast.Load()), args=list(args), keywords=[])
+    return ast.Call(
+        func=ast.Name(id=name, ctx=ast.Load()), args=list(args), keywords=[]
+    )
 
 
 def _dispatch_stream_call(callee: Any, /, *args: Any, **kwargs: Any) -> Any:
@@ -351,7 +353,8 @@ def _dispatch_call(callee: Any, /, *args: Any, **kwargs: Any) -> Any:
             monoid = callee
         if monoid is not None:
             return desugar_comprehension(args[0], monoid)
-        if isinstance(args[0].gi_frame.f_locals.get(".0"), Term):
+        frame = args[0].gi_frame
+        if frame is not None and isinstance(frame.f_locals.get(".0"), Term):
             # Consuming this would not terminate: a symbolic iterable yields
             # terms forever rather than stopping. Only a reduction can take a
             # comprehension over one, by reducing it rather than running it.
@@ -491,7 +494,7 @@ def _component_types(elem_type: Any, arity: int) -> list[Any]:
 
 
 def desugar_comprehension[W](
-    comprehension: collections.abc.Generator[Any, None, None],
+    comprehension: collections.abc.Generator[Any, Any, Any],
     monoid: Monoid[W],
 ) -> Expr[W]:
     """Desugar a generator expression into a call to :meth:`Monoid.reduce`.
@@ -533,7 +536,9 @@ def desugar_comprehension[W](
         if generator.is_async:
             raise NotImplementedError("Asynchronous comprehensions are not supported")
 
-        stream = _materialize(_evaluate(_prepare(generator.iter, bound, stream=True), namespace))
+        stream = _materialize(
+            _evaluate(_prepare(generator.iter, bound, stream=True), namespace)
+        )
         bound.update(_bind_target(generator.target, stream, namespace, streams))
 
         conditions.extend(
@@ -561,7 +566,9 @@ def _prepare(
 
 
 def _evaluate(node: ast.expr, namespace: dict[str, Any]) -> Any:
-    return eval(compile(ast.Expression(body=node), "<comprehension>", "eval"), namespace)
+    return eval(
+        compile(ast.Expression(body=node), "<comprehension>", "eval"), namespace
+    )
 
 
 def _namespace(comprehension: Any) -> dict[str, Any]:
@@ -572,6 +579,7 @@ def _namespace(comprehension: Any) -> dict[str, Any]:
     comprehension can refer to.
     """
     frame = comprehension.gi_frame
+    assert frame is not None, "Generator must not be exhausted"
     namespace = dict(frame.f_globals)
     namespace.update({k: v for k, v in frame.f_locals.items() if k != ".0"})
     namespace.update(_OPAQUE_VALUES)
@@ -599,8 +607,10 @@ def _materialize(stream: Any) -> Any:
     """
     if isinstance(stream, Term) or isinstance(stream, collections.abc.Collection):
         return stream
-    if inspect.isgenerator(stream) and isinstance(
-        stream.gi_frame.f_locals.get(".0"), Term
+    if (
+        inspect.isgenerator(stream)
+        and stream.gi_frame is not None
+        and isinstance(stream.gi_frame.f_locals.get(".0"), Term)
     ):
         # Draining this would not terminate: a symbolic iterable yields terms
         # forever rather than stopping. Only a stream handed straight to the
@@ -670,7 +680,11 @@ def _bind_projections(
                 zip(elts, _component_types(tp, len(elts)), strict=True)
             ):
                 _bind_projections(
-                    element, operation, (*steps, (index, component)), component, namespace
+                    element,
+                    operation,
+                    (*steps, (index, component)),
+                    component,
+                    namespace,
                 )
         case _:
             raise NotImplementedError(f"Unsupported loop target: {ast.dump(target)}")

@@ -221,9 +221,7 @@ DESUGARINGS = [
     ),
     pytest.param(
         lambda: (f(x) for x in (1, 2) if not p(x)),
-        lambda M, x: M.reduce(
-            M.mask(f(x()), ite(p(x()), False, True)), {x: (1, 2)}
-        ),
+        lambda M, x: M.reduce(M.mask(f(x()), ite(p(x()), False, True)), {x: (1, 2)}),
         id="not-becomes-a-conditional",
     ),
     pytest.param(
@@ -451,7 +449,9 @@ CONDITIONALS = [
 
 UNPACKING = [
     pytest.param(lambda: (a * b for a, b in [(1, 2), (3, 4)]), id="pair"),
-    pytest.param(lambda: (a + b + c for a, b, c in [(1, 2, 3), (4, 5, 6)]), id="triple"),
+    pytest.param(
+        lambda: (a + b + c for a, b, c in [(1, 2, 3), (4, 5, 6)]), id="triple"
+    ),
     pytest.param(
         lambda: (a * b + c for (a, b), c in [((1, 2), 3), ((4, 5), 6)]), id="nested"
     ),
@@ -531,8 +531,7 @@ INNER_REDUCTIONS = [
     ),
     pytest.param(
         lambda: (
-            sum(y for y in range(x)) + max(z for z in range(1, x + 2))
-            for x in range(4)
+            sum(y for y in range(x)) + max(z for z in range(1, x + 2)) for x in range(4)
         ),
         id="two-reductions",
     ),
@@ -558,7 +557,12 @@ LAMBDAS = [
 
 WALRUS = [
     pytest.param(lambda: ((y := x * 2) + y for x in range(4)), id="in-the-body"),
-    pytest.param(lambda: (x for x in range(8) if (y := x % 3) == 0), id="in-a-filter"),
+    pytest.param(
+        # The binding is deliberately unused: what matters is that a walrus in
+        # a filter is reconstructed at all.
+        lambda: (x for x in range(8) if (y := x % 3) == 0),  # noqa: F841
+        id="in-a-filter",
+    ),
     pytest.param(
         lambda: (y for x in range(5) if (y := x * 2) > 2), id="bound-by-a-filter"
     ),
@@ -567,29 +571,44 @@ WALRUS = [
 # These must stay on one line: Python 3.12's `dis` mis-reports jumps for
 # multiline comprehensions, which the disassembler suite covers directly.
 STRESS = [
-    pytest.param(lambda: (x + y for x in range(10) if x % 2 == 0 if x > 2 for y in range(10) if y % 3 == 0 if y < x), id="many-filters"),  # fmt: skip
-    pytest.param(lambda: (len([y if y > 1 else -y for y in range(3)]) for x in range(4) if (x if x % 2 == 1 else x % 2 == 0)), id="nested-ternary"),  # fmt: skip
-    pytest.param(lambda: (sum(y * z for z in range(y)) for x in range(4) for y in range(x) if y % 2 == 0 or y == 1), id="reduction-in-a-nest"),  # fmt: skip
+    pytest.param(
+        lambda: (
+            x + y
+            for x in range(10)
+            if x % 2 == 0
+            if x > 2
+            for y in range(10)
+            if y % 3 == 0
+            if y < x
+        ),
+        id="many-filters",
+    ),  # fmt: skip
+    pytest.param(
+        lambda: (
+            len([y if y > 1 else -y for y in range(3)])
+            for x in range(4)
+            if (x if x % 2 == 1 else x % 2 == 0)
+        ),
+        id="nested-ternary",
+    ),  # fmt: skip
+    pytest.param(
+        lambda: (
+            sum(y * z for z in range(y))
+            for x in range(4)
+            for y in range(x)
+            if y % 2 == 0 or y == 1
+        ),
+        id="reduction-in-a-nest",
+    ),  # fmt: skip
 ]
 
 MULTILINE = [
     pytest.param(
-        lambda: (
-            x * y
-            for x in range(4)
-            if x % 2 == 0
-            for y in range(x)
-            if y > 0
-        ),
+        lambda: (x * y for x in range(4) if x % 2 == 0 for y in range(x) if y > 0),
         id="split-generators",
     ),
     pytest.param(
-        lambda: (
-            x
-            if x > 2
-            else -x
-            for x in range(6)
-        ),
+        lambda: (x if x > 2 else -x for x in range(6)),
         id="split-ternary",
     ),
 ]
@@ -632,7 +651,9 @@ DISPATCH = [
     pytest.param(_aliased_reduction, id="aliased-reduction"),
     pytest.param(_aliased_stream_constructor, id="aliased-stream-constructor"),
     pytest.param(_closure_variable, id="closure-variable"),
-    pytest.param(lambda: (sum([1, 2, 3], x) for x in [10, 20]), id="reduction-with-start"),
+    pytest.param(
+        lambda: (sum([1, 2, 3], x) for x in [10, 20]), id="reduction-with-start"
+    ),
 ]
 
 ALL_SHAPES = [
@@ -693,11 +714,15 @@ def test_a_wholly_masked_nest_reduces_to_the_identity(monoid):
 NON_SCALAR_BODIES = [
     pytest.param(Sum, lambda: ((x, x * 2) for x in range(4)), (6, 12), id="tuple"),
     pytest.param(
-        Sum, lambda: ({"a": x, "b": x * 2} for x in range(4)), {"a": 6, "b": 12},
+        Sum,
+        lambda: ({"a": x, "b": x * 2} for x in range(4)),
+        {"a": 6, "b": 12},
         id="mapping",
     ),
     pytest.param(
-        Union, lambda: ([{"x": v}] for v in range(3)), [{"x": 0}, {"x": 1}, {"x": 2}],
+        Union,
+        lambda: ([{"x": v}] for v in range(3)),
+        [{"x": 0}, {"x": 1}, {"x": 2}],
         id="union-of-rows",
     ),
 ]
@@ -815,7 +840,9 @@ def test_an_inner_reduction_fuses_into_one_nest(monoid, builtin):
         fused = evaluate(nested)
     assert isinstance(fused, Term) and fused.op is monoid.reduce
     assert len(streams_of(fused)) == 2
-    assert not isinstance(body_of(fused), Term) or body_of(fused).op is not monoid.reduce
+    assert (
+        not isinstance(body_of(fused), Term) or body_of(fused).op is not monoid.reduce
+    )
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -891,7 +918,9 @@ SHADOWING = [
     ),
     pytest.param(lambda: (range * 2 for range in [1, 2, 3]), id="target-named-range"),
     pytest.param(lambda: (sum * 2 for sum in [1, 2, 3]), id="target-named-sum"),
-    pytest.param(lambda: (f * 2 for f in [1, 2, 3]), id="target-named-like-an-operation"),
+    pytest.param(
+        lambda: (f * 2 for f in [1, 2, 3]), id="target-named-like-an-operation"
+    ),
 ]
 
 
@@ -910,6 +939,7 @@ def test_a_shadowing_target_is_not_a_stream_of_the_outer_reduce():
     assert syntactic_eq_alpha(
         term, Sum.reduce(Sum.reduce(inner(), {inner: ys(outer())}), {outer: xs()})
     )
+
 
 # ============================================================================
 # ELEMENT TYPE INFERENCE
