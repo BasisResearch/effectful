@@ -56,7 +56,8 @@ llm = [
   "pillow",
   "pydantic",
   "typing_extensions",
-  "restrictedpython>=8.1"
+  "restrictedpython>=8.1",
+  "matplotlib>=3.11.1",
 ]
 prettyprinter = ["prettyprinter"]
 docs = [

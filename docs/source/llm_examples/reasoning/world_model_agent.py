@@ -48,7 +48,7 @@ import collections.abc
 import dataclasses
 import textwrap
 
-from gridworlds import Action, Color, Game, State, Transition
+from docs.source.llm_examples.reasoning.gridworlds import Action, Color, Game, State, Transition
 
 from effectful.handlers.llm import Agent, Template
 
@@ -211,7 +211,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.env == "push":
-        from gridworlds import PushGame
+        from docs.source.llm_examples.reasoning.gridworlds import PushGame
 
         game = PushGame()
     else:
