@@ -1,7 +1,6 @@
 import ast
 import collections.abc
 import copy
-import dis
 import typing
 
 import pytest
@@ -41,6 +40,9 @@ def materialize[T](genexpr: collections.abc.Generator[T, None, None]) -> list[T]
             return genexpr
         elif isinstance(genexpr, collections.abc.Generator):
             return [_materialize(item) for item in genexpr]
+        elif isinstance(genexpr, tuple):
+            # Kept as a tuple so that sets of tuples stay hashable
+            return tuple(_materialize(item) for item in genexpr)
         elif isinstance(genexpr, collections.abc.Sequence):
             return [_materialize(item) for item in genexpr]
         elif isinstance(genexpr, collections.abc.Set):
@@ -255,10 +257,7 @@ def test_fstring_expressions(genexpr):
         (x for x in range(10) if not x % 2),
         (x for x in range(10) if not (x > 5)),
         (x for x in range(10) if x > 2 and x < 8),
-        pytest.param(
-            (x for x in range(10) if x < 3 or x > 7),
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
+        (x for x in range(10) if x < 3 or x > 7),
         # More complex comparison edge cases
         # Comparisons with expressions
         (x for x in range(10) if x * 2 > 10),
@@ -273,23 +272,11 @@ def test_fstring_expressions(genexpr):
         # Complex boolean combinations
         (x for x in range(20) if not (x < 5 or x > 15)),
         (x for x in range(20) if x > 5 and x < 15 and x % 2 == 0),
-        pytest.param(
-            (x for x in range(20) if x < 5 or x > 15 or x == 10),
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            (x for x in range(20) if not (x > 5 and x < 15)),
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
+        (x for x in range(20) if x < 5 or x > 15 or x == 10),
+        (x for x in range(20) if not (x > 5 and x < 15)),
         # Mixed comparison and boolean operations
-        pytest.param(
-            (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
-        pytest.param(
-            (x for x in range(20) if not (x % 2 == 0 and x % 3 == 0)),
-            marks=pytest.mark.xfail(reason="Lambda reconstruction not implemented yet"),
-        ),
+        (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
+        (x for x in range(20) if not (x % 2 == 0 and x % 3 == 0)),
         # Edge cases with identity comparisons
         (x for x in [0, 1, 2, None, 4] if x is not None and x > 1),
         (x for x in [True, False, 1, 0] if x is True),
@@ -307,7 +294,6 @@ def test_comparison_operators(genexpr):
 # ============================================================================
 
 
-@pytest.mark.xfail(reason="Chained comparisons not yet fully supported")
 @pytest.mark.parametrize(
     "genexpr",
     [
@@ -344,10 +330,7 @@ def test_chained_comparison_operators(genexpr):
         # Boolean operations in filters
         (x for x in range(10) if not x % 2),
         (x for x in range(10) if x > 2 and x < 8),
-        pytest.param(
-            (x for x in range(10) if x < 3 or x > 7),
-            marks=pytest.mark.xfail(reason="Lazy conjunctions not implemented yet"),
-        ),
+        (x for x in range(10) if x < 3 or x > 7),
         # More complex filter edge cases
         (x for x in range(50) if x % 7 == 0),  # Different modulo
         (x for x in range(10) if x >= 0),  # Always true condition
@@ -355,23 +338,13 @@ def test_chained_comparison_operators(genexpr):
         (
             x for x in range(20) if x % 2 == 0 and x % 3 == 0
         ),  # Multiple conditions with and
-        pytest.param(
-            (x for x in range(20) if x % 2 == 0 or x % 3 == 0),
-            marks=pytest.mark.xfail(reason="Lazy conjunctions not implemented yet"),
+        (
+            x for x in range(20) if x % 2 == 0 or x % 3 == 0
         ),  # Multiple conditions with or
         # Nested boolean operations
-        pytest.param(
-            (x for x in range(20) if (x > 5 and x < 15) or x == 0),
-            marks=pytest.mark.xfail(reason="Lazy conjunctions not implemented yet"),
-        ),
-        pytest.param(
-            (x for x in range(20) if not (x > 10 and x < 15)),
-            marks=pytest.mark.xfail(reason="Lazy conjunctions not implemented yet"),
-        ),
-        pytest.param(
-            (x for x in range(50) if x > 10 and (x % 2 == 0 or x % 3 == 0)),
-            marks=pytest.mark.xfail(reason="Lazy conjunctions not implemented yet"),
-        ),
+        (x for x in range(20) if (x > 5 and x < 15) or x == 0),
+        (x for x in range(20) if not (x > 10 and x < 15)),
+        (x for x in range(50) if x > 10 and (x % 2 == 0 or x % 3 == 0)),
         # Multiple consecutive filters
         (x for x in range(100) if x > 20 if x < 80 if x % 10 == 0),
         (x for x in range(50) if x % 2 == 0 if x % 3 != 0 if x > 10),
@@ -487,22 +460,30 @@ def test_nested_comprehensions(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
-@pytest.mark.xfail(reason="bug in builtin module dis breaks this test in Python 3.12")
-def test_nested_comprehensions_multiline_fail():
-    """Illustrate bug in dis for multiline comprehensions"""
-    # this part works - dis.dis correctly reconstructs the generator expression
-    xs1 = (x for x in range(5) if x > 1)
-    assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs1))
-    assert_ast_equivalent(xs1, disassemble(xs1))
+def test_nested_comprehensions_multiline():
+    """The same filter reconstructs the same way however the source is laid out.
 
-    # this part fails - dis.dis incorrectly negates the filter expression x > 1
-    xs2 = (
+    On Python 3.12 these two spellings disassemble to different jump layouts --
+    only the one-line form emits POP_JUMP_IF_TRUE -- which used to make the
+    multiline form come out negated.
+    """
+    one_line = (x for x in range(5) if x > 1)
+    assert_ast_equivalent(one_line, disassemble(one_line))
+
+    multiline = (
         x
         for x in range(5)  # comment to avoid reformatting
         if x > 1
     )
-    assert_ast_equivalent(xs2, disassemble(xs2))
-    assert any(i.opname == "POP_JUMP_IF_TRUE" for i in dis.get_instructions(xs2))
+    assert_ast_equivalent(multiline, disassemble(multiline))
+
+    assert ast.unparse(disassemble(x for x in range(5) if x > 1)) == ast.unparse(
+        disassemble(
+            x
+            for x in range(5)  # comment to avoid reformatting
+            if x > 1
+        )
+    )
 
 
 # ============================================================================
@@ -586,9 +567,9 @@ def test_conditional_expressions_simple_no_comprehension(genexpr):
         ),
         (
             (
-                lambda x: (x * 2)
-                if x % 2 == 0
-                else ((x // 2) if x % 3 == 0 else (x + 2))
+                lambda x: (
+                    (x * 2) if x % 2 == 0 else ((x // 2) if x % 3 == 0 else (x + 2))
+                )
             )(xi)
             for xi in range(10)
         ),
@@ -646,45 +627,86 @@ def test_conditional_expressions_simple_comprehensions(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
-@pytest.mark.xfail(
-    reason="Lazy boolean ops and chained comparisons not yet fully supported"
-)
 @pytest.mark.parametrize(
     "genexpr",
     [
-        # Lazy boolean operations (and/or)
+        # `and` chains compile to a run of jumps that each fall through to the
+        # loop back-edge, which the disassembler folds into a single filter.
         (x for x in range(10) if x > 2 and x < 8),
-        (x for x in range(10) if x < 3 or x > 7),
         (x for x in range(20) if x > 5 and x % 2 == 0 and x < 15),
+        (x for x in range(-10, 10) if abs(x) > 3 and x % 2 == 0),
+        (x for x in ["hello", "world", "test"] if len(x) > 3 and x.startswith("h")),
+        (x for x in range(20) if x % 2 == 0 and x % 3 == 0 and x > 0 and x < 18),
+        ((x, y) for x in range(5) for y in range(5) if x < y and x + y > 2),
+        # `or` in filter position: reconstructed incorrectly, see the marker.
+        (x for x in range(10) if x < 3 or x > 7),
         (x for x in range(20) if x < 5 or x > 15 or x == 10),
-        # Mixed and/or
         (x for x in range(20) if (x > 10 and x % 2 == 0) or (x < 5 and x % 3 == 0)),
         (x for x in range(20) if x > 5 and (x < 10 or x > 15)),
-        # Chained comparisons
+        (x for x in range(100) if (x > 10 and x < 50) and (x % 3 == 0 or x % 5 == 0)),
+        # `not (a and b)` is compiled exactly like `not a or not b`.
+        (x for x in range(100) if not (x > 30 and x < 70)),
+        # Chained comparisons in filter position.
         (x for x in range(20) if 5 < x < 15),
         (x for x in range(20) if 0 <= x <= 10),
         (x for x in range(50) if 10 < x < 20 < x * 2),
         (x for x in range(10) if 0 <= x <= 5 <= x + 5),
-        # Mixed chained and boolean
         (x for x in range(50) if 5 < x < 15 and x % 2 == 0),
         (x for x in range(50) if x > 20 or 5 < x < 15),
-        # Complex boolean expressions in comprehension body
-        ((x if x > 5 and x < 15 else 0) for x in range(20)),
-        ((x if x < 3 or x > 17 else -x) for x in range(20)),
-        # Chained comparisons in conditional expressions
-        ((x if 5 < x < 15 else 0) for x in range(20)),
-        ((x * 2 if 0 <= x <= 10 else x / 2) for x in range(-5, 15)),
-        # Nested boolean logic
-        (x for x in range(100) if (x > 10 and x < 50) and (x % 3 == 0 or x % 5 == 0)),
-        (x for x in range(100) if not (x > 30 and x < 70)),
-        # Boolean expressions with function calls
-        (x for x in range(-10, 10) if abs(x) > 3 and x % 2 == 0),
-        (x for x in ["hello", "world", "test"] if len(x) > 3 and x.startswith("h")),
     ],
 )
-def test_lazy_boolean_and_chained_comparisons(genexpr):
+def test_lazy_boolean_and_chained_comparisons_in_filters(genexpr):
+    """Lazy boolean operators and chained comparisons in *filter* position.
+
+    This is the hard case: a filter's condition is recognised structurally, by
+    the jump falling through to the loop back-edge, so any condition CPython
+    compiles with an intermediate join point is misread.
+    """
     ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # The same operators in *ternary* position all work: both arms produce a
+        # value, so the fork/merge machinery in _symbolic_exec applies directly.
+        ((x if x > 5 and x < 15 else 0) for x in range(20)),
+        ((x if x < 3 or x > 17 else -x) for x in range(20)),
+        ((x if 5 < x < 15 else 0) for x in range(20)),
+        ((x * 2 if 0 <= x <= 10 else x / 2) for x in range(-5, 15)),
+        ((x if x > 2 and x < 8 else -x) for x in range(10)),
+        ((x if x < 2 or x > 8 else -x) for x in range(10)),
+        ((x if not (x > 2 and x < 8) else -x) for x in range(10)),
+        ((x if 0 <= x <= 5 <= x + 5 else -x) for x in range(10)),
+        ((x if x > 1 and x < 9 or x == 0 else -x) for x in range(10)),
+        # ... including nested inside another ternary
+        ((x if x > 5 or x < 2 else (0 if x == 3 else 1)) for x in range(10)),
+        ((x if x > 5 else (0 if 2 < x < 4 else 1)) for x in range(10)),
+    ],
+)
+def test_lazy_boolean_and_chained_comparisons_in_ternaries(genexpr):
+    """Lazy boolean operators and chained comparisons in conditional expressions."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+def test_short_circuit_filter_is_a_disjunction_of_paths():
+    """A short-circuiting filter is rebuilt as the disjunction over its paths.
+
+    `x < 3 or x > 7` used to be misread as a conditional expression, yielding an
+    AST that compiled and ran but computed `[0, 1, 2, False, False, ...]` instead
+    of `[0, 1, 2, 8, 9]`. Each path through the condition now contributes one
+    disjunct, so the reconstruction is equivalent rather than merely plausible.
+    """
+    genexpr = (x for x in range(10) if x < 3 or x > 7)
+    reconstructed = disassemble(genexpr)
+
+    assert isinstance(reconstructed.body, ast.GeneratorExp)
+    filters = reconstructed.body.generators[0].ifs
+    assert len(filters) == 1
+    assert isinstance(filters[0], ast.BoolOp) and isinstance(filters[0].op, ast.Or)
+    assert materialize(compile_and_eval(reconstructed)) == [0, 1, 2, 8, 9]
 
 
 @pytest.mark.parametrize(
@@ -716,10 +738,7 @@ def test_lazy_boolean_and_chained_comparisons(genexpr):
         # Complex nested case: conditional in function argument, function call in conditional
         (abs(x if len(str(x)) > 1 else x * 10) for x in range(15)),
         # Mixed: conditional in function call within comprehension filter
-        pytest.param(
-            (x for x in range(20) if max(x if x > 10 else 0, 5) > 8),
-            marks=pytest.mark.xfail(reason="Nested filters not implemented yet"),
-        ),
+        (x for x in range(20) if max(x if x > 10 else 0, 5) > 8),
     ],
 )
 def test_conditional_expressions_function_arguments(genexpr):
@@ -819,6 +838,697 @@ def test_complex_scenarios(genexpr, globals_dict):
 
     # Need to provide the same globals for evaluation
     assert_ast_equivalent(genexpr, ast_node, globals_dict)
+
+
+# ============================================================================
+# UNPACKING LOOP TARGETS
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Simple tuple targets
+        ((a, b) for a, b in [(1, 2), (3, 4)]),
+        (a + b for a, b in [(1, 2), (3, 4)]),
+        (a * b for a, b in [(2, 3), (4, 5)]),
+        ((b, a) for a, b in [(1, 2), (3, 4)]),
+        ((a, b, c) for a, b, c in [(1, 2, 3), (4, 5, 6)]),
+        ((a, b, c, d) for a, b, c, d in [(1, 2, 3, 4)]),
+        # Nested tuple targets
+        ((a, b, c) for a, (b, c) in [(1, (2, 3)), (4, (5, 6))]),
+        ((a, b, c) for (a, b), c in [((1, 2), 3)]),
+        ((a, b, c, d) for (a, b), (c, d) in [((1, 2), (3, 4))]),
+        ((a, b, c) for a, (b, (c,)) in [(1, (2, (3,)))]),
+        # Unpacking over dict views
+        ((k, v) for k, v in {1: "a", 2: "b"}.items()),
+        (v for k, v in {1: "a", 2: "b"}.items()),
+        # Unpacking combined with filters
+        ((a, b) for a, b in [(1, 2), (3, 1)] if a < b),
+        (a + b for a, b in [(1, 2), (3, 4)] if a % 2 == 0),
+        ((a, b) for a, b in [(1, 2), (3, 4)] if a > 0 if b > 3),
+        # Unpacking in nested loops, in either position
+        ((x, a, b) for x in range(2) for a, b in [(1, 2), (3, 4)]),
+        ((a, b, y) for a, b in [(1, 2)] for y in range(2)),
+        ((a, b, c, d) for a, b in [(1, 2)] for c, d in [(3, 4), (5, 6)]),
+        ((a, b, x) for a, b in [(1, 2), (3, 4)] for x in range(a)),
+        # Unpacking inside other comprehension types
+        ([a for a, b in [(1, 2), (3, 4)]] for _ in range(2)),
+        ({a for a, b in [(1, 2), (3, 4)]} for _ in range(2)),
+        ({a: b for a, b in [(1, 2), (3, 4)]} for _ in range(2)),
+        ((a for a, b in [(1, 2), (3, 4)]) for _ in range(2)),
+        # Unpacking with a conditional expression in the body
+        ((a if a > b else b) for a, b in [(1, 2), (4, 3)]),
+    ],
+)
+def test_unpacking_targets(genexpr):
+    """Test reconstruction of comprehensions that unpack their loop target."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        ((x, a, b) for x in range(2) for a, b in [(1, 2)]),
+        ((a, b, c, d) for a, b in [(1, 2)] for c, d in [(3, 4)]),
+        ((x, a, b) for x in range(2) for a, *b in [(1, 2, 3)]),
+        ((x, a, b, c) for x in range(2) for a, (b, c) in [(1, (2, 3))]),
+        ((x, a) for x in range(2) for (a,) in [(1,)]),
+        ((x, a, b) for x in range(2) for a, *b in [(1,)]),  # type: ignore[var-annotated]
+        ((x, y, a) for x in range(2) for y in range(2) for a, b in [(1, 2)]),
+    ],
+)
+def test_unpacking_over_single_element_literal(genexpr):
+    """A one-element inner loop over a literal.
+
+    Python 3.14 unrolls this: it assigns the targets outright and emits no
+    FOR_ITER, so the loop is not there to be recovered. The names it bound are
+    substituted at their uses instead, which reproduces the same elements.
+    """
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Starred last: UNPACK_EX with only a "before" count
+        (a for a, *b in [(1, 2, 3), (4, 5, 6)]),
+        (b for a, *b in [(1, 2, 3), (4, 5, 6)]),
+        ((a, b) for a, *b in [(1, 2, 3)]),
+        ((a, b, c) for a, b, *c in [(1, 2, 3, 4)]),
+        # Starred first: the "after" count lives in the high byte of the
+        # argument, so the instruction is prefixed with EXTENDED_ARG
+        (a for *a, b in [(1, 2, 3), (4, 5, 6)]),
+        (b for *a, b in [(1, 2, 3), (4, 5, 6)]),
+        ((a, b) for *a, b in [(1, 2, 3)]),
+        # Starred in the middle
+        ((a, b, c) for a, *b, c in [(1, 2, 3, 4)]),
+        ((a, b, c) for a, *b, c in [(1, 2, 3, 4, 5)]),
+        # Starred target that collects nothing
+        ((a, b) for a, *b in [(1,)]),  # type: ignore[var-annotated]
+        # Combined with filters, nesting and other comprehension types
+        ((a, b) for a, *b in [(1, 2), (3, 4)] if a > 1),
+        ((x, a, b) for x in range(2) for a, *b in [(1, 2, 3), (4, 5, 6)]),
+        ([a for a, *b in [(1, 2, 3)]] for _ in range(2)),
+    ],
+)
+def test_unpacking_starred_targets(genexpr):
+    """Test reconstruction of starred loop targets (UNPACK_EX)."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# OUTERMOST ITERABLE TYPES
+#
+# The outermost iterable is not part of the comprehension's bytecode: it is a
+# live object reachable through `gi_frame.f_locals[".0"]`, so `ensure_ast` has
+# to rebuild an expression for it from the object alone.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Strings and bytes
+        (c for c in "hello"),
+        (c.upper() for c in "hello" if c != "l"),
+        (c for c in "h\xe9llo"),  # non-ASCII takes a different iterator type
+        (b for b in b"abc"),
+        (b for b in bytearray(b"abc")),
+        # Sequences
+        (x for x in [1, 2, 3]),
+        (x for x in (1, 2, 3)),
+        (x for x in range(3)),
+        # Sets and frozensets
+        (x for x in {1, 2, 3}),
+        (x for x in frozenset({1, 2, 3})),
+        # Dict views
+        (k for k in {1: "a", 2: "b"}),
+        (k for k in {1: "a", 2: "b"}.keys()),
+        (v for v in {1: "a", 2: "b"}.values()),
+        (kv for kv in {1: "a", 2: "b"}.items()),
+        # reversed() over each of the underlying sequence types
+        (x for x in reversed([1, 2, 3])),
+        (x for x in reversed((1, 2, 3))),
+        (c for c in reversed("abc")),
+        (x for x in reversed(range(3))),
+        # Comprehensions as the outermost iterable
+        (x for x in (y for y in range(3))),
+        (x for x in [y for y in range(3)]),
+        (x for x in {y for y in range(3)}),
+        # Nested/structured contents
+        (t for t in [(1, 2), (3, 4)]),
+        (d for d in [{"a": 1}, {"b": 2}]),
+        (x for x in [[1, 2], [3, 4]]),
+    ],
+)
+def test_outermost_iterable_types(genexpr):
+    """Test reconstruction of the outermost iterable from the live object."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # zip/enumerate/map/filter wrap other iterators rather than a concrete
+        # sequence, but pickle with their constituent parts.
+        (x for x in zip([1, 2], [3, 4])),
+        ((a, b) for a, b in zip([1, 2], [3, 4])),
+        (x for x in zip("ab", range(2), [7, 8])),
+        (x for x in enumerate("ab")),
+        ((i, c) for i, c in enumerate("abc")),
+        (x for x in enumerate("ab", 5)),
+        (x for x in map(abs, [-1, 2])),
+        (x for x in map(max, [1, 2], [3, 0])),
+        (x for x in filter(None, [0, 1, 2])),
+        (x for x in filter(bool, [0, 1, 2])),
+        # Nested adaptors, and adaptors over non-sequence iterables
+        (x for x in zip(range(2), map(abs, [-1, -2]))),
+        (x for x in enumerate(filter(None, [0, 1]))),
+        (x for x in map(abs, range(-2, 2))),
+        (x for x in zip("ab", (y for y in range(2)))),
+        # With a filter and a non-trivial element expression
+        (a + b for a, b in zip([1, 2], [3, 4]) if a > 1),
+    ],
+)
+def test_outermost_iterable_adaptors(genexpr):
+    """zip/enumerate/map/filter are rebuilt from the parts they pickle with."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+def test_outermost_iterable_partially_consumed_adaptor():
+    """A consumed prefix is reflected in the adaptor's inner iterators."""
+    zipped = zip([1, 2, 3], [4, 5, 6])
+    next(zipped)
+
+    genexpr = (a + b for a, b in zipped)
+    reconstructed = disassemble(genexpr)  # must precede consuming `genexpr`
+    assert materialize(genexpr) == [7, 9]
+    assert materialize(compile_and_eval(reconstructed)) == [7, 9]
+
+
+def test_outermost_iterable_partially_consumed():
+    """Only the *unconsumed* remainder of the outermost iterator belongs in the AST."""
+    iterator = iter([10, 20, 30, 40])
+    next(iterator)
+    next(iterator)
+
+    genexpr = (x + 1 for x in iterator)
+    assert ast.unparse(disassemble(genexpr)) == "(x + 1 for x in [30, 40])"
+    assert materialize(genexpr) == [31, 41]
+
+
+def test_outermost_iterable_partially_consumed_str():
+    iterator = iter("hello")
+    next(iterator)
+
+    genexpr = (c for c in iterator)
+    assert ast.unparse(disassemble(genexpr)) == "(c for c in 'ello')"
+    assert materialize(genexpr) == ["e", "l", "l", "o"]
+
+
+# ============================================================================
+# BINARY OPERATORS
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Bitwise operators, which BINARY_OP folds in with the arithmetic ones
+        (x & 3 for x in range(8)),
+        (x | 3 for x in range(8)),
+        (x ^ 3 for x in range(8)),
+        (x << 2 for x in range(4)),
+        (x >> 1 for x in range(8)),
+        (~x & 7 for x in range(8)),
+        # Mixed precedence across the whole operator table
+        (x & 1 | x >> 2 ^ 3 for x in range(8)),
+        ((x | 1) & (x ^ 2) for x in range(8)),
+        (x + 1 & x - 1 for x in range(8)),
+        (x * 2 % 5 // 2 for x in range(8)),
+        (x**2 - x // 2 + x % 3 for x in range(1, 8)),
+        # Operators on non-numeric operands
+        (s + "!" for s in ["a", "b"]),
+        (s * 2 for s in ["a", "b"]),
+        (t + (9,) for t in [(1,), (2,)]),
+        (frozenset({x}) | frozenset({9}) for x in range(3)),
+        (frozenset({x, 1}) & frozenset({1}) for x in range(3)),
+        (frozenset({x, 1}) ^ frozenset({1}) for x in range(3)),
+        ({"a": x} | {"b": 0} for x in range(3)),
+    ],
+)
+def test_binary_operators(genexpr):
+    """Test reconstruction of the full BINARY_OP table."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+def test_matmul_operator():
+    """BINARY_OP argument 4 is `@`, which no built-in type implements.
+
+    The comprehension is disassembled but never evaluated, so this checks the
+    reconstructed source rather than the reconstructed values.
+    """
+    genexpr = (a @ b for a in [1, 2])  # noqa: F821
+    assert ast.unparse(disassemble(genexpr)) == "(a @ b for a in (1, 2))"
+
+
+# ============================================================================
+# KEYWORD ARGUMENTS AT CALL SITES
+#
+# Python 3.12 compiles these as KW_NAMES followed by CALL; 3.13 replaced the
+# pair with a single CALL_KW instruction.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr,globals_dict",
+    [
+        ((dict(a=x) for x in range(3)), {}),
+        ((dict(a=x, b=x * 2) for x in range(3)), {}),
+        ((dict(a=x if x > 0 else 0, b=x * 2 if x < 5 else x) for x in range(8)), {}),
+        # Mixed positional and keyword arguments
+        ((sorted([3, x], reverse=True) for x in range(3)), {}),
+        ((sorted([x, 1], key=abs) for x in range(3)), {}),
+        ((sorted([x, 1], key=abs, reverse=True) for x in range(3)), {}),
+        ((int(str(x), base=8) for x in range(8)), {}),
+        ((round(x / 3, ndigits=2) for x in range(5)), {}),
+        # Keyword arguments on a method call
+        (("a,b".split(sep=",") for x in range(2)), {}),
+        (("a-b".replace("-", "+") for x in range(2)), {}),
+        # Nested calls, each with keywords
+        ((dict(a=dict(b=x)) for x in range(3)), {}),
+        ((sorted(sorted([x, 1]), reverse=True) for x in range(3)), {}),
+        # Keyword arguments to a user-supplied callable
+        ((f(x, scale=2) for x in range(3)), {"f": lambda v, scale=1: v * scale}),  # type: ignore  # noqa: F821
+    ],
+)
+def test_keyword_arguments(genexpr, globals_dict):
+    """Test reconstruction of calls with keyword arguments."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node, globals_dict)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Starred positional arguments
+        (max(*[x, 1]) for x in range(3)),
+        (max(1, *[x, 2]) for x in range(3)),
+        (max(*[x, 1], *[2, 3]) for x in range(3)),
+        (max(*(x, 1)) for x in range(3)),
+        (sum([x, 1], *[0]) for x in range(3)),
+        # Double-starred keyword arguments
+        (dict(**{"a": x}) for x in range(3)),
+        (dict(a=x, **{"b": 1}) for x in range(3)),
+        (dict(**{"a": x}, **{"b": 2}) for x in range(3)),
+        (sorted([x, 1], **{"reverse": True}) for x in range(3)),  # type: ignore[call-overload]
+        # Both at once
+        (max(*[[x, 1]], **{"default": 0}) for x in range(3)),  # type: ignore[call-overload]
+        # On a method call, where the callable comes with a `self`
+        ("-".join(*[[str(x), "z"]]) for x in range(3)),
+        # Unpacking a comprehension, and unpacking into a nested call
+        (max(*[y for y in range(x + 2)]) for x in range(3)),
+        (max(*[abs(y) for y in range(-x - 1, 1)]) for x in range(3)),
+        (dict(**{str(k): k for k in range(x + 1)}) for x in range(3)),
+    ],
+)
+def test_star_argument_calls(genexpr):
+    """Test reconstruction of `*args`/`**kwargs` call sites (CALL_FUNCTION_EX).
+
+    The arguments arrive already collected into a sequence and a mapping, so the
+    reconstruction spells every argument as unpacked; that evaluates identically
+    even where the source passed some of them plainly.
+    """
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# LAMBDAS
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        ((lambda y: y * 2)(x) for x in range(5)),
+        ((lambda y, z: y + z)(x, x) for x in range(5)),
+        ((lambda y: y)(x) for x in range(5)),
+        # Closing over the loop variable, and over an enclosing comprehension
+        ((lambda y: y + x)(x) for x in range(5)),
+        ((lambda: x)() for x in range(5)),
+        (((lambda y: lambda z: z + y)(x))(1) for x in range(5)),
+        # Lambdas whose body is itself a comprehension
+        ((lambda: (y for y in range(x)))() for x in range(3)),
+        ((lambda: [y for y in range(x)])() for x in range(3)),
+        ((lambda n: sum(y for y in range(n)))(x) for x in range(3)),
+        # Lambdas as arguments to other calls
+        (sorted([x, 1], key=lambda v: -v) for x in range(3)),
+        (list(map(lambda v: v * 2, [x, 1])) for x in range(3)),
+        # Conditional expressions inside a lambda body
+        ((lambda y: y if y % 2 else -y)(x) for x in range(5)),
+        ((lambda y: (y if y > 1 else 0) + 1)(x) for x in range(5)),
+    ],
+)
+def test_lambdas(genexpr):
+    """Test reconstruction of lambdas appearing inside comprehensions."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Positional defaults, which attach to the *trailing* parameters
+        ((lambda y, z=2: y * z)(x) for x in range(3)),  # type: ignore[assignment]
+        ((lambda y=1: y)() for x in range(3)),  # type: ignore[assignment]
+        ((lambda y, z=2, w=3: y * z * w)(x) for x in range(3)),  # type: ignore[assignment]
+        ((lambda y, z=2: y * z)(x, 5) for x in range(3)),
+        # Keyword-only parameters, with and without defaults
+        ((lambda y, *, z=1: y + z)(x) for x in range(3)),  # type: ignore[assignment]
+        ((lambda y, *, z=1, w=2: y + z + w)(x) for x in range(3)),  # type: ignore[assignment]
+        ((lambda y, *, z: y + z)(x, z=4) for x in range(3)),
+        # Positional-only parameters
+        ((lambda y, /, z=2: y * z)(x) for x in range(3)),  # type: ignore[assignment]
+        # *args and **kwargs
+        ((lambda *a: sum(a))(x, x) for x in range(3)),
+        ((lambda **k: sum(k.values()))(a=x) for x in range(3)),
+        ((lambda *a, **k: len(a) + len(k))(x, b=1) for x in range(3)),
+        ((lambda y, *a: y + len(a))(x, 1, 2) for x in range(3)),
+        (
+            (lambda y, *a, z=3, **k: y + len(a) + z + len(k))(x, 1, w=2)
+            for x in range(3)
+        ),
+        # Defaults that are themselves non-trivial expressions
+        ((lambda y, z=(1, 2): y + len(z))(x) for x in range(3)),  # type: ignore[assignment]
+        ((lambda y, z=[1]: y + len(z))(x) for x in range(3)),  # type: ignore[assignment]
+    ],
+)
+def test_lambda_default_and_variadic_arguments(genexpr):
+    """Test reconstruction of lambda defaults and variadic parameters."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# ASSIGNMENT EXPRESSIONS
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # A walrus binds in the *enclosing* scope, so at module level it
+        # compiles to COPY + STORE_GLOBAL rather than to a local.
+        (y for x in range(4) if (y := x * 2) > 1),  # noqa: F821
+        ((y := x) + 1 for x in range(3)),  # noqa: F821
+        (y * y for x in range(4) if (y := x + 1) > 2),  # noqa: F821
+        ((y := x) if x > 1 else -1 for x in range(4)),  # noqa: F821
+        # Bound in one clause and read in a later one
+        ((y, z) for x in range(3) if (y := x + 1) for z in range(y)),  # noqa: F821
+        # Inside a nested comprehension, and inside a lambda
+        ([(z := w) + z for w in range(x)] for x in range(4)),  # noqa: F821
+        ((lambda n: [(z := w) + z for w in range(n)])(x) for x in range(4)),  # noqa: F821
+        # Combined with a short-circuiting filter. The `or` must not re-evaluate
+        # the assignment, which is why the disjunction is absorbed.
+        (y for x in range(6) if (y := x * 2) > 6 or y == 0),  # noqa: F821
+    ],
+)
+def test_assignment_expressions(genexpr):
+    """A walrus in a comprehension binds in the *enclosing* scope (STORE_GLOBAL here)."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# COMPREHENSIONS NESTED IN EACH SYNTACTIC POSITION
+#
+# A comprehension can appear in the element, in the iterable, and inside a
+# filter, and each of the four comprehension kinds can nest inside any other.
+# The filter position is the interesting one: filters are reconstructed from
+# control flow, so a comprehension inside a filter has to survive being treated
+# as part of a boolean condition.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # ... in filter position
+        (x for x in range(5) if any(y > 2 for y in range(x))),
+        (x for x in range(5) if all(y < 3 for y in range(x))),
+        (x for x in range(5) if [y for y in range(x)]),
+        (x for x in range(5) if {y for y in range(x)}),
+        (x for x in range(5) if {y: y for y in range(x)}),
+        (x for x in range(6) if len([y for y in range(x) if y % 2]) > 1),
+        (x for x in range(5) if any(y for y in range(x) if y % 2)),
+        (
+            x
+            for x in range(6)
+            if all(y < x for y in range(2)) and any(z > 1 for z in range(x))
+        ),  # noqa: E501  # fmt: skip
+        # ... in filter position, inside a short-circuiting condition
+        (x for x in range(6) if sum(y for y in range(x)) > 3 or x == 0),
+        (x for x in range(6) if x == 0 or any(y > 2 for y in range(x))),
+        (x for x in range(6) if x == 0 or len([y for y in range(x)]) > 2),
+        (
+            x
+            for x in range(6)
+            if any(y > 1 for y in range(x)) or all(z < 2 for z in range(x))
+        ),  # noqa: E501  # fmt: skip
+        # ... in iterable position
+        (x for x in [y for y in range(5) if y % 2]),
+        (x for x in {y for y in range(5) if y % 2}),
+        (x for x in {y: y for y in range(3)}),
+        (x for x in (y for y in range(5) if y > 1 or y == 0)),
+        (x for x in [y for y in [z for z in range(4)] if y % 2]),
+        (x for x in [y for y in range(4)] if x > 1 or x == 0),
+        ((a, b) for a in range(3) for b in [c for c in range(a)]),
+        # ... in element position
+        ([y for y in range(x) if y % 2 or y == 0] for x in range(4)),
+        ({y for y in range(x) if y > 1} for x in range(5)),
+        ({y: [z for z in range(y)] for y in range(x)} for x in range(4)),
+        (sum(y for y in range(x) if y % 2) for x in range(5)),
+        ([(z for z in range(y)) for y in range(x)] for x in range(3)),
+        # ... in several positions at once, with different kinds
+        (
+            [y for y in {z for z in range(x)}]
+            for x in range(4)
+            if any(w > 1 for w in range(x))
+        ),  # noqa: E501  # fmt: skip
+        ({k: [v for v in range(k)] for k in {j for j in range(x)}} for x in range(4)),
+        ([y for y in range(x) if y or y == 0] for x in range(5) if x > 1 or x == 0),
+        (
+            (y for y in range(x) if y % 2 or y == 0)
+            for x in (z for z in range(4))
+            if x < 3 or x == 3
+        ),  # noqa: E501  # fmt: skip
+        # ... nesting the four kinds inside one another
+        ({k: {v for v in range(k)} for k in [j for j in range(x)]} for x in range(4)),
+        ([{y: y} for y in range(x)] for x in range(4)),
+        ({(y, y * 2) for y in range(x)} for x in range(4)),
+        ({y: y for y in range(x) if y % 2 or y == 0} for x in range(5)),
+        ({y for y in range(x) if y % 2 or y == 0} for x in range(5)),
+        ([y for y in range(x) if 1 < y < 4] for x in range(6)),
+    ],
+)
+def test_comprehensions_in_every_position(genexpr):
+    """Test comprehensions nested in the element, the iterable and the filter."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # A lambda body is a separate code object with no loop of its own, so
+        # every branch inside one is a conditional expression rather than a
+        # filter -- including the branches of a comprehension nested in it.
+        ((lambda n: [y for y in range(n) if y % 2])(x) for x in range(4)),
+        ((lambda n: {y for y in range(n)})(x) for x in range(4)),
+        ((lambda n: {y: y**2 for y in range(n)})(x) for x in range(4)),
+        ((lambda n: sum(y for y in range(n)))(x) for x in range(4)),
+        ((lambda n: [y for y in range(n) if y > 1 or y == 0])(x) for x in range(5)),
+        ((lambda n: (y for y in range(n) if y % 2 or y == 0))(x) for x in range(4)),
+        ((lambda n: [y if y > 1 else -y for y in range(n)])(x) for x in range(4)),
+        ((lambda n: [y for y in range(n) if 1 < y < 3])(x) for x in range(5)),
+        # Lambdas nested in lambdas, and lambdas inside the comprehension body
+        ((lambda n: (lambda m: [y for y in range(m)])(n))(x) for x in range(3)),
+        ([(lambda v: v * 2)(y) for y in range(x)] for x in range(4)),
+        (list(map(lambda n: [y for y in range(n)], range(x))) for x in range(3)),
+        ([(lambda v: v if v > 1 else -v)(y) for y in range(x)] for x in range(4)),
+    ],
+)
+def test_comprehensions_inside_lambdas(genexpr):
+    """Test comprehensions nested inside lambda bodies."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Short-circuiting conditions nested in one another
+        (x for x in range(20) if (x > 2 or x < 1) and (x < 10 or x > 15)),
+        (x for x in range(20) if ((x > 2 and x < 5) or (x > 10 and x < 15)) or x == 0),
+        (x for x in range(30) if not (x % 2 == 0 or x % 3 == 0)),
+        (x for x in range(30) if not (not (x > 5) or not (x < 20))),
+        (x for x in range(40) if (x > 5 and x < 35) and (x % 3 == 0 or x % 5 == 0)),
+        (
+            x
+            for x in range(40)
+            if (x < 5 and x % 2 == 0) or (10 < x < 15) or (x > 35 and x % 3 == 0)
+        ),  # noqa: E501  # fmt: skip
+        # Short-circuiting conditions spanning several generators
+        (
+            (x, y)
+            for x in range(6)
+            if x < 2 or x > 4
+            for y in range(6)
+            if y < 1 or y > 4
+        ),
+        (
+            (x, y)
+            for x in range(5)
+            if x % 2 == 0 or x == 1
+            for y in range(x)
+            if y > 0 and y < 3
+        ),  # noqa: E501  # fmt: skip
+        # Conditional expressions and filters that are both lazy
+        ((x if (x > 2 or x < 1) else -x) for x in range(10) if x % 2 == 0 or x == 1),
+        (x for x in range(20) if (x if x > 5 else not x) or x == 3),
+        (
+            (x if x > 5 or x < 2 else (0 if x % 2 == 0 or x == 3 else 1))
+            for x in range(12)
+        ),  # noqa: E501  # fmt: skip
+        # Chained comparisons combined with lazy operators
+        (x for x in range(30) if 5 < x < 15 or 20 < x < 25),
+        (x for x in range(30) if 5 < x < 15 and (x % 2 == 0 or x % 3 == 0)),
+        ((x if 5 < x < 15 else 0) for x in range(20) if 2 < x < 18),
+        # Lazy conditions inside a nested comprehension, and around it
+        ([y for y in range(x) if y > 1 or y == 0] for x in range(5) if x > 2 or x == 0),
+        ((y for y in range(x) if y % 2 or y == 0) for x in range(4) if x < 3 or x == 3),
+    ],
+)
+def test_nested_lazy_conditions(genexpr):
+    """Test short-circuiting conditions nested inside one another."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# STRUCTURAL STRESS CASES
+# ============================================================================
+
+# These two must stay on one line: on Python 3.12 `dis` mis-reports jumps for
+# multiline comprehensions, which test_multiline_comprehensions covers directly.
+_STRESS_MANY_FILTERS = ((x, y) for x in range(10) if x % 2 == 0 if x > 2 for y in range(10) if y % 3 == 0 if y < x)  # fmt: skip
+_STRESS_NESTED_TERNARY = ([y if y > 1 else -y for y in range(x)] for x in range(4) if (x if x % 2 == 1 else x % 2 == 0))  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Deep loop nesting
+        (
+            a + b + c + d + e
+            for a in range(2)
+            for b in range(2)
+            for c in range(2)
+            for d in range(2)
+            for e in range(2)
+        ),
+        (
+            (a, b, c, d)
+            for a in range(2)
+            for b in range(a + 1)
+            for c in range(b + 1)
+            for d in range(c + 1)
+        ),
+        # Many filters spread over many loops. Kept on one line: on Python 3.12
+        # `dis` mis-reports jumps for multiline comprehensions, which is covered
+        # separately by test_multiline_comprehensions below.
+        (x for x in range(50) if x > 5 if x < 40 if x % 2 == 0 if x % 3 == 0),
+        _STRESS_MANY_FILTERS,
+        # Deep comprehension nesting
+        (((z for z in range(y)) for y in range(x)) for x in range(3)),
+        ([[z for z in range(y)] for y in range(x)] for x in range(3)),
+        ({y: [z for z in range(y)] for y in range(x)} for x in range(3)),
+        # Structured literals in the element position
+        ({x, x + 1} for x in range(3)),
+        ({x: x + 1} for x in range(3)),
+        (((x, x), x) for x in range(3)),
+        ([x, [x, [x]]] for x in range(3)),
+        ({"k": [x, {"j": (x,)}]} for x in range(3)),
+        # Ternaries interleaved with nesting
+        _STRESS_NESTED_TERNARY,
+        (((y if y else -1) for y in range(x)) for x in range(3)),
+    ],
+)
+def test_structural_stress(genexpr):
+    """Test reconstruction of deeply nested and heavily filtered comprehensions."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# MULTILINE COMPREHENSIONS
+#
+# On Python 3.12 `dis` reports a different jump layout for a filter whose source
+# spans several lines. The reconstruction used to come out negated, because the
+# filter/conditional distinction was drawn from the *local* instruction order.
+# Classifying branches from the control-flow graph instead is insensitive to
+# that, so these now reconstruct identically on 3.12 and 3.13+.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        (
+            x
+            for x in range(5)  # comment to avoid reformatting
+            if x > 1
+        ),
+        (
+            x
+            for x in range(10)  # comment to avoid reformatting
+            if x % 2 == 0
+            if x > 2
+        ),
+        (
+            (x, y)
+            for x in range(10)
+            if x % 2 == 0
+            if x > 2
+            for y in range(10)
+            if y % 3 == 0
+            if y < x
+        ),
+        (
+            [y if y > 1 else -y for y in range(x)]
+            for x in range(4)
+            if (x if x % 2 == 1 else x % 2 == 0)
+        ),
+    ],
+)
+def test_multiline_comprehensions(genexpr):
+    """Filters in multiline comprehensions are mis-disassembled on Python 3.12."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
+def test_multiline_comprehensions_same_on_one_line():
+    """The same expressions reconstruct correctly when written on one line."""
+    one_line = (x for x in range(10) if x % 2 == 0 if x > 2)
+    assert_ast_equivalent(one_line, disassemble(one_line))
 
 
 # ============================================================================

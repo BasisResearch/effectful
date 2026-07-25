@@ -16,6 +16,7 @@ Example:
 """
 
 import ast
+import builtins
 import collections
 import collections.abc
 import copy
@@ -23,6 +24,7 @@ import dis
 import enum
 import functools
 import inspect
+import itertools
 import sys
 import types
 import typing
@@ -51,10 +53,81 @@ class DummyIterName(ast.Name):
 
 
 class Skipped(ast.Name):
-    """Placeholder for skipped branches in if-expressions."""
+    """Placeholder for skipped branches in if-expressions.
 
-    def __init__(self, id: str, ctx: ast.Load = ast.Load()):
+    ``id`` is defaulted so that ``copy.deepcopy`` can reconstruct the node: on
+    Python 3.12 ``ast.AST.__reduce__`` supplies no positional arguments (3.13+
+    supplies one per field), so the constructor must be callable with none.
+    """
+
+    def __init__(self, id: str = "", ctx: ast.Load = ast.Load()):
         super().__init__(id=id, ctx=ctx)
+
+
+class CommonConstant(ast.Name):
+    """A constant pushed by 3.14's LOAD_COMMON_CONSTANT.
+
+    3.14 can inline `any()`/`all()` over a generator, guarding the fast path
+    with `loaded_name is <the builtin>`. Marking the builtin lets that guard be
+    recognised so the generic call path is followed instead, which still spells
+    out the original call.
+    """
+
+    def __init__(self, id: str = "", ctx: ast.Load = ast.Load()):
+        super().__init__(id=id, ctx=ctx)
+
+
+class TargetHole(ast.Name):
+    """Placeholder for a comprehension loop target that is not yet named.
+
+    ``FOR_ITER`` knows that a loop target exists but not what it is called; the
+    name only arrives with the ``STORE_FAST``/``UNPACK_SEQUENCE`` instructions
+    that follow. Each hole carries a unique ``id`` so that it can be located
+    again inside a comprehension after the surrounding state has been copied,
+    which matters for unpacking targets where several holes are live at once.
+    """
+
+    _counter: typing.ClassVar[Iterator[int]] = itertools.count()
+
+    def __init__(self, id: str = "", ctx: ast.Store = ast.Store()):
+        super().__init__(id=id or f".TARGET_{next(TargetHole._counter)}", ctx=ctx)
+
+
+class ReplaceTargetHole(ast.NodeTransformer):
+    """Replace the uniquely-identified :class:`TargetHole` ``id`` with ``replacement``."""
+
+    id: str
+    replacement: ast.expr
+
+    def __init__(self, id: str, replacement: ast.expr):
+        self.id = id
+        self.replacement = replacement
+        super().__init__()
+
+    def visit_TargetHole(self, node: TargetHole) -> ast.expr:
+        return self.replacement if node.id == self.id else node
+
+
+def _bind_target_hole(
+    stack: list[ast.expr], hole: ast.expr, replacement: ast.expr
+) -> list[ast.expr]:
+    """Fill the loop-target hole ``hole`` of the innermost matching comprehension.
+
+    Returns a new stack; the hole itself is left in place for the caller to pop.
+    """
+    assert isinstance(hole, TargetHole), f"Expected a loop target hole, got {hole}"
+    for pos, item in zip(reversed(range(len(stack))), reversed(stack)):
+        if not isinstance(item, CompExp) or not item.generators:
+            continue
+        if not any(
+            isinstance(n, TargetHole) and n.id == hole.id
+            for n in ast.walk(item.generators[-1].target)
+        ):
+            continue
+        new_comp = ReplaceTargetHole(hole.id, replacement).visit(copy.deepcopy(item))
+        return stack[:pos] + [new_comp] + stack[pos + 1 :]
+
+    raise TypeError(f"No comprehension found with loop target hole {hole.id}")
 
 
 class Null(ast.Constant):
@@ -210,10 +283,21 @@ class ReconstructionState:
     stack: list[ast.expr] = field(default_factory=list)
     result: ast.expr = field(default_factory=Placeholder)
 
-    loops: dict[int, int] = field(default_factory=collections.Counter)
+    # How many times each FOR_ITER has been entered on this path.
+    loops: dict[int, int] = field(default_factory=dict)
     finished: bool = field(default=False)
 
-    branches: dict[int, int] = field(default_factory=collections.Counter)
+    # Which edge each already-resolved conditional jump took on this path.
+    branches: "dict[int, BranchEdge]" = field(default_factory=dict)
+
+    # Locals bound to a known expression rather than to a loop target. 3.14
+    # unrolls a single-iteration loop over a literal, storing its targets
+    # directly, so those names have to be substituted back at their uses.
+    bindings: dict[str, ast.expr] = field(default_factory=dict)
+
+    # Set by KW_NAMES (Python 3.12 only) and consumed by the following CALL.
+    # KW_NAMES has no stack effect, so the names cannot live on `stack`.
+    kw_names: tuple[str, ...] | None = field(default=None)
 
     @functools.cached_property
     def instructions(self) -> collections.OrderedDict[int, dis.Instruction]:
@@ -229,9 +313,26 @@ class ReconstructionState:
 
 
 # Python version enum for version-specific handling
-class PythonVersion(enum.Enum):
+class PythonVersion(enum.IntEnum):
     PY_312 = 12
     PY_313 = 13
+    PY_314 = 14
+
+
+def current_version() -> PythonVersion:
+    """The bytecode dialect of the running interpreter.
+
+    Raises on a Python this module has not been taught, rather than guessing
+    that the previous release's opcodes still mean what they used to.
+    """
+    try:
+        return PythonVersion(sys.version_info.minor)
+    except ValueError as e:
+        supported = ", ".join(f"3.{v.value}" for v in PythonVersion)
+        raise NotImplementedError(
+            f"effectful.internals.disassembly supports {supported}, "
+            f"not 3.{sys.version_info.minor}"
+        ) from e
 
 
 # Global handler registry
@@ -261,12 +362,18 @@ def register_handler(
     *,
     version: PythonVersion,
 ):
-    """Register a handler for a specific operation name and optional version"""
+    """Register a handler for one opcode in one Python bytecode dialect.
+
+    Every dialect a handler applies to is named explicitly. Opcodes are not
+    assumed to carry forward: a release can keep an opcode's name while changing
+    what it does, so applicability to a new Python is a decision to make per
+    opcode rather than a default.
+    """
     if handler is None:
         return functools.partial(register_handler, opname, version=version)
 
     # Skip registration if version doesn't match current version
-    if version != PythonVersion(sys.version_info.minor):
+    if version != current_version():
         return handler
 
     # Only check opmap if the version matches (or no version specified)
@@ -294,19 +401,25 @@ def register_handler(
 
         jump: bool | None  # argument to dis.stack_effect
         if instr.opname in LOOP_OPS:
-            if state.loops[instr.offset] > 0:
+            if state.loops.get(instr.offset, 0) > 0:
                 new_state = replace(
                     new_state, instruction=state.instructions[instr.argval]
                 )
                 jump = True
             else:
+                # Copy rather than mutate: continuations forked from this state
+                # share the mapping and must not see each other's loop counts.
                 new_state = replace(
-                    new_state, instruction=state.next_instructions[instr.offset]
+                    new_state,
+                    instruction=state.next_instructions[instr.offset],
+                    loops={
+                        **state.loops,
+                        instr.offset: state.loops.get(instr.offset, 0) + 1,
+                    },
                 )
-                new_state.loops[instr.offset] += 1
                 jump = False
         elif instr.opname in BRANCH_OPS:
-            if state.branches.get(instr.offset, 0):
+            if new_state.branches.get(instr.offset) == BranchEdge.FALL_THROUGH:
                 new_state = replace(
                     new_state, instruction=state.next_instructions[instr.offset]
                 )
@@ -369,6 +482,352 @@ RETURN_OPS: set[typing.Literal["RETURN_VALUE", "RETURN_CONST"]] = {
 JUMP_OPS = {dis.opname[d] for d in dis.hasjrel} - LOOP_OPS - BRANCH_OPS - RETURN_OPS
 
 
+# Instructions that emit an element of the comprehension being built. Reaching
+# one of these means the current iteration was *not* filtered out.
+PRODUCE_OPS = {"YIELD_VALUE", "LIST_APPEND", "SET_ADD", "MAP_ADD"}
+
+
+def _successor_offsets(state: ReconstructionState, instr: dis.Instruction) -> list[int]:
+    """Offsets control can transfer to from ``instr``, ignoring exception edges."""
+    following = state.next_instructions.get(instr.offset)
+    if instr.opname in BRANCH_OPS | LOOP_OPS:
+        return [instr.argval] + ([following.offset] if following else [])
+    elif instr.opname in JUMP_OPS:
+        return [instr.argval]
+    elif instr.opname in RETURN_OPS:
+        return []
+    else:
+        return [following.offset] if following else []
+
+
+def _reachable_outcomes(state: ReconstructionState, start: int) -> tuple[bool, bool]:
+    """From ``start``, can the iteration be skipped, and can an element be produced?
+
+    Returns ``(can_skip, can_produce)``. "Skip" means reaching the loop
+    back-edge without emitting an element, i.e. being filtered out.
+    """
+    seen: set[int] = set()
+    pending = [start]
+    can_skip = can_produce = False
+
+    while pending:
+        offset = pending.pop()
+        if offset in seen or offset not in state.instructions:
+            continue
+        seen.add(offset)
+
+        instr = state.instructions[offset]
+        if instr.opname in PRODUCE_OPS:
+            can_produce = True
+            continue
+        if (
+            instr.opname == "JUMP_BACKWARD"
+            and state.instructions[instr.argval].opname in LOOP_OPS
+        ):
+            can_skip = True
+            continue
+
+        pending.extend(_successor_offsets(state, instr))
+
+    return can_skip, can_produce
+
+
+class BranchEdge(enum.IntEnum):
+    """Which way a conditional jump was resolved on the path being explored."""
+
+    TAKE_JUMP = 1
+    FALL_THROUGH = 2
+
+
+class BranchKind(enum.Enum):
+    """What role a conditional jump plays in a comprehension.
+
+    TERNARY
+        A conditional expression: the arms reconverge having each pushed a
+        value, and both are spliced back together into an ``ast.IfExp``.
+    FILTER
+        Part of a filter's condition. The condition is consumed rather than
+        producing a value, so each surviving path records the conjunction of
+        tests that got it to the element, and the filter as a whole is the
+        disjunction of those conjunctions.
+    """
+
+    TERNARY = enum.auto()
+    FILTER = enum.auto()
+
+
+@functools.cache
+def _stack_depths(code: types.CodeType) -> collections.abc.Mapping[int, int]:
+    """VM stack depth on entry to each reachable instruction.
+
+    Depths are relative to the start of the code object, which is all that is
+    needed to tell a value-producing branch from a control-flow one.
+    """
+    instructions = collections.OrderedDict(
+        (i.offset, i) for i in dis.get_instructions(code)
+    )
+    ordered = list(instructions.values())
+    following = {a.offset: b.offset for a, b in zip(ordered[:-1], ordered[1:])}
+
+    depths: dict[int, int] = {ordered[0].offset: 0}
+    pending = collections.deque([ordered[0].offset])
+    while pending:
+        offset = pending.popleft()
+        instr, depth = instructions[offset], depths[offset]
+        if instr.opname in RETURN_OPS:
+            continue
+
+        edges: list[tuple[int, bool | None]] = []
+        if instr.opname in BRANCH_OPS | LOOP_OPS:
+            edges = [(instr.argval, True)]
+            if offset in following:
+                edges.append((following[offset], False))
+        elif instr.opname in JUMP_OPS:
+            edges = [(instr.argval, True)]
+        elif offset in following:
+            edges = [(following[offset], None)]
+
+        for target, jump in edges:
+            if target in instructions and target not in depths:
+                depths[target] = depth + dis.stack_effect(
+                    instr.opcode, instr.arg, jump=jump
+                )
+                pending.append(target)
+
+    return depths
+
+
+def _forward_reachable(state: ReconstructionState, start: int) -> set[int]:
+    """Offsets reachable from ``start`` without producing or looping back."""
+    seen: set[int] = set()
+    pending = [start]
+    while pending:
+        offset = pending.pop()
+        if offset in seen or offset not in state.instructions:
+            continue
+        seen.add(offset)
+
+        instr = state.instructions[offset]
+        if instr.opname in PRODUCE_OPS:
+            continue
+        if (
+            instr.opname == "JUMP_BACKWARD"
+            and state.instructions[instr.argval].opname in LOOP_OPS
+        ):
+            continue
+
+        pending.extend(_successor_offsets(state, instr))
+
+    return seen
+
+
+def _is_conditional_expression(
+    state: ReconstructionState, instr: dis.Instruction
+) -> bool:
+    """Do the two edges of ``instr`` reconverge one stack slot deeper?
+
+    That is the signature of a conditional expression: each arm leaves a value
+    behind and control rejoins to consume it. A filter's condition is consumed
+    by the jump itself, so wherever its edges meet -- if they meet at all -- the
+    stack is no deeper than it was.
+    """
+    following = state.next_instructions.get(instr.offset)
+    if following is None:
+        return False
+
+    common = _forward_reachable(state, instr.argval) & _forward_reachable(
+        state, following.offset
+    )
+    if not common:
+        return False  # the edges never rejoin, so nothing was left on the stack
+
+    depths = _stack_depths(state.code)
+    join = min(common)  # arms are laid out contiguously, so the join comes first
+    if join not in depths or following.offset not in depths:
+        return False
+    return depths[join] == depths[following.offset] + 1
+
+
+def _classify_branch(
+    state: ReconstructionState, instr: dis.Instruction
+) -> tuple[BranchKind, list[BranchEdge]]:
+    """Classify a conditional jump and list the edges worth exploring."""
+    both = [BranchEdge.TAKE_JUMP, BranchEdge.FALL_THROUGH]
+    following = state.next_instructions.get(instr.offset)
+    if following is None:
+        return BranchKind.TERNARY, both
+
+    jump_skip, _ = _reachable_outcomes(state, instr.argval)
+    fall_skip, _ = _reachable_outcomes(state, following.offset)
+
+    # Neither edge can drop the current iteration -- because there is no loop at
+    # all (a lambda body) or because the element is produced regardless (a
+    # conditional in the element expression). Either way nothing is filtered.
+    if not jump_skip and not fall_skip:
+        return BranchKind.TERNARY, both
+
+    # Otherwise the branch could be a filter, or a conditional expression that
+    # merely happens to sit inside one. Only the latter leaves a value behind.
+    if _is_conditional_expression(state, instr):
+        return BranchKind.TERNARY, both
+
+    # An edge that cannot reach an element contributes nothing to the filter, so
+    # there is no point walking it. Pruning those edges is also what keeps the
+    # executor out of the operand-cleanup block on a chained comparison's
+    # failing edge.
+    live = [
+        edge
+        for edge, start in (
+            (BranchEdge.TAKE_JUMP, instr.argval),
+            (BranchEdge.FALL_THROUGH, following.offset),
+        )
+        if _reachable_outcomes(state, start)[1]
+    ]
+    return BranchKind.FILTER, live or [BranchEdge.TAKE_JUMP]
+
+
+def _negate(condition: ast.expr) -> ast.expr:
+    """Logical negation, cancelling a `not` rather than stacking another one."""
+    if isinstance(condition, ast.UnaryOp) and isinstance(condition.op, ast.Not):
+        return condition.operand
+    return ast.UnaryOp(op=ast.Not(), operand=condition)
+
+
+def _conjoin(conditions: list[ast.expr]) -> ast.expr | None:
+    """Combine the entries of a ``comprehension.ifs`` list into one expression."""
+    if not conditions:
+        return None
+    elif len(conditions) == 1:
+        return conditions[0]
+    else:
+        return ast.BoolOp(op=ast.And(), values=list(conditions))
+
+
+def _negates(candidate: ast.expr, condition: ast.expr) -> bool:
+    """Is ``candidate`` syntactically ``not condition``?"""
+    return (
+        isinstance(candidate, ast.UnaryOp)
+        and isinstance(candidate.op, ast.Not)
+        and ast.dump(candidate.operand) == ast.dump(condition)
+    )
+
+
+def _absorb(disjuncts: list[ast.expr]) -> list[ast.expr]:
+    """Apply ``X or (not X and Y)`` == ``X or Y`` to a list of disjuncts.
+
+    Enumerating paths records the negation of every test a path declined, so a
+    later disjunct restates the negation of an earlier one. Dropping it is not
+    merely tidier: `or` short-circuits, so the earlier disjunct has already been
+    evaluated, and leaving the negation in would evaluate it a second time --
+    visibly wrong when the condition contains an assignment expression.
+    """
+    absorbed: list[ast.expr] = []
+    for index, disjunct in enumerate(disjuncts):
+        earlier = disjuncts[:index]
+        if isinstance(disjunct, ast.BoolOp) and isinstance(disjunct.op, ast.And):
+            kept = [
+                value
+                for value in disjunct.values
+                if not any(_negates(value, other) for other in earlier)
+            ]
+            if kept and len(kept) < len(disjunct.values):
+                disjunct = _conjoin(kept)  # type: ignore[assignment]
+        absorbed.append(disjunct)
+    return absorbed
+
+
+def _disjoin(left: ast.expr, right: ast.expr) -> ast.expr:
+    """Combine two conditions with ``or``, flattening nested disjunctions."""
+    values: list[ast.expr] = []
+    for side in (left, right):
+        if isinstance(side, ast.BoolOp) and isinstance(side.op, ast.Or):
+            values.extend(side.values)
+        else:
+            values.append(side)
+
+    # Drop duplicates; paths through independent filters repeat their disjuncts.
+    unique: list[ast.expr] = []
+    for value in values:
+        if not any(ast.dump(value) == ast.dump(seen) for seen in unique):
+            unique.append(value)
+
+    unique = _absorb(unique)
+    return unique[0] if len(unique) == 1 else ast.BoolOp(op=ast.Or(), values=unique)
+
+
+def _merge_filters_into(node: typing.Any, other: typing.Any) -> bool:
+    """Walk two results in parallel, OR-ing the filters where they disagree.
+
+    Everything outside a ``comprehension.ifs`` has to match exactly; the ifs are
+    where the paths are allowed to differ, and are combined rather than
+    compared. Filters are not recursed into, so a nested comprehension inside a
+    filter is treated as part of that filter's condition. Mutates ``node``;
+    returns False if the two results differ somewhere they may not.
+    """
+    if type(node) is not type(other):
+        return False
+
+    if isinstance(node, ast.comprehension):
+        if ast.dump(node.target) != ast.dump(other.target):
+            return False
+        if not _merge_filters_into(node.iter, other.iter):
+            return False
+
+        guard, other_guard = _conjoin(node.ifs), _conjoin(other.ifs)
+        if guard is None or other_guard is None:
+            # One path reached the element unconditionally, so the filter as a
+            # whole is unconditional at this generator.
+            node.ifs = []
+        elif ast.dump(guard) != ast.dump(other_guard):
+            node.ifs = [_disjoin(guard, other_guard)]
+        return True
+
+    if not isinstance(node, ast.AST):
+        return bool(node == other)
+
+    for name in node._fields:
+        mine, theirs = getattr(node, name, None), getattr(other, name, None)
+        if isinstance(mine, list) or isinstance(theirs, list):
+            if not isinstance(mine, list) or not isinstance(theirs, list):
+                return False
+            if len(mine) != len(theirs):
+                return False
+            if not all(_merge_filters_into(a, b) for a, b in zip(mine, theirs)):
+                return False
+        elif isinstance(mine, ast.AST) or isinstance(theirs, ast.AST):
+            if not isinstance(mine, ast.AST) or not isinstance(theirs, ast.AST):
+                return False
+            if not _merge_filters_into(mine, theirs):
+                return False
+        elif mine != theirs:
+            return False
+
+    return True
+
+
+def _merge_filters(left: ast.expr, right: ast.expr) -> ast.expr | None:
+    """Combine two paths that differ only in which filter conditions they met.
+
+    Each path through a filter records the conjunction that got it to the
+    element; the filter as a whole is the disjunction over all such paths.
+    Returns ``None`` when the results differ by more than their filters.
+    """
+    # A marker anywhere means some conditional expression is still unresolved,
+    # and unresolved arms must be spliced before anything can be OR-ed.
+    if any(isinstance(n, Skipped) for n in ast.walk(left)):
+        return None
+    if any(isinstance(n, Skipped) for n in ast.walk(right)):
+        return None
+
+    merged = copy.deepcopy(left)
+    return merged if _merge_filters_into(merged, right) else None
+
+
+def _skipped_offset(key: str) -> int:
+    """Sort key for `.SKIPPED_<offset>` markers, so merging is deterministic."""
+    return int(key.rsplit("_", 1)[-1])
+
+
 def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
     """
     Merge two expression ASTs obtained from two branches of symbolic execution.
@@ -379,25 +838,92 @@ def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
         return copy.deepcopy(left)
 
     assert type(left) == type(right)
-    assert any(isinstance(n, ast.IfExp | ast.comprehension) for n in ast.walk(left))
-    assert any(isinstance(n, ast.IfExp | ast.comprehension) for n in ast.walk(right))
 
     lb, rb = BranchIdentifier(), BranchIdentifier()
     lb.visit(left)
     rb.visit(right)
-    common_keys = set(lb.branching.keys()) & set(rb.branching.keys())
-    if not any(lb.branching[k].testval != rb.branching[k].testval for k in common_keys):
-        for l_len, r_len in zip(lb.filter_lengths, rb.filter_lengths):
-            if l_len > r_len:
-                return copy.deepcopy(left)
-            elif r_len > l_len:
-                return copy.deepcopy(right)
 
-    for key in common_keys:
+    # A conditional expression: each path filled in one arm and left a marker in
+    # the other, so splice the two together. Sorted for determinism -- set
+    # iteration order over the marker names varies with PYTHONHASHSEED.
+    merged: ast.expr = copy.deepcopy(left)
+    spliced = False
+    common_keys = set(lb.branching) & set(rb.branching)
+    for key in sorted(common_keys, key=_skipped_offset):
         if lb.branching[key].testval != rb.branching[key].testval:
-            return ReplaceSkipped(key, rb.branching[key].value).visit(left)
+            visited = ReplaceSkipped(key, rb.branching[key].value).visit(merged)
+            assert isinstance(visited, ast.expr)
+            merged, spliced = visited, True
+
+    # The paths may *also* have satisfied different filter conditions on the way
+    # to the element, so combine those too rather than picking one arbitrarily.
+    combined = _merge_filters(merged, right)
+    if combined is not None:
+        return combined
+    if spliced:
+        return merged
+
+    if ast.dump(left) == ast.dump(right):
+        return copy.deepcopy(left)
 
     raise ValueError("No differing branches found to merge")
+
+
+def _specialization_guard_edge(
+    state: ReconstructionState, instr: dis.Instruction
+) -> BranchEdge | None:
+    """The edge past a 3.14 inlined-builtin guard, or None if this isn't one.
+
+    3.14 may inline `any()`/`all()` over a generator, guarding the inlined code
+    with `loaded_name is <the builtin>` and keeping an ordinary call on the
+    other edge. Only that other edge still contains the call to reconstruct, so
+    the guard is treated as though the identity test failed.
+    """
+    if not state.stack:
+        return None
+    condition = state.stack[-1]
+    if not isinstance(condition, ast.Compare):
+        return None
+    if not any(isinstance(c, CommonConstant) for c in condition.comparators):
+        return None
+
+    # Follow the edge taken when the identity test is false.
+    if instr.opname == "POP_JUMP_IF_FALSE":
+        return BranchEdge.TAKE_JUMP
+    elif instr.opname == "POP_JUMP_IF_TRUE":
+        return BranchEdge.FALL_THROUGH
+    else:
+        return None
+
+
+def _merge_all(results: list[ast.expr]) -> ast.expr:
+    """Combine every path's result into one expression.
+
+    Merging is not associative: a path that still carries an unfilled
+    conditional-expression arm can only combine with the path that took the
+    other arm, which need not be its neighbour. So rather than folding in
+    order, repeatedly merge whichever pair actually combines.
+    """
+    pending = list(results)
+    while len(pending) > 1:
+        for i, j in itertools.combinations(range(len(pending)), 2):
+            try:
+                merged = _merge_at_ifexp(pending[i], pending[j])
+            except (ValueError, AssertionError):
+                continue
+            pending = [merged] + [p for k, p in enumerate(pending) if k not in (i, j)]
+            break
+        else:
+            raise ValueError("Could not merge the paths of symbolic execution")
+
+    return pending[0]
+
+
+def _decide_branch(
+    state: ReconstructionState, instr: dis.Instruction, edge: BranchEdge
+) -> ReconstructionState:
+    """Record which edge of ``instr`` the path being explored takes."""
+    return replace(state, branches={**state.branches, instr.offset: edge})
 
 
 def _symbolic_exec(code: types.CodeType) -> ast.expr:
@@ -407,7 +933,8 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
             code=code,
             instruction=next(iter(dis.get_instructions(code))),
             stack=[Placeholder(), Placeholder()]
-            if PythonVersion(sys.version_info.minor) == PythonVersion.PY_312
+            if current_version() == PythonVersion.PY_312
+            and code.co_flags & inspect.CO_GENERATOR
             else [Placeholder()],
         )
     ]
@@ -417,23 +944,27 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
     while continuations:
         state = continuations.pop()
         while not state.finished:
-            if (
-                state.instruction.opname in BRANCH_OPS
-                and state.next_instructions[state.instruction.offset].opname
-                != "JUMP_BACKWARD"
-                and not state.branches.get(state.instruction.offset, 0)
-            ):
-                continuations.append(
-                    replace(
-                        state, branches=state.branches | {state.instruction.offset: 1}
+            instr = state.instruction
+            if instr.opname in BRANCH_OPS and instr.offset not in state.branches:
+                forced = _specialization_guard_edge(state, instr)
+                if forced is not None:
+                    state = _decide_branch(state, instr, forced)
+                else:
+                    _, live = _classify_branch(state, instr)
+                    # Explore the first live edge now; queue the rest for later.
+                    continuations.extend(
+                        _decide_branch(state, instr, edge) for edge in live[1:]
                     )
-                )
+                    state = _decide_branch(state, instr, live[0])
+
             state = OP_HANDLERS[state.instruction.opname](state, state.instruction)
         results.append(state.result)
 
     assert results, "No results from symbolic execution"
-    result = functools.reduce(_merge_at_ifexp, results[1:], results[0])
-    assert not any(isinstance(n, Skipped) for n in ast.walk(result))
+    result = _merge_all(results)
+    assert not any(isinstance(n, Skipped) for n in ast.walk(result)), (
+        "Every conditional expression arm must have been filled in"
+    )
     return result
 
 
@@ -455,6 +986,7 @@ def handle_return_generator_312(
 
 
 @register_handler("RETURN_GENERATOR", version=PythonVersion.PY_313)
+@register_handler("RETURN_GENERATOR", version=PythonVersion.PY_314)
 def handle_return_generator(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -469,6 +1001,7 @@ def handle_return_generator(
 
 @register_handler("YIELD_VALUE", version=PythonVersion.PY_312)
 @register_handler("YIELD_VALUE", version=PythonVersion.PY_313)
+@register_handler("YIELD_VALUE", version=PythonVersion.PY_314)
 def handle_yield_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -495,6 +1028,7 @@ def handle_yield_value(
 
 @register_handler("BUILD_LIST", version=PythonVersion.PY_312)
 @register_handler("BUILD_LIST", version=PythonVersion.PY_313)
+@register_handler("BUILD_LIST", version=PythonVersion.PY_314)
 def handle_build_list(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -518,6 +1052,7 @@ def handle_build_list(
 
 @register_handler("LIST_APPEND", version=PythonVersion.PY_312)
 @register_handler("LIST_APPEND", version=PythonVersion.PY_313)
+@register_handler("LIST_APPEND", version=PythonVersion.PY_314)
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -542,6 +1077,7 @@ def handle_list_append(
 
 @register_handler("BUILD_SET", version=PythonVersion.PY_312)
 @register_handler("BUILD_SET", version=PythonVersion.PY_313)
+@register_handler("BUILD_SET", version=PythonVersion.PY_314)
 def handle_build_set(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -562,6 +1098,7 @@ def handle_build_set(
 
 @register_handler("SET_ADD", version=PythonVersion.PY_312)
 @register_handler("SET_ADD", version=PythonVersion.PY_313)
+@register_handler("SET_ADD", version=PythonVersion.PY_314)
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -586,6 +1123,7 @@ def handle_set_add(
 
 @register_handler("BUILD_MAP", version=PythonVersion.PY_312)
 @register_handler("BUILD_MAP", version=PythonVersion.PY_313)
+@register_handler("BUILD_MAP", version=PythonVersion.PY_314)
 def handle_build_map(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -612,6 +1150,7 @@ def handle_build_map(
 
 @register_handler("MAP_ADD", version=PythonVersion.PY_312)
 @register_handler("MAP_ADD", version=PythonVersion.PY_313)
+@register_handler("MAP_ADD", version=PythonVersion.PY_314)
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -648,6 +1187,25 @@ def handle_return_value(
     return replace(state, stack=new_stack, result=new_result)
 
 
+@register_handler("RETURN_VALUE", version=PythonVersion.PY_314)
+def handle_return_value_314(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # Two things changed in 3.14. RETURN_CONST is gone, so a generator's
+    # trailing `return None` now arrives as LOAD_CONST + RETURN_VALUE; and
+    # RETURN_VALUE's stack effect is 0 rather than -1, the returned value being
+    # discarded along with the frame. The value therefore stays on the stack.
+    if not isinstance(state.result, Placeholder):
+        assert (
+            isinstance(state.stack[-1], ast.Constant) and state.stack[-1].value is None
+        ), "A generator may only fall off the end returning None"
+        return state
+
+    assert len(state.stack) == 2
+    new_result = ReplacePlaceholder(ensure_ast(state.stack[-1])).visit(state.stack[-2])
+    return replace(state, result=new_result)
+
+
 @register_handler("RETURN_CONST", version=PythonVersion.PY_312)
 @register_handler("RETURN_CONST", version=PythonVersion.PY_313)
 def handle_return_const(
@@ -664,6 +1222,7 @@ def handle_return_const(
 
 @register_handler("FOR_ITER", version=PythonVersion.PY_312)
 @register_handler("FOR_ITER", version=PythonVersion.PY_313)
+@register_handler("FOR_ITER", version=PythonVersion.PY_314)
 def handle_for_iter(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -671,7 +1230,7 @@ def handle_for_iter(
     # If the iterator is exhausted, it jumps to the target instruction
     assert len(state.stack) > 0, "FOR_ITER must have an iterator on the stack"
 
-    if state.loops[instr.offset] > 0:
+    if state.loops.get(instr.offset, 0) > 0:
         return replace(state, stack=state.stack + [Null()])
 
     # The iterator should be on top of stack
@@ -680,7 +1239,7 @@ def handle_for_iter(
     # Create a new loop variable - we'll get the actual name from STORE_FAST
     # For now, use a placeholder
     loop_info = ast.comprehension(
-        target=Placeholder(),
+        target=TargetHole(),
         iter=ensure_ast(iterator),
         ifs=[],
         is_async=0,
@@ -705,6 +1264,7 @@ def handle_for_iter(
 
 @register_handler("GET_ITER", version=PythonVersion.PY_312)
 @register_handler("GET_ITER", version=PythonVersion.PY_313)
+@register_handler("GET_ITER", version=PythonVersion.PY_314)
 def handle_get_iter(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -724,6 +1284,7 @@ def handle_end_for_312(
 
 
 @register_handler("END_FOR", version=PythonVersion.PY_313)
+@register_handler("END_FOR", version=PythonVersion.PY_314)
 def handle_end_for(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -734,6 +1295,7 @@ def handle_end_for(
 
 @register_handler("RERAISE", version=PythonVersion.PY_312)
 @register_handler("RERAISE", version=PythonVersion.PY_313)
+@register_handler("RERAISE", version=PythonVersion.PY_314)
 def handle_reraise(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -746,25 +1308,55 @@ def handle_reraise(
 # ============================================================================
 
 
+def _literal_elements(value: ast.expr, count: int | None = None) -> list[ast.expr]:
+    """The elements of a literal sequence, for destructuring a known value."""
+    assert isinstance(value, ast.Tuple | ast.List), (
+        f"Cannot unpack {type(value).__name__}; expected a literal sequence"
+    )
+    assert count is None or len(value.elts) == count, (
+        f"Expected {count} values to unpack, got {len(value.elts)}"
+    )
+    return [ensure_ast(element) for element in value.elts]
+
+
+def _bind_local(
+    state: ReconstructionState, var_name: str, value: ast.expr
+) -> ReconstructionState:
+    """Record that a local now stands for ``value``, popping it off the stack.
+
+    Reached when a store is not filling in a loop target: 3.14 unrolls a
+    single-iteration loop over a literal, assigning its targets outright. The
+    loop is gone from the bytecode, so the names it bound are not in scope in
+    the reconstruction and their uses are substituted instead.
+    """
+    bindings = {**state.bindings, var_name: ensure_ast(value)}
+    return replace(state, stack=state.stack[:-1], bindings=bindings)
+
+
+def _read_local(state: ReconstructionState, var_name: str) -> ast.expr:
+    """The expression a local name stands for at this point on this path."""
+    if var_name == DummyIterName().id:
+        return DummyIterName()
+    elif var_name in state.bindings:
+        # Bound to a known expression rather than by a loop, so the name itself
+        # is not in scope in the reconstruction; use what it was bound to.
+        return copy.deepcopy(state.bindings[var_name])
+    else:
+        return ast.Name(id=var_name, ctx=ast.Load())
+
+
 @register_handler("LOAD_FAST", version=PythonVersion.PY_312)
 @register_handler("LOAD_FAST", version=PythonVersion.PY_313)
+@register_handler("LOAD_FAST", version=PythonVersion.PY_314)
 def handle_load_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    var_name: str = instr.argval
-
-    if var_name == ".0":
-        # Special handling for .0 variable (the iterator)
-        new_stack = state.stack + [DummyIterName()]
-    else:
-        # Regular variable load
-        new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-
-    return replace(state, stack=new_stack)
+    return replace(state, stack=state.stack + [_read_local(state, instr.argval)])
 
 
 @register_handler("LOAD_DEREF", version=PythonVersion.PY_312)
 @register_handler("LOAD_DEREF", version=PythonVersion.PY_313)
+@register_handler("LOAD_DEREF", version=PythonVersion.PY_314)
 def handle_load_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -776,6 +1368,7 @@ def handle_load_deref(
 
 @register_handler("LOAD_CLOSURE", version=PythonVersion.PY_312)
 @register_handler("LOAD_CLOSURE", version=PythonVersion.PY_313)
+@register_handler("LOAD_CLOSURE", version=PythonVersion.PY_314)
 def handle_load_closure(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -787,6 +1380,7 @@ def handle_load_closure(
 
 @register_handler("LOAD_CONST", version=PythonVersion.PY_312)
 @register_handler("LOAD_CONST", version=PythonVersion.PY_313)
+@register_handler("LOAD_CONST", version=PythonVersion.PY_314)
 def handle_load_const(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -797,6 +1391,7 @@ def handle_load_const(
 
 @register_handler("LOAD_GLOBAL", version=PythonVersion.PY_312)
 @register_handler("LOAD_GLOBAL", version=PythonVersion.PY_313)
+@register_handler("LOAD_GLOBAL", version=PythonVersion.PY_314)
 def handle_load_global(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -813,6 +1408,7 @@ def handle_load_global(
 
 @register_handler("LOAD_NAME", version=PythonVersion.PY_312)
 @register_handler("LOAD_NAME", version=PythonVersion.PY_313)
+@register_handler("LOAD_NAME", version=PythonVersion.PY_314)
 def handle_load_name(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -822,40 +1418,80 @@ def handle_load_name(
     return replace(state, stack=new_stack)
 
 
+def _is_assignment_expression(state: ReconstructionState) -> bool:
+    """Is the top of the stack a COPY of the value beneath it?
+
+    That duplication is how an assignment expression keeps its value after
+    binding it: `COPY 1` then a `STORE_*`. `handle_copy` pushes the very same
+    node, so identity is what distinguishes it from two equal-looking values.
+    """
+    return len(state.stack) >= 2 and state.stack[-1] is state.stack[-2]
+
+
+def _handle_assignment_expression(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    """Rebuild `(name := value)` from the COPY/STORE pair that implements it."""
+    target = ast.Name(id=instr.argval, ctx=ast.Store())
+    named = ast.NamedExpr(target=target, value=ensure_ast(state.stack[-1]))
+    return replace(state, stack=state.stack[:-2] + [named])
+
+
+@register_handler("STORE_GLOBAL", version=PythonVersion.PY_312)
+@register_handler("STORE_GLOBAL", version=PythonVersion.PY_313)
+@register_handler("STORE_GLOBAL", version=PythonVersion.PY_314)
+def handle_store_global(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # A comprehension has no globals of its own, so the only way it stores one
+    # is an assignment expression, which binds in the enclosing scope.
+    assert _is_assignment_expression(state), (
+        "STORE_GLOBAL outside an assignment expression"
+    )
+    return _handle_assignment_expression(state, instr)
+
+
 @register_handler("STORE_DEREF", version=PythonVersion.PY_312)
 @register_handler("STORE_DEREF", version=PythonVersion.PY_313)
+@register_handler("STORE_DEREF", version=PythonVersion.PY_314)
 def handle_store_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # STORE_DEREF stores a value into a closure variable
-    # For AST reconstruction, we treat this the same as STORE_FAST
+    # STORE_DEREF stores into a closure variable: either an assignment
+    # expression binding in an enclosing function, or a loop target that an
+    # inner comprehension captures.
+    if _is_assignment_expression(state):
+        return _handle_assignment_expression(state, instr)
     return handle_store_fast(state, instr)
 
 
 @register_handler("STORE_FAST", version=PythonVersion.PY_312)
 @register_handler("STORE_FAST", version=PythonVersion.PY_313)
+@register_handler("STORE_FAST", version=PythonVersion.PY_314)
 def handle_store_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
+    if _is_assignment_expression(state):
+        # An assignment expression whose target is local to this code object,
+        # as in a comprehension inlined into the lambda that binds the name.
+        return _handle_assignment_expression(state, instr)
+
     if isinstance(state.stack[-1], ast.Name) and state.stack[-1].id == instr.argval:
         # If the variable is already on the stack, we can skip adding it again
         # This is common in nested comprehensions where the same variable is reused
         return replace(state, stack=state.stack[:-1])
 
-    assert isinstance(state.stack[-1], Placeholder)
-    for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-        if isinstance(item, CompExp) and item.generators[-1].target == state.stack[-1]:
-            new_result = copy.deepcopy(item)
-            new_result.generators[-1].target = ast.Name(
-                id=instr.argval, ctx=ast.Store()
-            )
-            new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
-            return replace(state, stack=new_stack)
+    if not isinstance(state.stack[-1], TargetHole):
+        return _bind_local(state, instr.argval, state.stack[-1])
 
-    raise TypeError("STORE_FAST did not find matching Placeholder")
+    new_stack = _bind_target_hole(
+        state.stack, state.stack[-1], ast.Name(id=instr.argval, ctx=ast.Store())
+    )
+    return replace(state, stack=new_stack[:-1])
 
 
 @register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_313)
+@register_handler("STORE_FAST_LOAD_FAST", version=PythonVersion.PY_314)
 def handle_store_fast_load_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -868,40 +1504,69 @@ def handle_store_fast_load_fast(
     assert isinstance(instr.argval, tuple)
     store_name, load_name = instr.argval
 
-    assert isinstance(state.stack[-1], Placeholder)
-    for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-        if isinstance(item, CompExp) and item.generators[-1].target == state.stack[-1]:
-            new_result = copy.deepcopy(item)
-            new_result.generators[-1].target = ast.Name(id=store_name, ctx=ast.Store())
-            new_var = ast.Name(id=load_name, ctx=ast.Load())
-            new_stack = (
-                state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1] + [new_var]
-            )
-            return replace(state, stack=new_stack)
+    if _is_assignment_expression(state):
+        # `(name := value)` whose result is read straight back, as in
+        # `(z := w) + z`. The duplicate becomes the assignment expression and
+        # the reload becomes a plain reference to the name just bound.
+        named = ast.NamedExpr(
+            target=ast.Name(id=store_name, ctx=ast.Store()),
+            value=ensure_ast(state.stack[-1]),
+        )
+        reload = ast.Name(id=load_name, ctx=ast.Load())
+        return replace(state, stack=state.stack[:-2] + [named, reload])
 
-    raise TypeError("STORE_FAST_LOAD_FAST did not find matching Placeholder")
+    if not isinstance(state.stack[-1], TargetHole):
+        # A plain assignment followed by a load, as 3.14 emits when it unrolls
+        # a single-iteration loop over a literal.
+        bound = _bind_local(state, store_name, state.stack[-1])
+        return replace(bound, stack=bound.stack + [_read_local(bound, load_name)])
+
+    new_stack = _bind_target_hole(
+        state.stack, state.stack[-1], ast.Name(id=store_name, ctx=ast.Store())
+    )
+    new_var = ast.Name(id=load_name, ctx=ast.Load())
+    return replace(state, stack=new_stack[:-1] + [new_var])
+
+
+@register_handler("STORE_FAST_STORE_FAST", version=PythonVersion.PY_313)
+@register_handler("STORE_FAST_STORE_FAST", version=PythonVersion.PY_314)
+def handle_store_fast_store_fast(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # STORE_FAST_STORE_FAST stores STACK[-1] into the first named variable and
+    # STACK[-2] into the second. It is emitted for unpacking targets, so both
+    # values are loop-target holes belonging to the same comprehension.
+    assert isinstance(instr.argval, tuple)
+    first_name, second_name = instr.argval
+
+    if not isinstance(state.stack[-1], TargetHole):
+        # Not loop targets: a pair of plain assignments, as 3.14 emits when it
+        # unrolls a single-iteration loop over a literal.
+        bound = _bind_local(state, first_name, state.stack[-1])
+        return _bind_local(bound, second_name, bound.stack[-1])
+
+    new_stack = _bind_target_hole(
+        state.stack, state.stack[-1], ast.Name(id=first_name, ctx=ast.Store())
+    )
+    new_stack = _bind_target_hole(
+        new_stack, new_stack[-2], ast.Name(id=second_name, ctx=ast.Store())
+    )
+    return replace(state, stack=new_stack[:-2])
 
 
 @register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_312)
 @register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_313)
+@register_handler("LOAD_FAST_AND_CLEAR", version=PythonVersion.PY_314)
 def handle_load_fast_and_clear(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     # LOAD_FAST_AND_CLEAR pushes a local variable onto the stack and clears it
     # For AST reconstruction, we treat this the same as LOAD_FAST
-    var_name: str = instr.argval
-
-    if var_name == ".0":
-        # Special handling for .0 variable (the iterator)
-        new_stack = state.stack + [DummyIterName()]
-    else:
-        # Regular variable load
-        new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-
-    return replace(state, stack=new_stack)
+    return replace(state, stack=state.stack + [_read_local(state, instr.argval)])
 
 
 @register_handler("LOAD_FAST_LOAD_FAST", version=PythonVersion.PY_313)
+@register_handler("LOAD_FAST_LOAD_FAST", version=PythonVersion.PY_314)
 def handle_load_fast_load_fast(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -913,25 +1578,14 @@ def handle_load_fast_load_fast(
         # Fallback: assume both names are the same
         var1 = var2 = instr.argval
 
-    new_stack = state.stack
-
-    # Load first variable
-    if var1 == ".0":
-        new_stack = new_stack + [DummyIterName()]
-    else:
-        new_stack = new_stack + [ast.Name(id=var1, ctx=ast.Load())]
-
-    # Load second variable
-    if var2 == ".0":
-        new_stack = new_stack + [DummyIterName()]
-    else:
-        new_stack = new_stack + [ast.Name(id=var2, ctx=ast.Load())]
+    new_stack = state.stack + [_read_local(state, var1), _read_local(state, var2)]
 
     return replace(state, stack=new_stack)
 
 
 @register_handler("MAKE_CELL", version=PythonVersion.PY_312)
 @register_handler("MAKE_CELL", version=PythonVersion.PY_313)
+@register_handler("MAKE_CELL", version=PythonVersion.PY_314)
 def handle_make_cell(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -944,6 +1598,7 @@ def handle_make_cell(
 
 @register_handler("COPY_FREE_VARS", version=PythonVersion.PY_312)
 @register_handler("COPY_FREE_VARS", version=PythonVersion.PY_313)
+@register_handler("COPY_FREE_VARS", version=PythonVersion.PY_314)
 def handle_copy_free_vars(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -961,6 +1616,7 @@ def handle_copy_free_vars(
 
 @register_handler("POP_TOP", version=PythonVersion.PY_312)
 @register_handler("POP_TOP", version=PythonVersion.PY_313)
+@register_handler("POP_TOP", version=PythonVersion.PY_314)
 def handle_pop_top(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -974,6 +1630,7 @@ def handle_pop_top(
 # Python 3.13 replacement for stack manipulation
 @register_handler("SWAP", version=PythonVersion.PY_312)
 @register_handler("SWAP", version=PythonVersion.PY_313)
+@register_handler("SWAP", version=PythonVersion.PY_314)
 def handle_swap(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -997,6 +1654,7 @@ def handle_swap(
 
 @register_handler("COPY", version=PythonVersion.PY_312)
 @register_handler("COPY", version=PythonVersion.PY_313)
+@register_handler("COPY", version=PythonVersion.PY_314)
 def handle_copy(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1014,6 +1672,7 @@ def handle_copy(
 
 @register_handler("PUSH_NULL", version=PythonVersion.PY_312)
 @register_handler("PUSH_NULL", version=PythonVersion.PY_313)
+@register_handler("PUSH_NULL", version=PythonVersion.PY_314)
 def handle_push_null(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1050,9 +1709,10 @@ def handle_binary_op(
         1: ast.BitAnd(),  # &
         2: ast.FloorDiv(),  # //
         3: ast.LShift(),  # <<
+        4: ast.MatMult(),  # @
         5: ast.Mult(),  # *
         6: ast.Mod(),  # %
-        7: ast.BitOr(),  # | (guessing based on pattern)
+        7: ast.BitOr(),  # |
         8: ast.Pow(),  # **
         9: ast.RShift(),  # >>
         10: ast.Sub(),  # -
@@ -1065,6 +1725,79 @@ def handle_binary_op(
         raise TypeError(f"Unknown binary operation: {instr.arg}")
 
     return handle_binop(op, state, instr)
+
+
+# 3.14 folded subscripting into BINARY_OP; `dis._nb_ops` names the oparg
+# NB_SUBSCR. Looked up rather than hard-coded, since it sits past the in-place
+# operators and so moves whenever one is added.
+_NB_OPS: list[tuple[str, str]] = getattr(dis, "_nb_ops", [])
+NB_SUBSCR: int | None = next(
+    (i for i, (name, _) in enumerate(_NB_OPS) if name == "NB_SUBSCR"), None
+)
+
+
+@register_handler("BINARY_OP", version=PythonVersion.PY_314)
+def handle_binary_op_314(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # As in 3.13, except that BINARY_OP now also implements `a[b]`, which used
+    # to be its own BINARY_SUBSCR opcode.
+    if instr.arg is not None and instr.arg == NB_SUBSCR:
+        return handle_binary_subscr(state, instr)
+    return handle_binary_op(state, instr)
+
+
+@register_handler("LOAD_SMALL_INT", version=PythonVersion.PY_314)
+def handle_load_small_int(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # LOAD_SMALL_INT pushes an int in range(256) held in the oparg itself,
+    # rather than going through co_consts.
+    assert isinstance(instr.argval, int)
+    return replace(state, stack=state.stack + [ensure_ast(instr.argval)])
+
+
+@register_handler("LOAD_FAST_BORROW", version=PythonVersion.PY_314)
+def handle_load_fast_borrow(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # A borrowed reference differs only in ownership, which the AST does not
+    # model, so this is LOAD_FAST as far as reconstruction is concerned.
+    return handle_load_fast(state, instr)
+
+
+@register_handler("LOAD_FAST_BORROW_LOAD_FAST_BORROW", version=PythonVersion.PY_314)
+def handle_load_fast_borrow_load_fast_borrow(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    return handle_load_fast_load_fast(state, instr)
+
+
+@register_handler("LOAD_COMMON_CONSTANT", version=PythonVersion.PY_314)
+def handle_load_common_constant(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # Pushes one of a small hardcoded set of constants. In a comprehension this
+    # only shows up in the guard of an inlined builtin; see CommonConstant.
+    name = getattr(instr.argval, "__name__", str(instr.argval))
+    return replace(state, stack=state.stack + [CommonConstant(id=name)])
+
+
+@register_handler("NOT_TAKEN", version=PythonVersion.PY_314)
+def handle_not_taken(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # A no-op marking the not-taken edge of a branch for sys.monitoring.
+    return state
+
+
+@register_handler("POP_ITER", version=PythonVersion.PY_314)
+def handle_pop_iter(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # POP_ITER discards the exhausted iterator that FOR_ITER left behind. In
+    # 3.13 the same cleanup was spelled END_FOR followed by POP_TOP.
+    return replace(state, stack=state.stack[:-1])
 
 
 # ============================================================================
@@ -1080,39 +1813,28 @@ def handle_unary_op(
     return replace(state, stack=new_stack)
 
 
-handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE",
-    functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_312,
-)
-handle_unary_negative = register_handler(
-    "UNARY_NEGATIVE",
-    functools.partial(handle_unary_op, ast.USub()),
-    version=PythonVersion.PY_313,
-)
-handle_unary_invert = register_handler(
-    "UNARY_INVERT",
-    functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_312,
-)
-handle_unary_invert = register_handler(
-    "UNARY_INVERT",
-    functools.partial(handle_unary_op, ast.Invert()),
-    version=PythonVersion.PY_313,
-)
-handle_unary_not = register_handler(
-    "UNARY_NOT",
-    functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_312,
-)
-handle_unary_not = register_handler(
-    "UNARY_NOT",
-    functools.partial(handle_unary_op, ast.Not()),
-    version=PythonVersion.PY_313,
-)
+UNARY_OPS: dict[str, ast.unaryop] = {
+    "UNARY_NEGATIVE": ast.USub(),
+    "UNARY_INVERT": ast.Invert(),
+    "UNARY_NOT": ast.Not(),
+}
+
+# These three behave identically in every dialect this module supports; 3.13's
+# "requires an exact bool operand" note on UNARY_NOT constrains the operand, not
+# the reconstruction.
+for _opname, _op in UNARY_OPS.items():
+    for _version in (
+        PythonVersion.PY_312,
+        PythonVersion.PY_313,
+        PythonVersion.PY_314,
+    ):
+        register_handler(
+            _opname, functools.partial(handle_unary_op, _op), version=_version
+        )
 
 
 @register_handler("CONVERT_VALUE", version=PythonVersion.PY_313)
+@register_handler("CONVERT_VALUE", version=PythonVersion.PY_314)
 def handle_convert_value(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1133,6 +1855,7 @@ def handle_convert_value(
 
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_312)
 @register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_313)
+@register_handler("CALL_INTRINSIC_1", version=PythonVersion.PY_314)
 def handle_call_intrinsic_1(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1154,6 +1877,7 @@ def handle_call_intrinsic_1(
 
 
 @register_handler("TO_BOOL", version=PythonVersion.PY_313)
+@register_handler("TO_BOOL", version=PythonVersion.PY_314)
 def handle_to_bool(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1182,6 +1906,7 @@ CMP_OPMAP: dict[str, ast.cmpop] = {
 
 @register_handler("COMPARE_OP", version=PythonVersion.PY_312)
 @register_handler("COMPARE_OP", version=PythonVersion.PY_313)
+@register_handler("COMPARE_OP", version=PythonVersion.PY_314)
 def handle_compare_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1201,6 +1926,7 @@ def handle_compare_op(
 
 @register_handler("CONTAINS_OP", version=PythonVersion.PY_312)
 @register_handler("CONTAINS_OP", version=PythonVersion.PY_313)
+@register_handler("CONTAINS_OP", version=PythonVersion.PY_314)
 def handle_contains_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1217,6 +1943,7 @@ def handle_contains_op(
 
 @register_handler("IS_OP", version=PythonVersion.PY_312)
 @register_handler("IS_OP", version=PythonVersion.PY_313)
+@register_handler("IS_OP", version=PythonVersion.PY_314)
 def handle_is_op(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1234,6 +1961,18 @@ def handle_is_op(
 # ============================================================================
 # FUNCTION CALL HANDLERS
 # ============================================================================
+
+
+@register_handler("KW_NAMES", version=PythonVersion.PY_312)
+def handle_kw_names(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # KW_NAMES names the trailing arguments of the CALL that follows it.
+    # Python 3.13 replaced this pair with a single CALL_KW instruction.
+    assert isinstance(instr.argval, tuple), "KW_NAMES requires a tuple of names"
+    assert all(isinstance(name, str) for name in instr.argval)
+    assert state.kw_names is None, "KW_NAMES must be consumed by the following CALL"
+    return replace(state, kw_names=instr.argval)
 
 
 @register_handler("CALL", version=PythonVersion.PY_312)
@@ -1267,17 +2006,28 @@ def handle_call_312(
         args = [self_arg] + remaining_args
         new_stack = state.stack[: -arg_count - 2]
 
+    # A preceding KW_NAMES names the trailing `len(kw_names)` positional slots.
+    keywords: list[ast.keyword] = []
+    if state.kw_names is not None:
+        assert 0 < len(state.kw_names) <= arg_count
+        keywords = [
+            ast.keyword(arg=name, value=value)
+            for name, value in zip(state.kw_names, args[-len(state.kw_names) :])
+        ]
+        args = args[: -len(state.kw_names)]
+
     if isinstance(func, CompLambda):
-        assert len(args) == 1
-        return replace(state, stack=new_stack + [func.inline(args[0])])
+        assert len(args) == 1 and not keywords
+        return replace(state, stack=new_stack + [func.inline(args[0])], kw_names=None)
     else:
         # Create function call AST
-        call_node = ast.Call(func=func, args=args, keywords=[])
+        call_node = ast.Call(func=func, args=args, keywords=keywords)
         new_stack = new_stack + [call_node]
-        return replace(state, stack=new_stack)
+        return replace(state, stack=new_stack, kw_names=None)
 
 
 @register_handler("CALL", version=PythonVersion.PY_313)
+@register_handler("CALL", version=PythonVersion.PY_314)
 def handle_call(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1306,6 +2056,7 @@ def handle_call(
 
 
 @register_handler("CALL_KW", version=PythonVersion.PY_313)
+@register_handler("CALL_KW", version=PythonVersion.PY_314)
 def handle_call_kw(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1338,34 +2089,151 @@ def handle_call_kw(
     return replace(state, stack=new_stack)
 
 
+# Flags shared by MAKE_FUNCTION (3.12) and SET_FUNCTION_ATTRIBUTE (3.13)
+MAKE_FUNCTION_DEFAULTS = 0x01
+MAKE_FUNCTION_KWDEFAULTS = 0x02
+MAKE_FUNCTION_ANNOTATIONS = 0x04
+MAKE_FUNCTION_CLOSURE = 0x08
+MAKE_FUNCTION_ANNOTATE = 0x10  # added in 3.14
+MAKE_FUNCTION_FLAGS = (
+    MAKE_FUNCTION_DEFAULTS,
+    MAKE_FUNCTION_KWDEFAULTS,
+    MAKE_FUNCTION_ANNOTATIONS,
+    MAKE_FUNCTION_CLOSURE,
+)
+
+
+def _apply_function_attribute(
+    func: ast.Lambda | CompLambda, flag: int, value: ast.expr
+) -> ast.Lambda | CompLambda:
+    """Attach one function attribute to a reconstructed lambda."""
+    if flag == MAKE_FUNCTION_CLOSURE:
+        # Free variables are already spelled by name in the reconstructed body.
+        return func
+    if flag == MAKE_FUNCTION_ANNOTATE:
+        # A lambda has no annotations, and the AST does not carry the lazy
+        # annotate function 3.14 attaches to annotated functions.
+        return func
+
+    assert isinstance(func, ast.Lambda) and not isinstance(func, CompLambda), (
+        "Only lambdas carry defaults; comprehensions take exactly one argument"
+    )
+
+    if flag == MAKE_FUNCTION_DEFAULTS:
+        # A tuple of defaults for the *trailing* positional parameters.
+        assert isinstance(value, ast.Tuple), "Expected a tuple of default values"
+        func.args.defaults = list(value.elts)
+    elif flag == MAKE_FUNCTION_KWDEFAULTS:
+        # A dict mapping keyword-only parameter names to their defaults.
+        assert isinstance(value, ast.Dict), "Expected a dict of keyword defaults"
+        by_name = {
+            key.value: val
+            for key, val in zip(value.keys, value.values)
+            if isinstance(key, ast.Constant)
+        }
+        func.args.kw_defaults = [by_name.get(a.arg) for a in func.args.kwonlyargs]
+    else:
+        raise NotImplementedError("Function annotations are not supported")
+
+    return func
+
+
+def _split_callable(
+    first: ast.expr, second: ast.expr
+) -> tuple[ast.expr, ast.expr | None]:
+    """Separate the callable from the NULL-or-self slot beside it.
+
+    Which of the two comes first varies: LOAD_GLOBAL and LOAD_ATTR report the
+    order in their argrepr, and it differs between 3.13 and 3.14.
+    """
+    if isinstance(first, Null):
+        return second, None
+    elif isinstance(second, Null):
+        return first, None
+    else:
+        return first, second
+
+
+def _build_variadic_call(
+    func: ast.expr,
+    self_arg: ast.expr | None,
+    positional: ast.expr,
+    keyword_mapping: ast.expr | None,
+) -> ast.Call:
+    """Assemble `func(*positional, **keyword_mapping)`.
+
+    CALL_FUNCTION_EX receives its arguments already collected into a sequence
+    and a mapping, with the original mix of plain and starred arguments no
+    longer distinguishable. Spelling every argument as unpacked reproduces the
+    call exactly, even where the source did not use `*` for all of them.
+    """
+    args: list[ast.expr] = [] if self_arg is None else [ensure_ast(self_arg)]
+    args.append(ast.Starred(value=ensure_ast(positional), ctx=ast.Load()))
+    keywords = (
+        []
+        if keyword_mapping is None
+        else [ast.keyword(arg=None, value=ensure_ast(keyword_mapping))]
+    )
+    return ast.Call(func=ensure_ast(func), args=args, keywords=keywords)
+
+
+@register_handler("CALL_FUNCTION_EX", version=PythonVersion.PY_312)
+@register_handler("CALL_FUNCTION_EX", version=PythonVersion.PY_313)
+def handle_call_function_ex(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # Stack: callable and NULL-or-self, the positional sequence, and -- only
+    # when the low bit of the oparg is set -- the keyword mapping.
+    size = 4 if instr.arg else 3
+    keyword_mapping = state.stack[-1] if instr.arg else None
+    positional = state.stack[-2] if instr.arg else state.stack[-1]
+    func, self_arg = _split_callable(state.stack[-size], state.stack[-size + 1])
+
+    call = _build_variadic_call(func, self_arg, positional, keyword_mapping)
+    return replace(state, stack=state.stack[:-size] + [call])
+
+
+@register_handler("CALL_FUNCTION_EX", version=PythonVersion.PY_314)
+def handle_call_function_ex_314(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # 3.14 always reserves the keyword-mapping slot, pushing NULL into it when
+    # the call has no `**` argument, so the layout is a fixed four slots.
+    keyword_mapping = None if isinstance(state.stack[-1], Null) else state.stack[-1]
+    func, self_arg = _split_callable(state.stack[-4], state.stack[-3])
+
+    call = _build_variadic_call(func, self_arg, state.stack[-2], keyword_mapping)
+    return replace(state, stack=state.stack[:-4] + [call])
+
+
 @register_handler("MAKE_FUNCTION", version=PythonVersion.PY_312)
 def handle_make_function_312(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # MAKE_FUNCTION in Python 3.12 uses flags to determine stack consumption
-    # Unlike 3.10, no qualified name on stack
-    # Unlike 3.13, uses flags instead of SET_FUNCTION_ATTRIBUTE
+    # MAKE_FUNCTION in Python 3.12 uses flags to determine stack consumption.
+    # Unlike 3.10 there is no qualified name on the stack, and unlike 3.13 the
+    # extra attributes travel with this instruction rather than with a following
+    # SET_FUNCTION_ATTRIBUTE. They are pushed in ascending flag order, below the
+    # code object.
     assert instr.arg is not None
     assert isinstance(state.stack[-1], ast.Lambda | CompLambda), (
         "Expected a function object (Lambda or CompLambda) on the stack."
     )
-    if instr.argrepr == "closure":
-        # This is a closure, remove the environment tuple from the stack for AST purposes
-        new_stack = state.stack[:-2]
-    elif instr.argrepr == "":
-        new_stack = state.stack[:-1]
-    else:
-        raise NotImplementedError(
-            "MAKE_FUNCTION with defaults or annotations not implemented."
-        )
 
-    # For comprehensions, we only care about the function object
-    func = state.stack[-1]
-    return replace(state, stack=new_stack + [func])
+    set_flags = [flag for flag in MAKE_FUNCTION_FLAGS if instr.arg & flag]
+    attributes = state.stack[-1 - len(set_flags) : -1]
+
+    func = copy.deepcopy(state.stack[-1])
+    for flag, value in zip(set_flags, attributes):
+        func = _apply_function_attribute(func, flag, value)
+
+    new_stack = state.stack[: -1 - len(set_flags)] + [func]
+    return replace(state, stack=new_stack)
 
 
 # Python 3.13 version
 @register_handler("MAKE_FUNCTION", version=PythonVersion.PY_313)
+@register_handler("MAKE_FUNCTION", version=PythonVersion.PY_314)
 def handle_make_function(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1382,17 +2250,22 @@ def handle_make_function(
 
 
 @register_handler("SET_FUNCTION_ATTRIBUTE", version=PythonVersion.PY_313)
+@register_handler("SET_FUNCTION_ATTRIBUTE", version=PythonVersion.PY_314)
 def handle_set_function_attribute(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # SET_FUNCTION_ATTRIBUTE sets an attribute on a function object
-    # In Python 3.13, this is used instead of flags in MAKE_FUNCTION
-    # For AST reconstruction, we typically don't need to track function attributes
-    # Just pop the attribute value and leave the function on the stack
+    # SET_FUNCTION_ATTRIBUTE sets one attribute on a function object. Python
+    # 3.13 uses it in place of the MAKE_FUNCTION flags; the stack holds the
+    # attribute value below the function, and only the function is left behind.
+    assert instr.arg is not None
+    assert isinstance(state.stack[-1], ast.Lambda | CompLambda), (
+        "Expected a function object (Lambda or CompLambda) on the stack."
+    )
 
-    # Pop the attribute value but keep the function
-    new_stack = state.stack[:-2] + [state.stack[-1]]  # Keep the function on top
-    return replace(state, stack=new_stack)
+    func = _apply_function_attribute(
+        copy.deepcopy(state.stack[-1]), instr.arg, state.stack[-2]
+    )
+    return replace(state, stack=state.stack[:-2] + [func])
 
 
 # ============================================================================
@@ -1402,6 +2275,7 @@ def handle_set_function_attribute(
 
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_312)
 @register_handler("LOAD_ATTR", version=PythonVersion.PY_313)
+@register_handler("LOAD_ATTR", version=PythonVersion.PY_314)
 def handle_load_attr(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1438,6 +2312,7 @@ def handle_binary_subscr(
 
 @register_handler("BINARY_SLICE", version=PythonVersion.PY_312)
 @register_handler("BINARY_SLICE", version=PythonVersion.PY_313)
+@register_handler("BINARY_SLICE", version=PythonVersion.PY_314)
 def handle_binary_slice(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1461,28 +2336,72 @@ def handle_binary_slice(
 
 @register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_312)
 @register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_313)
+@register_handler("UNPACK_SEQUENCE", version=PythonVersion.PY_314)
 def handle_unpack_sequence(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # UNPACK_SEQUENCE unpacks a sequence into multiple values
-    # arg is the number of values to unpack
+    # UNPACK_SEQUENCE splits a comprehension loop target into `arg` sub-targets,
+    # as in ((k, v) for k, v in items). The names are not known yet, so the
+    # single target hole is refined into a tuple of fresh holes, which the
+    # following STORE_* instructions bind one at a time.
+    #
+    # CPython pushes the unpacked values right-to-left, so element 0 ends up on
+    # top of the stack and is consumed by the first STORE_*.
     assert instr.arg is not None
     unpack_count: int = instr.arg
-    sequence = ensure_ast(state.stack[-1])  # noqa: F841
-    new_stack = state.stack[:-1]
 
-    # For tuple unpacking in comprehensions, we typically see patterns like:
-    # ((k, v) for k, v in items) where items is unpacked into k and v
-    # Create placeholder variables for the unpacked values
-    for i in range(unpack_count):
-        var_name = f"_unpack_{i}"
-        new_stack = new_stack + [ast.Name(id=var_name, ctx=ast.Load())]
+    if not isinstance(state.stack[-1], TargetHole):
+        # Destructuring a known value rather than a loop target, as 3.14 emits
+        # when it unrolls a single-iteration loop over a literal.
+        elements = _literal_elements(state.stack[-1], unpack_count)
+        return replace(state, stack=state.stack[:-1] + list(reversed(elements)))
 
-    return replace(state, stack=new_stack)
+    holes = [TargetHole() for _ in range(unpack_count)]
+    new_stack = _bind_target_hole(
+        state.stack, state.stack[-1], ast.Tuple(elts=list(holes), ctx=ast.Store())
+    )
+    return replace(state, stack=new_stack[:-1] + list(reversed(holes)))
+
+
+@register_handler("UNPACK_EX", version=PythonVersion.PY_312)
+@register_handler("UNPACK_EX", version=PythonVersion.PY_313)
+@register_handler("UNPACK_EX", version=PythonVersion.PY_314)
+def handle_unpack_ex(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # UNPACK_EX handles a starred target, as in ((a, b) for a, *b in pairs).
+    # The low byte of the argument counts the targets before the starred one and
+    # the high byte counts those after it; the starred target itself collects
+    # whatever is left over. As with UNPACK_SEQUENCE the values are pushed
+    # right-to-left, so the first target ends up on top of the stack.
+    assert instr.arg is not None
+    before, after = instr.arg & 0xFF, instr.arg >> 8
+
+    if not isinstance(state.stack[-1], TargetHole):
+        # Destructuring a known value; the starred target collects the middle.
+        elements = _literal_elements(state.stack[-1])
+        assert len(elements) >= before + after, "Too few values to unpack"
+        middle = elements[before : len(elements) - after]
+        unpacked: list[ast.expr] = [
+            *elements[:before],
+            ast.List(elts=list(middle), ctx=ast.Load()),
+            *elements[len(elements) - after :],
+        ]
+        return replace(state, stack=state.stack[:-1] + list(reversed(unpacked)))
+
+    holes = [TargetHole() for _ in range(before + 1 + after)]
+    elts: list[ast.expr] = list(holes)
+    elts[before] = ast.Starred(value=holes[before], ctx=ast.Store())
+
+    new_stack = _bind_target_hole(
+        state.stack, state.stack[-1], ast.Tuple(elts=elts, ctx=ast.Store())
+    )
+    return replace(state, stack=new_stack[:-1] + list(reversed(holes)))
 
 
 @register_handler("BUILD_TUPLE", version=PythonVersion.PY_312)
 @register_handler("BUILD_TUPLE", version=PythonVersion.PY_313)
+@register_handler("BUILD_TUPLE", version=PythonVersion.PY_314)
 def handle_build_tuple(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1504,6 +2423,7 @@ def handle_build_tuple(
 
 @register_handler("BUILD_SLICE", version=PythonVersion.PY_312)
 @register_handler("BUILD_SLICE", version=PythonVersion.PY_313)
+@register_handler("BUILD_SLICE", version=PythonVersion.PY_314)
 def handle_build_slice(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1557,29 +2477,72 @@ def handle_build_const_key_map(
 
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_312)
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
+@register_handler("LIST_EXTEND", version=PythonVersion.PY_314)
 def handle_list_extend(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # LIST_EXTEND extends the list at TOS-1 with the iterable at TOS
-    # initially recognized as list comp
+    # LIST_EXTEND appends the contents of the iterable at TOS to the list
+    # further down the stack. That list is either the empty ListComp that
+    # BUILD_LIST(0) optimistically created -- a list display, not a
+    # comprehension after all -- or a partly built argument list for a call
+    # with a starred argument.
+    update = state.stack[-1]
+    target = state.stack[-instr.argval - 1]
 
-    # The list being extended is actually in state.result instead of the stack
-    # because it was initially recognized as a list comprehension in BUILD_LIST,
-    # while the actual result expression is in the stack where the list "should be"
-    # and needs to be put back into the state result slot
-    assert isinstance(state.stack[-1], ast.Tuple | ast.List)
-    assert isinstance(state.stack[-instr.argval - 1], ast.ListComp)
+    # A literal iterable contributes its elements directly; anything else has to
+    # stay unpacked, as in `[*whatever]`.
+    elements: list[ast.expr]
+    if isinstance(update, ast.Tuple | ast.List):
+        elements = [ensure_ast(e) for e in update.elts]
+    else:
+        elements = [ast.Starred(value=ensure_ast(update), ctx=ast.Load())]
 
-    new_val = ast.List(
-        elts=[ensure_ast(e) for e in state.stack[-1].elts], ctx=ast.Load()
-    )
-    new_stack = state.stack[:-2] + [new_val]
+    if isinstance(target, ast.ListComp) and not target.generators:
+        merged = ast.List(elts=elements, ctx=ast.Load())
+    else:
+        assert isinstance(target, ast.List), "LIST_EXTEND expects a list to extend"
+        merged = ast.List(elts=list(target.elts) + elements, ctx=ast.Load())
 
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = merged
+    return replace(state, stack=new_stack)
+
+
+@register_handler("DICT_MERGE", version=PythonVersion.PY_312)
+@register_handler("DICT_MERGE", version=PythonVersion.PY_313)
+@register_handler("DICT_MERGE", version=PythonVersion.PY_314)
+def handle_dict_merge(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # DICT_MERGE folds the mapping at TOS into the one below it, rejecting
+    # duplicate keys. It assembles the keyword arguments of a call using `**`.
+    update = state.stack[-1]
+    target = state.stack[-instr.argval - 1]
+
+    # An `ast.Dict` entry with a key of None is `**value`, which is how a
+    # mapping that is not a literal has to be spliced in.
+    def entries(node: ast.expr) -> tuple[list[ast.expr | None], list[ast.expr]]:
+        if isinstance(node, ast.Dict):
+            return list(node.keys), list(node.values)
+        return [None], [ensure_ast(node)]
+
+    if isinstance(target, ast.DictComp) and not target.generators:
+        # BUILD_MAP(0) guessed at a dict comprehension; it was a `**` argument.
+        keys, values = entries(update)
+    else:
+        assert isinstance(target, ast.Dict), "DICT_MERGE expects a dict to merge into"
+        target_keys, target_values = entries(target)
+        update_keys, update_values = entries(update)
+        keys, values = target_keys + update_keys, target_values + update_values
+
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = ast.Dict(keys=keys, values=values)
     return replace(state, stack=new_stack)
 
 
 @register_handler("SET_UPDATE", version=PythonVersion.PY_312)
 @register_handler("SET_UPDATE", version=PythonVersion.PY_313)
+@register_handler("SET_UPDATE", version=PythonVersion.PY_314)
 def handle_set_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1598,6 +2561,7 @@ def handle_set_update(
 
 @register_handler("DICT_UPDATE", version=PythonVersion.PY_312)
 @register_handler("DICT_UPDATE", version=PythonVersion.PY_313)
+@register_handler("DICT_UPDATE", version=PythonVersion.PY_314)
 def handle_dict_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1619,6 +2583,7 @@ def handle_dict_update(
 
 @register_handler("BUILD_STRING", version=PythonVersion.PY_312)
 @register_handler("BUILD_STRING", version=PythonVersion.PY_313)
+@register_handler("BUILD_STRING", version=PythonVersion.PY_314)
 def handle_build_string(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1719,6 +2684,7 @@ def handle_format_value(
 
 
 @register_handler("FORMAT_SIMPLE", version=PythonVersion.PY_313)
+@register_handler("FORMAT_SIMPLE", version=PythonVersion.PY_314)
 def handle_format_simple(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1744,6 +2710,7 @@ def handle_format_simple(
 
 
 @register_handler("FORMAT_WITH_SPEC", version=PythonVersion.PY_313)
+@register_handler("FORMAT_WITH_SPEC", version=PythonVersion.PY_314)
 def handle_format_with_spec(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1787,79 +2754,100 @@ def _handle_pop_jump_if(
     state: ReconstructionState,
     instr: dis.Instruction,
 ) -> ReconstructionState:
-    # Generic handler for POP_JUMP_IF_* instructions
-    # Pops a value from the stack and jumps if the condition is met
+    # Generic handler for POP_JUMP_IF_* instructions. Pops a value from the
+    # stack; `condition` is true exactly when the jump is taken.
     condition: ast.expr = f_condition(ensure_ast(state.stack[-1]))
 
-    if state.next_instructions[instr.offset].opname == "JUMP_BACKWARD":
-        for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-            if not isinstance(item, CompExp):
-                continue
+    # An inlined-builtin guard is an implementation detail of the interpreter,
+    # not part of the comprehension: drop it rather than record it as a filter.
+    if _specialization_guard_edge(state, instr) is not None:
+        return replace(state, stack=state.stack[:-1])
 
-            elt: ast.expr = item.value if isinstance(item, ast.DictComp) else item.elt
-            new_result: CompExp = copy.deepcopy(item)
+    kind, _ = _classify_branch(state, instr)
+    edge = state.branches.get(instr.offset, BranchEdge.TAKE_JUMP)
 
-            if isinstance(elt, Placeholder):
-                if len(new_result.generators[-1].ifs) == 0:
-                    new_result.generators[-1].ifs.append(condition)
-                elif len(new_result.generators[-1].ifs) == 1:
-                    new_result.generators[-1].ifs[0] = ast.BoolOp(
-                        op=ast.And(),
-                        values=[new_result.generators[-1].ifs[0], condition],
-                    )
-                else:
-                    raise TypeError("should only ever have one filter")
-                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
-                return replace(state, stack=new_stack)
-            elif isinstance(elt, ast.IfExp) and any(
-                isinstance(x, Placeholder) for x in ast.walk(elt)
-            ):
-                # we've been building up an ifexp, but it's actually part of a comprehension
-                if isinstance(new_result, ast.DictComp):
-                    new_result.key, new_result.value = Placeholder(), Placeholder()
-                else:
-                    new_result.elt = Placeholder()
+    if kind is BranchKind.TERNARY:
+        return _handle_conditional_expression(state, instr, condition, edge)
 
-                # combined filter is (condition if not prev_condition else prev_condition)
-                combined_condition = ReplacePlaceholder(condition).visit(
-                    copy.deepcopy(elt)
-                )
-                assert isinstance(combined_condition, ast.expr)
-                if len(new_result.generators[-1].ifs) == 0:
-                    new_result.generators[-1].ifs.append(combined_condition)
-                elif len(new_result.generators[-1].ifs) == 1:
-                    new_result.generators[-1].ifs[0] = ast.BoolOp(
-                        op=ast.And(),
-                        values=[new_result.generators[-1].ifs[0], combined_condition],
-                    )
-                else:
-                    raise TypeError("should only ever have one filter")
-                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
-                return replace(state, stack=new_stack)
+    # A filter. The guard is the condition under which *this* path carries on
+    # toward the element, so it is negated when the path falls through.
+    guard = condition if edge is BranchEdge.TAKE_JUMP else _negate(condition)
+    return _attach_filter(state, guard)
+
+
+def _attach_filter(
+    state: ReconstructionState, guard: ast.expr | None
+) -> ReconstructionState:
+    """Conjoin ``guard`` to the filters of the innermost unfinished comprehension."""
+    for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
+        if not isinstance(item, CompExp):
+            continue
+
+        elt: ast.expr = item.value if isinstance(item, ast.DictComp) else item.elt
+        new_result: CompExp = copy.deepcopy(item)
+
+        if isinstance(elt, Placeholder):
+            resolved = guard
+        elif isinstance(elt, ast.IfExp) and any(
+            isinstance(x, Placeholder) for x in ast.walk(elt)
+        ):
+            # A conditional expression was being built up in the element slot,
+            # but it turned out to be part of this filter's condition. Move it
+            # back out, plugging the guard into the arm still awaiting a value.
+            if isinstance(new_result, ast.DictComp):
+                new_result.key, new_result.value = Placeholder(), Placeholder()
             else:
-                continue
+                new_result.elt = Placeholder()
 
-        raise TypeError("No comprehension context found for filter condition")
-    else:
-        for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
-            if any(isinstance(x, Placeholder) for x in ast.walk(item)):
-                body: Skipped | Placeholder
-                orelse: Skipped | Placeholder
-                if state.branches.get(instr.offset, 0):
-                    # we don't jump, so we're in the orelse branch
-                    body, orelse = Skipped(id=f".SKIPPED_{instr.offset}"), Placeholder()
-                else:
-                    # we jump, so we're in the body branch
-                    body, orelse = Placeholder(), Skipped(id=f".SKIPPED_{instr.offset}")
-                new_ifexp = ast.IfExp(test=condition, body=body, orelse=orelse)
-                new_result = ReplacePlaceholder(new_ifexp).visit(copy.deepcopy(item))
-                new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
-                return replace(state, stack=new_stack)
-        raise TypeError("No placeholder found for conditional expression")
+            if guard is None:
+                resolved = None
+            else:
+                plugged = ReplacePlaceholder(guard).visit(copy.deepcopy(elt))
+                assert isinstance(plugged, ast.expr)
+                resolved = plugged
+        else:
+            continue
+
+        if resolved is not None:
+            ifs = new_result.generators[-1].ifs
+            combined = _conjoin(ifs + [resolved])
+            assert combined is not None
+            new_result.generators[-1].ifs = [combined]
+
+        new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
+        return replace(state, stack=new_stack)
+
+    raise TypeError("No comprehension context found for filter condition")
+
+
+def _handle_conditional_expression(
+    state: ReconstructionState,
+    instr: dis.Instruction,
+    condition: ast.expr,
+    edge: BranchEdge,
+) -> ReconstructionState:
+    """Start an ``ast.IfExp``, marking the arm this path did not take."""
+    for pos, item in zip(reversed(range(len(state.stack))), reversed(state.stack)):
+        if any(isinstance(x, Placeholder) for x in ast.walk(item)):
+            body: Skipped | Placeholder
+            orelse: Skipped | Placeholder
+            skipped = Skipped(id=f".SKIPPED_{instr.offset}")
+            if edge is BranchEdge.FALL_THROUGH:
+                body, orelse = skipped, Placeholder()
+            else:
+                body, orelse = Placeholder(), skipped
+
+            new_ifexp = ast.IfExp(test=condition, body=body, orelse=orelse)
+            new_result = ReplacePlaceholder(new_ifexp).visit(copy.deepcopy(item))
+            new_stack = state.stack[:pos] + [new_result] + state.stack[pos + 1 : -1]
+            return replace(state, stack=new_stack)
+
+    raise TypeError("No placeholder found for conditional expression")
 
 
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_313)
+@register_handler("POP_JUMP_IF_TRUE", version=PythonVersion.PY_314)
 def handle_pop_jump_if_true(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1870,6 +2858,7 @@ def handle_pop_jump_if_true(
 
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_313)
+@register_handler("POP_JUMP_IF_FALSE", version=PythonVersion.PY_314)
 def handle_pop_jump_if_false(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1882,6 +2871,7 @@ def handle_pop_jump_if_false(
 
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_313)
+@register_handler("POP_JUMP_IF_NONE", version=PythonVersion.PY_314)
 def handle_pop_jump_if_none(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1897,6 +2887,7 @@ def handle_pop_jump_if_none(
 
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_312)
 @register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_313)
+@register_handler("POP_JUMP_IF_NOT_NONE", version=PythonVersion.PY_314)
 def handle_pop_jump_if_not_none(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1912,6 +2903,7 @@ def handle_pop_jump_if_not_none(
 
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_FORWARD", version=PythonVersion.PY_313)
+@register_handler("JUMP_FORWARD", version=PythonVersion.PY_314)
 def handle_jump_forward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1922,6 +2914,7 @@ def handle_jump_forward(
 
 @register_handler("JUMP_BACKWARD", version=PythonVersion.PY_312)
 @register_handler("JUMP_BACKWARD", version=PythonVersion.PY_313)
+@register_handler("JUMP_BACKWARD", version=PythonVersion.PY_314)
 def handle_jump_backward(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1932,6 +2925,7 @@ def handle_jump_backward(
 
 @register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_312)
 @register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_313)
+@register_handler("JUMP_BACKWARD_NO_INTERRUPT", version=PythonVersion.PY_314)
 def handle_jump_backward_no_interrupt(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1942,6 +2936,7 @@ def handle_jump_backward_no_interrupt(
 
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_312)
 @register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_313)
+@register_handler("JUMP_NO_INTERRUPT", version=PythonVersion.PY_314)
 def handle_jump_no_interrupt(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1952,14 +2947,28 @@ def handle_jump_no_interrupt(
 
 @register_handler("JUMP", version=PythonVersion.PY_312)
 @register_handler("JUMP", version=PythonVersion.PY_313)
+@register_handler("JUMP", version=PythonVersion.PY_314)
 def handle_jump(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     raise TypeError("JUMP instruction should not appear in generator comprehensions")
 
 
+@register_handler("EXTENDED_ARG", version=PythonVersion.PY_312)
+@register_handler("EXTENDED_ARG", version=PythonVersion.PY_313)
+@register_handler("EXTENDED_ARG", version=PythonVersion.PY_314)
+def handle_extended_arg(
+    state: ReconstructionState, instr: dis.Instruction
+) -> ReconstructionState:
+    # EXTENDED_ARG prefixes an instruction whose argument does not fit in a
+    # byte. `dis` has already folded it into the following instruction's `arg`,
+    # so there is nothing left to do here.
+    return state
+
+
 @register_handler("RESUME", version=PythonVersion.PY_312)
 @register_handler("RESUME", version=PythonVersion.PY_313)
+@register_handler("RESUME", version=PythonVersion.PY_314)
 def handle_resume(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -1969,6 +2978,7 @@ def handle_resume(
 
 @register_handler("SEND", version=PythonVersion.PY_312)
 @register_handler("SEND", version=PythonVersion.PY_313)
+@register_handler("SEND", version=PythonVersion.PY_314)
 def handle_send(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
@@ -2014,9 +3024,29 @@ def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
         return ast.Tuple(elts=[ensure_ast(v) for v in value], ctx=ast.Load())
 
 
+def _unconsumed(value: Iterator) -> typing.Any:
+    """Return the items an iterator has not yet yielded, as a concrete sequence.
+
+    Built-in sequence iterators pickle as ``(iter, (underlying,), index)``, where
+    ``index`` is how far the iterator has advanced (absent or ``None`` when it
+    does not apply). ``reversed`` objects pickle with ``reversed`` as the
+    callable and count *down* from the end of the underlying sequence.
+    """
+    reduced = value.__reduce__()
+    assert isinstance(reduced, tuple) and len(reduced) >= 2, (
+        f"Cannot recover the contents of {type(value)}"
+    )
+    if not reduced[1]:  # an exhausted iterator pickles with no arguments
+        return ()
+
+    underlying = reduced[1][0]
+    index = reduced[2] if len(reduced) > 2 and reduced[2] is not None else 0
+    return underlying[index::-1] if reduced[0] is reversed else underlying[index:]
+
+
 @ensure_ast.register(type(iter((1,))))
 def _ensure_ast_tuple_iterator(value: Iterator) -> ast.Tuple:
-    return ensure_ast(tuple(value.__reduce__()[1][0]))  # type: ignore
+    return ensure_ast(tuple(_unconsumed(value)))  # type: ignore
 
 
 @ensure_ast.register
@@ -2025,8 +3055,24 @@ def _ensure_ast_list(value: list) -> ast.List:
 
 
 @ensure_ast.register(type(iter([1])))
+@ensure_ast.register(type(iter({1: 2}.values())))
+@ensure_ast.register(type(iter({1: 2}.items())))
+@ensure_ast.register(type(iter(reversed([1]))))
+@ensure_ast.register(reversed)
 def _ensure_ast_list_iterator(value: Iterator) -> ast.List:
-    return ensure_ast(list(value.__reduce__()[1][0]))  # type: ignore
+    return ensure_ast(list(_unconsumed(value)))  # type: ignore
+
+
+@ensure_ast.register(type(iter("ab")))  # str_ascii_iterator
+@ensure_ast.register(type(iter("\xe9b")))  # str_iterator
+@ensure_ast.register(type(iter(b"ab")))
+@ensure_ast.register(type(iter(bytearray(b"ab"))))
+def _ensure_ast_str_iterator(value: Iterator) -> ast.Constant:
+    remainder = _unconsumed(value)
+    # bytearray iteration yields ints, exactly as bytes iteration does
+    return ensure_ast(  # type: ignore
+        bytes(remainder) if isinstance(remainder, bytearray) else remainder
+    )
 
 
 @ensure_ast.register(set)
@@ -2037,7 +3083,7 @@ def _ensure_ast_set(value: set | frozenset) -> ast.Set:
 
 @ensure_ast.register(type(iter({1})))
 def _ensure_ast_set_iterator(value: Iterator) -> ast.Set:
-    return ensure_ast(set(value.__reduce__()[1][0]))  # type: ignore
+    return ensure_ast(set(_unconsumed(value)))  # type: ignore
 
 
 @ensure_ast.register
@@ -2050,7 +3096,53 @@ def _ensure_ast_dict(value: dict) -> ast.Dict:
 
 @ensure_ast.register(type(iter({1: 2})))
 def _ensure_ast_dict_iterator(value: Iterator) -> ast.expr:
-    return ensure_ast(value.__reduce__()[1][0])
+    return ensure_ast(_unconsumed(value))
+
+
+@ensure_ast.register(types.BuiltinFunctionType)
+@ensure_ast.register(type)
+def _ensure_ast_builtin(value: typing.Callable) -> ast.Name:
+    """A built-in callable is referred to by name, which resolves via builtins.
+
+    Covers both built-in functions (``abs``) and built-in types used as
+    callables (``bool``), which appear as the predicate of a ``filter`` or the
+    function of a ``map``.
+    """
+    name = getattr(value, "__name__", None)
+    assert name and getattr(builtins, name, None) is value, (
+        f"Cannot reference non-builtin callable {value!r}"
+    )
+    return ast.Name(id=name, ctx=ast.Load())
+
+
+@ensure_ast.register(zip)
+@ensure_ast.register(enumerate)
+@ensure_ast.register(map)
+@ensure_ast.register(filter)
+def _ensure_ast_iterator_adaptor(value: Iterator) -> ast.Call:
+    """Rebuild zip/enumerate/map/filter from the arguments they pickle with.
+
+    These wrap other iterators rather than a concrete sequence, so unlike a list
+    or range iterator they cannot be materialised -- but ``__reduce__`` hands
+    back their constituent parts, each of which ``ensure_ast`` can handle in
+    turn. Any already-consumed prefix is reflected in the inner iterators.
+    """
+    func, args = value.__reduce__()[:2]  # type: ignore[misc]
+    return ast.Call(
+        func=ast.Name(id=func.__name__, ctx=ast.Load()),
+        args=[ensure_ast(arg) for arg in args],
+        keywords=[],
+    )
+
+
+@ensure_ast.register
+def _ensure_ast_slice(value: slice) -> ast.Slice:
+    """A constant slice, as 3.14 emits for `s[1:3]` alongside BINARY_OP/NB_SUBSCR."""
+    return ast.Slice(
+        lower=None if value.start is None else ensure_ast(value.start),
+        upper=None if value.stop is None else ensure_ast(value.stop),
+        step=None if value.step is None else ensure_ast(value.step),
+    )
 
 
 @ensure_ast.register
@@ -2064,7 +3156,7 @@ def _ensure_ast_range(value: range) -> ast.Call:
 
 @ensure_ast.register(type(iter(range(1))))
 def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
-    return ensure_ast(value.__reduce__()[1][0])  # type: ignore
+    return ensure_ast(_unconsumed(value))  # type: ignore
 
 
 @ensure_ast.register
@@ -2096,7 +3188,16 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         "Final return value must not contain statement nodes"
     )
     assert not any(
-        isinstance(x, Placeholder | Skipped | Null | CompLambda | ConvertedValue)
+        isinstance(
+            x,
+            Placeholder
+            | Skipped
+            | TargetHole
+            | CommonConstant
+            | Null
+            | CompLambda
+            | ConvertedValue,
+        )
         for x in ast.walk(result)
     ), "Final return value must not contain temporary nodes"
     assert not any(x.arg == ".0" for x in ast.walk(result) if isinstance(x, ast.arg)), (
@@ -2115,24 +3216,28 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
     )
 
     if name == "<lambda>" and isinstance(result, ast.expr):
+        # co_varnames lists parameters first: positional, keyword-only, then
+        # *args and **kwargs if present. Default values are not part of the code
+        # object -- they are pushed by the caller and attached by MAKE_FUNCTION
+        # (3.12) or SET_FUNCTION_ATTRIBUTE (3.13).
+        names = value.co_varnames
+        n_args, n_kwonly = value.co_argcount, value.co_kwonlyargcount
+        n_params = n_args + n_kwonly
+
+        vararg = kwarg = None
+        if value.co_flags & inspect.CO_VARARGS:
+            vararg = ast.arg(arg=names[n_params])
+            n_params += 1
+        if value.co_flags & inspect.CO_VARKEYWORDS:
+            kwarg = ast.arg(arg=names[n_params])
+
         args = ast.arguments(
-            posonlyargs=[
-                ast.arg(arg=arg)
-                for arg in value.co_varnames[: value.co_posonlyargcount]
-            ],
-            args=[
-                ast.arg(arg=arg)
-                for arg in value.co_varnames[
-                    value.co_posonlyargcount : value.co_argcount
-                ]
-            ],
-            kwonlyargs=[
-                ast.arg(arg=arg)
-                for arg in value.co_varnames[
-                    value.co_argcount : value.co_argcount + value.co_kwonlyargcount
-                ]
-            ],
-            kw_defaults=[],
+            posonlyargs=[ast.arg(arg=arg) for arg in names[: value.co_posonlyargcount]],
+            args=[ast.arg(arg=arg) for arg in names[value.co_posonlyargcount : n_args]],
+            vararg=vararg,
+            kwonlyargs=[ast.arg(arg=arg) for arg in names[n_args : n_args + n_kwonly]],
+            kw_defaults=[None] * n_kwonly,
+            kwarg=kwarg,
             defaults=[],
         )
         return ast.Lambda(args=args, body=result)
