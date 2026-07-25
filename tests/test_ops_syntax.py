@@ -1456,3 +1456,45 @@ def test_bench_term_construction(benchmark):
 
     result = benchmark(_make_benchmark_term, 25)
     assert isinstance(result, Term)
+
+
+def test_bench_nested_binder_construction(benchmark):
+    """Benchmark term construction under *nested* binders.
+
+    Constructing an operation that binds a variable renames that variable
+    throughout the body, which rebuilds the body. Nesting binders means each
+    level rebuilds everything beneath it, so a rebuild that is not single-pass
+    compounds multiplicatively with depth rather than adding to it.
+
+    ``test_bench_term_construction`` builds a binder-free term, so it never
+    reaches this path -- it is fast even when nested construction is
+    exponential in depth.
+    """
+
+    @defop
+    def _benchmark_let[S, T, A](
+        var: Annotated[Operation[[], S], Scoped[A]],
+        val: S,
+        body: Annotated[T, Scoped[A]],
+    ) -> T:
+        raise NotHandled
+
+    @defop
+    def _benchmark_add(x: int, y: int) -> int:
+        raise NotHandled
+
+    def _make_nested_term(depth: int) -> Term[int]:
+        """A term of ``depth`` nested binders, each used in the body below it."""
+        if depth < 1:
+            raise ValueError("depth must be positive")
+
+        body: Expr[int] = 0
+        for index in range(depth):
+            var = defop(int, name=f"_benchmark_var_{index}")
+            body = _benchmark_let(var, 1, _benchmark_add(var(), body))
+
+        assert isinstance(body, Term)
+        return body
+
+    result = benchmark(_make_nested_term, 10)
+    assert isinstance(result, Term)

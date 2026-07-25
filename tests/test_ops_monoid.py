@@ -1365,7 +1365,9 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
 @pytest.mark.parametrize("T,K", [(20, 3)])
 def test_comprehension_chain_0(T, K):
 
-    fs = [[[random.uniform(0, 1) for _ in range(K)] for _ in range(K)] for _ in range(T)]
+    fs = [
+        [[random.uniform(0, 1) for _ in range(K)] for _ in range(K)] for _ in range(T)
+    ]
 
     @Operation.define
     def phi() -> list[list[list[float]]]:
