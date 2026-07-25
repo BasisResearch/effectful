@@ -363,9 +363,7 @@ class ReduceArrayScan(ObjectInterpretation):
                 jax_getitem(scan_val, (index,)), And.plus(*tail_mask_elems)
             )
             tail_streams = {k: v for (k, v) in streams.items() if k != stream_op}
-            if tail_streams:
-                return monoid.reduce(tail_body, tail_streams)
-            return tail_body
+            return monoid.reduce(tail_body, tail_streams)
 
         mask_elems = _conjuncts(mask)
         for i, elem in enumerate(mask_elems):
@@ -508,8 +506,8 @@ class ReduceSumProductContraction(ObjectInterpretation):
 
         # create leading reduction dimensions
         index = tuple(k() for k in streams)
-        pos_lhs = Sum.reduce(Sum.delta(index, lhs), streams)
-        pos_rhs = Sum.reduce(Sum.delta(index, rhs), streams)
+        pos_lhs = Sum.reduce(Sum.delta(index, lhs) if index else lhs, streams)
+        pos_rhs = Sum.reduce(Sum.delta(index, rhs) if index else rhs, streams)
 
         dims = "".join(get_symbol(i) for i in range(len(streams)))
         contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)
@@ -745,7 +743,7 @@ class _EinsumBuilder:
         dims = [(self.out_vars[c], self.sizes[c]) for c in self.out_spec]
 
         reductions = self._build_plate_reductions(self.plate_tree)
-        reduction = Sum.reduce(reductions, streams) if streams else reductions
+        reduction = Sum.reduce(reductions, streams)
         return deffn(
             bind_dims(
                 deffn(reduction, *(self.out_vars[c] for c in self.out_spec))(

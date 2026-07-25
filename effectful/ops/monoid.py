@@ -143,8 +143,8 @@ class Monoid[W]:
         streams: Annotated[Streams, Scoped[A]],
     ) -> Annotated[U, Scoped[B]]:
         """Reduce ``body`` over ``streams``. Handlers supply per-monoid and
-        broadcasting behavior; the default rule only handles the empty-stream
-        case.
+        broadcasting behavior.
+
         """
         raise NotHandled
 
@@ -561,11 +561,20 @@ class PlusConsecutiveDups(ObjectInterpretation):
         return monoid.plus(*(args[i] for i in dedup_args))
 
 
+class ReduceEmpty(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams):
+        if streams:
+            return fwd()
+
+        return body
+
+
 class ReducePartial(ObjectInterpretation):
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams):
         if not streams:
-            return monoid.identity
+            return fwd()
 
         for stream_key, stream_body, streams_tail in outer_stream(streams):
             if isinstance(stream_body, Term):
@@ -984,8 +993,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 inner_tail_streams = {
                     k: v for (k, v) in inner_streams.items() if k != inner_plate_op
                 }
-                if inner_tail_streams:
-                    subst_body = inner_monoid.reduce(subst_body, inner_tail_streams)
+                subst_body = inner_monoid.reduce(subst_body, inner_tail_streams)
                 combined_factors.append(subst_body)
 
             combined = (
@@ -1013,33 +1021,20 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 peeled_body = Union.reduce(
                     [as_dict((peeled_idx, union_body))], union_streams
                 )
-                if not peeled_cprod_streams:
-                    peeled_cprod = peeled_body
-                else:
-                    peeled_cprod = CartesianProduct.reduce(
-                        peeled_body, peeled_cprod_streams
-                    )
+                peeled_cprod = CartesianProduct.reduce(
+                    peeled_body, peeled_cprod_streams
+                )
                 inner_reduce_body = monoid.reduce(combined, {stream_key: peeled_cprod})
 
             peeled_reduce = inner_monoid.reduce(
-                inner_reduce_body,
-                {shared_plate_op: plate_range},
+                inner_reduce_body, {shared_plate_op: plate_range}
             )
-
-            result_body = (
-                inner_monoid.plus(peeled_reduce, *row_outer_factors)
-                if row_outer_factors
-                else peeled_reduce
-            )
+            result_body = inner_monoid.plus(peeled_reduce, *row_outer_factors)
 
             # Include any extra sum streams outermost.  In particular, the
             # non-reduce product factors above remain outside the plate fold.
             tail_streams = {k: v for (k, v) in streams.items() if k != stream_key}
-            if tail_streams:
-                result = monoid.reduce(result_body, tail_streams)
-            else:
-                result = result_body
-
+            result = monoid.reduce(result_body, tail_streams)
             return result
 
         return fwd()
@@ -1352,7 +1347,7 @@ class EliminateSingletonStreams(ObjectInterpretation):
         }
         # reduce over no streams is a single (empty) assignment, i.e. the body
         # itself -- not the monoid identity.
-        return monoid.reduce(new_body, new_streams) if new_streams else new_body
+        return monoid.reduce(new_body, new_streams)
 
 
 class WhereHoist(ObjectInterpretation):
@@ -1752,6 +1747,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
+    ReduceEmpty(),
     ReduceFusion(),
     ReduceUnion(),
     ReduceSplit(),
