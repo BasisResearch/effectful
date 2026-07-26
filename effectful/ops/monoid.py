@@ -10,7 +10,6 @@ from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
 import effectful.ops.syntax
-from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
@@ -826,6 +825,74 @@ class ReduceUnfactor(ObjectInterpretation):
         return fwd()
 
 
+class _CannotPeel(Exception):
+    """A subscript of a row does not fold over the plate being peeled."""
+
+
+class _PeelRow(collections.abc.Mapping):
+    """A row with one index position peeled off.
+
+    Standing this in for a row variable puts it in the mapping position of
+    every ``row[..]``, so a subscript can be recognised by what it is indexing
+    rather than by comparing against the variable it came from. Each subscript
+    becomes one of the narrowed row, and the variable it used at the peeled
+    position -- the plate that subscript folds over -- is recorded.
+
+    Row indices are symbolic, so the subscripts never reach here on their own:
+    :meth:`_MappingTerm.__getitem__` only hands a mapping a *concrete* key.
+    The rule routes them here instead.
+
+    ``row[p]``, with nothing left once the position is dropped, is the row's
+    own value: the narrowed row has no index left to take.
+    """
+
+    def __init__(self, position: int, peeled: Operation, value):
+        self._position = position
+        self._peeled = peeled
+        self._value = value
+        # How often each plate was indexed at the peeled position, against how
+        # often it was used at all. A plate used no more often than it was
+        # peeled does not survive peeling, so nothing refers to it afterwards.
+        self.plates: dict[Operation, int] = {}
+        self.uses: dict[Operation, int] = {}
+
+    def used(self, plate: Operation) -> None:
+        self.uses[plate] = self.uses.get(plate, 0) + 1
+
+    def survives(self, plate: Operation) -> bool:
+        return self.uses.get(plate, 0) > self.plates.get(plate, 0)
+
+    def __getitem__(self, key: Any) -> Any:
+        key = tuple(key) if isinstance(key, Sequence) else (key,)
+        if len(key) <= self._position:
+            raise _CannotPeel
+        folded = key[self._position]
+        if not (isinstance(folded, Term) and not folded.args and not folded.kwargs):
+            raise _CannotPeel
+        self.plates[folded.op] = self.plates.get(folded.op, 0) + 1
+
+        rest = tuple(k for (i, k) in enumerate(key) if i != self._position)
+        return self._peeled()[rest] if rest else self._value
+
+    def __iter__(self):
+        return iter(())
+
+    def __len__(self) -> int:
+        return 0
+
+
+@evaluate.register
+def _(expr: _PeelRow):
+    return expr
+
+
+def _peel_subscript(mapping, key):
+    """Route a subscript of a row being peeled to the row itself."""
+    if isinstance(mapping, _PeelRow):
+        return mapping[key]
+    return fwd()
+
+
 class ReduceDistributeCartesianProduct(ObjectInterpretation):
     """Eliminates a reduce over a cartesian product.
         ∑_x₁ ∑_x₂ ... ∑_xₙ ∏_i f(xᵢ) = ∏_i ∑_xᵢ f(xᵢ)
@@ -861,15 +928,28 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
         ):
             return fwd()
 
-        # ``Factor`` may have moved product factors into nested additive
-        # reductions. Normalize the whole candidate so ReduceUnfactor can see
-        # and merge both stream bundles. This isolated interpretation cannot
-        # cycle with Factor. Build the candidate outside the active handler;
-        # otherwise invoking ``monoid.reduce`` here would recursively redispatch
-        # this rule.
-        with interpreter(CartesianProductNormalizeIntp):
-            candidate = monoid.reduce(body, streams)
-        body, streams = candidate.args
+        # ``Factor`` may have moved product factors into nested reductions of
+        # this same monoid, which hides the product this rule is looking for.
+        # Absorbing their streams back into this one exposes it again. This is
+        # what ``ReduceUnfactor`` does, applied here to the body's own factors
+        # rather than by renormalizing the whole candidate: the shape being
+        # looked for is a product of factors, so only the top level matters.
+        if isinstance(body, Term) and _is_monoid_plus(body.op):
+            absorbed = dict(streams)
+            factors = []
+            for factor in body.args:
+                if (
+                    isinstance(factor, Term)
+                    and factor.op is monoid.reduce
+                    and not (set(factor.args[1]) & set(absorbed))
+                ):
+                    nested_body, nested_streams = factor.args
+                    absorbed |= nested_streams
+                    factors.append(nested_body)
+                else:
+                    factors.append(factor)
+            if absorbed != streams:
+                body, streams = body.op(*factors), absorbed
 
         inner_reduces: tuple[Term, ...]
         if isinstance(body, Term) and _is_monoid_reduce(body.op):
@@ -895,8 +975,6 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
 
         if not distributes_over(inner_monoid, monoid):
             return fwd()
-
-        class InvalidIndexError(Exception): ...
 
         def drop_elem(ls, index):
             return tuple(x for (i, x) in enumerate(ls) if i != index)
@@ -954,79 +1032,90 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
             )
             plate_range = cprod_streams[plate_op]
 
-            def row_substitute(inner_body, inner_streams):
-                """Peel ``plate_index`` off every ``stream_key[...]`` in one
-                summand. Asserts the summand's bundle contains a stream that
-                folds over the full cartesian product row and returns that plate
-                variable alongside the substituted body."""
-                if stream_key in fvsof(inner_streams):
-                    raise InvalidIndexError()
+            # Standing a peeled row in for the row variable puts it in the
+            # mapping position of every ``row[..]``, and routing subscripts of
+            # it back to it rewrites each one and records the plate it folds
+            # over. All that is left to check per summand is that the plate it
+            # named is the one that summand folds over.
+            peeled_var = defop(stream_key)
+            row = _PeelRow(plate_index, peeled_var, union_body)
 
-                inner_plate_op = None
-
-                # substitute all instances of row[i, *rest] -> row[*rest]
-                def _getitem(mapping, idx1):
-                    nonlocal inner_plate_op
-
-                    idx1 = idx1 if isinstance(idx1, Sequence) else (idx1,)
-                    if isinstance(mapping, Term) and mapping.op == stream_key:
-                        if not (
-                            isinstance(idx1, Sequence)
-                            and len(idx1) > plate_index
-                            and isinstance(idx1[plate_index], Term)
-                            and idx1[plate_index].op in inner_streams
-                            and syntactic_eq(
-                                inner_streams[idx1[plate_index].op], plate_range
-                            )
-                        ):
-                            raise InvalidIndexError()
-
-                        if inner_plate_op is None:
-                            inner_plate_op = idx1[plate_index].op
-                        elif inner_plate_op != idx1[plate_index].op:
-                            raise InvalidIndexError()
-
-                        return fwd(mapping, drop_elem(idx1, plate_index))
+            def _count(plate):
+                def use(*a, **k):
+                    row.used(plate)
                     return fwd()
 
-                subst = handler({_MappingTerm.__getitem__: _getitem})(evaluate)(
-                    inner_body
-                )
-                if inner_plate_op is None and inner_streams:
-                    # A nontrivial reduction that does not fold over the row
-                    # cannot be unified with the peeled plate.  Streamless
-                    # reductions are ordinary product factors introduced by
-                    # sum-of-products expansion and are retained unchanged.
-                    raise InvalidIndexError()
-                return subst, inner_plate_op
+                return use
+
+            peeling = coproduct(
+                typing.cast(Interpretation, {stream_key: lambda: row}),
+                typing.cast(
+                    Interpretation,
+                    {_MappingTerm.__getitem__: _peel_subscript}
+                    | {
+                        plate: _count(plate)
+                        for reduce in row_inner_reduces
+                        for plate in reduce.args[1]
+                    },
+                ),
+            )
 
             try:
-                substituted = [
-                    row_substitute(*reduce.args) for reduce in row_inner_reduces
-                ]
-            except InvalidIndexError:
+                # One pass peels every summand. Which plate each one folds over
+                # need not be tracked as they go: a summand binds its own plate
+                # variable, so it is the one of those the row was indexed by
+                # that this summand's bundle binds.
+                peeled_bodies = handler(peeling)(evaluate)(
+                    tuple(reduce.args[0] for reduce in row_inner_reduces)
+                )
+
+                substituted = []
+                for subst, inner_reduce in zip(peeled_bodies, row_inner_reduces):
+                    inner_streams = inner_reduce.args[1]
+                    if stream_key in fvsof(inner_streams):
+                        raise _CannotPeel
+                    named = set(inner_streams) & set(row.plates)
+                    if len(named) > 1:
+                        raise _CannotPeel
+                    inner_plate_op = next(iter(named), None)
+                    if inner_plate_op is None:
+                        # A nontrivial reduction that does not fold over the
+                        # row cannot be unified with the peeled plate.
+                        # Streamless reductions are ordinary product factors
+                        # introduced by sum-of-products expansion and are
+                        # retained unchanged.
+                        if inner_streams:
+                            raise _CannotPeel
+                    elif not syntactic_eq(inner_streams[inner_plate_op], plate_range):
+                        raise _CannotPeel
+                    substituted.append((subst, inner_plate_op))
+            except _CannotPeel:
                 continue
 
             # Unify reductions by the variable used at this row position, not
             # merely by equal ranges. Equal-sized axes are otherwise ambiguous.
             shared_plate_op = plate_op
-            combined_factors = []
-            for (subst_body, inner_plate_op), inner_reduce in zip(
-                substituted, row_inner_reduces
-            ):
-                _, inner_streams = inner_reduce.args
-                assert isinstance(inner_streams, Mapping)
-                assert inner_plate_op is not None
-                if inner_plate_op is not shared_plate_op:
-                    subst_body = handler({inner_plate_op: shared_plate_op})(evaluate)(
-                        subst_body
-                    )
+            renaming = {
+                inner_plate_op: shared_plate_op
+                for (_, inner_plate_op) in substituted
+                if inner_plate_op is not shared_plate_op
+                and row.survives(inner_plate_op)
+            }
+            unified = tuple(subst_body for (subst_body, _) in substituted)
+            if renaming:
+                unified = handler(typing.cast(Interpretation, renaming))(evaluate)(
+                    unified
+                )
 
-                inner_tail_streams = {
-                    k: v for (k, v) in inner_streams.items() if k != inner_plate_op
-                }
-                subst_body = inner_monoid.reduce(subst_body, inner_tail_streams)
-                combined_factors.append(subst_body)
+            combined_factors = [
+                inner_monoid.reduce(
+                    subst_body,
+                    {k: v for (k, v) in inner_reduce.args[1].items() if k != plate},
+                )
+                for subst_body, (_, plate), inner_reduce in zip(
+                    unified, substituted, row_inner_reduces
+                )
+            ]
 
             combined = (
                 combined_factors[0]
@@ -1039,16 +1128,9 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 k: v for (k, v) in cprod_streams.items() if k != plate_op
             }
             if not peeled_cprod_streams and not peeled_idx:
-
-                def _to_body(mapping, key):
-                    if isinstance(mapping, Term) and mapping.op == stream_key:
-                        return union_body
-                    return fwd()
-
-                subst_combined = handler({_MappingTerm.__getitem__: _to_body})(
-                    evaluate
-                )(combined)
-                inner_reduce_body = monoid.reduce(subst_combined, union_streams)
+                # Nothing is left to index, and the peeled row already answered
+                # each subscript with the row's value.
+                inner_reduce_body = monoid.reduce(combined, union_streams)
             else:
                 peeled_body = Union.reduce(
                     [as_dict((peeled_idx, union_body))], union_streams
@@ -1056,7 +1138,7 @@ class ReduceDistributeCartesianProduct(ObjectInterpretation):
                 peeled_cprod = CartesianProduct.reduce(
                     peeled_body, peeled_cprod_streams
                 )
-                inner_reduce_body = monoid.reduce(combined, {stream_key: peeled_cprod})
+                inner_reduce_body = monoid.reduce(combined, {peeled_var: peeled_cprod})
 
             peeled_reduce = inner_monoid.reduce(
                 inner_reduce_body, {shared_plate_op: plate_range}
@@ -1951,26 +2033,6 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReduceEqualityMaskRange(),
     ReduceWhereToMasks(),
 )
-
-CartesianProductNormalizeIntp = functools.reduce(
-    coproduct,
-    typing.cast(
-        tuple[Interpretation, ...],
-        (
-            PlusEmpty(),
-            PlusSingle(),
-            PlusAssoc(),
-            ReduceUnfactor(),
-        ),
-    ),
-)
-"""Structural preprocessing used exclusively for cartesian-product inversion.
-
-It intentionally excludes ``Factor`` and sum-of-products rewrites, which
-would either cycle with ``ReduceUnfactor`` or move factors across a product
-fold.
-"""
-
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
     GetitemDelta(),
