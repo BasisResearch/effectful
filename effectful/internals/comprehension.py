@@ -54,9 +54,18 @@ from typing import Any
 
 from effectful.internals.disassembly import CompExp, disassemble, ensure_ast
 from effectful.internals.unification import Box, unify
-from effectful.ops.monoid import And, Max, Min, Monoid, Or, Sum
+from effectful.ops.monoid import (
+    And,
+    CartesianProduct,
+    Max,
+    Min,
+    Monoid,
+    Or,
+    Sum,
+    Union,
+)
 from effectful.ops.semantics import apply, evaluate, typeof
-from effectful.ops.syntax import defop, ite, iter_, range_
+from effectful.ops.syntax import as_dict, defop, ite, iter_, range_
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 REDUCTIONS: Mapping[Any, Monoid] = {
@@ -546,11 +555,33 @@ def desugar_comprehension[W](
             for condition in generator.ifs
         )
 
-    body = _evaluate(_prepare(tree.elt, bound), namespace)
+    body = _lift_body(monoid, _evaluate(_prepare(tree.elt, bound), namespace), streams)
     if conditions:
         body = monoid.mask(body, _as_condition(_conjoin(*conditions)))
 
     return monoid.reduce(body, streams)
+
+
+def _lift_body[W](monoid: Monoid[W], body: Any, streams: Mapping) -> Any:
+    """Lift a comprehension body into the monoid's element representation.
+
+    Most monoids reduce a body of their own element type directly, so there is
+    nothing to do. :data:`~effectful.ops.monoid.CartesianProduct` is the
+    exception: its elements are *rows* -- mappings from an index tuple to a
+    value -- because ``plus`` merges rows across the loop nest. A body written
+    as a comprehension yields plain values, so it has to be tagged with the
+    loop targets it was produced under before sibling rows can be merged.
+
+    ``CartesianProduct(range(K) for t in range(T))`` therefore reduces not
+    ``range(K)`` but the row stream ``[{(t,): v} for v in range(K)]``, whose
+    elements are the assignments ``t -> value`` that the comprehension means.
+    """
+    if monoid is not CartesianProduct:
+        return body
+
+    element = defop(element_type(body), name="row_value")
+    index = tuple(target() for target in streams)
+    return Union.reduce([as_dict((index, element()))], {element: body})
 
 
 def _prepare(
@@ -652,7 +683,9 @@ def _bind_target(
 
     if isinstance(target, ast.Name):
         operation = defop(elem_type, name=target.id)
-        namespace[target.id] = operation
+        namespace[target.id] = (
+            _row_view(operation) if _is_row_stream(stream) else operation
+        )
         streams[operation] = stream
         return names
 
@@ -688,6 +721,36 @@ def _bind_projections(
                 )
         case _:
             raise NotImplementedError(f"Unsupported loop target: {ast.dump(target)}")
+
+
+def _is_row_stream(stream: Any) -> bool:
+    """True if ``stream`` is a :data:`CartesianProduct` stream of rows."""
+    return isinstance(stream, Term) and stream.op is CartesianProduct.reduce
+
+
+class _RowView:
+    """A cartesian-product element, subscripted the way it was written.
+
+    A row is keyed by the tuple of plate indices it assigns, but Python hands
+    ``row[t]`` a bare ``t`` and only ``row[i, j]`` a tuple. Normalizing the key
+    here keeps one internal representation -- every row is tuple-keyed, as the
+    rules that consume them expect -- while letting a comprehension subscript a
+    single-plate assignment as ``ixs[t]`` rather than ``ixs[t,]``.
+    """
+
+    def __init__(self, row: Any):
+        self._row = row
+
+    def __getitem__(self, key: Any) -> Any:
+        return self._row[key if isinstance(key, tuple) else (key,)]
+
+
+def _row_view(operation: Operation[[], Any]) -> Callable[[], _RowView]:
+    def view() -> _RowView:
+        return _RowView(operation())
+
+    view.__name__ = operation.__name__
+    return view
 
 
 def _projector(
