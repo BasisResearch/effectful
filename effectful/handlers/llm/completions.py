@@ -191,6 +191,40 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
         )
 
 
+type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+
+CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
+
+
+def _add_cache_control_to_history(
+    history: collections.OrderedDict[str, "Message"],
+) -> None:
+    """Add cache_control to the last user/tool message in an agent's history.
+
+    This enables prompt caching on providers that support it (e.g. Anthropic).
+    Providers that don't support it (e.g. OpenAI) have cache_control stripped
+    by litellm's request transformation, so this is always safe to apply.
+
+    Mutates the history OrderedDict in place.
+    """
+    if not history:
+        return
+    for key in history:
+        msg = history[key]
+        if msg["role"] not in ("user", "tool", "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict) and "cache_control" not in last_block:
+                new_content = list(content)
+                new_content[-1] = {
+                    **last_block,
+                    "cache_control": CACHE_CONTROL_EPHEMERAL,
+                }
+                history[key] = typing.cast(Message, {**msg, "content": new_content})
+
+
 def _tools_in_scope(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> collections.abc.Set[Tool]:
@@ -649,7 +683,9 @@ def call_system(
         _system_vars_block(template.__context__),
     ]
     content = "\n\n".join(s for s in sections if s)
-    message = _make_message(dict(role="system", content=content))
+    message = _make_message(
+        dict(role="system", content=content, cache_control={"type": "ephemeral"})
+    )
     append_message(message, last=False)
     return message
 
@@ -1540,6 +1576,7 @@ class LiteLLMProvider(ObjectInterpretation):
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
         )  # type: ignore
+        is_agent = hasattr(template, "__history__")
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
@@ -1550,6 +1587,12 @@ class LiteLLMProvider(ObjectInterpretation):
                 message: Message = call_system(template)
 
             message = call_user(template, env)
+
+            # For agents with persistent history, add cache_control to the
+            # last user message so the growing prefix gets cached on providers
+            # that support it (Anthropic). litellm strips it for OpenAI.
+            if is_agent:
+                _add_cache_control_to_history(history_copy)
 
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             result: T | None = None
