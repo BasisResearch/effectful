@@ -7,6 +7,7 @@ import re
 import string
 import types
 import typing
+import uuid
 from collections.abc import Callable, Mapping, MutableMapping
 
 from effectful.ops.types import Operation
@@ -287,6 +288,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__agent_id__ = instance.__agent_id__  # type: ignore[attr-defined]
         return result
 
     @classmethod
@@ -419,6 +421,10 @@ class Agent(abc.ABC):
     share tools through a common base class or mixin rather than redefining them.
 
     """
+
+    @functools.cached_property
+    def __agent_id__(self) -> str:
+        return str(uuid.uuid4())
 
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:

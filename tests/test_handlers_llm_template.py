@@ -801,6 +801,105 @@ class TestNestedTemplateCalling:
         assert second_call_roles.count("assistant") >= 2  # from first call's history
 
 
+class _HelperAgent(Agent):
+    """You are a helper agent for cross-agent nesting regression tests."""
+
+    @Template.define
+    def answer(self, q: str) -> str:
+        """Answer: {q}. Do not use tools."""
+        raise NotHandled
+
+
+class _OrchestratorAgent(Agent):
+    """You orchestrate work by delegating to a helper agent."""
+
+    def __init__(self, helper: "_HelperAgent"):
+        self._helper = helper
+
+    @Tool.define
+    def ask_helper(self, q: str) -> str:
+        """Ask the helper agent a question."""
+        return self._helper.answer(q)
+
+    @Template.define
+    def run(self, task: str) -> str:
+        """Task: {task}"""
+        raise NotHandled
+
+
+class TestCrossAgentNestedTemplateCalling:
+    """A tool call that delegates to a *different* Agent must write back that
+    agent's own history, not be mistaken for a same-agent nested call.
+
+    `LiteLLMProvider._call`'s outermost-call detection used to be a single
+    global flag (any enclosing `_get_history` handler on the stack), which
+    couldn't distinguish "nested call on the same agent" from "a different
+    agent invoked mid-call" -- so the delegate's history was silently dropped.
+    """
+
+    def test_delegated_agent_history_is_written_back(self):
+        """The helper's own history is populated after being called via a tool."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("ask_helper", '{"q": "demo"}'),
+                make_text_response("helper's answer"),
+                make_text_response("final answer"),
+            ]
+        )
+        helper = _HelperAgent()
+        orch = _OrchestratorAgent(helper)
+
+        with handler(LiteLLMProvider()), handler(mock):
+            result = orch.run("do the thing")
+
+        assert result == "final answer"
+        assert len(helper.__history__) > 0
+        helper_roles = [m["role"] for m in helper.__history__.values()]
+        assert helper_roles.count("user") == 1
+        assert helper_roles.count("assistant") == 1
+
+    def test_orchestrator_and_helper_histories_are_disjoint(self):
+        """Each agent's history contains only its own messages."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("ask_helper", '{"q": "demo"}'),
+                make_text_response("helper's answer"),
+                make_text_response("final answer"),
+            ]
+        )
+        helper = _HelperAgent()
+        orch = _OrchestratorAgent(helper)
+
+        with handler(LiteLLMProvider()), handler(mock):
+            orch.run("do the thing")
+
+        assert set(orch.__history__.keys()).isdisjoint(set(helper.__history__.keys()))
+
+    def test_followup_call_on_delegate_sees_only_its_own_history(self):
+        """A later top-level call on the helper sees its own accumulated
+        history, not the orchestrator's."""
+        mock = MockCompletionHandler(
+            [
+                make_tool_call_response("ask_helper", '{"q": "first"}'),
+                make_text_response("helper's first answer"),
+                make_text_response("first orchestrator answer"),
+                make_text_response("helper's second answer"),
+            ]
+        )
+        helper = _HelperAgent()
+        orch = _OrchestratorAgent(helper)
+
+        with handler(LiteLLMProvider()), handler(mock):
+            orch.run("first task")
+            helper.answer("second question")
+
+        # helper's second (direct) call should see its own prior history
+        # (system + user + assistant from the delegated call) plus its own
+        # new user message.
+        followup_roles = [m["role"] for m in mock.received_messages[3]]
+        assert followup_roles.count("assistant") >= 1
+
+
 # ---------------------------------------------------------------------------
 # Template method and scoping tests (moved from test_handlers_llm_template.py)
 # ---------------------------------------------------------------------------

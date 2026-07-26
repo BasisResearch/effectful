@@ -1547,6 +1547,17 @@ class SystemPromptDumper(ObjectInterpretation):
         return message
 
 
+@Operation.define
+def _agent_call_active(agent_id: str) -> bool:
+    """Whether a call for the agent identified by `agent_id` is already in
+    progress on the current call stack. Defaults to False; overridden for the
+    dynamic extent of a top-level agent call so nested calls on the *same*
+    agent (e.g. a tool invoking another template on `self`) can detect they
+    are nested and skip writing back to the shared history.
+    """
+    return False
+
+
 class LiteLLMProvider(ObjectInterpretation):
     """Implements templates using the LiteLLM API."""
 
@@ -1576,10 +1587,24 @@ class LiteLLMProvider(ObjectInterpretation):
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
         )  # type: ignore
-        is_agent = hasattr(template, "__history__")
+        agent_id: str | None = getattr(template, "__agent_id__", None)
+        is_agent = agent_id is not None
         history_copy = history.copy()
 
-        with handler({_get_history: lambda: history_copy}):
+        # Only the outermost call for a given agent writes back to its shared
+        # history; nested calls (e.g. a tool invoking another template on the
+        # same agent) work on a private copy that is discarded on return. This
+        # is scoped per-agent (via __agent_id__) rather than globally, so a
+        # *different* agent invoked mid-call (e.g. via tool delegation) is
+        # still correctly treated as outermost for itself.
+        is_outermost = agent_id is None or not _agent_call_active(agent_id)
+        nesting_intp = (
+            {_agent_call_active: lambda aid, _id=agent_id: aid == _id or fwd(aid)}
+            if is_agent
+            else {}
+        )
+
+        with handler(nesting_intp), handler({_get_history: lambda: history_copy}):
             if (
                 not _get_history()
                 or next(iter(_get_history().values()))["role"] != "system"
@@ -1611,9 +1636,7 @@ class LiteLLMProvider(ObjectInterpretation):
                 else:
                     is_final = True
 
-        try:
-            _get_history()
-        except _NoActiveHistoryException:
+        if is_agent and is_outermost:
             history.clear()
             history.update(history_copy)
         return typing.cast(T, result)
