@@ -14,7 +14,13 @@ import torch.utils._pytree as pytree
 from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, syntactic_eq
+from effectful.ops.syntax import (
+    ConstructorOperation,
+    Scoped,
+    defdata,
+    defop,
+    syntactic_eq,
+)
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
@@ -74,7 +80,13 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     def _apply(op, *args, **kwargs):
         return defdata(op, *args, **kwargs)
 
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
+    with interpreter(
+        {
+            torch_getitem: _torch_getitem_sizeof,
+            apply: _apply,
+            ConstructorOperation.__apply__: apply.__default_rule__,
+        }
+    ):
         evaluate(value)
 
     return sizes
