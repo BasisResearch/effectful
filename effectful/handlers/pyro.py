@@ -28,7 +28,7 @@ from effectful.handlers.torch import (
 )
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, handler, typeof
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.syntax import ConstructorOperation, defdata, defop
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -368,7 +368,9 @@ def _unbind_dims_distribution(
             return a
 
     # Convert to a term in a context that does not evaluate distribution constructors.
-    with handler({apply: defdata}):
+    with handler(
+        {apply: defdata, ConstructorOperation.__apply__: apply.__default_rule__}
+    ):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):
@@ -403,7 +405,9 @@ def _bind_dims_distribution(
         else:
             return a
 
-    with handler({apply: defdata}):
+    with handler(
+        {apply: defdata, ConstructorOperation.__apply__: apply.__default_rule__}
+    ):
         d = typing.cast(TorchDistribution, evaluate(value))
 
     if not (isinstance(d, Term) and typeof(d) is TorchDistribution):

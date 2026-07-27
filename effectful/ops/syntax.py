@@ -1375,9 +1375,16 @@ class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
 class ConstructorOperation[**Q, V](Operation[Q, V]):
     @classmethod
     @functools.cache
-    def define[T](cls, typ: type[T]) -> "ConstructorOperation[Any, T]":
-        def _as_typ(*args, **kwargs) -> typ:  # type: ignore[valid-type]
-            return typ(*args, **kwargs)
+    def define[T](
+        cls, constructor: type[T] | Callable[..., T]
+    ) -> "ConstructorOperation[Any, T]":
+        if not isinstance(constructor, type):
+            return typing.cast(
+                ConstructorOperation[Any, T], super().define(constructor)
+            )
+
+        def _as_typ(*args, **kwargs) -> constructor:  # type: ignore[valid-type]
+            return constructor(*args, **kwargs)
 
         return typing.cast(ConstructorOperation[Any, T], super().define(_as_typ))
 
