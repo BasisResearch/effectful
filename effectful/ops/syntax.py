@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
+    Interpretation,
     NotHandled,
     Operation,
     Term,
@@ -952,14 +953,23 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
         return self.implementations[item].__get__(self, type(self))
 
 
-class PureInterpretation[T, V](ObjectInterpretation[T, V]):
-    def __hash__(self):
-        return hash(frozenset(self.implementations.items()))
+class PureInterpretation[T, V](Mapping[Operation[..., T], Callable[..., V]]):
+    """Mark an interpretation as pure so its evaluation results can be cached."""
 
-    def __eq__(self, other):
-        return isinstance(other, PureInterpretation) and frozenset(
-            self.implementations.items()
-        ) == frozenset(other.implementations.items())
+    def __init__(self, intp: Interpretation[T, V]):
+        self.intp = intp
+
+    def __iter__(self):
+        return iter(self.intp)
+
+    def __len__(self):
+        return len(self.intp)
+
+    def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
+        return self.intp[item]
+
+    __hash__ = object.__hash__
+    __eq__ = object.__eq__
 
 
 class _ImplementedOperation[**P, **Q, T, V]:

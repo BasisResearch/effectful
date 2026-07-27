@@ -12,6 +12,7 @@ from typing import Any
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
+    ObjectInterpretation,
     PureInterpretation,
     _BaseTerm,
     _CustomSingleDispatchCallable,
@@ -312,7 +313,7 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
-class _TypeofIntp(PureInterpretation):
+class _TypeofIntp(ObjectInterpretation):
     @implements(apply)
     def _(self, op, *args, **kwargs):
         from effectful.internals.unification import Box
@@ -320,7 +321,7 @@ class _TypeofIntp(PureInterpretation):
         return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTP = _TypeofIntp()
+_TYPEOF_INTP = PureInterpretation(_TypeofIntp())
 
 
 def _typeof(term: Expr):
@@ -358,38 +359,10 @@ def typeof[T](term: Expr[T]) -> type[T]:
     return typing.cast(type[T], type(type_or_value))
 
 
-def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
-    """Return the free operations in a term.
-
-    An operation belongs to `fvsof(t)` when it appears free in the term `t`.
-    This excludes operations like `apply` or collection constructors that are
-    raised during `evaluate` but do not appear in `t`. It also excludes
-    operations that are bound by a `Scoped` operation. However, it is not
-    restricted to the nullary operations in `t`.
-
-    **Example usage**:
-
-    `fvsof` includes all unbound operations in a term:
-
-    >>> a = defop(int)
-    >>> @defop
-    ... def f(x: int, y: int) -> int:
-    ...     raise NotHandled
-    >>> fvs = fvsof(f(a(), 1))
-    >>> assert fvs >= {f, a}
-
-    `fvsof` accepts the same values as `evaluate`, including collections:
-
-    >>> fvs = fvsof([a(), {'k': f(0, 1)}])
-    >>> assert fvs >= {f, a}
-
-    """
-    from effectful.internals.product_n import _unpack, argsof, productN
-    from effectful.internals.runtime import interpreter
-
-    # Analysis for type computation and term reconstruction
-    _fvsof_fvs = defop(object, name="fvsof_fvs")
-    _fvsof_binders = defop(object, name="fvsof_binders")
+@functools.cache
+def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
+    """Construct the singleton interpretation used by ``fvsof``."""
+    from effectful.internals.product_n import argsof, productN
 
     def _apply_collection_binders(op, *args, **kwargs):
         return frozenset().union(
@@ -438,23 +411,59 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
         fvs -= binders
         return fvs
 
-    _fvsof_intp = productN(
-        {
-            _fvsof_fvs: {
-                apply: _apply_fvs,
-                ConstructorOperation.__apply__: _apply_passthrough_fvs,
-            },
-            _fvsof_binders: {
-                apply: _apply_binders,
-                ConstructorOperation.__apply__: _apply_collection_binders,
-            },
-        }
+    _fvsof_fvs = defop(object, name="fvsof_fvs")
+    _fvsof_binders = defop(object, name="fvsof_binders")
+
+    return (
+        PureInterpretation(
+            productN(
+                {
+                    _fvsof_fvs: {
+                        apply: _apply_fvs,
+                        ConstructorOperation.__apply__: _apply_passthrough_fvs,
+                    },
+                    _fvsof_binders: {
+                        apply: _apply_binders,
+                        ConstructorOperation.__apply__: _apply_collection_binders,
+                    },
+                }
+            )
+        ),
+        _fvsof_fvs,
     )
 
-    with interpreter(_fvsof_intp):
-        result = evaluate(term)
 
-    fvs = _unpack(result, _fvsof_fvs)
+def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
+    """Return the free operations in a term.
+
+    An operation belongs to `fvsof(t)` when it appears free in the term `t`.
+    This excludes operations like `apply` or collection constructors that are
+    raised during `evaluate` but do not appear in `t`. It also excludes
+    operations that are bound by a `Scoped` operation. However, it is not
+    restricted to the nullary operations in `t`.
+
+    **Example usage**:
+
+    `fvsof` includes all unbound operations in a term:
+
+    >>> a = defop(int)
+    >>> @defop
+    ... def f(x: int, y: int) -> int:
+    ...     raise NotHandled
+    >>> fvs = fvsof(f(a(), 1))
+    >>> assert fvs >= {f, a}
+
+    `fvsof` accepts the same values as `evaluate`, including collections:
+
+    >>> fvs = fvsof([a(), {'k': f(0, 1)}])
+    >>> assert fvs >= {f, a}
+
+    """
+    from effectful.internals.product_n import _unpack
+
+    intp, prompt = _fvsof_intp()
+    result = evaluate(term, intp=intp)
+    fvs = _unpack(result, prompt)
     if not isinstance(fvs, frozenset):
         return frozenset()
     return fvs
