@@ -11,10 +11,10 @@ try:
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
-from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
     ConstructorOperation,
+    PureInterpretation,
     Scoped,
     _BaseTerm,
     _CustomSingleDispatchCallable,
@@ -42,23 +42,11 @@ def is_eager_array(x):
     )
 
 
-def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
-    """Return the sizes of named dimensions in an array expression.
+@functools.cache
+def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
+    """Construct the singleton interpretation used by ``sizesof``."""
+    from effectful.internals.product_n import argsof, productN
 
-    Sizes are inferred from the array shape.
-
-    :param value: An array expression.
-    :return: A mapping from named dimensions to their sizes.
-
-    **Example usage**:
-
-    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
-    >>> assert sizes[a] == 2 and sizes[b] == 3
-    """
-    from effectful.internals.product_n import _unpack, argsof, productN
-
-    # Analysis for type computation and term reconstruction
     _sizes = defop(object, name="sizes")
     _getitem_term = defop(object, name="getitem_args")
 
@@ -101,21 +89,42 @@ def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
         )
         return functools.reduce(_merge, itertools.chain(arg_sizes, sizes), {})
 
-    _intp = productN(
-        {
-            _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
-            _getitem_term: {
-                apply: _retain,
-                jax_getitem: _retain_getitem,
-                ConstructorOperation.__apply__: apply.__default_rule__,
-            },
-        }
+    return (
+        PureInterpretation(
+            productN(
+                {
+                    _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
+                    _getitem_term: {
+                        apply: _retain,
+                        jax_getitem: _retain_getitem,
+                        ConstructorOperation.__apply__: apply.__default_rule__,
+                    },
+                }
+            )
+        ),
+        _sizes,
     )
 
-    with interpreter(_intp):
-        result = evaluate(term)
 
-    fvs = _unpack(result, _sizes)
+def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
+    """Return the sizes of named dimensions in an array expression.
+
+    Sizes are inferred from the array shape.
+
+    :param value: An array expression.
+    :return: A mapping from named dimensions to their sizes.
+
+    **Example usage**:
+
+    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
+    >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
+    >>> assert sizes[a] == 2 and sizes[b] == 3
+    """
+    from effectful.internals.product_n import _unpack
+
+    intp, prompt = _sizesof_intp()
+    result = evaluate(term, intp=intp)
+    fvs = _unpack(result, prompt)
     if not isinstance(fvs, dict):
         return {}
     return fvs
