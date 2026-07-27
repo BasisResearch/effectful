@@ -320,6 +320,10 @@ class _TypeofIntp(ObjectInterpretation):
 
         return Box(op.__type_rule__(*args, **kwargs))
 
+    @implements(ConstructorOperation.__apply__)
+    def _constructor(self, op, *args, **kwargs):
+        return op.__default_rule__(*args, **kwargs)
+
 
 _TYPEOF_INTP = PureInterpretation(_TypeofIntp())
 
