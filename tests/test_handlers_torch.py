@@ -633,6 +633,20 @@ def test_tensor_iter():
 
 
 def test_tensor_eq():
+    integer = torch.tensor([[1, 2], [3, 4]])
+    equal = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    unequal = torch.tensor([[1, 2], [3, 5]])
+
+    assert syntactic_eq(integer, equal)
+    assert syntactic_eq(equal, integer)
+    assert not syntactic_eq(integer, unequal)
+    assert not syntactic_eq(integer, torch.tensor([1, 2, 3, 4]))
+    assert not syntactic_eq(torch.empty(0), torch.empty(0, 2))
+    assert not syntactic_eq(integer, [[1, 2], [3, 4]])
+    assert not syntactic_eq(torch.tensor([torch.nan]), torch.tensor([torch.nan]))
+    assert syntactic_eq({"tensor": integer}, {"tensor": equal})
+
     x = defop(torch.Tensor)()
-    y = torch.tensor([1, 2, 3])
-    assert syntactic_eq(x + y, x + y)
+    assert syntactic_eq(x + integer, x + equal)
+    assert not syntactic_eq(x + integer, x + unequal)
+    assert not syntactic_eq(x + integer, x + torch.tensor([1, 2, 3, 4]))

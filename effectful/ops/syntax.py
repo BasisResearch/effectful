@@ -484,9 +484,8 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.internals.product_n import _unpack, productN
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _simple_type, apply, evaluate
+    from effectful.ops.semantics import _simple_type, _typeof, apply, evaluate
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -497,49 +496,23 @@ def defdata[T](
         for var in bound_vars
     }
 
-    # Analysis for type computation and term reconstruction
-    typ = defop(object, name="typ")
-    cast = defop(object, name="cast")
-
-    def apply_type(op, *args, **kwargs):
-        from effectful.internals.unification import Box
-
-        assert isinstance(op, Operation)
-        tp = op.__type_rule__(*args, **kwargs)
-        return Box(tp)
-
-    def apply_cast(op, *args, **kwargs):
-        assert isinstance(op, Operation)
-        full_type = typ()
-        dispatch_type = _simple_type(full_type.value)
-        return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
-
-    analysis = productN(
-        {
-            typ: {
-                apply: apply_type,
-                ConstructorOperation.__apply__: apply.__default_rule__,
-            },
-            cast: {
-                apply: apply_cast,
-                ConstructorOperation.__apply__: apply.__default_rule__,
-            },
-        }
-    )
-
     def evaluate_with_renaming(expr, ctx):
         """Evaluate an expression with renaming applied."""
         renaming_ctx = {
             old_var: new_var for old_var, new_var in renaming.items() if old_var in ctx
         }
 
+        if not renaming_ctx:
+            return expr
+
         # Note: coproduct cannot be used to compose these interpretations
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
-        with interpreter(analysis | renaming_ctx):
-            result = evaluate(expr)
-
-        return result
+        with interpreter(
+            {apply: defdata, ConstructorOperation.__apply__: apply.__default_rule__}
+            | renaming_ctx
+        ):
+            return evaluate(expr)
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
@@ -553,11 +526,12 @@ def defdata[T](
         for (k, v) in renamed_args.kwargs.items()
     }
 
-    # Build the final term with type analysis
-    with interpreter(analysis):
-        result = op(*args_, **kwargs_)
-
-    return _unpack(result, cast)
+    # Build the final term using the cached type analysis of its children.
+    typed_args = tuple(_typeof(arg) for arg in args_)
+    typed_kwargs = {k: _typeof(v) for k, v in kwargs_.items()}
+    full_type = op.__type_rule__(*typed_args, **typed_kwargs)
+    dispatch_type = _simple_type(full_type)
+    return __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
 
 
 def _construct_dataclass_term[T](
@@ -792,17 +766,47 @@ next_ = _IteratorTerm.__next__
 def syntactic_eq(
     __dispatch: Callable[[type], Callable[[Any, Any], bool]], x, other
 ) -> bool:
-    """Syntactic equality, ignoring the interpretation of the terms.
+    """Compare values structurally, without interpreting any terms they contain.
 
-    :param x: A term.
-    :param other: Another term.
-    :returns: ``True`` if the terms are syntactically equal and ``False`` otherwise.
+    Two :class:`Term` objects are syntactically equal when they use the same
+    (identity-compared) operation, have recursively equal positional arguments in
+    the same order, and have recursively equal keyword arguments. Keyword insertion
+    order is ignored.
+
+    Dataclass instances and named tuples are compared recursively by field and must
+    have the same concrete type. Other mappings are compared recursively by key and
+    value without regard to mapping type or iteration order. Other sequences are
+    compared recursively in order without requiring the same sequence type; strings
+    and bytes are treated as atomic values. Values not covered by one of these cases
+    use their ordinary Python ``==`` behavior.
+
+    Registered backend values follow the same structural intent. In particular,
+    JAX arrays and PyTorch tensors compare by shape and values; dtype is not part of
+    syntactic equality, and NaNs compare unequal as they do with ordinary ``==``.
+
+    No operation defaults or installed interpretations are invoked during the
+    comparison.
+
+    >>> x = defop(int, name="x")
+    >>> syntactic_eq(x() + 1, x() + 1)
+    True
+    >>> y = defop(int, name="y")
+    >>> syntactic_eq(x() + 1, y() + 1)
+    False
+    >>> syntactic_eq({"items": [x(), 2]}, {"items": (x(), 2)})
+    True
+
+    :param x: A value, possibly containing terms.
+    :param other: Another value.
+    :returns: ``True`` if the values are syntactically equal and ``False`` otherwise.
     """
     if (
         dataclasses.is_dataclass(x)
         and not isinstance(x, type)
+        and not isinstance(x, Term)
         and dataclasses.is_dataclass(other)
         and not isinstance(other, type)
+        and not isinstance(other, Term)
     ):
         return type(x) == type(other) and syntactic_eq(
             {field.name: getattr(x, field.name) for field in dataclasses.fields(x)},
@@ -841,13 +845,21 @@ def _(x: collections.abc.Mapping, other) -> bool:
 
 @syntactic_eq.register
 def _(x: collections.abc.Sequence, other) -> bool:
-    if (
+    x_fields = getattr(x, "_fields", ())
+    other_fields = getattr(other, "_fields", ())
+    x_is_namedtuple = (
         isinstance(x, tuple)
         and hasattr(x, "_fields")
-        and all(hasattr(x, f) for f in x._fields)
-    ):
+        and all(hasattr(x, f) for f in x_fields)
+    )
+    other_is_namedtuple = (
+        isinstance(other, tuple)
+        and hasattr(other, "_fields")
+        and all(hasattr(other, f) for f in other_fields)
+    )
+    if x_is_namedtuple or other_is_namedtuple:
         return type(other) == type(x) and all(
-            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x._fields
+            syntactic_eq(getattr(x, f), getattr(other, f)) for f in x_fields
         )
     else:
         return (
@@ -938,6 +950,16 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
 
     def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
         return self.implementations[item].__get__(self, type(self))
+
+
+class PureInterpretation[T, V](ObjectInterpretation[T, V]):
+    def __hash__(self):
+        return hash(frozenset(self.implementations.items()))
+
+    def __eq__(self, other):
+        return isinstance(other, PureInterpretation) and frozenset(
+            self.implementations.items()
+        ) == frozenset(other.implementations.items())
 
 
 class _ImplementedOperation[**P, **Q, T, V]:
@@ -1351,7 +1373,4 @@ class ConstructorOperation[**Q, V](Operation[Q, V]):
         return _as_typ
 
 
-@CollectionConstrOperation.define
-def as_tuple(*args) -> tuple:
-    return tuple(args)
 class DataclassConstructorOperation[**Q, V](ConstructorOperation): ...

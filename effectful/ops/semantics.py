@@ -5,15 +5,18 @@ import functools
 import operator
 import types
 import typing
+import weakref
 from collections.abc import Callable
 from typing import Any
 
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
+    PureInterpretation,
     _BaseTerm,
     _CustomSingleDispatchCallable,
     defop,
+    implements,
 )
 from effectful.ops.types import (
     Expr,
@@ -121,6 +124,11 @@ def handler(intp: Interpretation):
         yield intp
 
 
+@ConstructorOperation.define
+def as_tuple(*args) -> tuple:
+    return tuple(args)
+
+
 @_CustomSingleDispatchCallable
 def evaluate[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -171,11 +179,44 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
     return typing.cast(T, DataclassConstructorOperation.define(type(expr))(**subst))
 
 
+_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
+
+
+def _term_cache(
+    expr: Term,
+) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
+    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
+    try:
+        return getattr(expr, _EVALUATION_CACHE_ATTR)
+    except AttributeError:
+        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+        try:
+            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return None
+        return cache
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
+    from effectful.internals.runtime import get_interpretation
+
+    current_intp = get_interpretation()
+    if isinstance(current_intp, PureInterpretation):
+        cache = _term_cache(expr)
+        if cache is not None and current_intp in cache:
+            return cache[current_intp]
+    else:
+        cache = None
+
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    return expr.op(*args, **kwargs)
+    result = expr.op(*args, **kwargs)
+    if cache is not None:
+        cache[current_intp] = result
+    return result
 
 
 @evaluate.register(Operation)
@@ -266,6 +307,22 @@ def _simple_type(tp: type) -> type:
     if isinstance(tp, types.UnionType):
         raise TypeError(f"Union types are not supported: {tp}")
     return typing.get_origin(tp) or tp
+
+
+class _TypeofIntp(PureInterpretation):
+    @implements(apply)
+    def _(self, op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
+        return Box(op.__type_rule__(*args, **kwargs))
+
+
+_TYPEOF_INTP = _TypeofIntp()
+
+
+def _typeof(term: Expr):
+    """Evaluate the cached type analysis without unwrapping its result."""
+    return evaluate(term, intp=_TYPEOF_INTP)
 
 
 def typeof[T](term: Expr[T]) -> type[T]:

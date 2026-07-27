@@ -5,6 +5,7 @@ import dataclasses
 import inspect
 from dataclasses import dataclass
 
+import pydantic
 import pytest
 from litellm import ModelResponse
 
@@ -14,8 +15,10 @@ from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     RetryLLMHandler,
     call_user,
+    collect_tools,
     completion,
 )
+from effectful.handlers.llm.encoding import DecodedToolCall, Encodable
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -241,6 +244,37 @@ class _DesignerAgent(Agent):
 # ---------------------------------------------------------------------------
 
 
+def test_agent_method_tool_advertised_name_matches_decode_key():
+    """An Agent method tool is collected under a qualified key ("self__nested_tool") that
+    differs from its own `__name__` ("nested_tool"). It must be *advertised* to the LLM
+    under that key, because tool-call decoding resolves the call by the advertised name --
+    otherwise every method tool is undecodable. This is the serialize->advertise->decode
+    round-trip, no LLM required."""
+    agent = _DesignerAgent()
+    tools = dict(collect_tools({"self": agent}))
+    key = "self__nested_tool"
+    tool = tools[key]
+    assert tool.__name__ == "nested_tool"  # own name differs from the context key
+
+    # Serialize exactly as `call_assistant` advertises it: single-entry {key: tool} context.
+    spec = pydantic.TypeAdapter(Encodable[type(tool)]).dump_python(
+        tool, mode="json", context={key: tool}
+    )
+    advertised = spec["function"]["name"]
+    assert advertised == key  # advertised under the context key, not __name__
+
+    # A tool call using the advertised name decodes back to the same tool object.
+    raw_tool_call = {
+        "id": "call_1",
+        "type": "function",
+        "function": {"name": advertised, "arguments": '{"payload": "x"}'},
+    }
+    decoded = pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
+        raw_tool_call, context=tools
+    )
+    assert decoded.tool is tool
+
+
 class TestAgentHistoryAccumulation:
     """History accumulates across sequential calls on the same instance."""
 
@@ -464,7 +498,9 @@ class TestSystemPromptInvariant:
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        assert mock.received_messages[0][0]["content"] == DEFAULT_SYSTEM_PROMPT
+        content = mock.received_messages[0][0]["content"]
+        # System message content is now a list of blocks with cache_control
+        assert content[0]["text"] == DEFAULT_SYSTEM_PROMPT
 
 
 class TestAgentDocstringFallback:
@@ -1539,15 +1575,11 @@ import typing
 from pathlib import Path
 from types import CodeType
 
-import pydantic
-
 from effectful.handlers.llm.completions import (
     LexicalReaders,
     PythonRepl,
     _LexicalVariableTool,
-    collect_tools,
 )
-from effectful.handlers.llm.encoding import Encodable
 from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 
 
