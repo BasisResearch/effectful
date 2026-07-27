@@ -3,6 +3,8 @@ import collections
 import doctest
 import functools
 import inspect
+import json
+import pickle
 import re
 import string
 import types
@@ -289,6 +291,7 @@ class Template[**P, T](Tool[P, T]):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
             result.__agent_id__ = instance.__agent_id__  # type: ignore[attr-defined]
+            result.__agent__ = instance  # type: ignore[attr-defined]
         return result
 
     @classmethod
@@ -372,6 +375,29 @@ class Agent(abc.ABC):
     base classes.  Instance attributes are available in template
     docstrings via `{self.attr}`.
 
+    Set `self.agent_id` (a plain attribute, read lazily -- see below) to make
+    this instance's history and declared dataclass fields persist across
+    process restarts when a persistence handler (see
+    `effectful.handlers.llm.completions.SQLitePersister`) is installed.
+    Leave it unset (the default) for a normal, transient instance -- it still
+    gets a private history, just not backed by any database, and it is never
+    checkpointed even if a persistence handler happens to be active.
+
+    `Agent` itself is deliberately *not* a dataclass (making it one would
+    make every subclass, even ones with a hand-written `__init__`, look like
+    a dataclass too -- `dataclasses.is_dataclass()` is inherited -- which
+    breaks any such subclass under `effectful`'s generic dataclass-replace
+    evaluation machinery). Nothing here depends on constructor timing, so
+    there's no chaining requirement of any kind: `__agent_id__` and
+    `__persistent__` are derived lazily, on first access, from whatever
+    `self.agent_id` happens to be at that point -- a subclass just needs
+    `self.agent_id` to end up set to a stable string, however it prefers to
+    do that (a `@dataclass` field, a custom `__init__`, or nothing at all,
+    for a transient instance).
+
+    Don't force access to `__history__` from within your own `__init__` --
+    it's meant to load lazily, on first real use, not at construction time.
+
     Example:
 
     ```python
@@ -422,13 +448,46 @@ class Agent(abc.ABC):
 
     """
 
+    agent_id: str | None = None
+
+    def __init__(self, *, agent_id: str | None = None) -> None:
+        self.agent_id = agent_id
+
+    @functools.cached_property
+    def __persistent__(self) -> bool:
+        return self.agent_id is not None
+
     @functools.cached_property
     def __agent_id__(self) -> str:
-        return str(uuid.uuid4())
+        return self.agent_id if self.agent_id is not None else str(uuid.uuid4())
 
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
-        return collections.OrderedDict()
+        history: collections.OrderedDict[str, Mapping[str, typing.Any]] = (
+            collections.OrderedDict()
+        )
+        if self.__persistent__:
+            # Deferred import: completions.py imports Agent/Template from this
+            # module, so this can only be resolved at call time, not at module
+            # load time. The query below and `SQLitePersister.__init__`'s
+            # `CREATE TABLE checkpoints` must be kept in sync.
+            from effectful.handlers.llm.completions import SQLitePersister
+
+            conn = SQLitePersister._checkpoint_connection()
+            if conn is not None:
+                with conn:
+                    row = conn.execute(
+                        "SELECT state, history FROM checkpoints WHERE agent_id = ?",
+                        (self.__agent_id__,),
+                    ).fetchone()
+                if row is not None:
+                    state_blob, history_json = row
+                    for key, value in pickle.loads(state_blob).items():
+                        setattr(self, key, value)
+                    history = collections.OrderedDict(
+                        (msg["id"], msg) for msg in json.loads(history_json)
+                    )
+        return history
 
 
 if typing.TYPE_CHECKING:

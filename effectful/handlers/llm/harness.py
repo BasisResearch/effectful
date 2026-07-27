@@ -22,8 +22,9 @@ script in the same context::
     python -m effectful.handlers.llm.harness <path_to_script.py> <harness_flags> <script_flags>
 
 Harness flags (``--model``, ``--num-retries``, ``--langfuse``, ``--render``,
-``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``, ``--pdb``)
-are consumed here; every other flag is passed through to the script unchanged.
+``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``, ``--pdb``,
+``--persist-db``) are consumed here; every other flag is passed through to the
+script unchanged.
 """
 
 import argparse
@@ -45,6 +46,7 @@ from effectful.handlers.llm.completions import (
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
+    SQLitePersister,
     SynthesizeAndCall,
     SystemPromptDumper,
     TerminalRenderer,
@@ -67,7 +69,9 @@ class harness(contextlib.ContextDecorator):
     5. `SynthesizeAndCall` -- synthesize a function and call it.
     6. `RetryLLMHandler` -- retry malformed/failing model output.
     7. `LexicalReaders` -- expose lexically-scoped tools to the model.
-    8. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+    8. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
+       SQLite after each successful call (if ``persist_db``).
+    9. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
     Args:
         model: LLM model to use.
@@ -81,6 +85,10 @@ class harness(contextlib.ContextDecorator):
             to ``litellm.completion``); omitted from requests when ``None``.
         api_base: API base URL forwarded to the provider.
         api_key: API key forwarded to the provider.
+        persist_db: If set, path to a SQLite database used to checkpoint a
+            persisted `~effectful.handlers.llm.template.Agent`'s (one
+            constructed with an explicit `agent_id`) state and history via
+            `~effectful.handlers.llm.completions.SQLitePersister`.
     """
 
     def __init__(
@@ -95,6 +103,7 @@ class harness(contextlib.ContextDecorator):
         reasoning_effort: str | None = None,
         api_base: str | None = None,
         api_key: str | None = None,
+        persist_db: str | os.PathLike[str] | None = None,
     ) -> None:
         self.model = model
         self.num_retries = num_retries
@@ -105,6 +114,7 @@ class harness(contextlib.ContextDecorator):
         self.reasoning_effort = reasoning_effort
         self.api_base = api_base
         self.api_key = api_key
+        self.persist_db = persist_db
 
     def __enter__(self) -> "harness":
         stack = contextlib.ExitStack()
@@ -137,6 +147,8 @@ class harness(contextlib.ContextDecorator):
             handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(self.num_retries)))
         )
         # stack.enter_context(handler(LexicalReaders()))
+        if self.persist_db is not None:
+            stack.enter_context(handler(SQLitePersister(pathlib.Path(self.persist_db))))
         if self.langfuse:
             stack.enter_context(handler(LangfuseTracer()))
         self._stack = stack
@@ -228,6 +240,16 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
     )
+    parser.add_argument(
+        "--persist-db",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Checkpoint persisted Agent state/history to this SQLite database "
+            "(installs SQLitePersister)"
+        ),
+    )
     return parser.parse_known_args(argv)
 
 
@@ -254,6 +276,7 @@ def main(argv: list[str] | None = None) -> None:
         api_key=os.environ.get("DS4_OPENAI_API_KEY", None)
         if ns.model == "openai/deepseek-v4-flash"
         else None,
+        persist_db=ns.persist_db,
     ):
         if ns.pdb:
             try:
