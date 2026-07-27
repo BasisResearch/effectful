@@ -1366,11 +1366,10 @@ class ConstructorOperation[**Q, V](Operation[Q, V]):
     @classmethod
     @functools.cache
     def define[T](cls, typ: type[T]) -> "ConstructorOperation[Any, T]":
-        @Operation.define
         def _as_typ(*args, **kwargs) -> typ:  # type: ignore[valid-type]
             return typ(*args, **kwargs)
 
-        return _as_typ
+        return typing.cast(ConstructorOperation[Any, T], super().define(_as_typ))
 
 
 class DataclassConstructorOperation[**Q, V](ConstructorOperation): ...

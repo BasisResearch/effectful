@@ -176,7 +176,10 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
         field.name: evaluate(getattr(expr, field.name))
         for field in dataclasses.fields(expr)  # type: ignore[arg-type]
     }
-    return typing.cast(T, DataclassConstructorOperation.define(type(expr))(**subst))
+    return typing.cast(
+        T,
+        DataclassConstructorOperation.define(type(expr))(**subst),  # type: ignore[arg-type]
+    )
 
 
 _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
@@ -399,7 +402,7 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     _fvsof_fvs = defop(object, name="fvsof_fvs")
     _fvsof_binders = defop(object, name="fvsof_binders")
 
-    def _apply_collection_binders(*args, **kwargs):
+    def _apply_collection_binders(op, *args, **kwargs):
         return frozenset().union(
             *(
                 {x}
@@ -452,13 +455,10 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
                 apply: _apply_fvs,
                 ConstructorOperation.__apply__: _apply_passthrough_fvs,
             },
-            _fvsof_binders: (
-                {apply: _apply_binders}
-                | {
-                    ConstructorOperation.define(t): _apply_collection_binders
-                    for t in (dict, list, set, tuple)
-                }
-            ),
+            _fvsof_binders: {
+                apply: _apply_binders,
+                ConstructorOperation.__apply__: _apply_collection_binders,
+            },
         }
     )
 
