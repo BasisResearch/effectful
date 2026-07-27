@@ -91,9 +91,7 @@ def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
             and not k.kwargs
             and issubclass(typeof(k), torch.Tensor)
         )
-        return functools.reduce(
-            _merge, itertools.chain(arg_sizes, index_sizes), {}
-        )
+        return functools.reduce(_merge, itertools.chain(arg_sizes, index_sizes), {})
 
     return (
         PureInterpretation(
