@@ -27,7 +27,7 @@ from effectful.handlers.llm.choreographies import (
     scatter,
     step,
 )
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
@@ -480,18 +480,6 @@ class TestScatter:
         ):
             run(choreo.run_async(coder=coders))
 
-    def test_scatter_outside_a_choreography_is_sequential(self):
-        coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
-        seen: list[str] = []
-
-        async def fake_call(agent, item):
-            seen.append(f"{agent.__agent_id__}:{item}")
-            return item.upper()
-
-        result = run(scatter(["a", "b", "c"], coders, fake_call))
-        assert result == ["A", "B", "C"]
-        assert seen == ["coder-1:a", "coder-2:b", "coder-1:c"]
-
 
 class TestManualProjection:
     """Driving projections directly, without `Choreography.run_async`."""
@@ -538,8 +526,7 @@ async def _chain(coders):
 
 
 async def _drive(choreo, agent, mock, pool, coders):
-    projection = choreo.projection(agent, executor=pool)
-    with handler(mock), projection.activate():
+    with handler(mock), handler(choreo.projection(agent, executor=pool)):
         return await _chain(coders)
 
 
@@ -760,6 +747,75 @@ class TestResume:
 
         assert result == "C"
         assert mock.calls == []
+
+
+class TestPrimitivesAreOperations:
+    """`step`, `call` and `scatter` are ordinary `Operation`s, so they have
+    default rules outside a choreography and can be handled like anything
+    else inside one."""
+
+    def test_step_outside_a_choreography_just_calls(self):
+        bot = Coder(agent_id="solo")
+
+        async def go():
+            with handler(MockLLM({"implement": "code"})):
+                return await step(bot.implement, "spec")
+
+        assert run(go()) == "code"
+
+    def test_a_handler_installed_over_the_projection_can_wrap_step(self):
+        """`fwd` works from a `step` handler, so the projection composes like
+        any other interpretation.
+
+        The handler has to sit *inside* the projection to see anything:
+        `Choreography.run_async` installs the projection within each agent
+        task, so it wins over anything wrapped around the run and never
+        forwards. Driving projections by hand puts the order in your control.
+        """
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        seen: list[str] = []
+        lock = threading.Lock()
+
+        class Tracer(ObjectInterpretation):
+            @implements(step)
+            def _step(self, template, *args, **kwargs):
+                # Synchronous body: `fwd` is still bound, and the awaitable it
+                # returns is what the choreography goes on to await.
+                pending = fwd()
+
+                async def traced():
+                    result = await pending
+                    with lock:
+                        seen.append(f"{_key(template)} -> {result}")
+                    return result
+
+                return traced()
+
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
+        mock = MockLLM({"plan": "P", "implement": "C"})
+
+        async def drive(agent):
+            with handler(choreo.projection(agent)), handler(Tracer()):
+                return await _plan_then_implement(architect, coder)
+
+        async def go():
+            with handler(mock):
+                return await asyncio.gather(*(drive(a) for a in (architect, coder)))
+
+        assert run(go()) == ["C", "C"]
+        # Both agents traced both steps, and both saw the same results.
+        assert sorted(seen) == ["arch.plan -> P"] * 2 + ["coder.implement -> C"] * 2
+
+    def test_scatter_outside_a_choreography_is_sequential(self):
+        coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
+        seen: list[str] = []
+
+        async def fake_call(agent, item):
+            seen.append(f"{agent.__agent_id__}:{item}")
+            return item.upper()
+
+        assert run(scatter(["a", "b", "c"], coders, fake_call)) == ["A", "B", "C"]
+        assert seen == ["coder-1:a", "coder-2:b", "coder-1:c"]
 
 
 class TestHandlerPropagation:
