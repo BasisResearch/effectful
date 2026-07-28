@@ -124,6 +124,55 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
     assert jnp.allclose(actual, expected)
 
 
+SCALAR_PLUS = [
+    pytest.param(Sum, 3.0, id="Sum"),
+    pytest.param(Product, 2.0, id="Product"),
+]
+
+
+@pytest.mark.parametrize("monoid,expected", SCALAR_PLUS)
+def test_plus_scalars_stays_scalar(monoid, expected):
+    """``Monoid.plus`` of plain Python numbers must not become a ``jax.Array``.
+
+    ``jax.typing.ArrayLike`` is a union that includes ``bool``, ``int``,
+    ``float`` and ``complex``, so the jax ``plus`` handlers -- which extend
+    ``EvaluateIntp`` after the scalar implementations and therefore take
+    precedence -- must not claim pure-Python scalar arithmetic.
+    """
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = monoid.plus(1.0, 2.0)
+
+    assert not isinstance(actual, jax.Array)
+    assert isinstance(actual, float)
+    assert actual == expected
+
+
+@pytest.mark.parametrize(
+    "monoid,expected",
+    [pytest.param(Sum, 6.0, id="Sum"), pytest.param(Product, 8.0, id="Product")],
+)
+def test_reduce_scalar_body_stays_scalar(monoid, expected, backend: JaxBackend):
+    """A reduction over a scalar body is likewise plain Python arithmetic."""
+    i = backend.define_vars("i", ret="scalar")
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = monoid.reduce(2.0, {i: range(3)})
+
+    assert not isinstance(actual, jax.Array)
+    assert isinstance(actual, float)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("monoid,expected", SCALAR_PLUS)
+def test_plus_mixed_array_and_scalar_is_array(monoid, expected):
+    """One genuine array is enough: the narrowing must not be over-applied."""
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = monoid.plus(jnp.asarray([1.0, 1.0]), 2.0)
+
+    assert isinstance(actual, jax.Array)
+    assert jnp.allclose(actual, jnp.asarray([expected, expected]))
+
+
 @pytest.mark.parametrize("monoid,reductor", MONOIDS)
 def test_arange_reduce_indirect(monoid, reductor, backend: JaxBackend):
     """When the range var is used both as a direct index and as a value
