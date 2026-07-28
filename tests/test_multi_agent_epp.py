@@ -1,8 +1,8 @@
-"""Tests for `effectful.handlers.llm.multi` -- choreographic EPP with a TaskQueue.
+"""Tests for `effectful.handlers.llm.multi` -- choreographic endpoint projection.
 
 No real LLM is involved: `MockLLM` and friends implement `Template.__apply__`
-directly, so what is under test is the choreography -- step allocation, claim
-based distribution, crash recovery -- rather than any completion logic.
+directly, so what is under test is the choreography -- step allocation, result
+sharing, scatter distribution -- rather than any completion logic.
 
 Every test runs under a timeout, because the failure mode of a concurrency bug
 here is a hang rather than a wrong answer.
@@ -10,7 +10,8 @@ here is a hang rather than a wrong answer.
 
 import asyncio
 import concurrent.futures
-import sqlite3
+import gc
+import logging
 import threading
 from typing import Any
 
@@ -18,12 +19,8 @@ import pytest
 
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.multi import (
-    MISSING,
     Choreography,
     ChoreographyError,
-    InMemoryTaskQueue,
-    PersistentTaskQueue,
-    TaskStatus,
     call,
     scatter,
     step,
@@ -144,222 +141,22 @@ def announce(text: str) -> str:
     raise NotHandled
 
 
-# ── Queue tests ───────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────
 
 
-@pytest.fixture(params=["in_memory", "persistent"])
-def queue(request, tmp_path):
-    q = (
-        InMemoryTaskQueue()
-        if request.param == "in_memory"
-        else PersistentTaskQueue(tmp_path / "queue.db")
-    )
-    yield q
-    run(q.close())
-
-
-class TestTaskQueue:
-    def test_submit_and_claim(self, queue):
-        async def go():
-            await queue.submit("work", {"n": 1}, task_id="t1")
-            task = await queue.claim_id("t1", "worker-1")
-            assert task is not None
-            assert task["id"] == "t1"
-            assert task["payload"] == {"n": 1}
-            assert task["owner"] == "worker-1"
-            # A claimed task cannot be claimed again.
-            assert await queue.claim_id("t1", "worker-2") is None
-
-        run(go())
-
-    def test_claim_missing_task(self, queue):
-        assert run(queue.claim_id("nope", "worker-1")) is None
-
-    def test_submit_is_idempotent(self, queue):
-        async def go():
-            await queue.submit("work", {"n": 1}, task_id="t1")
-            await queue.submit("work", {"n": 2}, task_id="t1")
-            task = await queue.claim_id("t1", "worker-1")
-            assert task["payload"] == {"n": 1}
-            assert await queue.pending_count() == 0
-
-        run(go())
-
-    def test_get_result_is_missing_until_done(self, queue):
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            assert await queue.get_result("t1") is MISSING
-            await queue.claim_id("t1", "w")
-            assert await queue.get_result("t1") is MISSING
-            await queue.complete("t1", "w", {"answer": 42})
-            assert await queue.get_result("t1") == {"answer": 42}
-
-        run(go())
-
-    @pytest.mark.parametrize("result", [None, 0, "", [], False])
-    def test_falsy_results_are_distinguishable_from_absence(self, queue, result):
-        """A completed step whose result is falsy -- ``None`` above all -- must
-        not read back as 'not done yet', or a poll loop waits forever."""
-
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            await queue.claim_id("t1", "w")
-            await queue.complete("t1", "w", result)
-            assert await queue.get_result("t1") == result
-            assert await queue.get_result("t1") is not MISSING
-            assert await queue.get_result("absent") is MISSING
-
-        run(go())
-
-    def test_claim_prefix_takes_lowest_id_first(self, queue):
-        async def go():
-            for i in (2, 0, 1):
-                await queue.submit("work", {"i": i}, task_id=f"s:{i:04d}")
-            await queue.submit("work", {}, task_id="other:0000")
-
-            claimed = []
-            while (task := await queue.claim_prefix("s:", "w")) is not None:
-                claimed.append(task["id"])
-            assert claimed == ["s:0000", "s:0001", "s:0002"]
-            # The unrelated prefix is untouched.
-            assert await queue.claim_id("other:0000", "w") is not None
-
-        run(go())
-
-    def test_release_stale_claims_releases_claimed(self, queue):
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            await queue.claim_id("t1", "w1")
-            assert await queue.release_stale_claims("w2") == 0
-            assert await queue.release_stale_claims("w1") == 1
-            assert await queue.pending_count() == 1
-            assert await queue.claim_id("t1", "w2") is not None
-
-        run(go())
-
-    def test_release_stale_claims_releases_failed(self, queue):
-        """A failed task has to go back to pending on restart. Left failed, it
-        is a step whose result never arrives and whose owner never retries."""
-
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            await queue.claim_id("t1", "w1")
-            await queue.fail("t1", "w1", "boom")
-            assert await queue.release_stale_claims("w1") == 1
-            assert await queue.pending_count() == 1
-            assert await queue.get_result("t1") is MISSING
-            assert await queue.claim_id("t1", "w1") is not None
-
-        run(go())
-
-    def test_release_stale_claims_leaves_done_alone(self, queue):
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            await queue.claim_id("t1", "w1")
-            await queue.complete("t1", "w1", "value")
-            assert await queue.release_stale_claims("w1") == 0
-            assert await queue.get_result("t1") == "value"
-
-        run(go())
-
-    def test_all_done_and_pending_count(self, queue):
-        async def go():
-            assert await queue.all_done()
-            await queue.submit("work", {}, task_id="t1")
-            assert await queue.pending_count() == 1
-            assert not await queue.all_done()
-            await queue.claim_id("t1", "w")
-            assert await queue.pending_count() == 0
-            assert not await queue.all_done()
-            await queue.complete("t1", "w", "x")
-            assert await queue.all_done()
-
-        run(go())
-
-    def test_complete_requires_a_claim(self, queue):
-        async def go():
-            await queue.submit("work", {}, task_id="t1")
-            await queue.complete("t1", "w", "value")  # never claimed
-            assert await queue.get_result("t1") is MISSING
-
-        run(go())
-
-
-class TestPersistentTaskQueue:
-    def test_wal_mode_enabled(self, tmp_path):
-        q = PersistentTaskQueue(tmp_path / "q.db")
-        try:
-            with sqlite3.connect(q.db_path) as conn:
-                assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
-        finally:
-            run(q.close())
-
-    def test_state_survives_a_new_instance(self, tmp_path):
-        db = tmp_path / "q.db"
-        first = PersistentTaskQueue(db)
-
-        async def go():
-            await first.submit("work", {"n": 7}, task_id="t1")
-            await first.claim_id("t1", "w")
-            await first.complete("t1", "w", "done")
-
-        run(go())
-        run(first.close())
-
-        second = PersistentTaskQueue(db)
-        try:
-            assert run(second.get_result("t1")) == "done"
-        finally:
-            run(second.close())
-
-    def test_concurrent_claims_never_double_claim(self, tmp_path):
-        """Two queue objects on one database stand in for two processes.
-
-        The claim is a read followed by a write; without a transaction that
-        spans both, two claimers can read the same pending row and both take
-        it. An in-process lock would not catch this -- these are separate
-        connections on separate threads.
-        """
-        db = tmp_path / "q.db"
-        left, right = PersistentTaskQueue(db), PersistentTaskQueue(db)
-        n = 25
-
-        async def drain(q: PersistentTaskQueue, owner: str) -> list[str]:
-            claimed = []
-            while (task := await q.claim_prefix("s:", owner)) is not None:
-                claimed.append(task["id"])
-                await asyncio.sleep(0)  # interleave with the other claimer
-            return claimed
-
-        async def go():
-            for i in range(n):
-                await left.submit("work", {"i": i}, task_id=f"s:{i:04d}")
-            return await asyncio.gather(drain(left, "a"), drain(right, "b"))
-
-        try:
-            a, b = run(go())
-        finally:
-            run(left.close())
-            run(right.close())
-
-        assert sorted(a + b) == [f"s:{i:04d}" for i in range(n)]
-        assert not set(a) & set(b)
-
-
-# ── Choreography tests ────────────────────────────────────────────
-
-
-def choreograph(program, agents, responses, *, queue=None, mock=None, **kwargs):
+def choreograph(program, agents, responses, *, mock=None, **kwargs):
     """Run *program* over *agents* with a mock LLM; return ``(result, mock)``."""
     mock = mock if mock is not None else MockLLM(responses)
-    choreo = Choreography(
-        program,
-        agents=agents,
-        queue=queue if queue is not None else InMemoryTaskQueue(),
-        handlers=[mock],
-        poll_interval=0.01,
-    )
+    choreo = Choreography(program, agents=agents, handlers=[mock])
     return run(choreo.run_async(**kwargs)), mock
+
+
+async def _plan_then_implement(architect, coder):
+    plan = await step(architect.plan, "spec")
+    return await step(coder.implement, plan)
+
+
+# ── Tests ─────────────────────────────────────────────────────────
 
 
 class TestChoreography:
@@ -448,8 +245,8 @@ class TestChoreography:
         assert mock.calls_for("coder") == ["coder.implement"] * 3
 
     def test_a_step_returning_none_does_not_hang(self):
-        """``None`` is a result like any other. Reading it back as 'not done'
-        would leave every other agent polling forever."""
+        """``None`` is a result like any other, and has to be distinguishable
+        from a step that has not finished."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
 
         async def program(architect, coder):
@@ -492,42 +289,64 @@ class TestChoreography:
         result, _ = choreograph(program, [coder], {"implement": "code"}, coder=coder)
         assert result == "code"
 
+    def test_a_step_owned_by_an_outsider_is_rejected(self):
+        """Nobody would ever run it, so every agent would wait for a result
+        that cannot arrive. Fail loudly rather than hang."""
+        coder = Coder(agent_id="coder")
+        stranger = Reviewer(agent_id="not-in-this-choreography")
+
+        async def program(coder, stranger):
+            code = await step(coder.implement, "spec")
+            return await step(stranger.review, code)
+
+        choreo = Choreography(program, agents=[coder], handlers=[MockLLM({})])
+        with pytest.raises(ChoreographyError, match="not part of this choreography"):
+            run(choreo.run_async(coder=coder, stranger=stranger))
+
     def test_agent_failure_becomes_a_choreography_error(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-
-        async def program(architect, coder):
-            plan = await step(architect.plan, "spec")
-            return await step(coder.implement, plan)
-
         choreo = Choreography(
-            program,
+            _plan_then_implement,
             agents=[architect, coder],
-            queue=InMemoryTaskQueue(),
             handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-            poll_interval=0.01,
         )
 
         with pytest.raises(ChoreographyError, match="'coder' failed"):
             run(choreo.run_async(architect=architect, coder=coder))
 
+    def test_a_failed_run_leaves_no_unretrieved_futures(self, caplog):
+        """The agents waiting on a failed step are cancelled by the task group
+        before they read its exception. Asyncio complains about an exception
+        nobody retrieved unless the failing side reads it first."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        choreo = Choreography(
+            _plan_then_implement,
+            agents=[architect, coder],
+            handlers=[FailingMockLLM({}, fail_on={"arch.plan"})],
+        )
+
+        with caplog.at_level(logging.DEBUG, logger="asyncio"):
+            with pytest.raises(ChoreographyError):
+                run(choreo.run_async(architect=architect, coder=coder))
+            gc.collect()
+
+        assert "never retrieved" not in caplog.text
+
     def test_repeated_runs_are_deterministic(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-
-        async def program(architect, coder):
-            plan = await step(architect.plan, "spec")
-            return await step(coder.implement, plan)
+        choreo = Choreography(
+            _plan_then_implement,
+            agents=[architect, coder],
+            handlers=[(mock := MockLLM({"plan": "P", "implement": "C"}))],
+        )
 
         results = [
-            choreograph(
-                program,
-                [architect, coder],
-                {"plan": "P", "implement": "C"},
-                architect=architect,
-                coder=coder,
-            )[0]
-            for _ in range(5)
+            run(choreo.run_async(architect=architect, coder=coder)) for _ in range(5)
         ]
+
         assert results == ["C"] * 5
+        # Results live for the duration of a run, so each run re-executes.
+        assert mock.calls_for("arch") == ["arch.plan"] * 5
 
 
 class TestScatter:
@@ -558,7 +377,7 @@ class TestScatter:
     def test_work_is_shared_between_agents(self):
         """Two coders, two items, and a barrier only both of them can clear.
 
-        If one coder claimed both items the other would never arrive and the
+        If one coder took both items the other would never arrive and the
         barrier would time out -- which is the point: this asserts real
         concurrent pull, not just that the work got done.
         """
@@ -591,8 +410,8 @@ class TestScatter:
         assert result == []
 
     def test_concurrent_scatters_via_gather(self):
-        """`asyncio.gather` over several scatters is what `fan_out` used to be:
-        agents in different groups work at the same time."""
+        """`asyncio.gather` over several scatters lets agents in different
+        groups work at the same time."""
         coder = Coder(agent_id="coder")
         tester = Verifier(agent_id="tester")
 
@@ -634,13 +453,7 @@ class TestScatter:
                 ["a"], coder, lambda c, item: step(reviewer.review, item)
             )
 
-        choreo = Choreography(
-            program,
-            agents=[coder, reviewer],
-            queue=InMemoryTaskQueue(),
-            handlers=[MockLLM({})],
-            poll_interval=0.01,
-        )
+        choreo = Choreography(program, agents=[coder, reviewer], handlers=[MockLLM({})])
 
         with pytest.raises(ChoreographyError, match="cannot be used inside scatter"):
             run(choreo.run_async(coder=coder, reviewer=reviewer))
@@ -656,9 +469,7 @@ class TestScatter:
         choreo = Choreography(
             program,
             agents=coders,
-            queue=InMemoryTaskQueue(),
             handlers=[FailingMockLLM({}, fail_on={"coder-1.implement"})],
-            poll_interval=0.01,
         )
 
         with pytest.raises(ChoreographyError, match="Simulated failure"):
@@ -677,6 +488,56 @@ class TestScatter:
         assert seen == ["coder-1:a", "coder-2:b", "coder-1:c"]
 
 
+class TestManualProjection:
+    """Driving projections directly, without `Choreography.run_async`."""
+
+    def test_agents_outnumbering_worker_threads_still_finish(self):
+        """Four agents, one worker thread, a chain in which each waits on the
+        previous one. A waiting agent is a suspended coroutine, so it holds no
+        thread -- run agent-per-thread instead and this deadlocks."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
+        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
+        choreo = Choreography(_chain, agents=agents)
+
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return await asyncio.gather(
+                    *(_drive(choreo, a, mock, pool, agents) for a in agents)
+                )
+
+        assert run(go()) == ["x!!!!"] * 4
+
+    def test_a_waiting_agent_sees_the_owners_failure(self):
+        """`asyncio.gather` does not cancel siblings when one raises, so a
+        waiting agent only learns of a failure if the failed step carries it."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(2)]
+        mock = FailingMockLLM({}, fail_on={"coder-0.implement"})
+        choreo = Choreography(_chain, agents=agents)
+
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                return await asyncio.gather(
+                    *(_drive(choreo, a, mock, pool, agents) for a in agents),
+                    return_exceptions=True,
+                )
+
+        outcomes = run(go())
+        assert [type(o) for o in outcomes] == [RuntimeError, RuntimeError]
+
+
+async def _chain(coders):
+    value = "x"
+    for coder in coders:
+        value = await step(coder.implement, value)
+    return value
+
+
+async def _drive(choreo, agent, mock, pool, coders):
+    projection = choreo.projection(agent, executor=pool)
+    with handler(mock), projection.activate():
+        return await _chain(coders)
+
+
 class TestHandlerPropagation:
     """`effectful`'s interpretation lives in a `contextvars.ContextVar`, which
     is what makes this design work: each agent task gets its own copy, and
@@ -688,252 +549,8 @@ class TestHandlerPropagation:
         is inherited by every agent task and by the threads they call into."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
         mock = MockLLM({"plan": "P", "implement": "C"})
-
-        async def program(architect, coder):
-            plan = await step(architect.plan, "spec")
-            return await step(coder.implement, plan)
-
-        choreo = Choreography(
-            program,
-            agents=[architect, coder],
-            queue=InMemoryTaskQueue(),
-            handlers=[],
-            poll_interval=0.01,
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
 
         with handler(mock):
             assert run(choreo.run_async(architect=architect, coder=coder)) == "C"
         assert sorted(mock.calls) == ["arch.plan", "coder.implement"]
-
-    def test_agents_outnumbering_worker_threads_still_finish(self):
-        """Four agents, one worker thread, a chain in which each waits on the
-        previous one. A waiting agent is a suspended coroutine, so it holds no
-        thread -- run agent-per-thread instead and this deadlocks."""
-        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
-        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
-        choreo = Choreography(
-            _chain, agents=agents, queue=InMemoryTaskQueue(), poll_interval=0.01
-        )
-
-        async def drive(agent, pool):
-            projection = choreo.projection(agent, executor=pool)
-            with handler(mock), projection.activate():
-                return await _chain(agents)
-
-        async def go():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return await asyncio.gather(*(drive(a, pool) for a in agents))
-
-        assert run(go()) == ["x!!!!"] * 4
-
-
-async def _chain(coders):
-    value = "x"
-    for coder in coders:
-        value = await step(coder.implement, value)
-    return value
-
-
-class TestCrashRecovery:
-    """Restart semantics: the program re-runs from the top, and steps that
-    already finished return their recorded result instead of calling a model."""
-
-    def _program(self):
-        async def program(architect, coder):
-            plan = await step(architect.plan, "spec")
-            return await step(coder.implement, plan)
-
-        return program
-
-    def test_completed_steps_are_not_re_executed(self):
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        queue = InMemoryTaskQueue()
-
-        async def prior_run():
-            await queue.submit("plan", {"agent": "arch"}, task_id="step-0000")
-            await queue.claim_id("step-0000", "arch")
-            await queue.complete("step-0000", "arch", "cached plan")
-
-        run(prior_run())
-
-        result, mock = choreograph(
-            self._program(),
-            [architect, coder],
-            {"plan": "SHOULD NOT RUN", "implement": "fresh code"},
-            queue=queue,
-            architect=architect,
-            coder=coder,
-        )
-
-        assert result == "fresh code"
-        assert mock.calls_for("arch") == []
-        assert mock.calls_for("coder") == ["coder.implement"]
-
-    def test_a_second_run_calls_no_model_at_all(self):
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        queue = InMemoryTaskQueue()
-        program = self._program()
-
-        first, _ = choreograph(
-            program,
-            [architect, coder],
-            {"plan": "P", "implement": "C"},
-            queue=queue,
-            architect=architect,
-            coder=coder,
-        )
-        second, mock = choreograph(
-            program,
-            [architect, coder],
-            {},
-            queue=queue,
-            mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
-            architect=architect,
-            coder=coder,
-        )
-
-        assert first == second == "C"
-        assert mock.calls == []
-
-    def test_a_failed_step_is_retried_on_restart(self):
-        """A failure aborts the run with the step marked failed. The next run
-        has to release it -- otherwise the step is neither done nor claimable
-        and every agent waits for a result that cannot arrive."""
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        queue = InMemoryTaskQueue()
-        program = self._program()
-
-        failing = Choreography(
-            program,
-            agents=[architect, coder],
-            queue=queue,
-            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-            poll_interval=0.01,
-        )
-        with pytest.raises(ChoreographyError):
-            run(failing.run_async(architect=architect, coder=coder))
-        assert run(queue.get_result("step-0001")) is MISSING
-
-        result, mock = choreograph(
-            program,
-            [architect, coder],
-            {"implement": "code at last"},
-            queue=queue,
-            architect=architect,
-            coder=coder,
-        )
-
-        assert result == "code at last"
-        # The architect's step survived the failed run and was not re-run.
-        assert mock.calls_for("arch") == []
-
-    def test_scatter_resumes_from_partial_results(self):
-        coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
-        queue = InMemoryTaskQueue()
-
-        async def program(coder):
-            return await scatter(
-                ["a", "b", "c"], coder, lambda c, item: call(c.implement, item)
-            )
-
-        async def prior_run():
-            await queue.submit("scatter-step-0000", {"item_index": 1}, "step-0000:0001")
-            await queue.claim_id("step-0000:0001", "coder-1")
-            await queue.complete("step-0000:0001", "coder-1", "cached b")
-
-        run(prior_run())
-
-        result, mock = choreograph(
-            program,
-            coders,
-            {"implement": lambda template, args: f"code({args[0]})"},
-            queue=queue,
-            coder=coders,
-        )
-
-        assert result == ["code(a)", "cached b", "code(c)"]
-        assert len([c for c in mock.calls if c.endswith(".implement")]) == 2
-
-    def test_restart_with_a_persistent_queue(self, tmp_path):
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        program = self._program()
-        db = tmp_path / "queue.db"
-
-        first = PersistentTaskQueue(db)
-        result, _ = choreograph(
-            program,
-            [architect, coder],
-            {"plan": "P", "implement": "C"},
-            queue=first,
-            architect=architect,
-            coder=coder,
-        )
-        run(first.close())
-        assert result == "C"
-
-        # A fresh process: new queue object, same database.
-        second = PersistentTaskQueue(db)
-        try:
-            resumed, mock = choreograph(
-                program,
-                [architect, coder],
-                {},
-                queue=second,
-                mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
-                architect=architect,
-                coder=coder,
-            )
-        finally:
-            run(second.close())
-
-        assert resumed == "C"
-        assert mock.calls == []
-
-    def test_stale_claims_are_released_on_restart(self, tmp_path):
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        queue = PersistentTaskQueue(tmp_path / "queue.db")
-
-        async def crashed_run():
-            # A previous process claimed step 0 and died before finishing it.
-            await queue.submit("plan", {"agent": "arch"}, task_id="step-0000")
-            await queue.claim_id("step-0000", "arch")
-
-        run(crashed_run())
-
-        try:
-            result, mock = choreograph(
-                self._program(),
-                [architect, coder],
-                {"plan": "P", "implement": "C"},
-                queue=queue,
-                architect=architect,
-                coder=coder,
-            )
-            assert run(queue.all_done())
-        finally:
-            run(queue.close())
-
-        assert result == "C"
-        assert mock.calls_for("arch") == ["arch.plan"]
-
-    def test_queue_records_final_state(self, tmp_path):
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        queue = PersistentTaskQueue(tmp_path / "queue.db")
-        try:
-            choreograph(
-                self._program(),
-                [architect, coder],
-                {"plan": "P", "implement": "C"},
-                queue=queue,
-                architect=architect,
-                coder=coder,
-            )
-            with sqlite3.connect(queue.db_path) as conn:
-                rows = conn.execute("SELECT id, status, owner FROM tasks").fetchall()
-        finally:
-            run(queue.close())
-
-        assert sorted(rows) == [
-            ("step-0000", TaskStatus.DONE, "arch"),
-            ("step-0001", TaskStatus.DONE, "coder"),
-        ]

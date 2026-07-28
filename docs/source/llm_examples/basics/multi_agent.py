@@ -3,11 +3,9 @@
 Demonstrates:
 - Choreographic programming: one ``async`` function describes the whole workflow
 - Endpoint projection: every agent runs that function as its own `asyncio.Task`,
-  claiming the steps it owns and awaiting the ones it doesn't
-- ``scatter``: two coders share the implementation work by claim-based pull, and
-  two reviewers share the reviews
-- Crash tolerance: Ctrl-C and re-run, and the agents resume from the last
-  completed step
+  executing the steps it owns and awaiting the ones it doesn't
+- ``scatter``: two coders share the implementation work and two reviewers share
+  the reviews, each item going to whichever agent is free
 
 The scenario: a team of agents collaboratively builds a small Python library.
 An architect breaks the project into module specs, coders implement the modules
@@ -18,17 +16,16 @@ Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
 suspended coroutine. See `effectful.handlers.llm.multi` for why steps are
 spelled ``await step(...)`` rather than as plain method calls.
 
-Run it, interrupt it, and run it again to watch it pick up where it left off::
+Run it with::
 
     python -m effectful.handlers.llm.harness \\
         docs/source/llm_examples/basics/multi_agent.py --model gpt-4o-mini
 
 Pass ``--persist-db PATH`` to the harness to checkpoint each agent's own
-conversation history alongside the choreography's step log.
+conversation history across runs.
 """
 
 import argparse
-import asyncio
 import json
 import pathlib
 from typing import Literal, TypedDict
@@ -37,7 +34,6 @@ from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.multi import (
     Choreography,
     ChoreographyError,
-    PersistentTaskQueue,
     call,
     scatter,
     step,
@@ -240,7 +236,7 @@ def main() -> None:
         "--workspace",
         type=pathlib.Path,
         default=pathlib.Path("./multi_agent_workspace"),
-        help="Directory for the generated library and the choreography's state",
+        help="Directory to write the generated library into",
     )
     parser.add_argument(
         "--project-spec",
@@ -266,15 +262,11 @@ def main() -> None:
         for i in range(args.reviewers)
     ]
 
-    # Tasks, the thread pool, cancellation on failure and crash recovery are all
-    # handled for you; the model handlers come from the harness.
-    choreo = Choreography(
-        build_project,
-        agents=[architect, *coders, *reviewers],
-        queue=PersistentTaskQueue(args.workspace / ".state" / "task_queue.db"),
-    )
+    # Tasks, the thread pool and cancellation on failure are all handled for
+    # you; the model handlers come from the harness.
+    choreo = Choreography(build_project, agents=[architect, *coders, *reviewers])
 
-    print("Starting multi-agent build (Ctrl-C to pause, re-run to resume)")
+    print("Starting multi-agent build")
     try:
         reviews = choreo.run(
             project_spec=args.project_spec,
@@ -285,11 +277,6 @@ def main() -> None:
     except ChoreographyError as e:
         print(f"Choreography failed: {e}")
         return
-    except KeyboardInterrupt:
-        print("Interrupted — re-run to resume from the last completed step")
-        return
-    finally:
-        asyncio.run(choreo.queue.close())
 
     passed = sum(1 for r in reviews if r["verdict"] == "PASS")
     print(f"\nDone: {len(reviews)} modules reviewed, {passed} passed")
