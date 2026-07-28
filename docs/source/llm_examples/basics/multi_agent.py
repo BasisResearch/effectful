@@ -8,11 +8,18 @@ Demonstrates:
   the reviews, each item going to whichever agent is free
 - ``StepLog``: interrupt the run and start it again, and the agents resume from
   the last step that finished
+- Tools as ground truth: the reviewers run each module's tests rather than
+  judging the code by reading it, so the fix loop turns on a fact
 
 The scenario: a team of agents collaboratively builds a small Python library.
 An architect breaks the project into module specs, coders implement the modules
-in parallel, and reviewers review them in parallel and send back fixes until
-everything passes.
+in parallel, and reviewers run their tests and review them in parallel, sending
+work back to the coders until everything passes.
+
+The reviewers run generated test files as subprocesses, so this example
+executes code the model wrote. Everything under
+`effectful.handlers.llm.harness` already can -- it installs a Python REPL --
+but it is worth knowing before pointing this at an untrusted project spec.
 
 Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
 suspended coroutine. See `effectful.handlers.llm.choreographies` for why steps
@@ -32,6 +39,8 @@ conversation history alongside them.
 import argparse
 import json
 import pathlib
+import subprocess
+import sys
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
@@ -43,6 +52,9 @@ from effectful.handlers.llm.choreographies import (
     scatter,
     step,
 )
+
+DEFAULT_TEST_TIMEOUT = 60
+"""Seconds a generated test file gets before the reviewer gives up on it."""
 
 # The project to build
 PROJECT_SPEC = """\
@@ -154,13 +166,20 @@ class CoderAgent(Agent):
 
 class ReviewerAgent(Agent):
     """You are a senior code reviewer. You review Python modules for
-    correctness, style, edge cases, and test coverage. Be specific
-    about issues and provide actionable feedback.
+    correctness, style, edge cases, and test coverage. You judge a module by
+    running its tests, not only by reading it. Be specific about issues and
+    provide actionable feedback.
     """
 
-    def __init__(self, output_dir: pathlib.Path, **kwargs):
+    def __init__(
+        self,
+        output_dir: pathlib.Path,
+        test_timeout: float = DEFAULT_TEST_TIMEOUT,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.output_dir = output_dir
+        self.test_timeout = test_timeout
 
     @Tool.define
     def read_file(self, path: str) -> str:
@@ -168,11 +187,33 @@ class ReviewerAgent(Agent):
         full = self.output_dir / path
         return full.read_text() if full.exists() else f"File not found: {path}"
 
+    @Tool.define
+    def run_tests(self, test_path: str) -> str:
+        """Run the test file at `test_path` with pytest and return its output."""
+        try:
+            result = subprocess.run(
+                # `-o addopts=` because pytest would otherwise inherit the
+                # addopts of whatever project the workspace happens to sit in.
+                [sys.executable, "-m", "pytest", test_path, "-q", "--no-header"]
+                + ["-o", "addopts=", "-p", "no:cacheprovider"],
+                cwd=self.output_dir,
+                capture_output=True,
+                text=True,
+                timeout=self.test_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            return f"Timed out after {self.test_timeout}s — the tests do not terminate."
+        return f"exit code {result.returncode}\n\n{result.stdout[-4000:]}"
+
     @Template.define
     def review_module(self, module_path: str, test_path: str) -> ReviewResult:
         """Review the module at {module_path} and its tests at {test_path}.
-        Use `read_file` to read them. Return verdict "PASS" or "NEEDS_FIXES"
-        and feedback. If NEEDS_FIXES, explain exactly what to change."""
+        Use `read_file` to read them and `run_tests` to run the test file.
+
+        Return verdict "PASS" or "NEEDS_FIXES" and feedback. A module whose
+        tests do not all pass is "NEEDS_FIXES", whatever the code looks like;
+        say which test failed and why. If the test itself is wrong, say that
+        instead — either way the coder has something to fix."""
 
 
 # ---------------------------------------------------------------------------
@@ -185,12 +226,14 @@ async def build_project(
     architect: ArchitectAgent,
     coder: CoderAgent,
     reviewer: ReviewerAgent,
+    max_rounds: int,
 ) -> list[ReviewResult]:
     """Choreographic program describing the full build workflow.
 
     1. Architect breaks the project into module specs.
     2. Coders implement modules in parallel (scatter hands each to whoever is free).
-    3. Reviewers review modules in parallel; coders fix in parallel until all pass.
+    3. Reviewers run each module's tests and review it; coders fix what failed,
+       for up to *max_rounds* rounds.
     """
     # Step 1: the architect plans the modules.  Every agent awaits this same
     # step; only the architect calls the model for it.
@@ -205,7 +248,10 @@ async def build_project(
     )
 
     # Step 3: review loop — keep fixing until the reviewers accept every module.
-    while True:
+    # Bounded, because a reviewer and a coder that disagree would otherwise
+    # trade rounds forever.  Every agent sees the same reviews, so they all
+    # leave the loop on the same iteration.
+    for _ in range(max_rounds):
         reviews: list[ReviewResult] = await scatter(
             plan["modules"],
             reviewer,
@@ -228,6 +274,8 @@ async def build_project(
                 json.dumps({**pair[0], "fix_feedback": pair[1]["feedback"]}, indent=2),
             ),
         )
+
+    return reviews  # out of rounds; hand back the last verdicts as they stand
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +302,19 @@ def main() -> None:
         "--reviewers", type=int, default=2, help="Number of reviewer agents"
     )
     parser.add_argument(
+        "--max-rounds",
+        type=int,
+        default=3,
+        help="How many review-and-fix rounds to allow before giving up",
+    )
+    parser.add_argument(
+        "--test-timeout",
+        type=float,
+        default=DEFAULT_TEST_TIMEOUT,
+        metavar="SECONDS",
+        help="How long a reviewer waits for a generated test file to finish",
+    )
+    parser.add_argument(
         "--restart",
         action="store_true",
         help="Forget the steps recorded by earlier runs and build from scratch",
@@ -268,7 +329,7 @@ def main() -> None:
     architect = ArchitectAgent(output_dir, agent_id="architect")
     coders = [CoderAgent(output_dir, agent_id=f"coder-{i}") for i in range(args.coders)]
     reviewers = [
-        ReviewerAgent(output_dir, agent_id=f"reviewer-{i}")
+        ReviewerAgent(output_dir, args.test_timeout, agent_id=f"reviewer-{i}")
         for i in range(args.reviewers)
     ]
 
@@ -294,6 +355,7 @@ def main() -> None:
             architect=architect,
             coder=coders,
             reviewer=reviewers,
+            max_rounds=args.max_rounds,
         )
     except ChoreographyError as e:
         print(f"Choreography failed: {e} — re-run to retry from this step")
