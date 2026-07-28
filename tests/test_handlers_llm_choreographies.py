@@ -23,8 +23,8 @@ from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
     EndpointProjection,
-    StepLog,
     _Steps,
+    recorded_steps,
     scatter,
     step,
 )
@@ -565,10 +565,11 @@ class TestProjection:
 
 
 class TestStepLog:
-    """The log on its own: what it stores and hands back."""
+    """The log file itself: what it stores and hands back."""
 
     def test_round_trips_arbitrary_results(self, tmp_path):
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
+        steps = _Steps(log)
         values = {
             "step-0000": "a string",
             "step-0001": None,
@@ -576,22 +577,16 @@ class TestStepLog:
             "step-0003": _Verdict(passed=False, note="nope"),
             "step-0004:0": [1, 2, 3],
         }
-        for step_id, value in values.items():
-            log.record(step_id, value)
 
-        assert log.load() == values
+        async def record():
+            for step_id, value in values.items():
+                steps.resolve(step_id, value)
 
-    def test_starts_empty_and_can_be_cleared(self, tmp_path):
-        log = StepLog(tmp_path / "steps.db")
-        assert log.load() == {}
-        log.record("step-0000", "x")
-        log.clear()
-        assert log.load() == {}
+        run(record())
+        assert recorded_steps(log) == values
 
-    def test_creates_missing_parent_directories(self, tmp_path):
-        log = StepLog(tmp_path / "nested" / "deeper" / "steps.db")
-        log.record("step-0000", "x")
-        assert StepLog(log.path).load() == {"step-0000": "x"}
+    def test_reading_a_log_no_run_has_written_is_empty(self, tmp_path):
+        assert recorded_steps(tmp_path / "nested" / "deeper" / "steps.db") == {}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -603,11 +598,11 @@ class _Verdict:
 
 
 class TestResume:
-    """A run given a `StepLog` replays what an earlier run finished."""
+    """A run given a log path replays what an earlier run finished."""
 
     def test_a_second_run_calls_no_model_at_all(self, tmp_path):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         first, _ = choreograph(
             _plan_then_implement,
@@ -634,7 +629,7 @@ class TestResume:
         """The canonical case: a run dies partway through, and the next one
         re-uses what finished and redoes only what didn't."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         failing = Choreography(_plan_then_implement, agents=[architect, coder], log=log)
         with (
@@ -644,7 +639,7 @@ class TestResume:
             run(failing.run_async(architect=architect, coder=coder))
 
         # Only the step that succeeded was recorded.
-        assert log.load() == {"step-0000": "P"}
+        assert recorded_steps(log) == {"step-0000": "P"}
 
         result, mock = choreograph(
             _plan_then_implement,
@@ -669,7 +664,7 @@ class TestResume:
             _plan_then_implement,
             [architect, coder],
             {"plan": "P", "implement": "C"},
-            log=StepLog(path),
+            log=path,
             architect=architect,
             coder=coder,
         )
@@ -678,7 +673,7 @@ class TestResume:
             [architect, coder],
             {},
             mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
-            log=StepLog(path),
+            log=path,
             architect=architect,
             coder=coder,
         )
@@ -690,9 +685,14 @@ class TestResume:
         """Interrupt a scatter over five modules and the next run implements
         only the ones that never finished."""
         coders = [Coder(agent_id=f"coder-{i}") for i in range(2)]
-        log = StepLog(tmp_path / "steps.db")
-        for index, value in [(1, "cached b"), (3, "cached d")]:
-            log.record(f"step-0000:{index}", value)
+        log = tmp_path / "steps.db"
+
+        async def prior_run():
+            steps = _Steps(log)
+            for index, value in [(1, "cached b"), (3, "cached d")]:
+                steps.resolve(f"step-0000:{index}", value)
+
+        run(prior_run())
 
         async def program(coder):
             return await scatter(
@@ -712,7 +712,7 @@ class TestResume:
 
     def test_a_failed_step_is_not_recorded(self, tmp_path):
         coder = Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         async def program(coder):
             return await step(coder.implement, "spec")
@@ -724,11 +724,11 @@ class TestResume:
         ):
             run(choreo.run_async(coder=coder))
 
-        assert log.load() == {}
+        assert recorded_steps(log) == {}
 
     def test_clearing_the_log_starts_over(self, tmp_path):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         choreograph(
             _plan_then_implement,
@@ -738,7 +738,7 @@ class TestResume:
             architect=architect,
             coder=coder,
         )
-        log.clear()
+        log.unlink()
         _, mock = choreograph(
             _plan_then_implement,
             [architect, coder],
@@ -754,7 +754,7 @@ class TestResume:
         """A recorded ``None`` has to come back as a completed step, not as a
         step with nothing recorded for it."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         async def program(architect, coder):
             plan = await step(architect.plan, "spec")

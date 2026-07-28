@@ -28,9 +28,10 @@ an `asyncio.Queue` of item indices that the agents in the pool drain with
 construction.
 
 Results live in memory, so by default an interrupted run starts over. Give
-`Choreography` a `StepLog` and each step is written to SQLite as it completes;
-a later run replays those results and resumes at the first step that never
-finished. (Agent *history* is a separate matter -- give an
+`Choreography` a *log* path and each step is written to SQLite as it completes;
+a later run over the same path replays those results and resumes at the first
+step that never finished, and `recorded_steps` reads back how far it got.
+(Agent *history* is a separate matter -- give an
 `~effectful.handlers.llm.template.Agent` an ``agent_id`` and install
 `~effectful.handlers.llm.completions.SQLitePersister` to checkpoint it.)
 
@@ -193,101 +194,43 @@ class ChoreographyError(Exception):
     """Raised when a choreography fails because one of its agents failed."""
 
 
-# ── Resumption ────────────────────────────────────────────────────
+# ── Shared step state ─────────────────────────────────────────────
 
 
-class StepLog:
-    """A durable record of completed steps, so an interrupted run can resume.
+def recorded_steps(log: str | os.PathLike[str]) -> dict[str, Any]:
+    """Every step recorded in the log at *log*, by step ID.
 
-    Pass one to `Choreography` and each step is written to SQLite as it
-    finishes. A later run over the same log replays those results instead of
-    calling the model again, and picks up at the first step that never
-    completed::
-
-        choreo = Choreography(
-            build_codebase,
-            agents=[architect, coder, reviewer],
-            handlers=[LiteLLMProvider(model="gpt-4o-mini")],
-            log=StepLog("./state/steps.db"),
-        )
-
-    Only successful steps are recorded, so a step that failed or was
-    interrupted simply runs again. Scatter items are recorded individually:
-    interrupt a scatter over ten modules after six and the next run implements
-    the remaining four.
-
-    .. warning::
-
-        Steps are identified by position, so a log only makes sense for the
-        program that wrote it. Editing the choreography shifts the step IDs
-        and the recorded results land on the wrong steps -- use `clear`, or a
-        fresh path, whenever the program changes.
-
-    Results are pickled, which is what lets a step return a dataclass or any
-    other decoded value rather than only JSON. The log is a cache of your own
-    run and is read back with the same trust as
-    `~effectful.handlers.llm.completions.SQLitePersister`'s checkpoints.
-
-    The recorded steps are readable on their own, which is the easiest way to
-    see how far a run got:
+    The easiest way to see how far a run got, and the only way to read the
+    results back: they are pickled, so the database is opaque to ``sqlite3`` on
+    the command line.
 
     >>> import pathlib, tempfile
-    >>> log = StepLog(pathlib.Path(tempfile.mkdtemp()) / "steps.db")
-    >>> log.load()
+    >>> log = pathlib.Path(tempfile.mkdtemp()) / "steps.db"
+    >>> recorded_steps(log)
     {}
-    >>> log.record("step-0000", {"verdict": "PASS"})
-    >>> log.load()
-    {'step-0000': {'verdict': 'PASS'}}
-    >>> log.clear()
-    >>> log.load()
-    {}
-
-    Args:
-        path: Path to the SQLite database file.
     """
-
-    def __init__(self, path: str | os.PathLike[str]) -> None:
-        self.path = pathlib.Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self._connect() as conn:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute(
-                "CREATE TABLE IF NOT EXISTS steps ("
-                "  id TEXT PRIMARY KEY, result BLOB NOT NULL"
-                ")"
-            )
-
-    def _connect(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
-        """A connection that closes on exit, in autocommit mode.
-
-        Autocommit because every write here is a single statement: there is
-        nothing to group into a transaction, and a step's result is durable the
-        moment it is written.
-        """
-        return contextlib.closing(sqlite3.connect(str(self.path), isolation_level=None))
-
-    def load(self) -> dict[str, Any]:
-        """Every recorded step, by step ID."""
-        with self._connect() as conn:
-            rows = conn.execute("SELECT id, result FROM steps").fetchall()
-        return {step_id: pickle.loads(blob) for step_id, blob in rows}
-
-    def record(self, step_id: str, result: Any) -> None:
-        """Record *result* as the outcome of *step_id*."""
-        with self._connect() as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO steps (id, result) VALUES (?, ?)",
-                (step_id, pickle.dumps(result)),
-            )
-
-    def clear(self) -> None:
-        """Forget every recorded step, so the next run starts over."""
-        with self._connect() as conn:
-            conn.execute("DELETE FROM steps")
+    with _connect(log) as conn:
+        rows = conn.execute("SELECT id, result FROM steps").fetchall()
+    return {step_id: pickle.loads(blob) for step_id, blob in rows}
 
 
-# ── Shared step state ─────────────────────────────────────────────
+def _connect(log: str | os.PathLike[str]) -> Any:
+    """A connection to the log at *log*, closing on exit, in autocommit mode.
+
+    Creates the database if it is not there yet, so reading a log that no run
+    has written is an empty result rather than an error. Autocommit because
+    every write is a single statement: there is nothing to group into a
+    transaction, and a step's result is durable the moment it is written.
+    """
+    path = pathlib.Path(log)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path), isolation_level=None)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS steps (id TEXT PRIMARY KEY, result BLOB NOT NULL)"
+    )
+    return contextlib.closing(conn)
 
 
 class _Steps:
@@ -301,12 +244,20 @@ class _Steps:
     cannot interleave inside them: whichever agent reaches a step first creates
     its cell and the rest find it. That also means one of these belongs to one
     event loop, which is why `Choreography` makes a fresh one per run.
+
+    Given the path to a log, each step is also written to SQLite as it
+    resolves, and `replay` reads them back at the start of a later run. The
+    file is the whole of that durable state -- these objects come and go with
+    the runs that use them.
     """
 
-    def __init__(self, log: StepLog | None = None) -> None:
+    def __init__(self, log: pathlib.Path | None = None) -> None:
         self._results: dict[str, asyncio.Future] = {}
         self._work: dict[str, asyncio.Queue[int]] = {}
         self._log = log
+        if log is not None:
+            with _connect(log):
+                pass  # create the database now rather than mid-run
 
     def result(self, step_id: str) -> asyncio.Future:
         """The future holding *step_id*'s result."""
@@ -324,14 +275,18 @@ class _Steps:
         about.
         """
         if self._log is not None:
-            self._log.record(step_id, value)
+            with _connect(self._log) as conn:
+                conn.execute(
+                    "INSERT OR REPLACE INTO steps (id, result) VALUES (?, ?)",
+                    (step_id, pickle.dumps(value)),
+                )
         self.result(step_id).set_result(value)
 
     def replay(self) -> int:
         """Pre-resolve the steps an earlier run recorded, and return how many."""
         if self._log is None:
             return 0
-        recorded = self._log.load()
+        recorded = recorded_steps(self._log)
         for step_id, value in recorded.items():
             future = self.result(step_id)
             if not future.done():
@@ -377,7 +332,8 @@ def step[**P, T](
 
     Under `EndpointProjection`, the agent that owns *template* executes the
     step while the others await its result; a step recorded by an earlier run
-    (see `StepLog`) returns without calling the model at all. A template bound
+    (see `Choreography`'s *log*) returns without calling the model at all. A
+    template bound
     to no agent is executed by every agent.
 
     The step ID is allocated when `step` is called, not when its result is
@@ -528,7 +484,7 @@ class EndpointProjection(ObjectInterpretation):
         if agent.__agent_id__ != self._agent_id:
             return await result
         if result.done():
-            # Recorded by an earlier run; see `StepLog`.
+            # Recorded by an earlier run's log.
             return result.result()
 
         try:
@@ -597,13 +553,32 @@ class Choreography:
 
     Without a *log*, each run starts from a clean slate: results live in
     memory for the duration of the run, so re-running a choreography
-    re-executes it. With one, completed steps are replayed instead.
+    re-executes it. With one, each step is written to SQLite as it completes
+    and a later run replays what is already there, resuming at the first step
+    that never finished. Only successful steps are recorded, so a step that
+    failed or was interrupted simply runs again, and scatter items are
+    recorded one by one -- interrupt a scatter over ten modules after six and
+    the next run implements the remaining four.
+
+    .. warning::
+
+        Steps are identified by position, so a log only makes sense for the
+        program that wrote it: editing the choreography shifts the IDs and the
+        recorded results land on the wrong steps. Delete the file, or use a
+        fresh path, whenever the program changes.
+
+    Results are pickled, which is what lets a step return a dataclass or any
+    other decoded value rather than only JSON, and is why `recorded_steps` is
+    the way to read a log back. It is a cache of your own run, read with the
+    same trust as `~effectful.handlers.llm.completions.SQLitePersister`'s
+    checkpoints.
 
     Args:
         program: The choreographic ``async`` function. All agents run it.
         agents: The agents participating in the choreography.
-        log: Where to record completed steps, so an interrupted run can be
-            resumed by running it again. ``None`` keeps everything in memory.
+        log: Path to a SQLite database in which to record completed steps, so
+            that an interrupted run resumes when run again. ``None`` keeps
+            everything in memory.
 
     Example::
 
@@ -622,12 +597,12 @@ class Choreography:
         self,
         program: Callable[..., Awaitable[Any]],
         agents: Sequence[Agent],
-        log: StepLog | None = None,
+        log: str | os.PathLike[str] | None = None,
     ) -> None:
         self.program = program
         self.agents = list(agents)
-        self.log = log
-        self._steps = _Steps(log)
+        self.log = pathlib.Path(log) if log is not None else None
+        self._steps = _Steps(self.log)
 
     async def _agent_main(
         self,

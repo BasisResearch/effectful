@@ -6,7 +6,7 @@ Demonstrates:
   executing the steps it owns and awaiting the ones it doesn't
 - ``scatter``: two coders share the implementation work and two reviewers share
   the reviews, each item going to whichever agent is free
-- ``StepLog``: interrupt the run and start it again, and the agents resume from
+- A step log: interrupt the run and start it again, and the agents resume from
   the last step that finished
 - Tools as ground truth: the reviewers run each module's tests rather than
   judging the code by reading it, so the fix loop turns on a fact
@@ -47,7 +47,7 @@ from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
-    StepLog,
+    recorded_steps,
     scatter,
     step,
 )
@@ -334,9 +334,9 @@ def main() -> None:
 
     # Steps completed by an earlier run are replayed instead of re-asking the
     # model, so an interrupted build resumes rather than starting over.
-    log = StepLog(args.workspace / ".state" / "steps.db")
+    log = args.workspace / ".state" / "steps.db"
     if args.restart:
-        log.clear()
+        log.unlink(missing_ok=True)
 
     # Tasks, the thread pool and cancellation on failure are all handled for
     # you; the model handlers come from the harness.
@@ -344,7 +344,7 @@ def main() -> None:
         build_project, agents=[architect, *coders, *reviewers], log=log
     )
 
-    done = len(log.load())
+    done = len(recorded_steps(log))
     print(
         f"Starting multi-agent build{f' ({done} steps already done)' if done else ''}"
     )
