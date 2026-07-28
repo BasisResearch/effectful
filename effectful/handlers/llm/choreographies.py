@@ -93,6 +93,7 @@ agree across agents.
     from effectful.handlers.llm import Agent, Template
     from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
     from effectful.handlers.llm.choreographies import Choreography, call, scatter, step
+    from effectful.ops.semantics import handler
 
     class ReviewResult(TypedDict):
         verdict: Literal["PASS", "NEEDS_FIXES"]
@@ -132,17 +133,17 @@ agree across agents.
     coder = Coder(agent_id="coder")
     reviewer = Reviewer(agent_id="reviewer")
 
-    choreo = Choreography(
-        build_codebase,
-        agents=[architect, coder, reviewer],
-        handlers=[LiteLLMProvider(model="gpt-4o-mini"), RetryLLMHandler()],
-    )
-    result = choreo.run(
-        project_spec="Build a URL slugify library",
-        architect=architect,
-        coder=coder,
-        reviewer=reviewer,
-    )
+    choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
+
+    # Handlers come from the enclosing context -- every agent task inherits
+    # them, and so does every worker thread they call into.
+    with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
+        result = choreo.run(
+            project_spec="Build a URL slugify library",
+            architect=architect,
+            coder=coder,
+            reviewer=reviewer,
+        )
 
 ## Example -- parallel scatter across multiple coders
 
@@ -158,17 +159,16 @@ agree across agents.
         return [await step(reviewer.review_code, code) for code in codes]
 
     choreo = Choreography(
-        build_parallel,
-        agents=[architect, coder1, coder2, coder3, reviewer],
-        handlers=[LiteLLMProvider(model="gpt-4o-mini"), RetryLLMHandler()],
+        build_parallel, agents=[architect, coder1, coder2, coder3, reviewer]
     )
-    # Pass a list for a role -- scatter distributes across all three coders.
-    reviews = choreo.run(
-        project_spec="Build textkit with slugify, wrap, and redact modules",
-        architect=architect,
-        coder=[coder1, coder2, coder3],
-        reviewer=reviewer,
-    )
+    with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
+        # Pass a list for a role -- scatter distributes across all three coders.
+        reviews = choreo.run(
+            project_spec="Build textkit with slugify, wrap, and redact modules",
+            architect=architect,
+            coder=[coder1, coder2, coder3],
+            reviewer=reviewer,
+        )
 
 """
 
@@ -186,9 +186,6 @@ from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 from effectful.handlers.llm.template import Agent
-from effectful.ops.semantics import handler
-from effectful.ops.syntax import ObjectInterpretation
-from effectful.ops.types import Interpretation
 
 
 class ChoreographyError(Exception):
@@ -611,6 +608,13 @@ class Choreography:
     interrupt an LLM call that is already in flight on a worker thread, so a
     failing run waits for those to return before it raises.
 
+    Handlers are taken from the surrounding context, exactly as anywhere else
+    in `effectful`: install them with `~effectful.ops.semantics.handler`
+    around the run and every agent task inherits them, as does every worker
+    thread the agents call into. Nothing needs to be handed to the
+    choreography, which is also why a script run under
+    `effectful.handlers.llm.harness` needs no handler code of its own.
+
     Without a *log*, each run starts from a clean slate: results live in
     memory for the duration of the run, so re-running a choreography
     re-executes it. With one, completed steps are replayed instead.
@@ -618,38 +622,30 @@ class Choreography:
     Args:
         program: The choreographic ``async`` function. All agents run it.
         agents: The agents participating in the choreography.
-        handlers: Handlers installed per agent beneath the projection (LLM
-            provider, retries, persistence). Handlers already installed around
-            the call -- by `effectful.handlers.llm.harness`, say -- are
-            inherited and need not be repeated here.
         log: Where to record completed steps, so an interrupted run can be
             resumed by running it again. ``None`` keeps everything in memory.
 
     Example::
 
-        choreo = Choreography(
-            build_codebase,
-            agents=[architect, coder, reviewer],
-            handlers=[LiteLLMProvider(model="gpt-4o-mini"), RetryLLMHandler()],
-        )
-        result = choreo.run(
-            project_spec="Build a library...",
-            architect=architect,
-            coder=coder,
-            reviewer=reviewer,
-        )
+        choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
+
+        with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
+            result = choreo.run(
+                project_spec="Build a library...",
+                architect=architect,
+                coder=coder,
+                reviewer=reviewer,
+            )
     """
 
     def __init__(
         self,
         program: Callable[..., Awaitable[Any]],
         agents: Sequence[Agent],
-        handlers: Sequence[Interpretation | ObjectInterpretation] | None = None,
         log: StepLog | None = None,
     ) -> None:
         self.program = program
         self.agents = list(agents)
-        self.handlers = list(handlers or [])
         self.log = log
         self._steps = _Steps(log)
 
@@ -694,11 +690,7 @@ class Choreography:
         executor: concurrent.futures.Executor,
         kwargs: dict[str, Any],
     ) -> Any:
-        projection = self.projection(agent, executor=executor)
-        with contextlib.ExitStack() as stack:
-            for h in self.handlers:
-                stack.enter_context(handler(h))
-            stack.enter_context(projection.activate())
+        with self.projection(agent, executor=executor).activate():
             try:
                 return await self.program(**kwargs)
             except (asyncio.CancelledError, ChoreographyError):

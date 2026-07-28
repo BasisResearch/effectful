@@ -149,8 +149,9 @@ def announce(text: str) -> str:
 def choreograph(program, agents, responses, *, mock=None, log=None, **kwargs):
     """Run *program* over *agents* with a mock LLM; return ``(result, mock)``."""
     mock = mock if mock is not None else MockLLM(responses)
-    choreo = Choreography(program, agents=agents, handlers=[mock], log=log)
-    return run(choreo.run_async(**kwargs)), mock
+    choreo = Choreography(program, agents=agents, log=log)
+    with handler(mock):
+        return run(choreo.run_async(**kwargs)), mock
 
 
 async def _plan_then_implement(architect, coder):
@@ -301,19 +302,21 @@ class TestChoreography:
             code = await step(coder.implement, "spec")
             return await step(stranger.review, code)
 
-        choreo = Choreography(program, agents=[coder], handlers=[MockLLM({})])
-        with pytest.raises(ChoreographyError, match="not part of this choreography"):
+        choreo = Choreography(program, agents=[coder])
+        with (
+            handler(MockLLM({})),
+            pytest.raises(ChoreographyError, match="not part of this choreography"),
+        ):
             run(choreo.run_async(coder=coder, stranger=stranger))
 
     def test_agent_failure_becomes_a_choreography_error(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
 
-        with pytest.raises(ChoreographyError, match="'coder' failed"):
+        with (
+            handler(FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError, match="'coder' failed"),
+        ):
             run(choreo.run_async(architect=architect, coder=coder))
 
     def test_a_failed_run_leaves_no_unretrieved_futures(self, caplog):
@@ -321,14 +324,13 @@ class TestChoreography:
         before they read its exception. Asyncio complains about an exception
         nobody retrieved unless the failing side reads it first."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({}, fail_on={"arch.plan"})],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
 
         with caplog.at_level(logging.DEBUG, logger="asyncio"):
-            with pytest.raises(ChoreographyError):
+            with (
+                handler(FailingMockLLM({}, fail_on={"arch.plan"})),
+                pytest.raises(ChoreographyError),
+            ):
                 run(choreo.run_async(architect=architect, coder=coder))
             gc.collect()
 
@@ -336,15 +338,14 @@ class TestChoreography:
 
     def test_repeated_runs_are_deterministic(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[(mock := MockLLM({"plan": "P", "implement": "C"}))],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
+        mock = MockLLM({"plan": "P", "implement": "C"})
 
-        results = [
-            run(choreo.run_async(architect=architect, coder=coder)) for _ in range(5)
-        ]
+        with handler(mock):
+            results = [
+                run(choreo.run_async(architect=architect, coder=coder))
+                for _ in range(5)
+            ]
 
         assert results == ["C"] * 5
         # Results live for the duration of a run, so each run re-executes.
@@ -455,9 +456,12 @@ class TestScatter:
                 ["a"], coder, lambda c, item: step(reviewer.review, item)
             )
 
-        choreo = Choreography(program, agents=[coder, reviewer], handlers=[MockLLM({})])
+        choreo = Choreography(program, agents=[coder, reviewer])
 
-        with pytest.raises(ChoreographyError, match="cannot be used inside scatter"):
+        with (
+            handler(MockLLM({})),
+            pytest.raises(ChoreographyError, match="cannot be used inside scatter"),
+        ):
             run(choreo.run_async(coder=coder, reviewer=reviewer))
 
     def test_failure_inside_scatter_propagates(self):
@@ -468,13 +472,12 @@ class TestScatter:
                 ["a", "b"], coder, lambda c, item: call(c.implement, item)
             )
 
-        choreo = Choreography(
-            program,
-            agents=coders,
-            handlers=[FailingMockLLM({}, fail_on={"coder-1.implement"})],
-        )
+        choreo = Choreography(program, agents=coders)
 
-        with pytest.raises(ChoreographyError, match="Simulated failure"):
+        with (
+            handler(FailingMockLLM({}, fail_on={"coder-1.implement"})),
+            pytest.raises(ChoreographyError, match="Simulated failure"),
+        ):
             run(choreo.run_async(coder=coders))
 
     def test_scatter_outside_a_choreography_is_sequential(self):
@@ -612,13 +615,11 @@ class TestResume:
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
         log = StepLog(tmp_path / "steps.db")
 
-        failing = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-            log=log,
-        )
-        with pytest.raises(ChoreographyError):
+        failing = Choreography(_plan_then_implement, agents=[architect, coder], log=log)
+        with (
+            handler(FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError),
+        ):
             run(failing.run_async(architect=architect, coder=coder))
 
         # Only the step that succeeded was recorded.
@@ -695,13 +696,11 @@ class TestResume:
         async def program(coder):
             return await step(coder.implement, "spec")
 
-        choreo = Choreography(
-            program,
-            agents=[coder],
-            handlers=[FailingMockLLM({}, fail_on={"coder.implement"})],
-            log=log,
-        )
-        with pytest.raises(ChoreographyError):
+        choreo = Choreography(program, agents=[coder], log=log)
+        with (
+            handler(FailingMockLLM({}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError),
+        ):
             run(choreo.run_async(coder=coder))
 
         assert log.load() == {}
