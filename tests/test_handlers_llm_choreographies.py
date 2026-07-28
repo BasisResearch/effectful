@@ -163,6 +163,26 @@ async def _plan_then_implement(architect, coder):
 
 
 class TestChoreography:
+    def test_a_choreography_is_called_like_its_program(self):
+        """`Choreography` is the program made runnable: same arguments,
+        positional or keyword, and the same result -- awaited for you."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+
+        async def program(spec: str, architect: Architect, coder: Coder) -> str:
+            plan = await step(architect.plan, spec)
+            return await step(coder.implement, plan)
+
+        choreo = Choreography(program, agents=[architect, coder])
+        with handler(MockLLM({"plan": "P", "implement": "C"})):
+            positional = choreo("build it", architect, coder)
+            by_keyword = choreo("build it", architect=architect, coder=coder)
+
+        assert positional == by_keyword == "C"
+        # mypy infers `str` here from the program's return type; the assert
+        # documents it, and the call above would not type check with the
+        # wrong arguments.
+        assert isinstance(positional, str)
+
     def test_each_agent_executes_only_its_own_steps(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
 

@@ -41,6 +41,7 @@ import json
 import pathlib
 import subprocess
 import sys
+from collections.abc import Sequence
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
@@ -222,11 +223,15 @@ class ReviewerAgent(Agent):
 async def build_project(
     project_spec: str,
     architect: ArchitectAgent,
-    coder: CoderAgent,
-    reviewer: ReviewerAgent,
+    coder: CoderAgent | Sequence[CoderAgent],
+    reviewer: ReviewerAgent | Sequence[ReviewerAgent],
     max_rounds: int,
 ) -> list[ReviewResult]:
     """Choreographic program describing the full build workflow.
+
+    A role may be filled by one agent or by several: `scatter` hands each item
+    to whichever of them is free, which is why the coder and reviewer
+    parameters are typed to accept a pool.
 
     1. Architect breaks the project into module specs.
     2. Coders implement modules in parallel (scatter hands each to whoever is free).
@@ -347,8 +352,8 @@ def main() -> None:
 
     print(f"{'Resuming' if resuming else 'Starting'} multi-agent build")
     try:
-        reviews = choreo.run(
-            project_spec=args.project_spec,
+        reviews = choreo(
+            args.project_spec,
             architect=architect,
             coder=coders,
             reviewer=reviewers,

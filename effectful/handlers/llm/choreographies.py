@@ -104,8 +104,8 @@ is what gives `scatter` a pool to hand work to::
         log="./state/steps.db",   # optional; resume where an earlier run stopped
     )
     with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
-        reviews = choreo.run(
-            project_spec="Build a URL slugify library",
+        reviews = choreo(
+            "Build a URL slugify library",
             architect=architect,
             coder=[coder1, coder2],
             reviewer=reviewer,
@@ -462,8 +462,13 @@ class EndpointProjection(ObjectInterpretation):
 # ── Choreography runner ───────────────────────────────────────────
 
 
-class Choreography:
+class Choreography[**P, T]:
     """Run a choreographic program with endpoint projection.
+
+    A `Choreography` is callable with the program's own signature, so it is
+    the program made runnable: where *program* is an ``async`` function
+    returning ``T``, the choreography is a plain callable returning ``T``,
+    having run every agent through it.
 
     Every agent runs *program* as its own `asyncio.Task`; `EndpointProjection`
     is what makes each of those tasks behave differently. Blocking template
@@ -518,17 +523,22 @@ class Choreography:
         choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
 
         with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
-            result = choreo.run(
-                project_spec="Build a library...",
+            result = choreo(
+                "Build a library...",
                 architect=architect,
                 coder=coder,
                 reviewer=reviewer,
             )
     """
 
+    program: Callable[P, Awaitable[T]]
+    agents: list[Agent]
+    log: pathlib.Path | None
+    _steps: _Steps
+
     def __init__(
         self,
-        program: Callable[..., Awaitable[Any]],
+        program: Callable[P, Awaitable[T]],
         agents: Sequence[Agent],
         log: str | os.PathLike[str] | None = None,
     ) -> None:
@@ -537,33 +547,11 @@ class Choreography:
         self.log = pathlib.Path(log) if log is not None else None
         self._steps = _Steps(self.log)
 
-    async def _agent_main(
-        self,
-        agent: Agent,
-        executor: concurrent.futures.Executor,
-        kwargs: dict[str, Any],
-    ) -> Any:
-        projection = EndpointProjection(
-            agent,
-            self._steps,
-            frozenset(a.__agent_id__ for a in self.agents),
-            executor=executor,
-        )
-        with handler(projection):
-            try:
-                return await self.program(**kwargs)
-            except (asyncio.CancelledError, ChoreographyError):
-                raise
-            except Exception as e:
-                raise ChoreographyError(
-                    f"Agent {agent.__agent_id__!r} failed: {e}"
-                ) from e
-
-    async def run_async(self, **kwargs: Any) -> Any:
+    async def run_async(self, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run the choreography to completion.
 
-        Keyword arguments are forwarded to the choreographic function. All
-        agents compute the same result; that result is returned.
+        The arguments are the program's own, forwarded to every agent. They all
+        compute the same result; that result is returned.
 
         Raises:
             ChoreographyError: If any agent fails.
@@ -571,8 +559,23 @@ class Choreography:
         # Fresh state per run: futures belong to the loop that created them.
         self._steps = _Steps(self.log)
         self._steps.replay()
+        agent_ids = frozenset(a.__agent_id__ for a in self.agents)
 
-        tasks: list[asyncio.Task] = []
+        async def as_agent(agent: Agent, executor: concurrent.futures.Executor) -> T:
+            projection = EndpointProjection(
+                agent, self._steps, agent_ids, executor=executor
+            )
+            with handler(projection):
+                try:
+                    return await self.program(*args, **kwargs)
+                except (asyncio.CancelledError, ChoreographyError):
+                    raise
+                except Exception as e:
+                    raise ChoreographyError(
+                        f"Agent {agent.__agent_id__!r} failed: {e}"
+                    ) from e
+
+        tasks: list[asyncio.Task[T]] = []
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=max(1, len(self.agents)), thread_name_prefix="choreo"
         ) as executor:
@@ -580,15 +583,15 @@ class Choreography:
                 async with asyncio.TaskGroup() as group:
                     tasks = [
                         group.create_task(
-                            self._agent_main(agent, executor, kwargs),
+                            as_agent(agent, executor),
                             name=f"choreo-{agent.__agent_id__}",
                         )
                         for agent in self.agents
                     ]
             except BaseExceptionGroup as group_error:
-                # Report one agent's failure rather than a group of one.
-                # `_agent_main` has already named the agent; the group nests if
-                # the program runs task groups of its own.
+                # Report one agent's failure rather than a group of one. The
+                # failure already names the agent; the group nests if the
+                # program runs task groups of its own.
                 error: BaseException = group_error
                 while isinstance(error, BaseExceptionGroup):
                     error = error.exceptions[0]
@@ -596,10 +599,10 @@ class Choreography:
 
         return tasks[0].result()
 
-    def run(self, **kwargs: Any) -> Any:
+    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run the choreography from synchronous code.
 
-        Equivalent to ``asyncio.run(choreo.run_async(**kwargs))``; call
-        `run_async` directly from inside a running event loop.
+        Equivalent to ``asyncio.run(choreo.run_async(...))``; await `run_async`
+        from inside an event loop that is already running.
         """
-        return asyncio.run(self.run_async(**kwargs))
+        return asyncio.run(self.run_async(*args, **kwargs))
