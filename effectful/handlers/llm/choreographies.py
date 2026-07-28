@@ -27,9 +27,11 @@ an `asyncio.Queue` of item indices that the agents in the pool drain with
 `get_nowait`. Whoever is free takes the next item, which balances load by
 construction.
 
-A choreography lives and dies with the process: results are in memory, so a
-run that is interrupted starts over. (Agent *history* is a separate matter --
-give an `~effectful.handlers.llm.template.Agent` an ``agent_id`` and install
+Results live in memory, so by default an interrupted run starts over. Give
+`Choreography` a `StepLog` and each step is written to SQLite as it completes;
+a later run replays those results and resumes at the first step that never
+finished. (Agent *history* is a separate matter -- give an
+`~effectful.handlers.llm.template.Agent` an ``agent_id`` and install
 `~effectful.handlers.llm.completions.SQLitePersister` to checkpoint it.)
 
 ## Why the program is async, and where the threads went
@@ -175,6 +177,10 @@ import concurrent.futures
 import contextlib
 import contextvars
 import functools
+import os
+import pathlib
+import pickle
+import sqlite3
 import typing
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
@@ -189,10 +195,104 @@ class ChoreographyError(Exception):
     """Raised when a choreography fails because one of its agents failed."""
 
 
+# ── Resumption ────────────────────────────────────────────────────
+
+
+class StepLog:
+    """A durable record of completed steps, so an interrupted run can resume.
+
+    Pass one to `Choreography` and each step is written to SQLite as it
+    finishes. A later run over the same log replays those results instead of
+    calling the model again, and picks up at the first step that never
+    completed::
+
+        choreo = Choreography(
+            build_codebase,
+            agents=[architect, coder, reviewer],
+            handlers=[LiteLLMProvider(model="gpt-4o-mini")],
+            log=StepLog("./state/steps.db"),
+        )
+
+    Only successful steps are recorded, so a step that failed or was
+    interrupted simply runs again. Scatter items are recorded individually:
+    interrupt a scatter over ten modules after six and the next run implements
+    the remaining four.
+
+    .. warning::
+
+        Steps are identified by position, so a log only makes sense for the
+        program that wrote it. Editing the choreography shifts the step IDs
+        and the recorded results land on the wrong steps -- use `clear`, or a
+        fresh path, whenever the program changes.
+
+    Results are pickled, which is what lets a step return a dataclass or any
+    other decoded value rather than only JSON. The log is a cache of your own
+    run and is read back with the same trust as
+    `~effectful.handlers.llm.completions.SQLitePersister`'s checkpoints.
+
+    The recorded steps are readable on their own, which is the easiest way to
+    see how far a run got:
+
+    >>> import pathlib, tempfile
+    >>> log = StepLog(pathlib.Path(tempfile.mkdtemp()) / "steps.db")
+    >>> log.load()
+    {}
+    >>> log.record("step-0000", {"verdict": "PASS"})
+    >>> log.load()
+    {'step-0000': {'verdict': 'PASS'}}
+    >>> log.clear()
+    >>> log.load()
+    {}
+
+    Args:
+        path: Path to the SQLite database file.
+    """
+
+    def __init__(self, path: str | os.PathLike[str]) -> None:
+        self.path = pathlib.Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS steps ("
+                "  id TEXT PRIMARY KEY, result BLOB NOT NULL"
+                ")"
+            )
+
+    def _connect(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
+        """A connection that closes on exit, in autocommit mode.
+
+        Autocommit because every write here is a single statement: there is
+        nothing to group into a transaction, and a step's result is durable the
+        moment it is written.
+        """
+        return contextlib.closing(sqlite3.connect(str(self.path), isolation_level=None))
+
+    def load(self) -> dict[str, Any]:
+        """Every recorded step, by step ID."""
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, result FROM steps").fetchall()
+        return {step_id: pickle.loads(blob) for step_id, blob in rows}
+
+    def record(self, step_id: str, result: Any) -> None:
+        """Record *result* as the outcome of *step_id*."""
+        with self._connect() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO steps (id, result) VALUES (?, ?)",
+                (step_id, pickle.dumps(result)),
+            )
+
+    def clear(self) -> None:
+        """Forget every recorded step, so the next run starts over."""
+        with self._connect() as conn:
+            conn.execute("DELETE FROM steps")
+
+
 # ── Shared step state ─────────────────────────────────────────────
 
 
-class _StepLog:
+class _Steps:
     """The shared state of one choreography run.
 
     Two dictionaries, keyed by step ID: a `asyncio.Future` per step, holding
@@ -201,13 +301,14 @@ class _StepLog:
 
     Both accessors are get-or-create, and neither awaits, so concurrent agents
     cannot interleave inside them: whichever agent reaches a step first creates
-    its cell and the rest find it. That also means one log belongs to one event
-    loop, which is why `Choreography` makes a fresh one per run.
+    its cell and the rest find it. That also means one of these belongs to one
+    event loop, which is why `Choreography` makes a fresh one per run.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, log: StepLog | None = None) -> None:
         self._results: dict[str, asyncio.Future] = {}
         self._work: dict[str, asyncio.Queue[int]] = {}
+        self._log = log
 
     def result(self, step_id: str) -> asyncio.Future:
         """The future holding *step_id*'s result."""
@@ -216,13 +317,41 @@ class _StepLog:
             future = self._results[step_id] = asyncio.get_running_loop().create_future()
         return future
 
-    def work(self, step_id: str, count: int) -> asyncio.Queue[int]:
-        """The queue of item indices for the scatter at *step_id*."""
+    def resolve(self, step_id: str, value: Any) -> None:
+        """Publish *value* as *step_id*'s result, recording it first.
+
+        Recording before publishing keeps the log ahead of the run: a crash
+        between the two costs one step's re-execution on the next run, whereas
+        the other order would report a step as done that no later run knows
+        about.
+        """
+        if self._log is not None:
+            self._log.record(step_id, value)
+        self.result(step_id).set_result(value)
+
+    def replay(self) -> int:
+        """Pre-resolve the steps an earlier run recorded, and return how many."""
+        if self._log is None:
+            return 0
+        recorded = self._log.load()
+        for step_id, value in recorded.items():
+            future = self.result(step_id)
+            if not future.done():
+                future.set_result(value)
+        return len(recorded)
+
+    def work(self, step_id: str, results: Sequence[asyncio.Future]) -> asyncio.Queue:
+        """The queue of item indices for the scatter at *step_id*.
+
+        Items already resolved -- replayed from a previous run -- are left out,
+        so a resumed scatter only distributes what is still outstanding.
+        """
         queue = self._work.get(step_id)
         if queue is None:
             queue = self._work[step_id] = asyncio.Queue()
-            for index in range(count):
-                queue.put_nowait(index)
+            for index, result in enumerate(results):
+                if not result.done():
+                    queue.put_nowait(index)
         return queue
 
 
@@ -261,7 +390,7 @@ class EndpointProjection:
 
     Args:
         agent: The agent this projection speaks for.
-        steps: The run's shared `_StepLog`. Every agent in a choreography must
+        steps: The run's shared step state. Every agent in a choreography must
             be given the same one -- it is how they exchange results.
         agent_ids: The IDs of every agent in the run, used to reject a step
             belonging to an agent that is not participating. ``None`` skips
@@ -274,7 +403,7 @@ class EndpointProjection:
     def __init__(
         self,
         agent: Agent,
-        steps: "_StepLog",
+        steps: "_Steps",
         agent_ids: frozenset[str] | None = None,
         executor: concurrent.futures.Executor | None = None,
     ) -> None:
@@ -335,13 +464,16 @@ class EndpointProjection:
         result = self._steps.result(step_id)
         if agent.__agent_id__ != self._agent_id:
             return await result
+        if result.done():
+            # Recorded by an earlier run; see `StepLog`.
+            return result.result()
 
         try:
             value = await self._in_thread(template, *args, **kwargs)
         except Exception as e:
             _fail(result, e)
             raise
-        result.set_result(value)
+        self._steps.resolve(step_id, value)
         return value
 
     async def _scatter[A: Agent, T, U](
@@ -356,7 +488,7 @@ class EndpointProjection:
         me = typing.cast(A, self._agent)
 
         if self._agent_id in {a.__agent_id__ for a in agents}:
-            work = self._steps.work(step_id, len(items))
+            work = self._steps.work(step_id, results)
             while True:
                 try:
                     index = work.get_nowait()
@@ -370,7 +502,7 @@ class EndpointProjection:
                     raise
                 finally:
                     _IN_SCATTER.reset(token)
-                results[index].set_result(value)
+                self._steps.resolve(f"{step_id}:{index}", value)
 
         return [await result for result in results]
 
@@ -479,8 +611,9 @@ class Choreography:
     interrupt an LLM call that is already in flight on a worker thread, so a
     failing run waits for those to return before it raises.
 
-    Each run starts from a clean slate -- results live in memory for the
-    duration of the run, so re-running a choreography re-executes it.
+    Without a *log*, each run starts from a clean slate: results live in
+    memory for the duration of the run, so re-running a choreography
+    re-executes it. With one, completed steps are replayed instead.
 
     Args:
         program: The choreographic ``async`` function. All agents run it.
@@ -489,6 +622,8 @@ class Choreography:
             provider, retries, persistence). Handlers already installed around
             the call -- by `effectful.handlers.llm.harness`, say -- are
             inherited and need not be repeated here.
+        log: Where to record completed steps, so an interrupted run can be
+            resumed by running it again. ``None`` keeps everything in memory.
 
     Example::
 
@@ -510,11 +645,22 @@ class Choreography:
         program: Callable[..., Awaitable[Any]],
         agents: Sequence[Agent],
         handlers: Sequence[Interpretation | ObjectInterpretation] | None = None,
+        log: StepLog | None = None,
     ) -> None:
         self.program = program
         self.agents = list(agents)
         self.handlers = list(handlers or [])
-        self._steps = _StepLog()
+        self.log = log
+        self._steps = _Steps(log)
+
+    def replay(self) -> int:
+        """Pre-resolve the steps a previous run recorded in `log`.
+
+        `run_async` calls this before starting the agents; call it yourself
+        only when driving `projection` objects by hand. Must run inside the
+        event loop the agents will use.
+        """
+        return self._steps.replay()
 
     def projection(
         self,
@@ -524,8 +670,9 @@ class Choreography:
         """The `EndpointProjection` for one agent.
 
         Projections handed out between runs share this choreography's current
-        step log, so they can drive a program together::
+        step state, so they can drive a program together::
 
+            choreo.replay()  # only if resuming from a StepLog
             async with asyncio.TaskGroup() as group:
                 for agent in choreo.agents:
                     projection = choreo.projection(agent)
@@ -570,8 +717,9 @@ class Choreography:
         Raises:
             ChoreographyError: If any agent fails.
         """
-        # A fresh log per run: futures belong to the loop that created them.
-        self._steps = _StepLog()
+        # Fresh state per run: futures belong to the loop that created them.
+        self._steps = _Steps(self.log)
+        self.replay()
 
         tasks: list[asyncio.Task] = []
         with concurrent.futures.ThreadPoolExecutor(

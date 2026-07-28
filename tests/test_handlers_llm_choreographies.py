@@ -10,6 +10,7 @@ here is a hang rather than a wrong answer.
 
 import asyncio
 import concurrent.futures
+import dataclasses
 import gc
 import logging
 import threading
@@ -21,6 +22,7 @@ from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
+    StepLog,
     call,
     scatter,
     step,
@@ -144,10 +146,10 @@ def announce(text: str) -> str:
 # ── Helpers ───────────────────────────────────────────────────────
 
 
-def choreograph(program, agents, responses, *, mock=None, **kwargs):
+def choreograph(program, agents, responses, *, mock=None, log=None, **kwargs):
     """Run *program* over *agents* with a mock LLM; return ``(result, mock)``."""
     mock = mock if mock is not None else MockLLM(responses)
-    choreo = Choreography(program, agents=agents, handlers=[mock])
+    choreo = Choreography(program, agents=agents, handlers=[mock], log=log)
     return run(choreo.run_async(**kwargs)), mock
 
 
@@ -536,6 +538,229 @@ async def _drive(choreo, agent, mock, pool, coders):
     projection = choreo.projection(agent, executor=pool)
     with handler(mock), projection.activate():
         return await _chain(coders)
+
+
+class TestStepLog:
+    """The log on its own: what it stores and hands back."""
+
+    def test_round_trips_arbitrary_results(self, tmp_path):
+        log = StepLog(tmp_path / "steps.db")
+        values = {
+            "step-0000": "a string",
+            "step-0001": None,
+            "step-0002": {"verdict": "PASS", "feedback": ""},
+            "step-0003": _Verdict(passed=False, note="nope"),
+            "step-0004:0": [1, 2, 3],
+        }
+        for step_id, value in values.items():
+            log.record(step_id, value)
+
+        assert log.load() == values
+
+    def test_starts_empty_and_can_be_cleared(self, tmp_path):
+        log = StepLog(tmp_path / "steps.db")
+        assert log.load() == {}
+        log.record("step-0000", "x")
+        log.clear()
+        assert log.load() == {}
+
+    def test_creates_missing_parent_directories(self, tmp_path):
+        log = StepLog(tmp_path / "nested" / "deeper" / "steps.db")
+        log.record("step-0000", "x")
+        assert StepLog(log.path).load() == {"step-0000": "x"}
+
+
+@dataclasses.dataclass(frozen=True)
+class _Verdict:
+    """A non-JSON result, to pin that the log is not limited to JSON types."""
+
+    passed: bool
+    note: str
+
+
+class TestResume:
+    """A run given a `StepLog` replays what an earlier run finished."""
+
+    def test_a_second_run_calls_no_model_at_all(self, tmp_path):
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = StepLog(tmp_path / "steps.db")
+
+        first, _ = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P", "implement": "C"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+        second, mock = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {},
+            mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+
+        assert first == second == "C"
+        assert mock.calls == []
+
+    def test_resume_picks_up_after_the_last_completed_step(self, tmp_path):
+        """The canonical case: a run dies partway through, and the next one
+        re-uses what finished and redoes only what didn't."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = StepLog(tmp_path / "steps.db")
+
+        failing = Choreography(
+            _plan_then_implement,
+            agents=[architect, coder],
+            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
+            log=log,
+        )
+        with pytest.raises(ChoreographyError):
+            run(failing.run_async(architect=architect, coder=coder))
+
+        # Only the step that succeeded was recorded.
+        assert log.load() == {"step-0000": "P"}
+
+        result, mock = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"implement": "C at last"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+
+        assert result == "C at last"
+        assert mock.calls_for("arch") == []
+        assert mock.calls_for("coder") == ["coder.implement"]
+
+    def test_resume_reads_a_log_written_by_another_instance(self, tmp_path):
+        """Resumption is across processes, so nothing may be carried in memory
+        from the run that wrote the log."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        path = tmp_path / "steps.db"
+
+        choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P", "implement": "C"},
+            log=StepLog(path),
+            architect=architect,
+            coder=coder,
+        )
+        result, mock = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {},
+            mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
+            log=StepLog(path),
+            architect=architect,
+            coder=coder,
+        )
+
+        assert result == "C"
+        assert mock.calls == []
+
+    def test_a_scatter_resumes_item_by_item(self, tmp_path):
+        """Interrupt a scatter over five modules and the next run implements
+        only the ones that never finished."""
+        coders = [Coder(agent_id=f"coder-{i}") for i in range(2)]
+        log = StepLog(tmp_path / "steps.db")
+        for index, value in [(1, "cached b"), (3, "cached d")]:
+            log.record(f"step-0000:{index}", value)
+
+        async def program(coder):
+            return await scatter(
+                list("abcde"), coder, lambda c, item: call(c.implement, item)
+            )
+
+        result, mock = choreograph(
+            program,
+            coders,
+            {"implement": lambda template, args: f"code({args[0]})"},
+            log=log,
+            coder=coders,
+        )
+
+        assert result == ["code(a)", "cached b", "code(c)", "cached d", "code(e)"]
+        assert len([c for c in mock.calls if c.endswith(".implement")]) == 3
+
+    def test_a_failed_step_is_not_recorded(self, tmp_path):
+        coder = Coder(agent_id="coder")
+        log = StepLog(tmp_path / "steps.db")
+
+        async def program(coder):
+            return await step(coder.implement, "spec")
+
+        choreo = Choreography(
+            program,
+            agents=[coder],
+            handlers=[FailingMockLLM({}, fail_on={"coder.implement"})],
+            log=log,
+        )
+        with pytest.raises(ChoreographyError):
+            run(choreo.run_async(coder=coder))
+
+        assert log.load() == {}
+
+    def test_clearing_the_log_starts_over(self, tmp_path):
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = StepLog(tmp_path / "steps.db")
+
+        choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P", "implement": "C"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+        log.clear()
+        _, mock = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P2", "implement": "C2"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+
+        assert sorted(mock.calls) == ["arch.plan", "coder.implement"]
+
+    def test_a_step_result_of_none_replays_as_none(self, tmp_path):
+        """A recorded ``None`` has to come back as a completed step, not as a
+        step with nothing recorded for it."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = StepLog(tmp_path / "steps.db")
+
+        async def program(architect, coder):
+            plan = await step(architect.plan, "spec")
+            assert plan is None
+            return await step(coder.implement, "go")
+
+        choreograph(
+            program,
+            [architect, coder],
+            {"plan": None, "implement": "C"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+        result, mock = choreograph(
+            program,
+            [architect, coder],
+            {},
+            mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+
+        assert result == "C"
+        assert mock.calls == []
 
 
 class TestHandlerPropagation:

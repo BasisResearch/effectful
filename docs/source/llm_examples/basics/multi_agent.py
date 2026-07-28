@@ -6,6 +6,8 @@ Demonstrates:
   executing the steps it owns and awaiting the ones it doesn't
 - ``scatter``: two coders share the implementation work and two reviewers share
   the reviews, each item going to whichever agent is free
+- ``StepLog``: interrupt the run and start it again, and the agents resume from
+  the last step that finished
 
 The scenario: a team of agents collaboratively builds a small Python library.
 An architect breaks the project into module specs, coders implement the modules
@@ -16,13 +18,15 @@ Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
 suspended coroutine. See `effectful.handlers.llm.choreographies` for why steps
 are spelled ``await step(...)`` rather than as plain method calls.
 
-Run it with::
+Run it, interrupt it with Ctrl-C, and run it again to watch it pick up where it
+left off::
 
     python -m effectful.handlers.llm.harness \\
         docs/source/llm_examples/basics/multi_agent.py --model gpt-4o-mini
 
-Pass ``--persist-db PATH`` to the harness to checkpoint each agent's own
-conversation history across runs.
+Use ``--restart`` to forget the recorded steps and build from scratch, and pass
+``--persist-db PATH`` to the harness to checkpoint each agent's own
+conversation history alongside them.
 """
 
 import argparse
@@ -34,6 +38,7 @@ from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
+    StepLog,
     call,
     scatter,
     step,
@@ -248,6 +253,11 @@ def main() -> None:
     parser.add_argument(
         "--reviewers", type=int, default=2, help="Number of reviewer agents"
     )
+    parser.add_argument(
+        "--restart",
+        action="store_true",
+        help="Forget the steps recorded by earlier runs and build from scratch",
+    )
     args = parser.parse_args()
 
     output_dir = args.workspace / "output"
@@ -262,11 +272,22 @@ def main() -> None:
         for i in range(args.reviewers)
     ]
 
+    # Steps completed by an earlier run are replayed instead of re-asking the
+    # model, so an interrupted build resumes rather than starting over.
+    log = StepLog(args.workspace / ".state" / "steps.db")
+    if args.restart:
+        log.clear()
+
     # Tasks, the thread pool and cancellation on failure are all handled for
     # you; the model handlers come from the harness.
-    choreo = Choreography(build_project, agents=[architect, *coders, *reviewers])
+    choreo = Choreography(
+        build_project, agents=[architect, *coders, *reviewers], log=log
+    )
 
-    print("Starting multi-agent build")
+    done = len(log.load())
+    print(
+        f"Starting multi-agent build{f' ({done} steps already done)' if done else ''}"
+    )
     try:
         reviews = choreo.run(
             project_spec=args.project_spec,
@@ -275,7 +296,10 @@ def main() -> None:
             reviewer=reviewers,
         )
     except ChoreographyError as e:
-        print(f"Choreography failed: {e}")
+        print(f"Choreography failed: {e} — re-run to retry from this step")
+        return
+    except KeyboardInterrupt:
+        print("Interrupted — re-run to resume from the last completed step")
         return
 
     passed = sum(1 for r in reviews if r["verdict"] == "PASS")
