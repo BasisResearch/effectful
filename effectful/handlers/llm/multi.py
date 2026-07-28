@@ -734,15 +734,16 @@ class EndpointProjection:
         await self._queue.complete(step_id, self._agent_id, result)
         return result
 
-    async def _scatter[T, U](
+    async def _scatter[A: Agent, T, U](
         self,
         step_id: str,
         items: Sequence[T],
-        agent: Agent | Sequence[Agent],
-        fn: Callable[[Agent, T], Awaitable[U]],
+        agent: A | Sequence[A],
+        fn: Callable[[A, T], Awaitable[U]],
     ) -> list[U]:
         agents = [agent] if isinstance(agent, Agent) else list(agent)
         agent_ids = {a.__agent_id__ for a in agents}
+        me = typing.cast(A, self._agent)
         task_ids = [f"{step_id}:{i:04d}" for i in range(len(items))]
 
         # Every agent submits every task, but the IDs are deterministic and
@@ -759,7 +760,7 @@ class EndpointProjection:
                 item = items[task["payload"]["item_index"]]
                 token = _IN_SCATTER.set(True)
                 try:
-                    result = await fn(self._agent, item)
+                    result = await fn(me, item)
                 except Exception as e:
                     await self._queue.fail(task["id"], self._agent_id, str(e))
                     raise
@@ -815,10 +816,10 @@ def step[**P, T](
     return projection._run_step(projection._next_step(), template, args, kwargs)
 
 
-def scatter[T, U](
+def scatter[A: Agent, T, U](
     items: Sequence[T],
-    agent: Agent | Sequence[Agent],
-    fn: Callable[[Agent, T], Awaitable[U]],
+    agent: A | Sequence[A],
+    fn: Callable[[A, T], Awaitable[U]],
 ) -> Awaitable[list[U]]:
     """Distribute *items* over *agent* by calling ``await fn(agent, item)``.
 
@@ -844,10 +845,10 @@ def scatter[T, U](
     return projection._scatter(projection._next_step(), items, agent, fn)
 
 
-async def _scatter_default[T, U](
+async def _scatter_default[A: Agent, T, U](
     items: Sequence[T],
-    agent: Agent | Sequence[Agent],
-    fn: Callable[[Agent, T], Awaitable[U]],
+    agent: A | Sequence[A],
+    fn: Callable[[A, T], Awaitable[U]],
 ) -> list[U]:
     agents = [agent] if isinstance(agent, Agent) else list(agent)
     return [await fn(agents[i % len(agents)], item) for i, item in enumerate(items)]

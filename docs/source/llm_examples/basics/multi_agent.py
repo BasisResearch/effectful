@@ -1,49 +1,39 @@
-"""Multi-agent system using choreographic endpoint projection.
+"""Multi-agent library build via choreographic endpoint projection.
 
 Demonstrates:
-
-- Choreographic programming: one ``async`` function describes the entire workflow
-- Automatic endpoint projection: each agent runs it as its own `asyncio.Task`
-- Crash tolerance: Ctrl-C and restart, agents resume where they left off
-- Scatter: two coder agents share the implementation work via claim-based pull
-- A persisted `Agent` (`agent_id` + `SQLitePersister`) for automatic checkpointing
+- Choreographic programming: one ``async`` function describes the whole workflow
+- Endpoint projection: every agent runs that function as its own `asyncio.Task`,
+  claiming the steps it owns and awaiting the ones it doesn't
+- ``scatter``: two coders share the implementation work by claim-based pull, and
+  two reviewers share the reviews
+- Crash tolerance: Ctrl-C and re-run, and the agents resume from the last
+  completed step
 
 The scenario: a team of agents collaboratively builds a small Python library.
-An architect agent breaks the project into module specs, two coder agents
-implement the modules in parallel (via `scatter`), and two reviewer agents
-review modules in parallel and request fixes until everything passes.
+An architect breaks the project into module specs, coders implement the modules
+in parallel, and reviewers review them in parallel and send back fixes until
+everything passes.
 
-Only the LLM calls occupy threads, and only while they are in flight: an agent
-waiting on a peer's step is a suspended coroutine. See
-`effectful.handlers.llm.multi` for why the program is written with explicit
-``await step(...)`` rather than plain method calls.
+Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
+suspended coroutine. See `effectful.handlers.llm.multi` for why steps are
+spelled ``await step(...)`` rather than as plain method calls.
 
-Usage::
+Run it, interrupt it, and run it again to watch it pick up where it left off::
 
-    # First run -- agents start working
-    python docs/source/multi_agent_example.py
+    python -m effectful.handlers.llm.harness \\
+        docs/source/llm_examples/basics/multi_agent.py --model gpt-4o-mini
 
-    # Ctrl-C mid-run, then restart -- agents pick up where they left off
-    python docs/source/multi_agent_example.py
-
-Requirements:
-    pip install effectful[llm]
-    export OPENAI_API_KEY=...   # or any LiteLLM-supported provider
-
+Pass ``--persist-db PATH`` to the harness to checkpoint each agent's own
+conversation history alongside the choreography's step log.
 """
 
+import argparse
 import asyncio
 import json
-import logging
-from pathlib import Path
+import pathlib
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.completions import (
-    LiteLLMProvider,
-    RetryLLMHandler,
-    SQLitePersister,
-)
 from effectful.handlers.llm.multi import (
     Choreography,
     ChoreographyError,
@@ -52,23 +42,6 @@ from effectful.handlers.llm.multi import (
     scatter,
     step,
 )
-from effectful.ops.types import NotHandled
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(message)s",
-    datefmt="%H:%M:%S",
-)
-log = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
-
-WORKSPACE = Path("./multi_agent_workspace")
-STATE_DIR = WORKSPACE / ".state"
-OUTPUT_DIR = WORKSPACE / "output"
-MODEL = "gpt-4o-mini"
 
 # The project to build
 PROJECT_SPEC = """\
@@ -82,7 +55,7 @@ test cases written as a separate test_<module>.py file.
 
 
 # ---------------------------------------------------------------------------
-# Structured types — constrained decoding for LLM output
+# Structured output — constrained decoding for LLM output
 # ---------------------------------------------------------------------------
 
 
@@ -120,19 +93,17 @@ class ArchitectAgent(Agent):
     Be concrete and specific — the coder will follow your spec exactly.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, output_dir: pathlib.Path, **kwargs):
         super().__init__(**kwargs)
-        self._output_dir = OUTPUT_DIR
+        self.output_dir = output_dir
 
     @Tool.define
     def read_existing_files(self) -> str:
         """List files already written to the output directory."""
-        if not self._output_dir.exists():
-            return "No files yet."
-        files = sorted(self._output_dir.rglob("*.py"))
+        files = sorted(self.output_dir.rglob("*.py"))
         if not files:
             return "No Python files yet."
-        return "\n".join(str(f.relative_to(self._output_dir)) for f in files)
+        return "\n".join(str(f.relative_to(self.output_dir)) for f in files)
 
     @Template.define
     def plan_modules(self, project_spec: str) -> PlanResult:
@@ -144,7 +115,6 @@ class ArchitectAgent(Agent):
 
         Project spec:
         {project_spec}"""
-        raise NotHandled
 
 
 class CoderAgent(Agent):
@@ -153,22 +123,20 @@ class CoderAgent(Agent):
     test files. Output ONLY the Python source code, no markdown fences.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, output_dir: pathlib.Path, **kwargs):
         super().__init__(**kwargs)
-        self._output_dir = OUTPUT_DIR
+        self.output_dir = output_dir
 
     @Tool.define
     def read_file(self, path: str) -> str:
         """Read a file from the output directory."""
-        full = self._output_dir / path
-        if full.exists():
-            return full.read_text()
-        return f"File not found: {path}"
+        full = self.output_dir / path
+        return full.read_text() if full.exists() else f"File not found: {path}"
 
     @Tool.define
     def write_file(self, path: str, content: str) -> str:
         """Write a file to the output directory."""
-        full = self._output_dir / path
+        full = self.output_dir / path
         full.parent.mkdir(parents=True, exist_ok=True)
         full.write_text(content)
         return f"Wrote {len(content)} chars to {path}"
@@ -181,7 +149,6 @@ class CoderAgent(Agent):
 
         Specification:
         {module_spec}"""
-        raise NotHandled
 
 
 class ReviewerAgent(Agent):
@@ -190,24 +157,21 @@ class ReviewerAgent(Agent):
     about issues and provide actionable feedback.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, output_dir: pathlib.Path, **kwargs):
         super().__init__(**kwargs)
-        self._output_dir = OUTPUT_DIR
+        self.output_dir = output_dir
 
     @Tool.define
     def read_file(self, path: str) -> str:
         """Read a file from the output directory."""
-        full = self._output_dir / path
-        if full.exists():
-            return full.read_text()
-        return f"File not found: {path}"
+        full = self.output_dir / path
+        return full.read_text() if full.exists() else f"File not found: {path}"
 
     @Template.define
     def review_module(self, module_path: str, test_path: str) -> ReviewResult:
         """Review the module at {module_path} and its tests at {test_path}.
         Use `read_file` to read them. Return verdict "PASS" or "NEEDS_FIXES"
         and feedback. If NEEDS_FIXES, explain exactly what to change."""
-        raise NotHandled
 
 
 # ---------------------------------------------------------------------------
@@ -224,22 +188,22 @@ async def build_project(
     """Choreographic program describing the full build workflow.
 
     1. Architect breaks the project into module specs.
-    2. Coders implement modules in parallel (scatter distributes via claim-based pull).
+    2. Coders implement modules in parallel (scatter distributes by claim-based pull).
     3. Reviewers review modules in parallel; coders fix in parallel until all pass.
     """
-    # Step 1: Architect plans modules.  Every agent awaits this same step; only
-    # the architect actually calls the model.
+    # Step 1: the architect plans the modules.  Every agent awaits this same
+    # step; only the architect calls the model for it.
     plan = await step(architect.plan_modules, project_spec)
 
-    # Step 2: Scatter implementation across coders.
-    # Each module becomes a task in the queue; coders claim until none remain.
+    # Step 2: scatter implementation across the coders.  Each module becomes a
+    # task in the queue and the coders claim tasks until none remain.
     await scatter(
         plan["modules"],
         coder,
         lambda c, mod: call(c.implement_module, json.dumps(mod, indent=2)),
     )
 
-    # Step 3: Review loop — keep fixing until reviewers accept all modules
+    # Step 3: review loop — keep fixing until the reviewers accept every module.
     while True:
         reviews: list[ReviewResult] = await scatter(
             plan["modules"],
@@ -252,11 +216,9 @@ async def build_project(
             for mod, review in zip(plan["modules"], reviews)
             if review["verdict"] == "NEEDS_FIXES"
         ]
-
         if not needs_fixes:
             return reviews
 
-        # Scatter fixes across coders, then re-review
         await scatter(
             needs_fixes,
             coder,
@@ -273,59 +235,66 @@ async def build_project(
 
 
 def main() -> None:
-    WORKSPACE.mkdir(parents=True, exist_ok=True)
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--workspace",
+        type=pathlib.Path,
+        default=pathlib.Path("./multi_agent_workspace"),
+        help="Directory for the generated library and the choreography's state",
+    )
+    parser.add_argument(
+        "--project-spec",
+        type=str,
+        default=PROJECT_SPEC,
+        help="The project for the team to build",
+    )
+    parser.add_argument("--coders", type=int, default=2, help="Number of coder agents")
+    parser.add_argument(
+        "--reviewers", type=int, default=2, help="Number of reviewer agents"
+    )
+    args = parser.parse_args()
 
-    # Create agents.  An explicit agent_id is what makes an Agent persistent:
-    # its history and state are checkpointed by SQLitePersister below.
-    architect = ArchitectAgent(agent_id="architect")
-    coder1 = CoderAgent(agent_id="coder-1")
-    coder2 = CoderAgent(agent_id="coder-2")
-    reviewer1 = ReviewerAgent(agent_id="reviewer-1")
-    reviewer2 = ReviewerAgent(agent_id="reviewer-2")
+    output_dir = args.workspace / "output"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Build the choreography — tasks, thread pool, cancellation on failure and
-    # crash recovery are all handled for you.
+    # An explicit agent_id is what makes an Agent persistent, and it is also how
+    # endpoint projection tells the agents apart.
+    architect = ArchitectAgent(output_dir, agent_id="architect")
+    coders = [CoderAgent(output_dir, agent_id=f"coder-{i}") for i in range(args.coders)]
+    reviewers = [
+        ReviewerAgent(output_dir, agent_id=f"reviewer-{i}")
+        for i in range(args.reviewers)
+    ]
+
+    # Tasks, the thread pool, cancellation on failure and crash recovery are all
+    # handled for you; the model handlers come from the harness.
     choreo = Choreography(
         build_project,
-        agents=[architect, coder1, coder2, reviewer1, reviewer2],
-        queue=PersistentTaskQueue(STATE_DIR / "task_queue.db"),
-        handlers=[
-            LiteLLMProvider(model=MODEL),
-            RetryLLMHandler(),
-            SQLitePersister(STATE_DIR / "checkpoints.db"),
-        ],
+        agents=[architect, *coders, *reviewers],
+        queue=PersistentTaskQueue(args.workspace / ".state" / "task_queue.db"),
     )
 
-    log.info("Starting multi-agent build (Ctrl-C to pause, re-run to resume)")
-
+    print("Starting multi-agent build (Ctrl-C to pause, re-run to resume)")
     try:
         reviews = choreo.run(
-            project_spec=PROJECT_SPEC,
+            project_spec=args.project_spec,
             architect=architect,
-            coder=[coder1, coder2],
-            reviewer=[reviewer1, reviewer2],
+            coder=coders,
+            reviewer=reviewers,
         )
     except ChoreographyError as e:
-        log.error("Choreography failed: %s", e)
+        print(f"Choreography failed: {e}")
         return
     except KeyboardInterrupt:
-        log.warning("Interrupted — re-run to resume from the last completed step")
+        print("Interrupted — re-run to resume from the last completed step")
         return
     finally:
         asyncio.run(choreo.queue.close())
 
-    # Summary
-    output_files = list(OUTPUT_DIR.rglob("*.py"))
     passed = sum(1 for r in reviews if r["verdict"] == "PASS")
-    log.info(
-        "Done: %d modules reviewed (%d passed), %d output files",
-        len(reviews),
-        passed,
-        len(output_files),
-    )
-    for f in output_files:
-        log.info("  %s", f.relative_to(WORKSPACE))
+    print(f"\nDone: {len(reviews)} modules reviewed, {passed} passed")
+    for f in sorted(output_dir.rglob("*.py")):
+        print(f"  {f.relative_to(args.workspace)}")
 
 
 if __name__ == "__main__":
