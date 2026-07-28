@@ -520,6 +520,63 @@ def test_different_comprehension_types(genexpr):
 
 
 # ============================================================================
+# DICT DISPLAYS
+#
+# A dict display with dynamic keys is built by BUILD_MAP from key/value pairs
+# that the compiler pushed in source order. Dicts compare equal whatever order
+# they were built in, so these tests pin the order down directly: which of two
+# equal keys wins, what `items()` yields, and when each subexpression runs.
+# ============================================================================
+
+
+_EVAL_ORDER: list[str] = []
+
+
+def _note(tag: str, value: typing.Any) -> typing.Any:
+    """Record that this subexpression was evaluated, and pass its value along."""
+    _EVAL_ORDER.append(tag)
+    return value
+
+
+def test_dict_display_duplicate_keys():
+    """The last of two equal keys wins, so the pairs must keep their order."""
+    genexpr = ({x: "first", x: "second"} for x in range(1))  # noqa: F602
+    reconstructed = disassemble(genexpr)
+    assert ast.unparse(reconstructed) == (
+        "({x: 'first', x: 'second'} for x in range(0, 1, 1))"
+    )
+    assert materialize(genexpr) == [{0: "second"}]
+    assert materialize(compile_and_eval(reconstructed)) == [{0: "second"}]
+
+
+def test_dict_display_insertion_order():
+    genexpr = ({x: "a", x + 1: "b", x + 2: "c"} for x in range(1))
+    reconstructed = disassemble(genexpr)
+    expected = [[(0, "a"), (1, "b"), (2, "c")]]
+    assert [list(d.items()) for d in genexpr] == expected
+    assert [list(d.items()) for d in compile_and_eval(reconstructed)] == expected
+
+
+def test_dict_display_evaluation_order():
+    """Keys and values run left to right, key before its own value."""
+    genexpr = (
+        {_note("k1", "a"): _note("v1", 1), _note("k2", "b"): _note("v2", 2)}
+        for _ in range(1)
+    )
+    reconstructed = disassemble(genexpr)
+
+    _EVAL_ORDER.clear()
+    assert materialize(genexpr) == [{"a": 1, "b": 2}]
+    assert _EVAL_ORDER == ["k1", "v1", "k2", "v2"]
+
+    _EVAL_ORDER.clear()
+    assert materialize(compile_and_eval(reconstructed, {"_note": _note})) == [
+        {"a": 1, "b": 2}
+    ]
+    assert _EVAL_ORDER == ["k1", "v1", "k2", "v2"]
+
+
+# ============================================================================
 # CONDITIONAL EXPRESSIONS
 # ============================================================================
 
@@ -1006,6 +1063,11 @@ def test_outermost_iterable_types(genexpr):
         (x for x in map(max, [1, 2], [3, 0])),
         (x for x in filter(None, [0, 1, 2])),
         (x for x in filter(bool, [0, 1, 2])),
+        # A strict zip over equal-length iterables behaves like a lax one, but
+        # its strictness has to survive anyway -- see the ragged case below.
+        ((a, b) for a, b in zip([1, 2], [3, 4], strict=True)),
+        (x for x in zip("ab", range(2), [7, 8], strict=True)),
+        (x for x in zip(range(2), map(abs, [-1, -2]), strict=True)),
         # Nested adaptors, and adaptors over non-sequence iterables
         (x for x in zip(range(2), map(abs, [-1, -2]))),
         (x for x in enumerate(filter(None, [0, 1]))),
@@ -1084,6 +1146,59 @@ def test_unreachable_comprehension_body(genexpr):
     ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
     assert materialize(compile_and_eval(ast_node)) == []
+
+
+def test_outermost_iterable_strict_zip_stays_strict():
+    """A ragged strict zip raises; the reconstruction must raise there too."""
+    genexpr = (a + b for a, b in zip([1, 2, 3], [4, 5], strict=True))
+    reconstructed = disassemble(genexpr)
+    assert ast.unparse(reconstructed) == (
+        "(a + b for a, b in zip([1, 2, 3], [4, 5], strict=True))"
+    )
+
+    with pytest.raises(ValueError):
+        materialize(compile_and_eval(reconstructed))
+    with pytest.raises(ValueError):
+        materialize(genexpr)
+
+
+def test_outermost_iterable_lax_zip_stays_lax():
+    """A lax zip stops at the shortest iterable and must not become strict."""
+    genexpr = (a + b for a, b in zip([1, 2, 3], [4, 5]))
+    reconstructed = disassemble(genexpr)
+    assert ast.unparse(reconstructed) == "(a + b for a, b in zip([1, 2, 3], [4, 5]))"
+    assert materialize(compile_and_eval(reconstructed)) == [5, 7]
+    assert materialize(genexpr) == [5, 7]
+
+
+def test_outermost_iterable_partially_consumed_strict_zip():
+    """Strictness survives even once the zip has been partly consumed."""
+    zipped = zip([1, 2, 3], [4, 5], strict=True)
+    next(zipped)
+
+    genexpr = (a + b for a, b in zipped)
+    reconstructed = disassemble(genexpr)  # must precede consuming `genexpr`
+    assert "strict=True" in ast.unparse(reconstructed)
+    with pytest.raises(ValueError):
+        materialize(compile_and_eval(reconstructed))
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # "dict_item" was once an internal marker in the first slot of a tuple,
+        # which is a string a user's data is perfectly entitled to hold.
+        (x for x in (("dict_item", 1, 2),)),
+        (x for x in [("dict_item", "key", "value")]),
+        (x for x in (("dict_item",), ("dict_item", 1), ("dict_item", 1, 2, 3))),
+        (("dict_item", x) for x in range(2)),
+        (("dict_item", x, x + 1) for x in range(2)),
+        (x for x in {("dict_item", 1, 2): "v"}.items()),
+    ],
+)
+def test_tuples_starting_with_dict_item(genexpr):
+    """No element of a user's tuple is an internal marker to be stripped."""
+    assert_ast_equivalent(genexpr, disassemble(genexpr))
 
 
 def test_outermost_iterable_partially_consumed_adaptor():
@@ -1302,6 +1417,32 @@ def test_lambda_default_and_variadic_arguments(genexpr):
     assert_ast_equivalent(genexpr, ast_node)
 
 
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # A lambda reached as a live object -- through the outermost iterable --
+        # rather than built inside the comprehension. Its defaults are on the
+        # function, not in the code object it was compiled to.
+        (fn() for fn in [lambda value=1: value]),
+        (fn(2) for fn in [lambda a, b=10: a * b]),
+        (fn(2) for fn in (lambda a, b=10: a * b,)),
+        (fn(1) for fn in [lambda a, *, k=5: a + k]),
+        (fn(1) for fn in [lambda a, /, b=2, *, k=5: a * b + k]),
+        (fn() for fn in [lambda x=(1, 2): sum(x)]),
+        (fn() for fn in [lambda x=[1, 2]: len(x)]),
+        (fn(1, 2) for fn in [lambda a, b=0, *rest, k=5, **kw: a + b + k + len(rest)]),
+        # ... several of them, and one with no defaults alongside
+        (fn() for fn in [lambda: 0, lambda v=1: v, lambda v=2: v]),  # type: ignore[misc]
+        # ... and one passed through map rather than iterated directly
+        (fn(3) for fn in map(lambda f: f, [lambda a, b=4: a * b])),
+    ],
+)
+def test_lambda_object_defaults(genexpr):
+    """A lambda arriving as a live object keeps the defaults attached to it."""
+    ast_node = disassemble(genexpr)
+    assert_ast_equivalent(genexpr, ast_node)
+
+
 # ============================================================================
 # ASSIGNMENT EXPRESSIONS
 # ============================================================================
@@ -1435,6 +1576,204 @@ def test_comprehensions_inside_lambdas(genexpr):
     """Test comprehensions nested inside lambda bodies."""
     ast_node = disassemble(genexpr)
     assert_ast_equivalent(genexpr, ast_node)
+
+
+# ============================================================================
+# CLOSURES
+#
+# A comprehension written inside a function reads the function's locals out of
+# closure cells, not out of globals. Those cells belong to a scope the
+# reconstruction does not reproduce, so leaving a free variable as a bare name
+# would silently turn it into a global lookup -- picking up a different value,
+# or none at all. The captured value is written into the tree instead. Each
+# test below evaluates the reconstruction in a namespace that binds the same
+# name to something else, so a lookup that leaked out would be caught.
+# ============================================================================
+
+
+def test_closure_shadowed_by_global():
+    def make():
+        value = 1
+        return (value for _ in range(1))
+
+    genexpr = make()
+    reconstructed = disassemble(genexpr)
+    assert ast.unparse(reconstructed) == "(1 for _ in range(0, 1, 1))"
+    assert materialize(genexpr) == [1]
+    assert materialize(compile_and_eval(reconstructed, {"value": 2})) == [1]
+
+
+@pytest.mark.parametrize(
+    "make,shadow,expected",
+    [
+        # In the element expression, the filter, and an inner iterable
+        (lambda: (lambda n: (x * n for x in range(4)))(3), {"n": 100}, [0, 3, 6, 9]),
+        (
+            lambda: (lambda t: (x for x in range(6) if x > t))(3),
+            {"t": -1},
+            [4, 5],
+        ),
+        (
+            lambda: (lambda k: (y for x in range(2) for y in range(k)))(2),
+            {"k": 5},
+            [0, 1, 0, 1],
+        ),
+        # A captured container, indexed and iterated
+        (
+            lambda: (lambda d: (d[i] for i in range(2)))([10, 20]),
+            {"d": [0, 0]},
+            [10, 20],
+        ),
+        (
+            lambda: (lambda d: (v for v in d))({"a": 1, "b": 2}),
+            {"d": {}},
+            ["a", "b"],
+        ),
+        # Captured by a lambda nested inside the comprehension
+        (
+            lambda: (lambda n: ((lambda y: y * n)(x) for x in range(4)))(3),
+            {"n": 100},
+            [0, 3, 6, 9],
+        ),
+        (
+            lambda: (lambda n: ((lambda: (lambda: n)())() for _ in range(2)))(7),
+            {"n": 0},
+            [7, 7],
+        ),
+        # Captured by a comprehension nested inside the comprehension
+        (
+            lambda: (lambda n: ([y * n for y in range(x)] for x in range(3)))(2),
+            {"n": 100},
+            [[], [0], [0, 2]],
+        ),
+        (
+            lambda: (lambda n: (sum(y for y in range(x) if y < n) for x in range(4)))(
+                2
+            ),
+            {"n": 100},
+            [0, 0, 1, 1],
+        ),
+        # Two free variables at once
+        (
+            lambda: (lambda a, b: (x * a + b for x in range(3)))(2, 1),
+            {"a": 0, "b": 0},
+            [1, 3, 5],
+        ),
+    ],
+)
+def test_closure_free_variables(make, shadow, expected):
+    genexpr = make()
+    reconstructed = disassemble(genexpr)
+    assert materialize(genexpr) == expected
+    assert materialize(compile_and_eval(reconstructed, dict(shadow))) == expected
+    # The name must not survive anywhere in the tree, or the shadowing binding
+    # above would have been the one that answered.
+    assert not (
+        {node.id for node in ast.walk(reconstructed) if isinstance(node, ast.Name)}
+        & set(shadow)
+    )
+
+
+def test_closure_target_captured_by_nested_lambda_stays_a_name():
+    """A cell this comprehension *creates* is bound in the reconstruction too."""
+    genexpr = ((lambda: x)() for x in range(3))
+    reconstructed = disassemble(genexpr)
+    assert materialize(genexpr) == [0, 1, 2]
+    assert materialize(compile_and_eval(reconstructed, {"x": 99})) == [0, 1, 2]
+
+
+def test_closure_shadowed_by_a_nested_comprehension_target():
+    """Only the free `n` is the captured one; the inner comprehension rebinds it."""
+
+    def make():
+        n = 5
+        return (n + sum(n for n in range(x)) for x in range(3))
+
+    genexpr = make()
+    reconstructed = disassemble(genexpr)
+    assert materialize(genexpr) == [5, 5, 6]
+    assert materialize(compile_and_eval(reconstructed, {"n": 100, "sum": sum})) == [
+        5,
+        5,
+        6,
+    ]
+
+
+def test_closure_shadowed_by_a_nested_lambda_parameter():
+    """Only the free `n` is the captured one; the lambda's parameter is its own."""
+
+    def make():
+        n = 5
+        return ((lambda n: n * 2)(x) + n for x in range(3))
+
+    genexpr = make()
+    reconstructed = disassemble(genexpr)
+    assert materialize(genexpr) == [5, 7, 9]
+    assert materialize(compile_and_eval(reconstructed, {"n": 100})) == [5, 7, 9]
+
+
+def test_closure_inside_a_live_lambda():
+    """A lambda reached as an object closes over cells of its own."""
+
+    def make():
+        n = 3
+        return (fn(2) for fn in [lambda a, b=10: a * n + b])
+
+    genexpr = make()
+    reconstructed = disassemble(genexpr)
+    assert materialize(genexpr) == [16]
+    assert materialize(compile_and_eval(reconstructed, {"n": 100})) == [16]
+
+
+def test_closure_value_that_cannot_be_represented():
+    """A capture with no AST spelling is refused rather than quietly dropped."""
+
+    class Opaque:
+        pass
+
+    def make():
+        obj = Opaque()
+        return (obj for _ in range(1))
+
+    with pytest.raises(TypeError, match="captured in free variable 'obj'"):
+        disassemble(make())
+
+
+def test_closure_captured_iterator_is_refused():
+    """An iterator's remaining elements are not the iterator, so it is refused."""
+
+    def make():
+        flags = iter([True, False, True, False])
+        return (x for x in range(4) if next(flags))
+
+    with pytest.raises(TypeError, match="captured in free variable 'flags'"):
+        disassemble(make())
+
+
+# ============================================================================
+# STATEFUL EXPRESSIONS
+#
+# What comes back is syntax, so evaluating it runs the comprehension a second
+# time. A filter or element expression that depends on state that has since
+# moved on answers differently then -- faithfully reconstructed, but no longer
+# in agreement with the generator it came from.
+# ============================================================================
+
+
+_FLAGS = iter([True, False, True, False, False, False, True, False])
+
+
+def test_stateful_filter_is_re_evaluated():
+    genexpr = (x for x in range(4) if next(_FLAGS))
+    reconstructed = disassemble(genexpr)
+    assert ast.unparse(reconstructed) == "(x for x in range(0, 4, 1) if next(_FLAGS))"
+
+    # The reconstruction is the same comprehension, but `_FLAGS` has advanced by
+    # the time it runs, so the two do not agree element for element.
+    assert materialize(genexpr) == [0, 2]
+    assert materialize(
+        compile_and_eval(reconstructed, {"_FLAGS": _FLAGS, "next": next})
+    ) == [2]
 
 
 @pytest.mark.parametrize(
@@ -1636,9 +1975,9 @@ def test_multiline_comprehensions_same_on_one_line():
         ((1,), "(1,)"),
         ((1, 2), "(1, 2)"),
         (("a", "b", "c"), "('a', 'b', 'c')"),
-        # Special dict_item tuples
-        (("dict_item", "key", "value"), "('key', 'value')"),
-        (("dict_item", 42, "answer"), "(42, 'answer')"),
+        # A tuple is a tuple: no element of one is a marker to be stripped
+        (("dict_item", "key", "value"), "('dict_item', 'key', 'value')"),
+        (("dict_item", 42, "answer"), "('dict_item', 42, 'answer')"),
         # Nested tuples
         ((1, (2, 3)), "(1, (2, 3))"),
         (((1, 2), (3, 4)), "((1, 2), (3, 4))"),
@@ -1705,13 +2044,19 @@ def test_ensure_ast(value, expected_str):
 def test_error_handling():
     """Test that appropriate errors are raised for unsupported cases."""
     # Test with non-generator input
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         disassemble([1, 2, 3])  # Not a generator
 
     # Test with consumed generator
     gen = (x for x in range(5))
     list(gen)  # Consume it
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
+        disassemble(gen)
+
+    # Test with a generator that has been started but not consumed
+    gen = (x for x in range(5))
+    next(gen)
+    with pytest.raises(ValueError):
         disassemble(gen)
 
 

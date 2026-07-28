@@ -13,6 +13,33 @@ Example:
     >>> g = (x * 2 for x in range(10) if x % 2 == 0)
     >>> ast_node = disassemble(g)
     >>> # ast_node is now an ast.Expression representing the original expression
+
+What is recovered, and what is not:
+
+    What comes back is the comprehension's *syntax*, not the generator's
+    suspended state, so evaluating the reconstruction runs every expression in
+    it a second time. For a comprehension over pure expressions the two agree
+    element for element. Where they can part company:
+
+    * A **stateful filter or element expression** -- one that mutates something,
+      or whose value depends on state that has moved on -- is re-run, and can
+      answer differently the second time. `(x for x in xs if next(flags))`
+      reconstructs faithfully as source, but iterating the reconstruction draws
+      from `flags` where it now stands, not from where it stood when the
+      original generator was built. The side effects happen twice, once per
+      iteration of each generator.
+
+    * The **outermost iterable** is not part of the comprehension's bytecode --
+      it is an object the generator already holds -- so it is recovered from
+      that object rather than from source. What lands in the tree is a snapshot
+      of the elements not yet consumed: `iter([1, 2, 3])` advanced once becomes
+      the literal `[2, 3]`. The expression that produced it is gone, and so is
+      any laziness it had.
+
+    * A **free variable** is likewise recovered by value, not by name: the value
+      in the closure cell is written into the tree. A captured object with no
+      AST spelling raises `TypeError` rather than reconstructing to a name that
+      would resolve against the evaluating namespace instead.
 """
 
 import ast
@@ -317,6 +344,12 @@ class ReconstructionState:
     # Set by KW_NAMES (Python 3.12 only) and consumed by the following CALL.
     # KW_NAMES has no stack effect, so the names cannot live on `stack`.
     kw_names: tuple[str, ...] | None = field(default=None)
+
+    # The value captured in each closure cell the code reads, by name. A free
+    # variable is looked up in a cell, not in globals, so reconstructing it as a
+    # bare name would resolve to whatever the evaluating namespace happens to
+    # bind; the captured value has to be written into the tree instead.
+    freevars: dict[str, ast.expr] = field(default_factory=dict)
 
     @property
     def instructions(self) -> collections.abc.Mapping[int, dis.Instruction]:
@@ -959,7 +992,7 @@ def _decide_branch(
     return replace(state, branches={**state.branches, instr.offset: edge})
 
 
-def _symbolic_exec(code: types.CodeType) -> ast.expr:
+def _symbolic_exec(code: types.CodeType, freevars: dict[str, ast.expr]) -> ast.expr:
     """Execute bytecode symbolically, following control flow."""
     continuations: list[ReconstructionState] = [
         ReconstructionState(
@@ -969,6 +1002,7 @@ def _symbolic_exec(code: types.CodeType) -> ast.expr:
             if current_version() == PythonVersion.PY_312
             and code.co_flags & inspect.CO_GENERATOR
             else [Placeholder()],
+            freevars=freevars,
         )
     ]
 
@@ -1168,12 +1202,14 @@ def handle_build_map(
         new_stack = state.stack + [new_result]
         return replace(state, stack=new_stack)
     else:
-        # Pop key-value pairs for the dict
-        keys: list[ast.expr | None] = [
-            ensure_ast(state.stack[-2 * i - 2]) for i in range(size)
-        ]
-        values = [ensure_ast(state.stack[-2 * i - 1]) for i in range(size)]
-        new_stack = state.stack[: -2 * size] if size > 0 else state.stack
+        # Pop key-value pairs for the dict. They sit on the stack in source
+        # order -- key first, then value -- so they must be read from the
+        # bottom of that slice up: a later duplicate key has to keep winning,
+        # and side effects have to happen in the order they were written.
+        pairs = state.stack[-2 * size :]
+        keys: list[ast.expr | None] = [ensure_ast(pairs[2 * i]) for i in range(size)]
+        values = [ensure_ast(pairs[2 * i + 1]) for i in range(size)]
+        new_stack = state.stack[: -2 * size]
 
         # Create dict AST
         dict_node = ast.Dict(keys=keys, values=values)
@@ -1453,10 +1489,18 @@ def handle_load_fast(
 def handle_load_deref(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # LOAD_DEREF loads a value from a closure variable
+    # LOAD_DEREF loads a value out of a cell. When the cell is one this code
+    # object *creates* (a comprehension target captured by a nested lambda, say)
+    # the name is bound inside the reconstructed tree too, so it can stand. A
+    # free variable is different: its cell belongs to an enclosing scope that
+    # the reconstructed tree does not reproduce, so a bare name would silently
+    # become a global lookup. Write the captured value in instead.
     var_name = instr.argval
-    new_stack = state.stack + [ast.Name(id=var_name, ctx=ast.Load())]
-    return replace(state, stack=new_stack)
+    if var_name in state.code.co_freevars and var_name in state.freevars:
+        loaded: ast.expr = copy.deepcopy(state.freevars[var_name])
+    else:
+        loaded = ast.Name(id=var_name, ctx=ast.Load())
+    return replace(state, stack=state.stack + [loaded])
 
 
 @register_handler("LOAD_CLOSURE", version=PythonVersion.PY_312)
@@ -1478,8 +1522,15 @@ def handle_load_const(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
     const_value = instr.argval
-    new_stack = state.stack + [ensure_ast(const_value)]
-    return replace(state, stack=new_stack)
+    # A nested lambda or comprehension arrives as a code object, and its own
+    # free variables reach back through this scope to the same cells, so the
+    # captured values have to travel with it.
+    loaded = (
+        _reconstruct_code(const_value, state.freevars)
+        if isinstance(const_value, types.CodeType)
+        else ensure_ast(const_value)
+    )
+    return replace(state, stack=state.stack + [loaded])
 
 
 @register_handler("LOAD_GLOBAL", version=PythonVersion.PY_312)
@@ -2201,7 +2252,9 @@ def _apply_function_attribute(
 ) -> ast.Lambda | CompLambda:
     """Attach one function attribute to a reconstructed lambda."""
     if flag == MAKE_FUNCTION_CLOSURE:
-        # Free variables are already spelled by name in the reconstructed body.
+        # The body has already resolved each free variable: to a captured value
+        # if the cell came from outside the comprehension, and otherwise to the
+        # name the reconstructed tree binds it under. See `handle_load_deref`.
         return func
     if flag == MAKE_FUNCTION_ANNOTATE:
         # A lambda has no annotations, and the AST does not carry the lazy
@@ -3108,13 +3161,8 @@ def _ensure_ast_constant(value) -> ast.Constant:
 
 @ensure_ast.register
 def _ensure_ast_tuple(value: tuple) -> ast.Tuple:
-    """Convert tuple to AST - special handling for dict items"""
-    if len(value) > 0 and value[0] == "dict_item":
-        return ast.Tuple(
-            elts=[ensure_ast(value[1]), ensure_ast(value[2])], ctx=ast.Load()
-        )
-    else:
-        return ast.Tuple(elts=[ensure_ast(v) for v in value], ctx=ast.Load())
+    """Convert tuple to AST"""
+    return ast.Tuple(elts=[ensure_ast(v) for v in value], ctx=ast.Load())
 
 
 def _unconsumed(value: Iterator) -> typing.Any:
@@ -3219,15 +3267,22 @@ def _ensure_ast_iterator_adaptor(value: Iterator) -> ast.Call:
     or range iterator they cannot be materialised -- but ``__reduce__`` hands
     back their constituent parts, each of which ``ensure_ast`` can handle in
     turn. Any already-consumed prefix is reflected in the inner iterators.
+
+    A ``zip`` also pickles its strictness as reduction state, which has to be
+    carried over as a keyword argument: a strict ``zip`` raises on ragged input
+    where a lax one stops at the shortest iterable.
     """
     reduced = value.__reduce__()
     if isinstance(reduced, str):
         raise TypeError(f"Cannot convert {type(value)} to AST node")
     func, args = reduced[:2]
+    keywords = []
+    if isinstance(value, zip) and len(reduced) > 2 and reduced[2]:
+        keywords.append(ast.keyword(arg="strict", value=ast.Constant(value=True)))
     return ast.Call(
         func=ast.Name(id=func.__name__, ctx=ast.Load()),
         args=[ensure_ast(arg) for arg in args],
-        keywords=[],
+        keywords=keywords,
     )
 
 
@@ -3255,8 +3310,62 @@ def _ensure_ast_range_iterator(value: Iterator) -> ast.Call:
     return ensure_ast(_unconsumed(value))  # type: ignore
 
 
-@ensure_ast.register
-def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
+def _cell_values(
+    code: types.CodeType, closure: tuple[types.CellType, ...] | None
+) -> dict[str, typing.Any]:
+    """Read the cells a function closed over, by free-variable name.
+
+    A cell that is still empty -- a recursive definition not yet bound, say --
+    is left out.
+    """
+    values: dict[str, typing.Any] = {}
+    for name, cell in zip(code.co_freevars, closure or ()):
+        try:
+            values[name] = cell.cell_contents
+        except ValueError:
+            continue
+    return values
+
+
+def _freevar_bindings(
+    code: types.CodeType, captured: collections.abc.Mapping[str, typing.Any]
+) -> dict[str, ast.expr]:
+    """AST nodes for the values ``code``'s free variables were captured from.
+
+    A free variable with no captured value to be found is left out, and the
+    reconstructed tree keeps the bare name, which is as close as it can get.
+
+    An iterator is refused rather than written in. `ensure_ast` spells one as
+    the elements it has left, which is what the outermost iterable wants -- it
+    is about to be consumed anyway -- but a captured iterator is a value the
+    body can do anything with, and a list of its remaining elements is not the
+    same object.
+    """
+    bindings: dict[str, ast.expr] = {}
+    for name in code.co_freevars:
+        if name not in captured:
+            continue
+        value = captured[name]
+        try:
+            if isinstance(value, Iterator):
+                raise TypeError("an iterator has no AST spelling in value position")
+            bindings[name] = ensure_ast(value)
+        except (TypeError, AssertionError) as exc:
+            raise TypeError(
+                f"Cannot represent {value!r}, "
+                f"the value captured in free variable {name!r}: {exc}"
+            ) from exc
+    return bindings
+
+
+def _reconstruct_code(
+    value: types.CodeType, freevars: dict[str, ast.expr]
+) -> ast.Lambda | CompLambda:
+    """Reconstruct a lambda or comprehension body from its code object.
+
+    ``freevars`` maps the names this code captures from enclosing scopes to the
+    values found in their cells; see `handle_load_deref`.
+    """
     assert inspect.iscode(value), "Input must be a code object"
 
     name: str = value.co_name.split(".")[-1]
@@ -3277,7 +3386,7 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
         raise TypeError(f"Unsupported code object type: {value.co_name}")
 
     # Symbolic execution to reconstruct the AST
-    result: ast.expr = _symbolic_exec(value)
+    result: ast.expr = _symbolic_exec(value, freevars)
 
     # Check postconditions
     assert not any(isinstance(x, ast.stmt) for x in ast.walk(result)), (
@@ -3350,14 +3459,37 @@ def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
 
 
 @ensure_ast.register
+def _ensure_ast_codeobj(value: types.CodeType) -> ast.Lambda | CompLambda:
+    """A bare code object has no cells attached, so free variables stay names."""
+    return _reconstruct_code(value, {})
+
+
+@ensure_ast.register
 def _ensure_ast_lambda(value: types.LambdaType) -> ast.Lambda:
     assert inspect.isfunction(value) and value.__name__.endswith("<lambda>"), (
         "Input must be a lambda function"
     )
     code: types.CodeType = value.__code__
-    result = ensure_ast(code)
+    result = _reconstruct_code(
+        code, _freevar_bindings(code, _cell_values(code, value.__closure__))
+    )
     assert isinstance(result, ast.Lambda), "Lambda body must be an AST Lambda node"
     assert not isinstance(result, CompLambda), "Lambda must not be a CompLambda"
+
+    # Default values are not in the code object: they were evaluated where the
+    # lambda was written and attached to the function. A lambda built inside the
+    # comprehension gets them from the stack instead -- see
+    # `_apply_function_attribute` -- but one arriving as a live object carries
+    # them here, and dropping them would leave parameters with no way to be
+    # filled. They cover the *trailing* positional parameters.
+    if value.__defaults__:
+        result.args.defaults = [ensure_ast(d) for d in value.__defaults__]
+    if value.__kwdefaults__:
+        by_name = value.__kwdefaults__
+        result.args.kw_defaults = [
+            ensure_ast(by_name[arg.arg]) if arg.arg in by_name else None
+            for arg in result.args.kwonlyargs
+        ]
     return result
 
 
@@ -3367,10 +3499,15 @@ def _ensure_ast_genexpr(genexpr: types.GeneratorType) -> ast.GeneratorExp:
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
         "Generator must be in created state"
     )
-    genexpr_ast = ensure_ast(genexpr.gi_code)
-    assert isinstance(genexpr_ast, CompLambda)
     assert genexpr.gi_frame is not None, "Generator must not be exhausted"
-    geniter_ast = ensure_ast(genexpr.gi_frame.f_locals[".0"])
+    # A generator holds its cells in its frame rather than in a __closure__, and
+    # an unstarted frame already has them all copied in.
+    frame_locals = genexpr.gi_frame.f_locals
+    genexpr_ast = _reconstruct_code(
+        genexpr.gi_code, _freevar_bindings(genexpr.gi_code, frame_locals)
+    )
+    assert isinstance(genexpr_ast, CompLambda)
+    geniter_ast = ensure_ast(frame_locals[".0"])
     result = genexpr_ast.inline(geniter_ast)
     assert isinstance(result, ast.GeneratorExp)
     assert inspect.getgeneratorstate(genexpr) == inspect.GEN_CREATED, (
@@ -3411,8 +3548,11 @@ def disassemble(
         ast.Expression: An AST node representing the reconstructed comprehension.
 
     Raises:
-        AssertionError: If the input is not a generator or if the generator
+        ValueError: If the input is not a generator or if the generator
             has already been started (not in 'GEN_CREATED' state).
+        TypeError: If some part of the comprehension has no AST spelling --
+            an outermost iterable or a captured free variable whose value
+            cannot be written into the tree.
 
     Example:
         >>> # Generator expression
@@ -3432,7 +3572,19 @@ def disassemble(
         The reconstruction is based on bytecode analysis and may not perfectly
         preserve the original source code formatting or variable names in all
         cases. However, the semantic behavior of the reconstructed AST should
-        match the original comprehension.
+        match the original comprehension, subject to the limits set out under
+        "What is recovered, and what is not" in this module's docstring:
+        evaluating the result re-runs every expression in it, so a stateful
+        filter or element expression can answer differently the second time,
+        and the outermost iterable is a snapshot rather than an expression.
     """
-    assert inspect.isgenerator(genexpr), "Input must be a generator expression"
+    if not inspect.isgenerator(genexpr):
+        raise ValueError(
+            f"Input must be a generator expression, got {type(genexpr).__name__}"
+        )
+    if inspect.getgeneratorstate(genexpr) != inspect.GEN_CREATED:
+        raise ValueError(
+            "Input must be a generator expression that has not been started, "
+            f"got one in state {inspect.getgeneratorstate(genexpr)}"
+        )
     return ast.fix_missing_locations(ast.Expression(ensure_ast(genexpr)))
