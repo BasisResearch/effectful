@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
+    Interpretation,
     NotHandled,
     Operation,
     Term,
@@ -540,7 +541,10 @@ def defdata[T](
         # here would recompute binders and rename each child again at every
         # level, re-traversing the subtree once per level of nesting.
         rebuild = functools.partial(_build_term, __dispatch)
-        with interpreter({apply: rebuild} | renaming_ctx):
+        with interpreter(
+            {apply: rebuild, ConstructorOperation.__apply__: apply.__default_rule__}
+            | renaming_ctx
+        ):
             return evaluate(expr)
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
@@ -976,14 +980,23 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
         return self.implementations[item].__get__(self, type(self))
 
 
-class PureInterpretation[T, V](ObjectInterpretation[T, V]):
-    def __hash__(self):
-        return hash(frozenset(self.implementations.items()))
+class PureInterpretation[T, V](Mapping[Operation[..., T], Callable[..., V]]):
+    """Mark an interpretation as pure so its evaluation results can be cached."""
 
-    def __eq__(self, other):
-        return isinstance(other, PureInterpretation) and frozenset(
-            self.implementations.items()
-        ) == frozenset(other.implementations.items())
+    def __init__(self, intp: Interpretation[T, V]):
+        self.intp = intp
+
+    def __iter__(self):
+        return iter(self.intp)
+
+    def __len__(self):
+        return len(self.intp)
+
+    def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
+        return self.intp[item]
+
+    __hash__ = object.__hash__
+    __eq__ = object.__eq__
 
 
 class _ImplementedOperation[**P, **Q, T, V]:
@@ -1384,3 +1397,23 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+class ConstructorOperation[**Q, V](Operation[Q, V]):
+    @classmethod
+    @functools.cache
+    def define[T](
+        cls, constructor: type[T] | Callable[..., T]
+    ) -> "ConstructorOperation[Any, T]":
+        if not isinstance(constructor, type):
+            return typing.cast(
+                ConstructorOperation[Any, T], super().define(constructor)
+            )
+
+        def _as_typ(*args, **kwargs) -> constructor:  # type: ignore[valid-type]
+            return constructor(*args, **kwargs)
+
+        return typing.cast(ConstructorOperation[Any, T], super().define(_as_typ))
+
+
+class DataclassConstructorOperation[**Q, V](ConstructorOperation): ...
