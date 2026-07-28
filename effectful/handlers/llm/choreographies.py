@@ -430,8 +430,9 @@ async def _scatter_sequentially[A: Agent, T, U](
 class EndpointProjection(ObjectInterpretation):
     """Projects a choreographic program onto a single agent.
 
-    Install it like any other handler -- ``with handler(projection):`` -- and
-    `step` and `scatter` route through it for the current task.
+    `Choreography` installs one per agent, and that is what makes the agents
+    -- all running the same program -- behave differently: `step` and
+    `scatter` route through the projection for the task it was installed in.
 
     Each implementation runs synchronously and *returns* an awaitable rather
     than being a coroutine function itself. That is what keeps step IDs in
@@ -465,11 +466,6 @@ class EndpointProjection(ObjectInterpretation):
         self._agent_ids = agent_ids
         self._executor = executor
         self._step = 0
-
-    @property
-    def agent(self) -> Agent:
-        """The agent this projection speaks for."""
-        return self._agent
 
     def _next_step(self) -> str:
         step_id = f"step-{self._step:04d}"
@@ -633,47 +629,19 @@ class Choreography:
         self.log = log
         self._steps = _Steps(log)
 
-    def projection(
-        self,
-        agent: Agent,
-        executor: concurrent.futures.Executor | None = None,
-    ) -> EndpointProjection:
-        """The `EndpointProjection` for one agent.
-
-        Projections handed out between runs share this choreography's current
-        step state, so they can drive a program together::
-
-            async def drive(agent):
-                with handler(choreo.projection(agent)):
-                    return await choreo.program(**kwargs)
-
-            async with asyncio.TaskGroup() as group:
-                for agent in choreo.agents:
-                    group.create_task(drive(agent))
-
-        Doing it by hand is also how you get a handler *over* the projection --
-        one that intercepts `step` and forwards with
-        `~effectful.ops.semantics.fwd`. `run_async` installs the projection
-        inside each agent task, where it wins over anything wrapped around the
-        run, so a wrapping handler has to be installed after it.
-
-        Resuming from a `StepLog` is a `run_async` feature: it is what replays
-        the recorded steps into the shared state before the agents start.
-        """
-        return EndpointProjection(
-            agent,
-            self._steps,
-            frozenset(a.__agent_id__ for a in self.agents),
-            executor=executor,
-        )
-
     async def _agent_main(
         self,
         agent: Agent,
         executor: concurrent.futures.Executor,
         kwargs: dict[str, Any],
     ) -> Any:
-        with handler(self.projection(agent, executor=executor)):
+        projection = EndpointProjection(
+            agent,
+            self._steps,
+            frozenset(a.__agent_id__ for a in self.agents),
+            executor=executor,
+        )
+        with handler(projection):
             try:
                 return await self.program(**kwargs)
             except (asyncio.CancelledError, ChoreographyError):

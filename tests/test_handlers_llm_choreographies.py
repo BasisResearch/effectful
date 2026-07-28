@@ -22,7 +22,9 @@ from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
+    EndpointProjection,
     StepLog,
+    _Steps,
     scatter,
     step,
 )
@@ -508,43 +510,6 @@ class TestScatter:
             run(choreo.run_async(coder=coders))
 
 
-class TestManualProjection:
-    """Driving projections directly, without `Choreography.run_async`."""
-
-    def test_agents_outnumbering_worker_threads_still_finish(self):
-        """Four agents, one worker thread, a chain in which each waits on the
-        previous one. A waiting agent is a suspended coroutine, so it holds no
-        thread -- run agent-per-thread instead and this deadlocks."""
-        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
-        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
-        choreo = Choreography(_chain, agents=agents)
-
-        async def go():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return await asyncio.gather(
-                    *(_drive(choreo, a, mock, pool, agents) for a in agents)
-                )
-
-        assert run(go()) == ["x!!!!"] * 4
-
-    def test_a_waiting_agent_sees_the_owners_failure(self):
-        """`asyncio.gather` does not cancel siblings when one raises, so a
-        waiting agent only learns of a failure if the failed step carries it."""
-        agents = [Coder(agent_id=f"coder-{i}") for i in range(2)]
-        mock = FailingMockLLM({}, fail_on={"coder-0.implement"})
-        choreo = Choreography(_chain, agents=agents)
-
-        async def go():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                return await asyncio.gather(
-                    *(_drive(choreo, a, mock, pool, agents) for a in agents),
-                    return_exceptions=True,
-                )
-
-        outcomes = run(go())
-        assert [type(o) for o in outcomes] == [RuntimeError, RuntimeError]
-
-
 async def _chain(coders):
     value = "x"
     for coder in coders:
@@ -552,9 +517,51 @@ async def _chain(coders):
     return value
 
 
-async def _drive(choreo, agent, mock, pool, coders):
-    with handler(mock), handler(choreo.projection(agent, executor=pool)):
-        return await _chain(coders)
+async def _drive(agents, steps, mock, pool):
+    """Run `_chain` as every agent at once, over one shared step state.
+
+    This is what `Choreography.run_async` does; spelling it out here is how
+    these tests get to choose the thread pool.
+    """
+
+    async def as_agent(agent):
+        projection = EndpointProjection(agent, steps, executor=pool)
+        with handler(mock), handler(projection):
+            return await _chain(agents)
+
+    return await asyncio.gather(*(as_agent(a) for a in agents), return_exceptions=True)
+
+
+class TestProjection:
+    """`EndpointProjection` on its own, driven without a `Choreography`."""
+
+    def test_agents_outnumbering_worker_threads_still_finish(self):
+        """Four agents, one worker thread, a chain in which each waits on the
+        previous one. A waiting agent is a suspended coroutine, so it holds no
+        thread -- run agent-per-thread instead and this deadlocks."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
+        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
+
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return await _drive(agents, _Steps(), mock, pool)
+
+        assert run(go()) == ["x!!!!"] * 4
+
+    def test_a_waiting_agent_sees_the_owners_failure(self):
+        """`asyncio.gather` does not cancel siblings when one raises, so a
+        waiting agent only learns of a failure if the failed step carries it.
+
+        `Choreography` runs its agents in a task group, which does cancel, so
+        this is the mechanism underneath rather than what a run relies on."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(2)]
+        mock = FailingMockLLM({}, fail_on={"coder-0.implement"})
+
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                return await _drive(agents, _Steps(), mock, pool)
+
+        assert [type(o) for o in run(go())] == [RuntimeError, RuntimeError]
 
 
 class TestStepLog:
@@ -790,48 +797,32 @@ class TestPrimitivesAreOperations:
 
         assert run(go()) == "code"
 
-    def test_a_handler_installed_over_the_projection_can_wrap_step(self):
-        """`fwd` works from a `step` handler, so the projection composes like
-        any other interpretation.
-
-        The handler has to sit *inside* the projection to see anything:
-        `Choreography.run_async` installs the projection within each agent
-        task, so it wins over anything wrapped around the run and never
-        forwards. Driving projections by hand puts the order in your control.
-        """
-        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+    def test_a_step_handler_can_forward(self):
+        """`fwd` works from a handler that returns an awaitable rather than
+        being a coroutine function, which is the shape every implementation of
+        these operations has to take -- `effectful` binds `fwd` around the
+        synchronous call, so a deferred body would run after it was gone."""
+        bot = Coder(agent_id="solo")
         seen: list[str] = []
-        lock = threading.Lock()
 
         class Tracer(ObjectInterpretation):
             @implements(step)
             def _step(self, template, *args, **kwargs):
-                # Synchronous body: `fwd` is still bound, and the awaitable it
-                # returns is what the choreography goes on to await.
                 pending = fwd()
 
                 async def traced():
                     result = await pending
-                    with lock:
-                        seen.append(f"{_key(template)} -> {result}")
+                    seen.append(f"{template.__name__} -> {result}")
                     return result
 
                 return traced()
 
-        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
-        mock = MockLLM({"plan": "P", "implement": "C"})
-
-        async def drive(agent):
-            with handler(choreo.projection(agent)), handler(Tracer()):
-                return await _plan_then_implement(architect, coder)
-
         async def go():
-            with handler(mock):
-                return await asyncio.gather(*(drive(a) for a in (architect, coder)))
+            with handler(MockLLM({"implement": "code"})), handler(Tracer()):
+                return await step(bot.implement, "spec")
 
-        assert run(go()) == ["C", "C"]
-        # Both agents traced both steps, and both saw the same results.
-        assert sorted(seen) == ["arch.plan -> P"] * 2 + ["coder.implement -> C"] * 2
+        assert run(go()) == "code"
+        assert seen == ["implement -> code"]
 
     def test_scatter_outside_a_choreography_is_sequential(self):
         coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
