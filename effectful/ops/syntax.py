@@ -491,7 +491,13 @@ def defdata[T](
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _simple_type, _typeof, apply, evaluate
+    from effectful.ops.semantics import (
+        _seed_typeof,
+        _simple_type,
+        _typeof,
+        apply,
+        evaluate,
+    )
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -514,8 +520,23 @@ def defdata[T](
         # Note: coproduct cannot be used to compose these interpretations
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
-        with interpreter({apply: defdata} | renaming_ctx):
+        #
+        # Rebuild with ``_reconstruct`` rather than ``defdata``: the subterm was
+        # already renamed when it was first built, so re-entering ``defdata``
+        # here would recompute binders and rename each child again at every
+        # level, re-traversing the subtree once per level of nesting.
+        with interpreter({apply: _reconstruct} | renaming_ctx):
             return evaluate(expr)
+
+    def _reconstruct(op, *args, **kwargs):
+        """Rebuild one node, reusing its children's cached type analysis."""
+        typed = tuple(_typeof(a) for a in args)
+        typed_kw = {k: _typeof(v) for k, v in kwargs.items()}
+        node_type = op.__type_rule__(*typed, **typed_kw)
+        node_dispatch = _simple_type(node_type)
+        node = __dispatch(node_dispatch)(node_dispatch, op, *args, **kwargs)
+        _seed_typeof(node, node_type)
+        return node
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
@@ -534,7 +555,9 @@ def defdata[T](
     typed_kwargs = {k: _typeof(v) for k, v in kwargs_.items()}
     full_type = op.__type_rule__(*typed_args, **typed_kwargs)
     dispatch_type = _simple_type(full_type)
-    return __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
+    result = __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
+    _seed_typeof(result, full_type)
+    return result
 
 
 def _construct_dataclass_term[T](

@@ -306,6 +306,25 @@ class _TypeofIntp(PureInterpretation):
 _TYPEOF_INTP = _TypeofIntp()
 
 
+def _seed_typeof(expr: Expr, full_type: Any) -> None:
+    """Record a term's already-computed type analysis in its cache.
+
+    :func:`~effectful.ops.syntax.defdata` computes the type of every term it
+    builds in order to pick a constructor. Storing that result here means a
+    parent's :func:`_typeof` on a freshly built child is a cache hit rather
+    than a fresh traversal of the whole subterm -- without which term
+    construction is quadratic in subterm size, and compounds multiplicatively
+    through nested binders.
+    """
+    from effectful.internals.unification import Box
+
+    if not isinstance(expr, Term):
+        return
+    cache = _term_cache(expr)
+    if cache is not None:
+        cache[_TYPEOF_INTP] = Box(full_type)
+
+
 def _typeof(term: Expr):
     """Evaluate the cached type analysis without unwrapping its result."""
     return evaluate(term, intp=_TYPEOF_INTP)
