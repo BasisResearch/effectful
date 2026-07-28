@@ -1055,3 +1055,58 @@ def test_encodable_code_schema_is_a_string():
     """The LLM sees a `CodeType` parameter as a plain string."""
     schema = pydantic.TypeAdapter(Encodable[CodeType]).json_schema()
     assert schema["type"] == "string"
+
+
+# ============================================================================
+# Serializing a callable: `Encodable[Callable]`'s two directions carry different
+# obligations
+#
+# Validation decodes code the model *wrote*, and holds it to `SynthesizedFunction`'s
+# constraints. Serialization encodes a value that already exists, which was never
+# under those constraints -- a class read out of the lexical scope, or an inner
+# function a Template *body* returned. Conflating the two aborted the enclosing call
+# with a `ValidationError` raised from inside pydantic's serializer.
+# ============================================================================
+
+
+def _outer_returning_unannotated():
+    """Stands in for a synthesized Template body: `TemplateBody` waives annotations,
+    so the function it returns need not have any."""
+
+    def step(state, action):
+        return state + action
+
+    return step
+
+
+class _LexicalEnum(int):
+    """Stands in for a class handed back by `read_lexical_variable` -- a *callable*,
+    so it routes to the `Callable` serializer."""
+
+
+@pytest.mark.parametrize(
+    "label,value",
+    [
+        ("inner function with unannotated parameters", _outer_returning_unannotated()),
+        ("a class, whose source is a `class` statement", _LexicalEnum),
+    ],
+)
+def test_serialize_callable_does_not_reapply_synthesis_constraints(label, value):
+    """Serializing recovers the value's source and encodes it, rather than
+    re-validating it as if the model had just submitted it for synthesis."""
+    encoded = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).dump_python(
+        value, mode="json", context={}
+    )
+    assert "module_code" in encoded, label
+    assert encoded["module_code"].strip(), label
+
+
+def test_serialize_callable_matches_its_declared_schema():
+    """What serialization emits is what its JSON schema promises: the plain
+    `EncodedFunction` shape, with none of the synthesis constraints attached."""
+    adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
+    schema = adapter.json_schema(mode="serialization")
+    encoded = adapter.dump_python(
+        _outer_returning_unannotated(), mode="json", context={}
+    )
+    assert set(encoded) <= set(schema["properties"])

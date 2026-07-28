@@ -792,17 +792,28 @@ class SynthesizedMethodTemplateBody(SynthesizedTemplateBody):
         )
 
 
-def _serialize_synthesized(
-    value: Callable, typed_enc: type[SynthesizedFunction]
-) -> dict:
-    """Encode a callable back to its ``module_code`` form (source, or a stub)."""
+def _serialize_synthesized(value: Callable) -> dict:
+    """Encode a callable back to its ``module_code`` form (source, or a stub).
+
+    Emits a plain `EncodedFunction` -- which is exactly what the serialization JSON
+    schema declares -- rather than the `SynthesizedFunction` subclass that governs
+    the *other* direction. The two directions carry different obligations, and
+    conflating them was a real bug: `SynthesizedFunction`'s constraints ("the last
+    statement must be a function definition", "every parameter must be annotated")
+    are demands on code a model is *writing*, and a value being serialized is under
+    no such obligation. It is any callable that reached this point -- a class handed
+    back by a lexical-scope read, or an inner function a Template *body* returned,
+    which was never required to annotate anything -- and re-validating its recovered
+    source rejected those with a `ValidationError` raised from inside pydantic's
+    serializer, aborting the whole call rather than encoding the value.
+    """
     try:
         source = inspect.getsource(value)
     except (OSError, TypeError):
         source = None
 
     if source:
-        return typed_enc(module_code=textwrap.dedent(source)).model_dump()
+        return EncodedFunction(module_code=textwrap.dedent(source)).model_dump()
 
     name = getattr(value, "__name__", None)
     docstring = inspect.getdoc(value)
@@ -820,7 +831,7 @@ def _serialize_synthesized(
     """{docstring}"""
     ...
 '''
-    return typed_enc(module_code=stub_code).model_dump()
+    return EncodedFunction(module_code=stub_code).model_dump()
 
 
 def _synthesize_callable(
@@ -928,9 +939,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(
-            lambda value: _serialize_synthesized(value, typed_enc)
-        ),
+        pydantic.PlainSerializer(lambda value: _serialize_synthesized(value)),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
             mode="validation",
@@ -983,9 +992,7 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(
-            lambda value: _serialize_synthesized(value, typed_enc)
-        ),
+        pydantic.PlainSerializer(lambda value: _serialize_synthesized(value)),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
             mode="validation",
@@ -1046,9 +1053,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.PlainValidator(_validate),
-        pydantic.PlainSerializer(
-            lambda value: _serialize_synthesized(value, typed_enc)
-        ),
+        pydantic.PlainSerializer(lambda value: _serialize_synthesized(value)),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
             mode="validation",
