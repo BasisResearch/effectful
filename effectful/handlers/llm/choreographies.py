@@ -45,13 +45,13 @@ finished. (Agent *history* is a separate matter -- give an
 `effectful.internals.runtime._set_prompt`), and `Operation.__call__` binds
 `~effectful.ops.semantics.fwd` around the call itself, so an ``async def``
 handler would return an un-awaited coroutine whose body later ran outside both
-bindings. `step`, `call` and `scatter` are therefore ordinary `Operation`s
-whose implementations return coroutines rather than being coroutines, which is
-also what lets a step ID be allocated while `step` is being called. It is why
-the choreography spells its steps out with ``await step(...)`` rather than
-calling ``architect.plan(spec)`` directly.
+bindings. `step` and `scatter` are therefore ordinary `Operation`s whose
+implementations return coroutines rather than being coroutines, which is also
+what lets a step ID be allocated while `step` is being called. It is why the
+choreography spells its steps out with ``await step(...)`` rather than calling
+``architect.plan(spec)`` directly.
 
-*A template call must still run on a thread.* `call` hands the blocking call to
+*A template call must still run on a thread.* `step` hands the blocking call to
 a worker thread and awaits it, so an agent waiting on a peer costs a suspended
 coroutine rather than a parked thread. Note that the naive alternative --
 wrapping each agent's whole program in `asyncio.to_thread` -- deadlocks here:
@@ -63,11 +63,8 @@ the number of agents for the same reason.
 ## Primitives
 
 `step`
-    A choreography step: one template call, executed by its owner and shared
-    with everyone else.
-`call`
-    Execution on a worker thread with no coordination. Use it for work that is
-    already covered by an enclosing step -- notably inside `scatter`.
+    One template call: executed by its owner, shared with everyone else. Inside
+    a `scatter` item, where the item is already the step, it is just the call.
 `scatter`
     Distribute items across a pool of same-role agents, each item going to
     whichever agent is free.
@@ -76,9 +73,9 @@ Several scatters run concurrently with `asyncio.gather`; agents belonging to
 more than one group work on all of them at once::
 
     specs, tests, proofs = await asyncio.gather(
-        scatter(blocks, spec_writer, lambda w, b: call(w.write_spec, b)),
-        scatter(blocks, tester, lambda t, b: call(t.write_tests, b)),
-        scatter(blocks, prover, lambda p, b: call(p.prove, b)),
+        scatter(blocks, spec_writer, lambda w, b: step(w.write_spec, b)),
+        scatter(blocks, tester, lambda t, b: step(t.write_tests, b)),
+        scatter(blocks, prover, lambda p, b: step(p.prove, b)),
     )
 
 Step IDs are allocated when `step`/`scatter` is *called*, not when the returned
@@ -93,7 +90,7 @@ agree across agents.
 
     from effectful.handlers.llm import Agent, Template
     from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-    from effectful.handlers.llm.choreographies import Choreography, call, scatter, step
+    from effectful.handlers.llm.choreographies import Choreography, scatter, step
     from effectful.ops.semantics import handler
 
     class ReviewResult(TypedDict):
@@ -155,7 +152,7 @@ agree across agents.
         # Each module goes to whichever coder is free.
         codes = await scatter(
             plan["modules"], coder,
-            lambda c, mod: call(c.implement_module, str(mod)),
+            lambda c, mod: step(c.implement_module, str(mod)),
         )
         return [await step(reviewer.review_code, code) for code in codes]
 
@@ -373,20 +370,6 @@ def _fail(future: asyncio.Future, error: BaseException) -> None:
 
 
 @Operation.define
-def call[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> Awaitable[T]:
-    """Await a blocking call -- usually a `Template` -- on a worker thread.
-
-    No coordination: the call is not a choreography step, and no other agent
-    learns its result. Use it for work already covered by an enclosing step,
-    most importantly for the per-item function passed to `scatter`.
-
-    Unhandled, this is `asyncio.to_thread`. `EndpointProjection` handles it by
-    using the choreography's own thread pool instead.
-    """
-    return asyncio.to_thread(fn, *args, **kwargs)
-
-
-@Operation.define
 def step[**P, T](
     template: Callable[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> Awaitable[T]:
@@ -401,9 +384,15 @@ def step[**P, T](
     awaited, so concurrent steps still get the same IDs in the same order on
     every agent.
 
-    Unhandled, this is just `call`.
+    Inside `scatter` the enclosing item *is* the step -- it has its own ID and
+    its own entry in the log -- so a step there is simply the call itself, run
+    on the choreography's thread pool with no further bookkeeping. A step on
+    another agent's template is refused, since a scatter item is work one agent
+    took on alone.
+
+    Unhandled, this is `asyncio.to_thread`.
     """
-    return call(template, *args, **kwargs)
+    return asyncio.to_thread(template, *args, **kwargs)
 
 
 @Operation.define
@@ -423,10 +412,8 @@ def scatter[A: Agent, T, U](
 
     Unhandled, items are processed sequentially, round-robin over the pool.
 
-    .. warning::
-
-        *fn* should only touch the agent it is handed, with `call`. A `step`
-        inside *fn* is rejected, and other agents' templates are not supported.
+    *fn* should only touch the agent it is handed; a `step` inside it on any
+    other agent's template is refused.
     """
     return _scatter_sequentially(items, agent, fn)
 
@@ -440,20 +427,11 @@ async def _scatter_sequentially[A: Agent, T, U](
     return [await fn(agents[i % len(agents)], item) for i, item in enumerate(items)]
 
 
-def _no_step_inside_scatter(template: Callable, *args, **kwargs):
-    """The interpretation of `step` in force while a scatter item is running."""
-    raise RuntimeError(
-        "step() cannot be used inside scatter(): its per-item work is not a "
-        "choreography step, and allocating step IDs there would put the agents "
-        "out of sync. Use call() instead."
-    )
-
-
 class EndpointProjection(ObjectInterpretation):
     """Projects a choreographic program onto a single agent.
 
     Install it like any other handler -- ``with handler(projection):`` -- and
-    `step`, `call` and `scatter` route through it for the current task.
+    `step` and `scatter` route through it for the current task.
 
     Each implementation runs synchronously and *returns* an awaitable rather
     than being a coroutine function itself. That is what keeps step IDs in
@@ -498,10 +476,6 @@ class EndpointProjection(ObjectInterpretation):
         self._step += 1
         return step_id
 
-    @implements(call)
-    def _call(self, fn: Callable, *args, **kwargs) -> Awaitable:
-        return self._in_thread(fn, *args, **kwargs)
-
     @implements(step)
     def _step(self, template: Callable, *args, **kwargs) -> Awaitable:
         return self._run_step(self._next_step(), template, args, kwargs)
@@ -509,6 +483,22 @@ class EndpointProjection(ObjectInterpretation):
     @implements(scatter)
     def _scatter_items(self, items, agent, fn) -> Awaitable:
         return self._scatter(self._next_step(), items, agent, fn)
+
+    def _step_within_item(self, template: Callable, *args, **kwargs) -> Awaitable:
+        """`step`, as interpreted while this agent runs a scatter item.
+
+        The item already is a step, with its own ID and its own place in the
+        log, so there is nothing left to coordinate -- just run the call.
+        """
+        agent = getattr(template, "__agent__", None)
+        if agent is not None and agent.__agent_id__ != self._agent_id:
+            raise RuntimeError(
+                f"a scatter item taken on by {self._agent_id!r} called "
+                f"{template.__name__}(), which belongs to "
+                f"{agent.__agent_id__!r}. A scatter item is work one agent "
+                f"does alone; step across agents outside the scatter."
+            )
+        return self._in_thread(template, *args, **kwargs)
 
     async def _in_thread[T](self, fn: Callable[..., T], *args, **kwargs) -> T:
         """Await *fn* on a worker thread, carrying the current context along.
@@ -529,7 +519,7 @@ class EndpointProjection(ObjectInterpretation):
 
         if agent is None:
             # Unbound template: not owned by anyone, so every agent runs it.
-            return await call(template, *args, **kwargs)
+            return await self._in_thread(template, *args, **kwargs)
 
         if self._agent_ids is not None and agent.__agent_id__ not in self._agent_ids:
             raise ChoreographyError(
@@ -546,7 +536,7 @@ class EndpointProjection(ObjectInterpretation):
             return result.result()
 
         try:
-            value = await call(template, *args, **kwargs)
+            value = await self._in_thread(template, *args, **kwargs)
         except Exception as e:
             _fail(result, e)
             raise
@@ -575,7 +565,7 @@ class EndpointProjection(ObjectInterpretation):
                     # Rebinding `step` is what stops per-item work from
                     # allocating step IDs; the binding lasts exactly as long as
                     # the item does.
-                    with handler({step: _no_step_inside_scatter}):
+                    with handler({step: self._step_within_item}):
                         value = await fn(me, items[index])
                 except Exception as e:
                     _fail(results[index], e)
@@ -586,12 +576,6 @@ class EndpointProjection(ObjectInterpretation):
 
 
 # ── Choreography runner ───────────────────────────────────────────
-
-
-def _first_exception(group: BaseExceptionGroup) -> BaseException:
-    """The first leaf exception of a possibly nested exception group."""
-    exc = group.exceptions[0]
-    return _first_exception(exc) if isinstance(exc, BaseExceptionGroup) else exc
 
 
 class Choreography:
@@ -649,15 +633,6 @@ class Choreography:
         self.log = log
         self._steps = _Steps(log)
 
-    def replay(self) -> int:
-        """Pre-resolve the steps a previous run recorded in `log`.
-
-        `run_async` calls this before starting the agents; call it yourself
-        only when driving `projection` objects by hand. Must run inside the
-        event loop the agents will use.
-        """
-        return self._steps.replay()
-
     def projection(
         self,
         agent: Agent,
@@ -667,8 +642,6 @@ class Choreography:
 
         Projections handed out between runs share this choreography's current
         step state, so they can drive a program together::
-
-            choreo.replay()  # only if resuming from a StepLog
 
             async def drive(agent):
                 with handler(choreo.projection(agent)):
@@ -683,6 +656,9 @@ class Choreography:
         `~effectful.ops.semantics.fwd`. `run_async` installs the projection
         inside each agent task, where it wins over anything wrapped around the
         run, so a wrapping handler has to be installed after it.
+
+        Resuming from a `StepLog` is a `run_async` feature: it is what replays
+        the recorded steps into the shared state before the agents start.
         """
         return EndpointProjection(
             agent,
@@ -718,7 +694,7 @@ class Choreography:
         """
         # Fresh state per run: futures belong to the loop that created them.
         self._steps = _Steps(self.log)
-        self.replay()
+        self._steps.replay()
 
         tasks: list[asyncio.Task] = []
         with concurrent.futures.ThreadPoolExecutor(
@@ -734,7 +710,13 @@ class Choreography:
                         for agent in self.agents
                     ]
             except BaseExceptionGroup as group_error:
-                raise _first_exception(group_error)
+                # Report one agent's failure rather than a group of one.
+                # `_agent_main` has already named the agent; the group nests if
+                # the program runs task groups of its own.
+                error: BaseException = group_error
+                while isinstance(error, BaseExceptionGroup):
+                    error = error.exceptions[0]
+                raise error
 
         return tasks[0].result()
 

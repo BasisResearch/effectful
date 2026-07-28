@@ -23,7 +23,6 @@ from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
     StepLog,
-    call,
     scatter,
     step,
 )
@@ -362,7 +361,7 @@ class TestScatter:
             return await scatter(
                 ["a", "b", "c", "d", "e"],
                 coder,
-                lambda c, item: call(c.implement, item),
+                lambda c, item: step(c.implement, item),
             )
 
         result, mock = choreograph(
@@ -393,7 +392,7 @@ class TestScatter:
 
         async def program(coder):
             return await scatter(
-                ["x", "y"], coder, lambda c, item: call(c.implement, item)
+                ["x", "y"], coder, lambda c, item: step(c.implement, item)
             )
 
         result, mock = choreograph(
@@ -407,7 +406,7 @@ class TestScatter:
         coder = Coder(agent_id="coder")
 
         async def program(coder):
-            return await scatter([], coder, lambda c, item: call(c.implement, item))
+            return await scatter([], coder, lambda c, item: step(c.implement, item))
 
         result, _ = choreograph(program, [coder], {}, coder=coder)
         assert result == []
@@ -430,8 +429,8 @@ class TestScatter:
 
         async def program(coder, tester):
             return await asyncio.gather(
-                scatter(["a"], coder, lambda c, item: call(c.implement, item)),
-                scatter(["b"], tester, lambda t, item: call(t.write_tests, item)),
+                scatter(["a"], coder, lambda c, item: step(c.implement, item)),
+                scatter(["b"], tester, lambda t, item: step(t.write_tests, item)),
             )
 
         (code, tests), _ = choreograph(
@@ -445,9 +444,37 @@ class TestScatter:
         assert code == ["code(a)"]
         assert tests == ["tests(b)"]
 
-    def test_step_inside_scatter_is_rejected(self):
-        """Per-item work is not a choreography step: allocating step IDs from
-        inside a scatter would desynchronise the agents."""
+    def test_a_step_inside_an_item_allocates_no_step_id(self):
+        """The item already is a step -- it has its own ID and its own place in
+        the log -- so a step inside it is just the call, and the choreography's
+        step counter is untouched by however many the item makes."""
+        coder = Coder(agent_id="coder")
+
+        async def two_calls(c, item):
+            first = await step(c.implement, item)
+            return await step(c.implement, first)
+
+        async def program(coder):
+            scattered = await scatter(["a", "b"], coder, two_calls)
+            after = await step(coder.implement, "after")
+            return scattered, after
+
+        (scattered, after), mock = choreograph(
+            program,
+            [coder],
+            {"implement": lambda template, args: f"<{args[0]}>"},
+            coder=coder,
+        )
+
+        assert scattered == ["<<a>>", "<<b>>"]
+        assert after == "<after>"
+        # Four calls inside the scatter, one step after it: the scatter is
+        # step-0000 and the step that follows is step-0001, not step-0005.
+        assert len(mock.calls) == 5
+
+    def test_an_item_may_not_step_on_another_agent(self):
+        """A scatter item is work one agent took on alone, so its templates
+        have to be its own -- nobody else is waiting to run them."""
         coder = Coder(agent_id="coder")
         reviewer = Reviewer(agent_id="rev")
 
@@ -460,7 +487,7 @@ class TestScatter:
 
         with (
             handler(MockLLM({})),
-            pytest.raises(ChoreographyError, match="cannot be used inside scatter"),
+            pytest.raises(ChoreographyError, match="belongs to 'rev'"),
         ):
             run(choreo.run_async(coder=coder, reviewer=reviewer))
 
@@ -469,7 +496,7 @@ class TestScatter:
 
         async def program(coder):
             return await scatter(
-                ["a", "b"], coder, lambda c, item: call(c.implement, item)
+                ["a", "b"], coder, lambda c, item: step(c.implement, item)
             )
 
         choreo = Choreography(program, agents=coders)
@@ -662,7 +689,7 @@ class TestResume:
 
         async def program(coder):
             return await scatter(
-                list("abcde"), coder, lambda c, item: call(c.implement, item)
+                list("abcde"), coder, lambda c, item: step(c.implement, item)
             )
 
         result, mock = choreograph(

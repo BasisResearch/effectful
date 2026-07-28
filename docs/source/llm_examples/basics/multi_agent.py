@@ -48,7 +48,6 @@ from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
     StepLog,
-    call,
     scatter,
     step,
 )
@@ -244,7 +243,7 @@ async def build_project(
     await scatter(
         plan["modules"],
         coder,
-        lambda c, mod: call(c.implement_module, json.dumps(mod, indent=2)),
+        lambda c, mod: step(c.implement_module, json.dumps(mod, indent=2)),
     )
 
     # Step 3: review loop — keep fixing until the reviewers accept every module.
@@ -255,7 +254,7 @@ async def build_project(
         reviews: list[ReviewResult] = await scatter(
             plan["modules"],
             reviewer,
-            lambda r, mod: call(r.review_module, mod["module_path"], mod["test_path"]),
+            lambda r, mod: step(r.review_module, mod["module_path"], mod["test_path"]),
         )
 
         needs_fixes = [
@@ -269,7 +268,7 @@ async def build_project(
         await scatter(
             needs_fixes,
             coder,
-            lambda c, pair: call(
+            lambda c, pair: step(
                 c.implement_module,
                 json.dumps({**pair[0], "fix_feedback": pair[1]["feedback"]}, indent=2),
             ),
