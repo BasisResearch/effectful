@@ -68,12 +68,21 @@ for a, b in {
 
 
 def _jax_args(args):
-    """True iff ``args`` is non-empty and every arg is a concrete
-    :class:`jax.typing.ArrayLike` or named tensor.
+    """True iff ``args`` is non-empty, every arg is a concrete
+    :class:`jax.typing.ArrayLike` or named tensor, and at least one of them is
+    an array rather than a Python scalar.
 
+    :class:`jax.typing.ArrayLike` is a union that includes ``bool``, ``int``,
+    ``float`` and ``complex``, so admitting it alone would claim pure-Python
+    scalar arithmetic. These handlers extend ``EvaluateIntp`` after the scalar
+    implementations and so take precedence over them, which would silently
+    narrow a Python float to a ``float32`` array and leave downstream rules
+    treating a scalar body as array-valued.
     """
-    return args and all(
-        isinstance(a, jax.typing.ArrayLike) or is_eager_array(a) for a in args
+    return (
+        args
+        and all(isinstance(a, jax.typing.ArrayLike) or is_eager_array(a) for a in args)
+        and any(not isinstance(a, bool | int | float | complex) for a in args)
     )
 
 
