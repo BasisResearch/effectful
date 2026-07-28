@@ -90,7 +90,7 @@ agree across agents.
 
     from effectful.handlers.llm import Agent, Template
     from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-    from effectful.handlers.llm.multi import Choreography, call, scatter, step
+    from effectful.handlers.llm.choreographies import Choreography, call, scatter, step
 
     class ReviewResult(TypedDict):
         verdict: Literal["PASS", "NEEDS_FIXES"]

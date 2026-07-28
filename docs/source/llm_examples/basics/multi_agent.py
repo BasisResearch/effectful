@@ -13,8 +13,8 @@ in parallel, and reviewers review them in parallel and send back fixes until
 everything passes.
 
 Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
-suspended coroutine. See `effectful.handlers.llm.multi` for why steps are
-spelled ``await step(...)`` rather than as plain method calls.
+suspended coroutine. See `effectful.handlers.llm.choreographies` for why steps
+are spelled ``await step(...)`` rather than as plain method calls.
 
 Run it with::
 
@@ -31,7 +31,7 @@ import pathlib
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.multi import (
+from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
     call,
@@ -184,15 +184,15 @@ async def build_project(
     """Choreographic program describing the full build workflow.
 
     1. Architect breaks the project into module specs.
-    2. Coders implement modules in parallel (scatter distributes by claim-based pull).
+    2. Coders implement modules in parallel (scatter hands each to whoever is free).
     3. Reviewers review modules in parallel; coders fix in parallel until all pass.
     """
     # Step 1: the architect plans the modules.  Every agent awaits this same
     # step; only the architect calls the model for it.
     plan = await step(architect.plan_modules, project_spec)
 
-    # Step 2: scatter implementation across the coders.  Each module becomes a
-    # task in the queue and the coders claim tasks until none remain.
+    # Step 2: scatter implementation across the coders.  Each coder takes the
+    # next module as it becomes free, until none are left.
     await scatter(
         plan["modules"],
         coder,
