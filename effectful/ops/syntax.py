@@ -432,6 +432,26 @@ def deffn[T, A, B](
     raise NotHandled
 
 
+def _build_term[T](
+    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    op: Operation[..., T],
+    *args,
+    **kwargs,
+) -> Expr[T]:
+    """Build a single node from arguments whose bound variables are already renamed.
+
+    This is :func:`defdata` without the renaming step: it computes the node's
+    type from the types of its arguments and dispatches on that type to pick a
+    constructor.
+    """
+    from effectful.ops.semantics import _simple_type, _typeof
+
+    typed_args = tuple(_typeof(arg) for arg in args)
+    typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
+    dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
+    return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+
+
 @_CustomSingleDispatchCallable
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -491,13 +511,7 @@ def defdata[T](
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import (
-        _seed_typeof,
-        _simple_type,
-        _typeof,
-        apply,
-        evaluate,
-    )
+    from effectful.ops.semantics import apply, evaluate
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -521,22 +535,13 @@ def defdata[T](
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
         #
-        # Rebuild with ``_reconstruct`` rather than ``defdata``: the subterm was
+        # Rebuild with ``_build_term`` rather than ``defdata``: the subterm was
         # already renamed when it was first built, so re-entering ``defdata``
         # here would recompute binders and rename each child again at every
         # level, re-traversing the subtree once per level of nesting.
-        with interpreter({apply: _reconstruct} | renaming_ctx):
+        rebuild = functools.partial(_build_term, __dispatch)
+        with interpreter({apply: rebuild} | renaming_ctx):
             return evaluate(expr)
-
-    def _reconstruct(op, *args, **kwargs):
-        """Rebuild one node, reusing its children's cached type analysis."""
-        typed = tuple(_typeof(a) for a in args)
-        typed_kw = {k: _typeof(v) for k, v in kwargs.items()}
-        node_type = op.__type_rule__(*typed, **typed_kw)
-        node_dispatch = _simple_type(node_type)
-        node = __dispatch(node_dispatch)(node_dispatch, op, *args, **kwargs)
-        _seed_typeof(node, node_type)
-        return node
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
     renamed_args.apply_defaults()
@@ -550,14 +555,7 @@ def defdata[T](
         for (k, v) in renamed_args.kwargs.items()
     }
 
-    # Build the final term using the cached type analysis of its children.
-    typed_args = tuple(_typeof(arg) for arg in args_)
-    typed_kwargs = {k: _typeof(v) for k, v in kwargs_.items()}
-    full_type = op.__type_rule__(*typed_args, **typed_kwargs)
-    dispatch_type = _simple_type(full_type)
-    result = __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
-    _seed_typeof(result, full_type)
-    return result
+    return _build_term(__dispatch, op, *args_, **kwargs_)
 
 
 def _construct_dataclass_term[T](
