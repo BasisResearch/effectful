@@ -1,4 +1,5 @@
 import functools
+import itertools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
@@ -11,10 +12,17 @@ except ImportError:
 
 import torch.utils._pytree as pytree
 
-from effectful.internals.runtime import interpreter
 from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
-from effectful.ops.syntax import Scoped, defdata, defop, syntactic_eq
+from effectful.ops.syntax import (
+    ConstructorOperation,
+    PureInterpretation,
+    Scoped,
+    _BaseTerm,
+    defdata,
+    defop,
+    syntactic_eq,
+)
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
@@ -34,6 +42,74 @@ def _getitem_ellipsis_and_none(
     return torch.reshape(x, new_shape), new_key
 
 
+@functools.cache
+def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
+    """Construct the singleton interpretation used by ``sizesof``."""
+    from effectful.internals.product_n import argsof, productN
+
+    sizes = defop(object, name="sizes")
+    getitem_term = defop(object, name="getitem_args")
+
+    def _retain(op, *args, **kwargs):
+        # Non-getitem subterms are opaque to this analysis. Keeping their
+        # arguments would retain the entire input term unnecessarily.
+        return _BaseTerm(op)
+
+    def _retain_getitem(*args, **kwargs):
+        return defdata(torch_getitem, *args, **kwargs)
+
+    def _merge(s1, s2):
+        result = s1.copy()
+        for k, v in s2.items():
+            if k in result and result[k] != v:
+                raise ValueError(
+                    f"Named index {k} used in incompatible dimensions of size {result[k]} and {v}"
+                )
+            result[k] = v
+        return result
+
+    def _apply_sizes(op, *args, **kwargs):
+        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
+        return functools.reduce(_merge, analyses, {})
+
+    def _getitem(x, key):
+        # Inspect this getitem's arguments in the term projection without
+        # forcing that projection to retain the getitem result.
+        term_args, _ = argsof(getitem_term)
+        term_x, term_key = term_args
+
+        arg_sizes = (value for value in (x, key) if isinstance(value, dict))
+        if not isinstance(term_x, torch.Tensor):
+            return functools.reduce(_merge, arg_sizes, {})
+
+        shape, desugared_key = _desugar_tensor_index(term_x.shape, term_key)
+        index_sizes = (
+            {k.op: shape[i]}
+            for i, k in enumerate(desugared_key)
+            if isinstance(k, Term)
+            and not k.args
+            and not k.kwargs
+            and issubclass(typeof(k), torch.Tensor)
+        )
+        return functools.reduce(_merge, itertools.chain(arg_sizes, index_sizes), {})
+
+    return (
+        PureInterpretation(
+            productN(
+                {
+                    sizes: {apply: _apply_sizes, torch_getitem: _getitem},
+                    getitem_term: {
+                        apply: _retain,
+                        torch_getitem: _retain_getitem,
+                        ConstructorOperation.__apply__: apply.__default_rule__,
+                    },
+                }
+            )
+        ),
+        sizes,
+    )
+
+
 def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     """Return the sizes of named dimensions in a tensor expression.
 
@@ -48,35 +124,13 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
     >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
     >>> assert sizes[a] == 2 and sizes[b] == 3
     """
-    sizes: dict[Operation[[], torch.Tensor], int] = {}
+    from effectful.internals.product_n import _unpack
 
-    def _torch_getitem_sizeof(
-        x: Expr[torch.Tensor], key: tuple[Expr[IndexElement], ...]
-    ) -> Expr[torch.Tensor]:
-        if isinstance(x, torch.Tensor):
-            shape, key_ = _desugar_tensor_index(x.shape, key)
-
-            for i, k in enumerate(key_):
-                if (
-                    isinstance(k, Term)
-                    and len(k.args) == 0
-                    and len(k.kwargs) == 0
-                    and issubclass(typeof(k), torch.Tensor)
-                ):
-                    if k.op in sizes and sizes[k.op] != shape[i]:
-                        raise ValueError(
-                            f"Named index {k.op} used in incompatible dimensions of size {sizes[k.op]} and {shape[i]}"
-                        )
-                    sizes[k.op] = shape[i]
-
-        return defdata(torch_getitem, x, key)
-
-    def _apply(op, *args, **kwargs):
-        return defdata(op, *args, **kwargs)
-
-    with interpreter({torch_getitem: _torch_getitem_sizeof, apply: _apply}):
-        evaluate(value)
-
+    intp, prompt = _sizesof_intp()
+    result = evaluate(value, intp=intp)
+    sizes = _unpack(result, prompt)
+    if not isinstance(sizes, dict):
+        return {}
     return sizes
 
 
