@@ -24,7 +24,6 @@ from effectful.handlers.llm.choreographies import (
     ChoreographyError,
     EndpointProjection,
     _Steps,
-    recorded_steps,
     scatter,
     step,
 )
@@ -564,37 +563,21 @@ class TestProjection:
         assert [type(o) for o in run(go())] == [RuntimeError, RuntimeError]
 
 
-class TestStepLog:
-    """The log file itself: what it stores and hands back."""
-
-    def test_round_trips_arbitrary_results(self, tmp_path):
-        log = tmp_path / "steps.db"
-        steps = _Steps(log)
-        values = {
-            "step-0000": "a string",
-            "step-0001": None,
-            "step-0002": {"verdict": "PASS", "feedback": ""},
-            "step-0003": _Verdict(passed=False, note="nope"),
-            "step-0004:0": [1, 2, 3],
-        }
-
-        async def record():
-            for step_id, value in values.items():
-                steps.resolve(step_id, value)
-
-        run(record())
-        assert recorded_steps(log) == values
-
-    def test_reading_a_log_no_run_has_written_is_empty(self, tmp_path):
-        assert recorded_steps(tmp_path / "nested" / "deeper" / "steps.db") == {}
-
-
 @dataclasses.dataclass(frozen=True)
 class _Verdict:
     """A non-JSON result, to pin that the log is not limited to JSON types."""
 
     passed: bool
     note: str
+
+
+class Judge(Agent):
+    """Returns a dataclass."""
+
+    @Template.define
+    def rule(self, case: str) -> _Verdict:
+        """Rule on: {case}"""
+        raise NotHandled
 
 
 class TestResume:
@@ -637,9 +620,6 @@ class TestResume:
             pytest.raises(ChoreographyError),
         ):
             run(failing.run_async(architect=architect, coder=coder))
-
-        # Only the step that succeeded was recorded.
-        assert recorded_steps(log) == {"step-0000": "P"}
 
         result, mock = choreograph(
             _plan_then_implement,
@@ -710,7 +690,9 @@ class TestResume:
         assert result == ["code(a)", "cached b", "code(c)", "cached d", "code(e)"]
         assert len([c for c in mock.calls if c.endswith(".implement")]) == 3
 
-    def test_a_failed_step_is_not_recorded(self, tmp_path):
+    def test_a_failed_step_runs_again_rather_than_replaying(self, tmp_path):
+        """Nothing is recorded for a step that raised, so the next run has no
+        cached answer to reach for and simply retries it."""
         coder = Coder(agent_id="coder")
         log = tmp_path / "steps.db"
 
@@ -724,9 +706,62 @@ class TestResume:
         ):
             run(choreo.run_async(coder=coder))
 
-        assert recorded_steps(log) == {}
+        result, mock = choreograph(
+            program, [coder], {"implement": "C"}, log=log, coder=coder
+        )
+        assert result == "C"
+        assert mock.calls == ["coder.implement"]
 
-    def test_clearing_the_log_starts_over(self, tmp_path):
+    def test_a_dataclass_result_survives_a_resume(self, tmp_path):
+        """Results are pickled rather than JSON-encoded, so a step may return
+        anything a template can decode to."""
+        judge = Judge(agent_id="judge")
+        coder = Coder(agent_id="coder")
+        log = tmp_path / "steps.db"
+        verdict = _Verdict(passed=False, note="needs work")
+
+        async def program(judge, coder):
+            ruling = await step(judge.rule, "the case")
+            assert ruling == verdict
+            return await step(coder.implement, ruling.note)
+
+        choreograph(
+            program,
+            [judge, coder],
+            {"rule": verdict, "implement": "C"},
+            log=log,
+            judge=judge,
+            coder=coder,
+        )
+        # The second run gets its ruling from the log, dataclass and all.
+        result, mock = choreograph(
+            program,
+            [judge, coder],
+            {},
+            mock=FailingMockLLM({}, fail_on={"judge.rule", "coder.implement"}),
+            log=log,
+            judge=judge,
+            coder=coder,
+        )
+        assert result == "C"
+        assert mock.calls == []
+
+    def test_a_log_in_a_directory_that_does_not_exist_yet(self, tmp_path):
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = tmp_path / "nested" / "deeper" / "steps.db"
+
+        result, _ = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P", "implement": "C"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+        assert result == "C"
+        assert log.exists()
+
+    def test_deleting_the_log_starts_over(self, tmp_path):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
         log = tmp_path / "steps.db"
 

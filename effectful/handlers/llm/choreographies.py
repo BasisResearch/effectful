@@ -30,8 +30,7 @@ construction.
 Results live in memory, so by default an interrupted run starts over. Give
 `Choreography` a *log* path and each step is written to SQLite as it completes;
 a later run over the same path replays those results and resumes at the first
-step that never finished, and `recorded_steps` reads back how far it got.
-(Agent *history* is a separate matter -- give an
+step that never finished. (Agent *history* is a separate matter -- give an
 `~effectful.handlers.llm.template.Agent` an ``agent_id`` and install
 `~effectful.handlers.llm.completions.SQLitePersister` to checkpoint it.)
 
@@ -83,91 +82,37 @@ Step IDs are allocated when `step`/`scatter` is *called*, not when the returned
 awaitable is *awaited*, so the IDs in a `asyncio.gather` are deterministic and
 agree across agents.
 
-## Example -- sequential choreography with a review loop
+## Writing one
 
-::
-
-    from typing import Literal, TypedDict
-
-    from effectful.handlers.llm import Agent, Template
-    from effectful.handlers.llm.completions import LiteLLMProvider, RetryLLMHandler
-    from effectful.handlers.llm.choreographies import Choreography, scatter, step
-    from effectful.ops.semantics import handler
-
-    class ReviewResult(TypedDict):
-        verdict: Literal["PASS", "NEEDS_FIXES"]
-        feedback: str
-
-    class Architect(Agent):
-        \"\"\"You are a software architect.\"\"\"
-
-        @Template.define
-        def plan_modules(self, project_spec: str) -> str:
-            \"\"\"Break this project into modules: {project_spec}\"\"\"
-
-    class Coder(Agent):
-        \"\"\"You are a Python developer.\"\"\"
-
-        @Template.define
-        def implement_module(self, spec: str) -> str:
-            \"\"\"Implement the module: {spec}\"\"\"
-
-    class Reviewer(Agent):
-        \"\"\"You are a code reviewer.\"\"\"
-
-        @Template.define
-        def review_code(self, code: str) -> ReviewResult:
-            \"\"\"Review this code: {code}\"\"\"
+A choreography is an ``async`` function whose parameters are the agents. It
+reads as the workflow, from nobody's point of view in particular::
 
     async def build_codebase(project_spec, architect, coder, reviewer):
         plan = await step(architect.plan_modules, project_spec)
-        code = await step(coder.implement_module, plan)
-        while True:
-            result = await step(reviewer.review_code, code)
-            if result["verdict"] == "PASS":
-                return code
-            code = await step(coder.implement_module, result["feedback"])
-
-    architect = Architect(agent_id="architect")
-    coder = Coder(agent_id="coder")
-    reviewer = Reviewer(agent_id="reviewer")
-
-    choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
-
-    # Handlers come from the enclosing context -- every agent task inherits
-    # them, and so does every worker thread they call into.
-    with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
-        result = choreo.run(
-            project_spec="Build a URL slugify library",
-            architect=architect,
-            coder=coder,
-            reviewer=reviewer,
-        )
-
-## Example -- parallel scatter across multiple coders
-
-::
-
-    async def build_parallel(project_spec, architect, coder, reviewer):
-        plan = await step(architect.plan_modules, project_spec)
-        # Each module goes to whichever coder is free.
         codes = await scatter(
             plan["modules"], coder,
             lambda c, mod: step(c.implement_module, str(mod)),
         )
         return [await step(reviewer.review_code, code) for code in codes]
 
+Hand it the agents and run it. A role may be filled by several agents, which
+is what gives `scatter` a pool to hand work to::
+
     choreo = Choreography(
-        build_parallel, agents=[architect, coder1, coder2, coder3, reviewer]
+        build_codebase,
+        agents=[architect, coder1, coder2, reviewer],
+        log="./state/steps.db",   # optional; resume where an earlier run stopped
     )
     with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
-        # Pass a list for a role -- scatter distributes across all three coders.
         reviews = choreo.run(
-            project_spec="Build textkit with slugify, wrap, and redact modules",
+            project_spec="Build a URL slugify library",
             architect=architect,
-            coder=[coder1, coder2, coder3],
+            coder=[coder1, coder2],
             reviewer=reviewer,
         )
+
+``docs/source/llm_examples/basics/multi_agent.py`` is a complete, runnable
+version: agents with tools, a review-and-fix loop, and resumption.
 
 """
 
@@ -197,42 +142,6 @@ class ChoreographyError(Exception):
 # ── Shared step state ─────────────────────────────────────────────
 
 
-def recorded_steps(log: str | os.PathLike[str]) -> dict[str, Any]:
-    """Every step recorded in the log at *log*, by step ID.
-
-    The easiest way to see how far a run got, and the only way to read the
-    results back: they are pickled, so the database is opaque to ``sqlite3`` on
-    the command line.
-
-    >>> import pathlib, tempfile
-    >>> log = pathlib.Path(tempfile.mkdtemp()) / "steps.db"
-    >>> recorded_steps(log)
-    {}
-    """
-    with _connect(log) as conn:
-        rows = conn.execute("SELECT id, result FROM steps").fetchall()
-    return {step_id: pickle.loads(blob) for step_id, blob in rows}
-
-
-def _connect(log: str | os.PathLike[str]) -> Any:
-    """A connection to the log at *log*, closing on exit, in autocommit mode.
-
-    Creates the database if it is not there yet, so reading a log that no run
-    has written is an empty result rather than an error. Autocommit because
-    every write is a single statement: there is nothing to group into a
-    transaction, and a step's result is durable the moment it is written.
-    """
-    path = pathlib.Path(log)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path), isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
-    conn.execute(
-        "CREATE TABLE IF NOT EXISTS steps (id TEXT PRIMARY KEY, result BLOB NOT NULL)"
-    )
-    return contextlib.closing(conn)
-
-
 class _Steps:
     """The shared state of one choreography run.
 
@@ -256,8 +165,25 @@ class _Steps:
         self._work: dict[str, asyncio.Queue[int]] = {}
         self._log = log
         if log is not None:
-            with _connect(log):
-                pass  # create the database now rather than mid-run
+            # Once per run, rather than on every step that gets recorded.
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with self._connect() as conn:
+                conn.execute(
+                    "CREATE TABLE IF NOT EXISTS steps "
+                    "(id TEXT PRIMARY KEY, result BLOB NOT NULL)"
+                )
+
+    def _connect(self) -> contextlib.AbstractContextManager[sqlite3.Connection]:
+        """A connection to the log, closing on exit, in autocommit mode.
+
+        Autocommit because every write is a single statement: there is nothing
+        to group into a transaction, and a step's result is durable the moment
+        it is written.
+        """
+        conn = sqlite3.connect(str(self._log), isolation_level=None)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        return contextlib.closing(conn)
 
     def result(self, step_id: str) -> asyncio.Future:
         """The future holding *step_id*'s result."""
@@ -275,7 +201,7 @@ class _Steps:
         about.
         """
         if self._log is not None:
-            with _connect(self._log) as conn:
+            with self._connect() as conn:
                 conn.execute(
                     "INSERT OR REPLACE INTO steps (id, result) VALUES (?, ?)",
                     (step_id, pickle.dumps(value)),
@@ -286,12 +212,13 @@ class _Steps:
         """Pre-resolve the steps an earlier run recorded, and return how many."""
         if self._log is None:
             return 0
-        recorded = recorded_steps(self._log)
-        for step_id, value in recorded.items():
+        with self._connect() as conn:
+            rows = conn.execute("SELECT id, result FROM steps").fetchall()
+        for step_id, blob in rows:
             future = self.result(step_id)
             if not future.done():
-                future.set_result(value)
-        return len(recorded)
+                future.set_result(pickle.loads(blob))
+        return len(rows)
 
     def work(self, step_id: str, results: Sequence[asyncio.Future]) -> asyncio.Queue:
         """The queue of item indices for the scatter at *step_id*.
@@ -346,7 +273,12 @@ def step[**P, T](
     another agent's template is refused, since a scatter item is work one agent
     took on alone.
 
-    Unhandled, this is `asyncio.to_thread`.
+    Unhandled -- outside any choreography -- this is `asyncio.to_thread`, so a
+    choreographic program is still runnable on its own, one step after another:
+
+    >>> import asyncio
+    >>> asyncio.run(step(str.upper, "a step is a call, until it is projected"))
+    'A STEP IS A CALL, UNTIL IT IS PROJECTED'
     """
     return asyncio.to_thread(template, *args, **kwargs)
 
@@ -568,10 +500,11 @@ class Choreography:
         fresh path, whenever the program changes.
 
     Results are pickled, which is what lets a step return a dataclass or any
-    other decoded value rather than only JSON, and is why `recorded_steps` is
-    the way to read a log back. It is a cache of your own run, read with the
-    same trust as `~effectful.handlers.llm.completions.SQLitePersister`'s
-    checkpoints.
+    other decoded value rather than only JSON. A log is a cache of your own
+    run, read back with the same trust as
+    `~effectful.handlers.llm.completions.SQLitePersister`'s checkpoints -- and
+    read back only by running the choreography again, since a step ID means
+    nothing without the program that assigned it.
 
     Args:
         program: The choreographic ``async`` function. All agents run it.

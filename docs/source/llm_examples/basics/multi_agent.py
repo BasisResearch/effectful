@@ -47,7 +47,6 @@ from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
-    recorded_steps,
     scatter,
     step,
 )
@@ -337,6 +336,8 @@ def main() -> None:
     log = args.workspace / ".state" / "steps.db"
     if args.restart:
         log.unlink(missing_ok=True)
+    # Ask before building the choreography, which creates the log if it is new.
+    resuming = log.exists()
 
     # Tasks, the thread pool and cancellation on failure are all handled for
     # you; the model handlers come from the harness.
@@ -344,10 +345,7 @@ def main() -> None:
         build_project, agents=[architect, *coders, *reviewers], log=log
     )
 
-    done = len(recorded_steps(log))
-    print(
-        f"Starting multi-agent build{f' ({done} steps already done)' if done else ''}"
-    )
+    print(f"{'Resuming' if resuming else 'Starting'} multi-agent build")
     try:
         reviews = choreo.run(
             project_spec=args.project_spec,
