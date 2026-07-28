@@ -959,8 +959,15 @@ class PythonRepl(ObjectInterpretation):
     @Operation.define
     @classmethod
     def repl_history(cls) -> list[str]:
-        """This REPL session's error-free executed snippets, in order."""
-        raise NotImplementedError("No handler")
+        """This REPL session's error-free executed snippets, in order.
+
+        Empty by default: unlike the tool operations above, this one is asked for
+        by a *decoder* (`Encodable[CodeType]`, to type-check a snippet against the
+        session it will run in), which can be reached with no REPL in scope at all
+        -- decoding a code object outside a managed `PythonRepl` call. "No session"
+        is a meaningful answer there (no prior snippets), not a missing handler.
+        """
+        return []
 
     @implements(call_system)
     def _call_system(self, template, tool_types=frozenset()):

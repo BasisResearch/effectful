@@ -338,18 +338,15 @@ def test_decode_with_anchor_rejects_non_nestable():
             )
 
 
-def test_decode_without_anchor_allows_non_nestable():
-    # No anchor -> no splice -> the scan is skipped, and the star import is legal at
-    # the module level where the code is exec'd. So it decodes and runs fine.
-    with handler(UnsafeEvalProvider()):
-        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
-        fn = ta.validate_python(
-            SynthesizedFunction(
-                module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
-            ),
-            context={},
+def test_decode_without_anchor_still_rejects_non_nestable():
+    # The splice-time scan is anchor-conditional, but `SynthesizedFunction` states the
+    # no-star-import rule to the model as an unconditional constraint on `module_code`
+    # -- so it is enforced unconditionally too, and the anchorless path rejects it just
+    # as the spliced one does (here at model validation, before any provider runs).
+    with pytest.raises(pydantic.ValidationError):
+        SynthesizedFunction(
+            module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
         )
-        assert callable(fn)
 
 
 # ============================================================================
@@ -660,6 +657,268 @@ def test_restricted_exec_print_captured_to_stdout():
     output-capturing callers see it (rather than NameError on `_print_`)."""
     out = _restricted_run("print('hi')", {}, capture=True)
     assert out == "hi\n"
+
+
+# ============================================================================
+# What `RestrictedPythonPolicy` allows, and what the sandbox still refuses
+#
+# The two halves of one trade: generated code gets to be ordinary modern Python
+# (upstream RestrictedPython rejects most of the first list outright), and none of
+# that widens the reach of the second.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        # Rejected by upstream `RestrictingNodeTransformer`, allowed here.
+        (
+            "annotated assignment",
+            "def f() -> int:\n    t: int = 2\n    return t\nR = f()",
+        ),
+        ("private helper", "def _dbl(x: int) -> int:\n    return 2 * x\nR = _dbl(1)"),
+        (
+            "nonlocal",
+            "def f() -> int:\n    n = 0\n    def bump() -> None:\n        nonlocal n\n"
+            "        n += 1\n    bump()\n    bump()\n    return n\nR = f()",
+        ),
+        ("augmented item assignment", "a = [0, 1]\na[0] += 2\nR = a[0]"),
+        (
+            "augmented attribute assignment",
+            "class C:\n    v = 0\nc = C()\nc.v += 2\nR = c.v",
+        ),
+        (
+            "dataclass",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\nR = P(2).x",
+        ),
+        (
+            "dunder methods",
+            "class B:\n    def __len__(self) -> int:\n        return 2\nR = len(B())",
+        ),
+        (
+            "super",
+            "class A:\n    def __init__(self) -> None:\n        self.x = 2\n"
+            "class B(A):\n    def __init__(self) -> None:\n        super().__init__()\nR = B().x",
+        ),
+        (
+            "type alias",
+            "type Row = list[int]\ndef f(r: Row) -> int:\n    return r[0]\nR = f([2])",
+        ),
+        # Broken by the missing runtime guards, rather than by the policy.
+        ("subscripting", "a = [0, 1, 2]\nR = a[2]"),
+        ("slicing", "R = len([0, 1, 2][1:])"),
+        ("tuple unpacking", "a, b = (1, 1)\nR = a + b"),
+        ("augmented assignment", "n = 0\nfor i in [1, 1]:\n    n += i\nR = n"),
+        ("starred call", "R = max(*[1, 2])"),
+        ("guarded import", "import math\nR = math.isqrt(5)"),
+        (
+            "from-import",
+            "from itertools import islice\nR = len(list(islice([1, 2, 3], 2)))",
+        ),
+        ("extended builtins", "R = sum(sorted(set(map(int, ['2', '2'])))) "),
+        ("bytearray", "b = bytearray(b'ab')\nb[0] = 99\nR = len(bytes(b))"),
+        ("memoryview", "R = len(bytes(memoryview(b'xyz')[1:]))"),
+        ("base64", "import base64\nR = len(base64.b64decode(base64.b64encode(b'hi')))"),
+        ("struct", "import struct\nR = struct.unpack('<H', struct.pack('<H', 2))[0]"),
+        ("csv", "import csv\nR = int(list(csv.reader(['a,b', '1,2']))[1][1])"),
+        (
+            "__slots__",
+            "class P:\n    __slots__ = ('x',)\n"
+            "    def __init__(self) -> None:\n        self.x = 2\nR = P().x",
+        ),
+        ("__all__", "__all__ = ['f']\ndef f() -> int:\n    return 2\nR = f()"),
+        # `str.format` -- allowed as long as no field reaches past its argument.
+        ("str.format", "R = int('{}'.format(2))"),
+        ("str.format keyword", "R = int('{n}'.format(n=2))"),
+        ("str.format nested spec", "R = int('{0:{1}}'.format(2, 'd'))"),
+        ("str.format_map", "R = int('{v}'.format_map({'v': 2}))"),
+        ("str.format unbound", "R = int(str.format('{0}', 2))"),
+        # `match` -- every pattern kind, since each is a separate visitor.
+        (
+            "match literal",
+            "match 1:\n    case 1:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match singleton",
+            "match None:\n    case None:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match or",
+            "match 3:\n    case 1 | 3:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        ("match capture", "match 2:\n    case x:\n        R = x"),
+        (
+            "match guard",
+            "match 9:\n    case x if x > 5:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        ("match sequence", "match [1, 1]:\n    case [a, b]:\n        R = a + b"),
+        ("match star", "match [2, 9, 9]:\n    case [first, *rest]:\n        R = first"),
+        ("match as", "match [1]:\n    case [1] as hit:\n        R = len(hit) + 1"),
+        (
+            "match mapping",
+            "match {'k': 1, 'z': 0}:\n    case {'k': v, **rest}:\n        R = v + len(rest)",
+        ),
+        (
+            "match class by keyword",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\n    y: int\n"
+            "match P(0, 2):\n    case P(x=0, y=y):\n        R = y\n    case _:\n        R = 0",
+        ),
+        (
+            "match class by position",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\n    y: int\n"
+            "match P(0, 2):\n    case P(0, y):\n        R = y\n    case _:\n        R = 0",
+        ),
+        (
+            "match dotted value",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n    BLUE = 2\n"
+            "match C.RED:\n    case C.RED:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match nested",
+            "match {'p': [1, {'q': 1}]}:\n    case {'p': [a, {'q': b}]}:\n        R = a + b",
+        ),
+    ],
+)
+def test_restricted_allows_ordinary_python(label, source):
+    """Each of these is code a model writes without thinking twice; every one of
+    them fails to run under stock RestrictedPython."""
+    ns: dict = {}
+    _restricted_run(source, ns)
+    assert ns["R"] == 2, label
+
+
+def test_restricted_annotations_are_not_stringified():
+    """Annotations evaluate to the objects the source names.
+
+    `compile_restricted` compiles without ``dont_inherit`` from a module that does
+    ``from __future__ import annotations``, so its future flag leaks in and every
+    annotation in generated code becomes a string -- which silently changes what
+    `dataclasses`, `typing.get_type_hints` and anything else reading annotations
+    see. The provider recompiles to keep the source's own semantics.
+    """
+    ns: dict = {}
+    _restricted_run("class P:\n    x: int\n", ns)
+    assert ns["P"].__annotations__ == {"x": int}
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("attribute escape to type", "R = ().__class__.__bases__[0].__subclasses__()"),
+        ("function globals", "def f() -> None:\n    pass\nR = f.__globals__"),
+        ("dynamic dunder getattr", "R = getattr((), '__class__')"),
+        (
+            "frame via traceback",
+            "try:\n    raise ValueError\nexcept ValueError as e:\n    R = e.__traceback__",
+        ),
+        ("generator frame", "def g():\n    yield 1\nR = g().gi_frame"),
+        ("open", "R = open('/etc/passwd').read()"),
+        ("import os", "import os\nR = os.name"),
+        ("import sys", "import sys\nR = sys.modules"),
+        ("import importlib", "import importlib\nR = importlib"),
+        ("dunder import", "R = __import__('os')"),
+        ("exec", "R = exec('1')"),
+        ("eval", "R = eval('1')"),
+        ("compile", "R = compile('1', '<s>', 'eval')"),
+        ("globals", "R = globals()"),
+        ("star import", "from math import *\nR = pi"),
+        ("rebind a guard", "_getattr_ = getattr\nR = 1"),
+        ("rebind builtins", "__builtins__ = 1\nR = 1"),
+        ("async", "async def f() -> None:\n    pass\nR = 1"),
+        # `io.open` *is* `builtins.open`, so allowing `io` would undo omitting it;
+        # `numpy.load(..., allow_pickle=True)` executes arbitrary code.
+        ("import io", "import io\nR = io.open('/etc/passwd')"),
+        ("import numpy", "import numpy\nR = numpy"),
+        # The format traversals that are the reason RestrictedPython refuses
+        # `str.format` outright: they happen inside CPython's formatter, where the
+        # `_getattr_`/`_getitem_` rewriting cannot see them.
+        ("format reaches an attribute", "R = '{0.__class__}'.format(())"),
+        ("format reaches the type hierarchy", "R = '{0.__class__.__mro__}'.format(())"),
+        ("format reaches an item", "R = '{0[0]}'.format([1, 2])"),
+        ("format reaches from a nested spec", "R = '{0:{1.__class__}}'.format(1, 2)"),
+        ("format_map reaches an attribute", "R = '{v.__class__}'.format_map({'v': 1})"),
+        ("unbound format reaches", "R = str.format('{0.__class__}', ())"),
+        ("string.Formatter", "import string\nR = string.Formatter().format('{0}', 1)"),
+        # A pattern reads attributes of the subject outside the `_getattr_`
+        # rewriting, so the names it can read are checked in the AST instead. The
+        # dotted-name forms are the ones Python's own parser accepts.
+        (
+            "class pattern reads a dunder",
+            "match 1:\n    case object(__class__=cls):\n        R = cls\n    case _:\n        R = 0",
+        ),
+        (
+            "class pattern reads a frame attribute",
+            "match 1:\n    case object(gi_frame=g):\n        R = g\n    case _:\n        R = 0",
+        ),
+        (
+            "value pattern reaches a dunder",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n"
+            "match 1:\n    case C.__class__:\n        R = 1\n    case _:\n        R = 0",
+        ),
+        (
+            "mapping key reaches a dunder",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n"
+            "match {}:\n    case {C.__class__: v}:\n        R = v\n    case _:\n        R = 0",
+        ),
+        (
+            "capture binds a guard name",
+            "match 1:\n    case _getattr_:\n        R = 1",
+        ),
+        (
+            "star capture binds a guard name",
+            "match [1, 2]:\n    case [x, *_getattr_]:\n        R = 1\n    case _:\n        R = 0",
+        ),
+    ],
+)
+def test_restricted_still_refuses_the_way_out(label, source):
+    """The relaxations above are about what generated code may *say*, not about
+    what it may *reach*: the interpreter's internals, the import system, the
+    filesystem and the compiler are all still closed. Each of these fails at
+    compile time (the policy) or at run time (the guarded environment)."""
+    with pytest.raises(Exception):
+        _restricted_run(source, {})
+
+
+def test_restricted_runs_doctests_under_the_same_policy():
+    """A docstring is model output too, so its examples run restricted.
+
+    Left to `doctest`, the examples are compiled by the built-in `compile` and run
+    with whatever globals they are handed -- so an escape written in a docstring
+    would execute with nothing restricting it. Here the identical function passes
+    its doctests under no provider and fails them under `RestrictedEvalProvider`,
+    because the example itself is rejected by the policy.
+    """
+
+    def peek(x: int) -> int:
+        """Reach the type hierarchy from an example.
+
+        >>> ().__class__ is tuple
+        True
+        """
+        return x
+
+    run_doctests(peek, {"peek": peek})  # unrestricted: the example is just Python
+    with handler(RestrictedEvalProvider()):
+        with pytest.raises(TypeError, match="doctest failed"):
+            run_doctests(peek, {"peek": peek})
+
+
+def test_restricted_doctest_can_print_and_import():
+    """The restricted doctest environment is still a usable one: `print` works (the
+    transformer injects its collector only into modules and functions, never into
+    the `single`-mode code an example compiles to) and allow-listed imports work."""
+
+    def summarize(xs: list[int]) -> int:
+        """Total ``xs``.
+
+        >>> import math
+        >>> print(math.isqrt(4), summarize([1, 2]))
+        2 3
+        """
+        return sum(xs)
+
+    with handler(RestrictedEvalProvider()):
+        run_doctests(summarize, {"summarize": summarize})
 
 
 class TestRunDoctests:
