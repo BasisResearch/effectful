@@ -22,9 +22,9 @@ script in the same context::
     python -m effectful.handlers.llm.harness <path_to_script.py> <harness_flags> <script_flags>
 
 Harness flags (``--model``, ``--num-retries``, ``--langfuse``, ``--render``,
-``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``, ``--pdb``,
-``--persist-db``) are consumed here; every other flag is passed through to the
-script unchanged.
+``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``,
+``--eval-provider``, ``--pdb``, ``--persist-db``) are consumed here; every other
+flag is passed through to the script unchanged.
 """
 
 import argparse
@@ -51,8 +51,16 @@ from effectful.handlers.llm.completions import (
     SystemPromptDumper,
     TerminalRenderer,
 )
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
 from effectful.ops.semantics import handler
+
+# The providers that run model-authored Python, by the name the CLI knows them
+# under: `unsafe` runs it with the plain interpreter, `restricted` under
+# RestrictedPython's language subset and a guarded environment.
+EVAL_PROVIDERS: dict[str, typing.Callable[[], typing.Any]] = {
+    "unsafe": UnsafeEvalProvider,
+    "restricted": RestrictedEvalProvider,
+}
 
 
 class harness(contextlib.ContextDecorator):
@@ -65,7 +73,8 @@ class harness(contextlib.ContextDecorator):
     1. `LiteLLMProvider` -- the model backend.
     2. `TerminalRenderer` -- live-render the streaming history (if ``render``).
     3. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
-    4. `UnsafeEvalProvider` and `PythonRepl` -- run model-authored Python.
+    4. The ``eval_provider`` (`EVAL_PROVIDERS`) and `PythonRepl` -- run
+       model-authored Python.
     5. `SynthesizeAndCall` -- synthesize a function and call it.
     6. `RetryLLMHandler` -- retry malformed/failing model output.
     7. `LexicalReaders` -- expose lexically-scoped tools to the model.
@@ -89,6 +98,8 @@ class harness(contextlib.ContextDecorator):
             persisted `~effectful.handlers.llm.template.Agent`'s (one
             constructed with an explicit `agent_id`) state and history via
             `~effectful.handlers.llm.completions.SQLitePersister`.
+        eval_provider: Which provider runs model-authored Python -- a key of
+            `EVAL_PROVIDERS` (``"unsafe"`` or ``"restricted"``).
     """
 
     def __init__(
@@ -104,6 +115,7 @@ class harness(contextlib.ContextDecorator):
         api_base: str | None = None,
         api_key: str | None = None,
         persist_db: str | os.PathLike[str] | None = None,
+        eval_provider: str = "unsafe",
     ) -> None:
         self.model = model
         self.num_retries = num_retries
@@ -115,6 +127,7 @@ class harness(contextlib.ContextDecorator):
         self.api_base = api_base
         self.api_key = api_key
         self.persist_db = persist_db
+        self.eval_provider = eval_provider
 
     def __enter__(self) -> "harness":
         stack = contextlib.ExitStack()
@@ -140,7 +153,7 @@ class harness(contextlib.ContextDecorator):
             stack.enter_context(
                 handler(SystemPromptDumper(path=pathlib.Path(self.dump_system_prompt)))
             )
-        stack.enter_context(handler(UnsafeEvalProvider()))
+        stack.enter_context(handler(EVAL_PROVIDERS[self.eval_provider]()))
         stack.enter_context(handler(PythonRepl()))
         stack.enter_context(handler(SynthesizeAndCall()))
         stack.enter_context(
@@ -236,6 +249,13 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Reasoning effort forwarded to litellm.completion",
     )
     parser.add_argument(
+        "--eval-provider",
+        type=str,
+        default="unsafe",
+        choices=sorted(EVAL_PROVIDERS),
+        help="Provider that runs model-authored Python",
+    )
+    parser.add_argument(
         "--pdb",
         action="store_true",
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
@@ -277,6 +297,7 @@ def main(argv: list[str] | None = None) -> None:
         if ns.model == "openai/deepseek-v4-flash"
         else None,
         persist_db=ns.persist_db,
+        eval_provider=ns.eval_provider,
     ):
         if ns.pdb:
             try:
