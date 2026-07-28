@@ -22,12 +22,12 @@ from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
-    StepLog,
-    call,
+    EndpointProjection,
+    _Steps,
     scatter,
     step,
 )
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 
@@ -149,8 +149,9 @@ def announce(text: str) -> str:
 def choreograph(program, agents, responses, *, mock=None, log=None, **kwargs):
     """Run *program* over *agents* with a mock LLM; return ``(result, mock)``."""
     mock = mock if mock is not None else MockLLM(responses)
-    choreo = Choreography(program, agents=agents, handlers=[mock], log=log)
-    return run(choreo.run_async(**kwargs)), mock
+    choreo = Choreography(program, agents=agents, log=log)
+    with handler(mock):
+        return run(choreo.run_async(**kwargs)), mock
 
 
 async def _plan_then_implement(architect, coder):
@@ -162,6 +163,26 @@ async def _plan_then_implement(architect, coder):
 
 
 class TestChoreography:
+    def test_a_choreography_is_called_like_its_program(self):
+        """`Choreography` is the program made runnable: same arguments,
+        positional or keyword, and the same result -- awaited for you."""
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+
+        async def program(spec: str, architect: Architect, coder: Coder) -> str:
+            plan = await step(architect.plan, spec)
+            return await step(coder.implement, plan)
+
+        choreo = Choreography(program, agents=[architect, coder])
+        with handler(MockLLM({"plan": "P", "implement": "C"})):
+            positional = choreo("build it", architect, coder)
+            by_keyword = choreo("build it", architect=architect, coder=coder)
+
+        assert positional == by_keyword == "C"
+        # mypy infers `str` here from the program's return type; the assert
+        # documents it, and the call above would not type check with the
+        # wrong arguments.
+        assert isinstance(positional, str)
+
     def test_each_agent_executes_only_its_own_steps(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
 
@@ -301,19 +322,21 @@ class TestChoreography:
             code = await step(coder.implement, "spec")
             return await step(stranger.review, code)
 
-        choreo = Choreography(program, agents=[coder], handlers=[MockLLM({})])
-        with pytest.raises(ChoreographyError, match="not part of this choreography"):
+        choreo = Choreography(program, agents=[coder])
+        with (
+            handler(MockLLM({})),
+            pytest.raises(ChoreographyError, match="not part of this choreography"),
+        ):
             run(choreo.run_async(coder=coder, stranger=stranger))
 
     def test_agent_failure_becomes_a_choreography_error(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
 
-        with pytest.raises(ChoreographyError, match="'coder' failed"):
+        with (
+            handler(FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError, match="'coder' failed"),
+        ):
             run(choreo.run_async(architect=architect, coder=coder))
 
     def test_a_failed_run_leaves_no_unretrieved_futures(self, caplog):
@@ -321,14 +344,13 @@ class TestChoreography:
         before they read its exception. Asyncio complains about an exception
         nobody retrieved unless the failing side reads it first."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({}, fail_on={"arch.plan"})],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
 
         with caplog.at_level(logging.DEBUG, logger="asyncio"):
-            with pytest.raises(ChoreographyError):
+            with (
+                handler(FailingMockLLM({}, fail_on={"arch.plan"})),
+                pytest.raises(ChoreographyError),
+            ):
                 run(choreo.run_async(architect=architect, coder=coder))
             gc.collect()
 
@@ -336,15 +358,14 @@ class TestChoreography:
 
     def test_repeated_runs_are_deterministic(self):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        choreo = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[(mock := MockLLM({"plan": "P", "implement": "C"}))],
-        )
+        choreo = Choreography(_plan_then_implement, agents=[architect, coder])
+        mock = MockLLM({"plan": "P", "implement": "C"})
 
-        results = [
-            run(choreo.run_async(architect=architect, coder=coder)) for _ in range(5)
-        ]
+        with handler(mock):
+            results = [
+                run(choreo.run_async(architect=architect, coder=coder))
+                for _ in range(5)
+            ]
 
         assert results == ["C"] * 5
         # Results live for the duration of a run, so each run re-executes.
@@ -361,7 +382,7 @@ class TestScatter:
             return await scatter(
                 ["a", "b", "c", "d", "e"],
                 coder,
-                lambda c, item: call(c.implement, item),
+                lambda c, item: step(c.implement, item),
             )
 
         result, mock = choreograph(
@@ -392,7 +413,7 @@ class TestScatter:
 
         async def program(coder):
             return await scatter(
-                ["x", "y"], coder, lambda c, item: call(c.implement, item)
+                ["x", "y"], coder, lambda c, item: step(c.implement, item)
             )
 
         result, mock = choreograph(
@@ -406,7 +427,7 @@ class TestScatter:
         coder = Coder(agent_id="coder")
 
         async def program(coder):
-            return await scatter([], coder, lambda c, item: call(c.implement, item))
+            return await scatter([], coder, lambda c, item: step(c.implement, item))
 
         result, _ = choreograph(program, [coder], {}, coder=coder)
         assert result == []
@@ -429,8 +450,8 @@ class TestScatter:
 
         async def program(coder, tester):
             return await asyncio.gather(
-                scatter(["a"], coder, lambda c, item: call(c.implement, item)),
-                scatter(["b"], tester, lambda t, item: call(t.write_tests, item)),
+                scatter(["a"], coder, lambda c, item: step(c.implement, item)),
+                scatter(["b"], tester, lambda t, item: step(t.write_tests, item)),
             )
 
         (code, tests), _ = choreograph(
@@ -444,9 +465,37 @@ class TestScatter:
         assert code == ["code(a)"]
         assert tests == ["tests(b)"]
 
-    def test_step_inside_scatter_is_rejected(self):
-        """Per-item work is not a choreography step: allocating step IDs from
-        inside a scatter would desynchronise the agents."""
+    def test_a_step_inside_an_item_allocates_no_step_id(self):
+        """The item already is a step -- it has its own ID and its own place in
+        the log -- so a step inside it is just the call, and the choreography's
+        step counter is untouched by however many the item makes."""
+        coder = Coder(agent_id="coder")
+
+        async def two_calls(c, item):
+            first = await step(c.implement, item)
+            return await step(c.implement, first)
+
+        async def program(coder):
+            scattered = await scatter(["a", "b"], coder, two_calls)
+            after = await step(coder.implement, "after")
+            return scattered, after
+
+        (scattered, after), mock = choreograph(
+            program,
+            [coder],
+            {"implement": lambda template, args: f"<{args[0]}>"},
+            coder=coder,
+        )
+
+        assert scattered == ["<<a>>", "<<b>>"]
+        assert after == "<after>"
+        # Four calls inside the scatter, one step after it: the scatter is
+        # step-0000 and the step that follows is step-0001, not step-0005.
+        assert len(mock.calls) == 5
+
+    def test_an_item_may_not_step_on_another_agent(self):
+        """A scatter item is work one agent took on alone, so its templates
+        have to be its own -- nobody else is waiting to run them."""
         coder = Coder(agent_id="coder")
         reviewer = Reviewer(agent_id="rev")
 
@@ -455,9 +504,12 @@ class TestScatter:
                 ["a"], coder, lambda c, item: step(reviewer.review, item)
             )
 
-        choreo = Choreography(program, agents=[coder, reviewer], handlers=[MockLLM({})])
+        choreo = Choreography(program, agents=[coder, reviewer])
 
-        with pytest.raises(ChoreographyError, match="cannot be used inside scatter"):
+        with (
+            handler(MockLLM({})),
+            pytest.raises(ChoreographyError, match="belongs to 'rev'"),
+        ):
             run(choreo.run_async(coder=coder, reviewer=reviewer))
 
     def test_failure_inside_scatter_propagates(self):
@@ -465,66 +517,16 @@ class TestScatter:
 
         async def program(coder):
             return await scatter(
-                ["a", "b"], coder, lambda c, item: call(c.implement, item)
+                ["a", "b"], coder, lambda c, item: step(c.implement, item)
             )
 
-        choreo = Choreography(
-            program,
-            agents=coders,
-            handlers=[FailingMockLLM({}, fail_on={"coder-1.implement"})],
-        )
+        choreo = Choreography(program, agents=coders)
 
-        with pytest.raises(ChoreographyError, match="Simulated failure"):
+        with (
+            handler(FailingMockLLM({}, fail_on={"coder-1.implement"})),
+            pytest.raises(ChoreographyError, match="Simulated failure"),
+        ):
             run(choreo.run_async(coder=coders))
-
-    def test_scatter_outside_a_choreography_is_sequential(self):
-        coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
-        seen: list[str] = []
-
-        async def fake_call(agent, item):
-            seen.append(f"{agent.__agent_id__}:{item}")
-            return item.upper()
-
-        result = run(scatter(["a", "b", "c"], coders, fake_call))
-        assert result == ["A", "B", "C"]
-        assert seen == ["coder-1:a", "coder-2:b", "coder-1:c"]
-
-
-class TestManualProjection:
-    """Driving projections directly, without `Choreography.run_async`."""
-
-    def test_agents_outnumbering_worker_threads_still_finish(self):
-        """Four agents, one worker thread, a chain in which each waits on the
-        previous one. A waiting agent is a suspended coroutine, so it holds no
-        thread -- run agent-per-thread instead and this deadlocks."""
-        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
-        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
-        choreo = Choreography(_chain, agents=agents)
-
-        async def go():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                return await asyncio.gather(
-                    *(_drive(choreo, a, mock, pool, agents) for a in agents)
-                )
-
-        assert run(go()) == ["x!!!!"] * 4
-
-    def test_a_waiting_agent_sees_the_owners_failure(self):
-        """`asyncio.gather` does not cancel siblings when one raises, so a
-        waiting agent only learns of a failure if the failed step carries it."""
-        agents = [Coder(agent_id=f"coder-{i}") for i in range(2)]
-        mock = FailingMockLLM({}, fail_on={"coder-0.implement"})
-        choreo = Choreography(_chain, agents=agents)
-
-        async def go():
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-                return await asyncio.gather(
-                    *(_drive(choreo, a, mock, pool, agents) for a in agents),
-                    return_exceptions=True,
-                )
-
-        outcomes = run(go())
-        assert [type(o) for o in outcomes] == [RuntimeError, RuntimeError]
 
 
 async def _chain(coders):
@@ -534,40 +536,51 @@ async def _chain(coders):
     return value
 
 
-async def _drive(choreo, agent, mock, pool, coders):
-    projection = choreo.projection(agent, executor=pool)
-    with handler(mock), projection.activate():
-        return await _chain(coders)
+async def _drive(agents, steps, mock, pool):
+    """Run `_chain` as every agent at once, over one shared step state.
+
+    This is what `Choreography.run_async` does; spelling it out here is how
+    these tests get to choose the thread pool.
+    """
+
+    async def as_agent(agent):
+        projection = EndpointProjection(agent, steps, executor=pool)
+        with handler(mock), handler(projection):
+            return await _chain(agents)
+
+    return await asyncio.gather(*(as_agent(a) for a in agents), return_exceptions=True)
 
 
-class TestStepLog:
-    """The log on its own: what it stores and hands back."""
+class TestProjection:
+    """`EndpointProjection` on its own, driven without a `Choreography`."""
 
-    def test_round_trips_arbitrary_results(self, tmp_path):
-        log = StepLog(tmp_path / "steps.db")
-        values = {
-            "step-0000": "a string",
-            "step-0001": None,
-            "step-0002": {"verdict": "PASS", "feedback": ""},
-            "step-0003": _Verdict(passed=False, note="nope"),
-            "step-0004:0": [1, 2, 3],
-        }
-        for step_id, value in values.items():
-            log.record(step_id, value)
+    def test_agents_outnumbering_worker_threads_still_finish(self):
+        """Four agents, one worker thread, a chain in which each waits on the
+        previous one. A waiting agent is a suspended coroutine, so it holds no
+        thread -- run agent-per-thread instead and this deadlocks."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(4)]
+        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
 
-        assert log.load() == values
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return await _drive(agents, _Steps(), mock, pool)
 
-    def test_starts_empty_and_can_be_cleared(self, tmp_path):
-        log = StepLog(tmp_path / "steps.db")
-        assert log.load() == {}
-        log.record("step-0000", "x")
-        log.clear()
-        assert log.load() == {}
+        assert run(go()) == ["x!!!!"] * 4
 
-    def test_creates_missing_parent_directories(self, tmp_path):
-        log = StepLog(tmp_path / "nested" / "deeper" / "steps.db")
-        log.record("step-0000", "x")
-        assert StepLog(log.path).load() == {"step-0000": "x"}
+    def test_a_waiting_agent_sees_the_owners_failure(self):
+        """`asyncio.gather` does not cancel siblings when one raises, so a
+        waiting agent only learns of a failure if the failed step carries it.
+
+        `Choreography` runs its agents in a task group, which does cancel, so
+        this is the mechanism underneath rather than what a run relies on."""
+        agents = [Coder(agent_id=f"coder-{i}") for i in range(2)]
+        mock = FailingMockLLM({}, fail_on={"coder-0.implement"})
+
+        async def go():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                return await _drive(agents, _Steps(), mock, pool)
+
+        assert [type(o) for o in run(go())] == [RuntimeError, RuntimeError]
 
 
 @dataclasses.dataclass(frozen=True)
@@ -578,12 +591,21 @@ class _Verdict:
     note: str
 
 
+class Judge(Agent):
+    """Returns a dataclass."""
+
+    @Template.define
+    def rule(self, case: str) -> _Verdict:
+        """Rule on: {case}"""
+        raise NotHandled
+
+
 class TestResume:
-    """A run given a `StepLog` replays what an earlier run finished."""
+    """A run given a log path replays what an earlier run finished."""
 
     def test_a_second_run_calls_no_model_at_all(self, tmp_path):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         first, _ = choreograph(
             _plan_then_implement,
@@ -610,19 +632,14 @@ class TestResume:
         """The canonical case: a run dies partway through, and the next one
         re-uses what finished and redoes only what didn't."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
-        failing = Choreography(
-            _plan_then_implement,
-            agents=[architect, coder],
-            handlers=[FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})],
-            log=log,
-        )
-        with pytest.raises(ChoreographyError):
+        failing = Choreography(_plan_then_implement, agents=[architect, coder], log=log)
+        with (
+            handler(FailingMockLLM({"plan": "P"}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError),
+        ):
             run(failing.run_async(architect=architect, coder=coder))
-
-        # Only the step that succeeded was recorded.
-        assert log.load() == {"step-0000": "P"}
 
         result, mock = choreograph(
             _plan_then_implement,
@@ -647,7 +664,7 @@ class TestResume:
             _plan_then_implement,
             [architect, coder],
             {"plan": "P", "implement": "C"},
-            log=StepLog(path),
+            log=path,
             architect=architect,
             coder=coder,
         )
@@ -656,7 +673,7 @@ class TestResume:
             [architect, coder],
             {},
             mock=FailingMockLLM({}, fail_on={"arch.plan", "coder.implement"}),
-            log=StepLog(path),
+            log=path,
             architect=architect,
             coder=coder,
         )
@@ -668,13 +685,18 @@ class TestResume:
         """Interrupt a scatter over five modules and the next run implements
         only the ones that never finished."""
         coders = [Coder(agent_id=f"coder-{i}") for i in range(2)]
-        log = StepLog(tmp_path / "steps.db")
-        for index, value in [(1, "cached b"), (3, "cached d")]:
-            log.record(f"step-0000:{index}", value)
+        log = tmp_path / "steps.db"
+
+        async def prior_run():
+            steps = _Steps(log)
+            for index, value in [(1, "cached b"), (3, "cached d")]:
+                steps.resolve(f"step-0000:{index}", value)
+
+        run(prior_run())
 
         async def program(coder):
             return await scatter(
-                list("abcde"), coder, lambda c, item: call(c.implement, item)
+                list("abcde"), coder, lambda c, item: step(c.implement, item)
             )
 
         result, mock = choreograph(
@@ -688,27 +710,80 @@ class TestResume:
         assert result == ["code(a)", "cached b", "code(c)", "cached d", "code(e)"]
         assert len([c for c in mock.calls if c.endswith(".implement")]) == 3
 
-    def test_a_failed_step_is_not_recorded(self, tmp_path):
+    def test_a_failed_step_runs_again_rather_than_replaying(self, tmp_path):
+        """Nothing is recorded for a step that raised, so the next run has no
+        cached answer to reach for and simply retries it."""
         coder = Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         async def program(coder):
             return await step(coder.implement, "spec")
 
-        choreo = Choreography(
-            program,
-            agents=[coder],
-            handlers=[FailingMockLLM({}, fail_on={"coder.implement"})],
-            log=log,
-        )
-        with pytest.raises(ChoreographyError):
+        choreo = Choreography(program, agents=[coder], log=log)
+        with (
+            handler(FailingMockLLM({}, fail_on={"coder.implement"})),
+            pytest.raises(ChoreographyError),
+        ):
             run(choreo.run_async(coder=coder))
 
-        assert log.load() == {}
+        result, mock = choreograph(
+            program, [coder], {"implement": "C"}, log=log, coder=coder
+        )
+        assert result == "C"
+        assert mock.calls == ["coder.implement"]
 
-    def test_clearing_the_log_starts_over(self, tmp_path):
+    def test_a_dataclass_result_survives_a_resume(self, tmp_path):
+        """Results are pickled rather than JSON-encoded, so a step may return
+        anything a template can decode to."""
+        judge = Judge(agent_id="judge")
+        coder = Coder(agent_id="coder")
+        log = tmp_path / "steps.db"
+        verdict = _Verdict(passed=False, note="needs work")
+
+        async def program(judge, coder):
+            ruling = await step(judge.rule, "the case")
+            assert ruling == verdict
+            return await step(coder.implement, ruling.note)
+
+        choreograph(
+            program,
+            [judge, coder],
+            {"rule": verdict, "implement": "C"},
+            log=log,
+            judge=judge,
+            coder=coder,
+        )
+        # The second run gets its ruling from the log, dataclass and all.
+        result, mock = choreograph(
+            program,
+            [judge, coder],
+            {},
+            mock=FailingMockLLM({}, fail_on={"judge.rule", "coder.implement"}),
+            log=log,
+            judge=judge,
+            coder=coder,
+        )
+        assert result == "C"
+        assert mock.calls == []
+
+    def test_a_log_in_a_directory_that_does_not_exist_yet(self, tmp_path):
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "nested" / "deeper" / "steps.db"
+
+        result, _ = choreograph(
+            _plan_then_implement,
+            [architect, coder],
+            {"plan": "P", "implement": "C"},
+            log=log,
+            architect=architect,
+            coder=coder,
+        )
+        assert result == "C"
+        assert log.exists()
+
+    def test_deleting_the_log_starts_over(self, tmp_path):
+        architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
+        log = tmp_path / "steps.db"
 
         choreograph(
             _plan_then_implement,
@@ -718,7 +793,7 @@ class TestResume:
             architect=architect,
             coder=coder,
         )
-        log.clear()
+        log.unlink()
         _, mock = choreograph(
             _plan_then_implement,
             [architect, coder],
@@ -734,7 +809,7 @@ class TestResume:
         """A recorded ``None`` has to come back as a completed step, not as a
         step with nothing recorded for it."""
         architect, coder = Architect(agent_id="arch"), Coder(agent_id="coder")
-        log = StepLog(tmp_path / "steps.db")
+        log = tmp_path / "steps.db"
 
         async def program(architect, coder):
             plan = await step(architect.plan, "spec")
@@ -761,6 +836,59 @@ class TestResume:
 
         assert result == "C"
         assert mock.calls == []
+
+
+class TestPrimitivesAreOperations:
+    """`step`, `call` and `scatter` are ordinary `Operation`s, so they have
+    default rules outside a choreography and can be handled like anything
+    else inside one."""
+
+    def test_step_outside_a_choreography_just_calls(self):
+        bot = Coder(agent_id="solo")
+
+        async def go():
+            with handler(MockLLM({"implement": "code"})):
+                return await step(bot.implement, "spec")
+
+        assert run(go()) == "code"
+
+    def test_a_step_handler_can_forward(self):
+        """`fwd` works from a handler that returns an awaitable rather than
+        being a coroutine function, which is the shape every implementation of
+        these operations has to take -- `effectful` binds `fwd` around the
+        synchronous call, so a deferred body would run after it was gone."""
+        bot = Coder(agent_id="solo")
+        seen: list[str] = []
+
+        class Tracer(ObjectInterpretation):
+            @implements(step)
+            def _step(self, template, *args, **kwargs):
+                pending = fwd()
+
+                async def traced():
+                    result = await pending
+                    seen.append(f"{template.__name__} -> {result}")
+                    return result
+
+                return traced()
+
+        async def go():
+            with handler(MockLLM({"implement": "code"})), handler(Tracer()):
+                return await step(bot.implement, "spec")
+
+        assert run(go()) == "code"
+        assert seen == ["implement -> code"]
+
+    def test_scatter_outside_a_choreography_is_sequential(self):
+        coders = [Coder(agent_id="coder-1"), Coder(agent_id="coder-2")]
+        seen: list[str] = []
+
+        async def fake_call(agent, item):
+            seen.append(f"{agent.__agent_id__}:{item}")
+            return item.upper()
+
+        assert run(scatter(["a", "b", "c"], coders, fake_call)) == ["A", "B", "C"]
+        assert seen == ["coder-1:a", "coder-2:b", "coder-1:c"]
 
 
 class TestHandlerPropagation:

@@ -6,7 +6,7 @@ Demonstrates:
   executing the steps it owns and awaiting the ones it doesn't
 - ``scatter``: two coders share the implementation work and two reviewers share
   the reviews, each item going to whichever agent is free
-- ``StepLog``: interrupt the run and start it again, and the agents resume from
+- A step log: interrupt the run and start it again, and the agents resume from
   the last step that finished
 - Tools as ground truth: the reviewers run each module's tests rather than
   judging the code by reading it, so the fix loop turns on a fact
@@ -41,14 +41,13 @@ import json
 import pathlib
 import subprocess
 import sys
+from collections.abc import Sequence
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
 from effectful.handlers.llm.choreographies import (
     Choreography,
     ChoreographyError,
-    StepLog,
-    call,
     scatter,
     step,
 )
@@ -224,11 +223,15 @@ class ReviewerAgent(Agent):
 async def build_project(
     project_spec: str,
     architect: ArchitectAgent,
-    coder: CoderAgent,
-    reviewer: ReviewerAgent,
+    coder: CoderAgent | Sequence[CoderAgent],
+    reviewer: ReviewerAgent | Sequence[ReviewerAgent],
     max_rounds: int,
 ) -> list[ReviewResult]:
     """Choreographic program describing the full build workflow.
+
+    A role may be filled by one agent or by several: `scatter` hands each item
+    to whichever of them is free, which is why the coder and reviewer
+    parameters are typed to accept a pool.
 
     1. Architect breaks the project into module specs.
     2. Coders implement modules in parallel (scatter hands each to whoever is free).
@@ -244,7 +247,7 @@ async def build_project(
     await scatter(
         plan["modules"],
         coder,
-        lambda c, mod: call(c.implement_module, json.dumps(mod, indent=2)),
+        lambda c, mod: step(c.implement_module, json.dumps(mod, indent=2)),
     )
 
     # Step 3: review loop — keep fixing until the reviewers accept every module.
@@ -255,7 +258,7 @@ async def build_project(
         reviews: list[ReviewResult] = await scatter(
             plan["modules"],
             reviewer,
-            lambda r, mod: call(r.review_module, mod["module_path"], mod["test_path"]),
+            lambda r, mod: step(r.review_module, mod["module_path"], mod["test_path"]),
         )
 
         needs_fixes = [
@@ -269,7 +272,7 @@ async def build_project(
         await scatter(
             needs_fixes,
             coder,
-            lambda c, pair: call(
+            lambda c, pair: step(
                 c.implement_module,
                 json.dumps({**pair[0], "fix_feedback": pair[1]["feedback"]}, indent=2),
             ),
@@ -335,9 +338,11 @@ def main() -> None:
 
     # Steps completed by an earlier run are replayed instead of re-asking the
     # model, so an interrupted build resumes rather than starting over.
-    log = StepLog(args.workspace / ".state" / "steps.db")
+    log = args.workspace / ".state" / "steps.db"
     if args.restart:
-        log.clear()
+        log.unlink(missing_ok=True)
+    # Ask before building the choreography, which creates the log if it is new.
+    resuming = log.exists()
 
     # Tasks, the thread pool and cancellation on failure are all handled for
     # you; the model handlers come from the harness.
@@ -345,13 +350,10 @@ def main() -> None:
         build_project, agents=[architect, *coders, *reviewers], log=log
     )
 
-    done = len(log.load())
-    print(
-        f"Starting multi-agent build{f' ({done} steps already done)' if done else ''}"
-    )
+    print(f"{'Resuming' if resuming else 'Starting'} multi-agent build")
     try:
-        reviews = choreo.run(
-            project_spec=args.project_spec,
+        reviews = choreo(
+            args.project_spec,
             architect=architect,
             coder=coders,
             reviewer=reviewers,
