@@ -66,8 +66,12 @@ class ImageTools(Agent):
 
 
 def main() -> None:
+    # The shared static directory is ``docs/source/_static``; this file lives at
+    # ``docs/source/llm_examples/basics/``, so it is three levels up -- it was two
+    # before the examples moved into ``basics/``, which left this default pointing
+    # at a path that does not exist.
     DEFAULT_IMAGE = (
-        pathlib.Path(__file__).resolve().parent.parent
+        pathlib.Path(__file__).resolve().parents[2]
         / "_static"
         / "img"
         / "chirho_logo_wide.png"

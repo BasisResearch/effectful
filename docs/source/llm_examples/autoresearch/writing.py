@@ -590,20 +590,24 @@ class ContentRefiner(Agent):
 
 def refine(
     draft: Manuscript, guidelines: str, *, max_iters: int
-) -> tuple[Manuscript, Review]:
+) -> tuple[Manuscript, Review, list[Review]]:
     """Hill-climb the draft against AgentReview: propose a revision, re-score, keep
     it only if it earns its place, else revert to the last accepted version and
-    halt. Returns the best manuscript and its review."""
+    halt. Returns the best manuscript, its review, and the score trace -- every
+    review taken along the way, starting with the draft's, so the caller can see
+    the climb (and the one rejected step that ends it)."""
     manuscript = draft
     # A fresh Reviewer per call keeps the judge stateless: every version is scored
     # independently, which is what the accept/revert comparison relies on. (The
     # refiner, by contrast, is reused, so it remembers what it already tried.)
     review = Reviewer(guidelines).review(manuscript)
     refiner = ContentRefiner()
+    trace = [review]
 
     for i in range(max_iters):
         candidate = refiner.revise(manuscript, review)
         candidate_review = Reviewer(guidelines).review(candidate)
+        trace.append(candidate_review)
         if review.overall < candidate_review.overall or (
             review.overall == candidate_review.overall
             and review.sub_total < candidate_review.sub_total
@@ -612,12 +616,12 @@ def refine(
         else:
             break
 
-    return manuscript, review
+    return manuscript, review, trace
 
 
 async def _compose(
     materials: RawMaterials, venue: Venue, *, max_iters: int
-) -> tuple[Manuscript, Review]:
+) -> tuple[Manuscript, Review, list[Review]]:
     """Outline -> (plot || review) -> write -> refine: the five steps."""
     # Step 1: synthesize the materials into the plan the rest of the pipeline plays.
     outline = OutlineAgent().plan(materials)
@@ -639,13 +643,19 @@ async def _compose(
     return refine(draft, venue.guidelines, max_iters=max_iters)
 
 
-def compose(materials: RawMaterials, venue: Venue, *, max_iters: int) -> Manuscript:
+def compose(
+    materials: RawMaterials, venue: Venue, *, max_iters: int
+) -> tuple[Manuscript, Review, list[Review]]:
     """The full pipeline: synthesize the outline, run plotting and literature review
     concurrently, assemble the draft, and hill-climb it against the simulated
-    reviewer. Returns the best manuscript, its review, and the score trace."""
+    reviewer. Returns the best manuscript, its review, and the score trace.
+
+    This is the synchronous entry point: it owns the ``asyncio.run``, so callers
+    (and the doctests) drive the whole pipeline with an ordinary call.
+    """
     token = CUTOFF.set(venue.cutoff)
     try:
-        return asyncio.run(_compose(materials, venue, max_iters=max_iters))[0]
+        return asyncio.run(_compose(materials, venue, max_iters=max_iters))
     finally:
         CUTOFF.reset(token)
 
@@ -696,7 +706,7 @@ def main() -> None:
     args = parser.parse_args()
 
     venue = VENUES[args.venue]
-    manuscript, review, trace = asyncio.run(compose(MATERIALS, venue, args.max_iters))
+    manuscript, review, trace = compose(MATERIALS, venue, max_iters=args.max_iters)
     print(f"\n[refine] overall-score trace: {[r.overall for r in trace]}")
     print(f"\n{review}   (venue: {venue.name})")
     print(f"\n{manuscript}")
