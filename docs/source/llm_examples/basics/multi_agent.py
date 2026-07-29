@@ -45,7 +45,7 @@ from collections.abc import Sequence
 from typing import Literal, TypedDict
 
 from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.harness.choreographies import (
+from effectful.handlers.llm.harness.choreographing import (
     Choreography,
     ChoreographyError,
     scatter,
