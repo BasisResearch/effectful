@@ -15,7 +15,6 @@ from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
 from effectful.handlers.llm.harness.completions import (
-    LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
     _get_history,
@@ -26,6 +25,7 @@ from effectful.handlers.llm.harness.completions import (
 from effectful.handlers.llm.harness.encoding import _TOOLS_KEY, DecodedToolCall
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
+from effectful.handlers.llm.harness.scoping import LexicalReaders
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

@@ -30,7 +30,6 @@ from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.harness.completions import (
     DecodedToolCall,
     FinalTool,
-    LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
     ResultDecodingError,
@@ -46,6 +45,7 @@ from effectful.handlers.llm.harness.completions import (
 )
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
+from effectful.handlers.llm.harness.scoping import LexicalReaders
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
