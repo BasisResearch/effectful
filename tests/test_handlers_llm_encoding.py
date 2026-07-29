@@ -27,10 +27,10 @@ from effectful.handlers.llm.harness.encoding import (
     DecodedToolCall,
     to_content_blocks,
 )
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
-from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.types import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler

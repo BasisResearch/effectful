@@ -1,6 +1,5 @@
 import ast
 import collections.abc
-import contextlib
 import doctest
 import inspect
 import json
@@ -602,37 +601,3 @@ def _run_doctests(
             report = f"{failed} doctest(s) failed out of {attempted} attempted."
         raise TypeError(f"doctest failed:\n{report}")
     return None
-
-
-@contextlib.contextmanager
-def _doctest_compiled_with(
-    compiler: collections.abc.Callable[..., types.CodeType],
-):
-    """Run the examples inside this block through ``compiler`` instead of the
-    built-in `compile`.
-
-    `doctest.DocTestRunner` compiles and runs every example with a bare
-    ``exec(compile(source, filename, "single", flags, True), test.globs)``, with no
-    hook to supply a different compiler. Both names resolve as globals of the
-    `doctest` module before falling back to builtins, so binding ``compile`` there
-    for the duration of the run redirects example compilation without
-    reimplementing (and having to track) the runner. ``compiler`` is called with
-    `compile`'s positional signature, which `RestrictedPython.compile_restricted`
-    already matches.
-
-    This rebinds module state, so it is not safe against another thread running
-    doctests concurrently under a *different* compiler; the block is short and
-    holds only for the examples of one synthesized object.
-    """
-    sentinel = object()
-    original = doctest.__dict__.get("compile", sentinel)
-    doctest.compile = compiler  # type: ignore[attr-defined]
-    try:
-        yield
-    finally:
-        # Restore `doctest` exactly as we found it -- normally by *removing* the
-        # global again, so `compile` resolves to the builtin as it did before.
-        if original is sentinel:
-            del doctest.compile  # type: ignore[attr-defined]
-        else:
-            doctest.compile = original  # type: ignore[attr-defined]

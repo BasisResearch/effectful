@@ -31,8 +31,8 @@ from effectful.handlers.llm.harness.execution import (
     splice_repl_code_into_body,
     type_check,
 )
-from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 
