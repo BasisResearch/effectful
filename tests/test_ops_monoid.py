@@ -37,6 +37,7 @@ from effectful.ops.monoid import (
     ReduceEmpty,
     ReduceEqualityMaskRange,
     ReduceFusion,
+    ReduceGroundCartesianProduct,
     ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
@@ -1360,6 +1361,126 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
     )
     rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+def test_ground_cartesian_product_substitutes_dependent_plate_domain(
+    backend: Backend,
+):
+    """Each grounded row value retains the domain of its plate assignment."""
+    row_value, plate, t = backend.define_vars("row_value", "plate", "t", ret="scalar")
+    domain = backend.define_vars(
+        "domain", arg_types=(backend.scalar_typ,), ret="stream"
+    )
+    factor = backend.define_vars(
+        "factor",
+        arg_types=(
+            backend.scalar_typ,
+            backend.scalar_typ,
+            backend.scalar_typ,
+        ),
+        ret="scalar",
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(
+            factor(t(), row()[(t(),)], row()[(t() + 1,)]),
+            {t: range(2)},
+        ),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((plate(),), row_value()))],
+                    {row_value: domain(plate())},
+                ),
+                {plate: range(3)},
+            )
+        },
+    )
+
+    grounded = [Operation.define(row_value, name=f"row_value_{i}") for i in range(3)]
+    rhs = Sum.reduce(
+        Product.plus(
+            factor(0, grounded[0](), grounded[1]()),
+            factor(1, grounded[1](), grounded[2]()),
+        ),
+        {grounded[i]: domain(i) for i in range(3)},
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
+
+
+def test_ground_cartesian_product_declines_diagonal_chain(backend: Backend):
+    """A diagonal does not consume the off-diagonal cells of a two-dimensional row."""
+    row_value, p, q, t = backend.define_vars("row_value", "p", "q", "t", ret="scalar")
+    factor = backend.define_vars(
+        "factor",
+        arg_types=(backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(
+            factor(
+                row()[(t(), t())],
+                row()[(t() + 1, t() + 1)],
+            ),
+            {t: range(1)},
+        ),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((p(), q()), row_value()))], {row_value: range(2)}
+                ),
+                {p: range(2), q: range(2)},
+            )
+        },
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=lhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
+
+
+def test_ground_cartesian_product_extra_value_streams(backend: Backend):
+    """Extra row value streams are retained."""
+    row_value, row_value1, row_value2, p, q, t = backend.define_vars(
+        "row_value", "row_value1", "row_value2", "p", "q", "t", ret="scalar"
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(row()[(t(),)], {t: range(2)}),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((p(),), row_value()))], {row_value: range(2), q: range(3)}
+                ),
+                {p: range(2)},
+            )
+        },
+    )
+
+    rhs = Sum.reduce(
+        Product.plus(row_value1(), row_value2()),
+        {
+            row_value1: Union.reduce([row_value()], {q: range(3), row_value: range(2)}),
+            row_value2: Union.reduce([row_value()], {q: range(3), row_value: range(2)}),
+        },
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
 
 
 @pytest.mark.parametrize("T,K", [(10, 3)])
