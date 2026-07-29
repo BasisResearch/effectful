@@ -521,6 +521,6 @@ else:
         """
 
         def __class_getitem__(cls, item):
-            from effectful.handlers.llm.encoding import TypeToPydanticType
+            from effectful.handlers.llm.harness.encoding import TypeToPydanticType
 
             return TypeToPydanticType().evaluate(item)

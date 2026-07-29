@@ -508,7 +508,7 @@ def test_encode_idempotent(ty, value, ctx):
 
 @pytest.mark.parametrize("ty", [Term, Operation])
 def test_define_raises_for_invalid_types(ty):
-    with pytest.raises(TypeError):
+    with pytest.raises(pydantic.errors.PydanticSchemaGenerationError):
         Encodable[ty]
 
 
