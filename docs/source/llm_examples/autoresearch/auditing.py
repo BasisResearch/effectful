@@ -41,40 +41,53 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    Measured 2026-07 over the full 40-claim corpus, the first three rows at
+    Measured 2026-07 over the full 43-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
-    rejects temperature 0, so it runs at the provider default):
+    rejects temperature 0, so it runs at the provider default). ``b-c`` is the
+    discordant split for two-pass against naive -- items two-pass alone got right,
+    then items naive alone got right -- with an exact McNemar p:
 
-    ==============  ========  ===========  =====
-    model           two-pass  single-pass  naive
-    ==============  ========  ===========  =====
-    gpt-4o             90.0%        72.5%  72.5%
-    gpt-4.1            90.0%        90.0%  75.0%
-    gpt-4.1-mini       82.5%        77.5%  80.0%
-    *mean, above*     *87.5%*      *80.0%* *75.8%*
-    gpt-5.5            90.0%        97.5%  95.0%
-    ==============  ========  ===========  =====
+    ==============  ========  ===========  ======  =========
+    model           two-pass  single-pass  naive   b-c (p)
+    ==============  ========  ===========  ======  =========
+    gpt-4o             81.4%        72.1%  81.4%   2-2 (1.00)
+    gpt-4.1            88.4%        83.7%  83.7%   2-0 (0.50)
+    gpt-4.1-mini       81.4%        76.7%  81.4%   1-1 (1.00)
+    gpt-5.5            88.4%        95.3%  93.0%   0-2 (0.50)
+    ==============  ========  ===========  ======  =========
 
-    On the three non-reasoning models the published ordering holds -- two-pass
-    ahead of single-pass ahead of naive, by 7.5 and 4.2 points on the mean, with
-    two individual gaps over naive of 17.5 and 15 points. Upstream reports
-    96.3 / 86.1 / 69.4; this is the same shape at a lower level.
+    **Nothing here is significant, and the published gap does not reproduce.**
+    Two-pass leads single-pass in three of four models and naive in one, but every
+    split is within noise at this n.
 
-    gpt-5.5 reverses it, and that is the same reversal upstream's own data shows
-    at the top of the capability range: its strongest single-call run scores
-    94.4% naive against 93.5% for two-pass with the same model on both passes,
-    and its Lean benchmark (VERINA, N=189) has two-pass losing outright. The
-    blind informalization step is a scaffold: worth a lot to a model that needs
-    it, a net cost to one that does not.
+    That conclusion survived a deliberate attempt to break it. Five corpus
+    configurations were run, twelve runs each:
 
-    Caveats that still bind. n=40 at one run per cell; the three non-reasoning
-    rows are one run each, so a 2.5pp difference is one item and only the
-    double-digit gaps are worth anything. And the corpus is not upstream's: 4 of
-    its 22 faithful claims are opaque-invariant projections against 26 of 27
-    there, so this measures the architecture on a different task.
+    ===========================================  ==========================
+    corpus                                       significant results
+    ===========================================  ==========================
+    mixed, 4/22 faithful invariant-carrying      gpt-4o 7-0, p=0.016
+    78% invariant-carrying, invariant caveat     none
+    78% invariant-carrying, no caveat            none
+    ...plus subtle traps, no caveat              gpt-4.1 5-0, p=0.062
+    ...plus subtle traps and caveat (this file)  none
+    ===========================================  ==========================
 
-    **Two earlier versions of this table were wrong.** See ``The leak`` below --
-    the way they were wrong is the most transferable thing in this file.
+    The one significant cell did not replicate under any of the four later
+    variants. Across roughly forty tests at alpha=0.05 a single p=0.016 is what
+    chance produces, so it is reported here as a false positive rather than as a
+    finding -- an earlier revision of this docstring claimed on its basis that the
+    published ordering had reproduced, and that claim is withdrawn.
+
+    Two things did hold up across configurations. Two-pass is ahead of
+    single-pass in 3 of 4 models in the final run and led in most cells
+    throughout, a directional trend too small to resolve at n=43. And the items
+    that discriminate are consistently the *subtle weakenings* --
+    ``Revision.order_irrelevant``, ``Revision.tally_monotonic``,
+    ``Revision.count_bounded`` -- not the invariant projections that upstream's
+    benchmark is mostly made of. Concentrating the projection shape (18 of 23
+    faithful claims carry an opaque ``Wf p`` or ``Valid bs``, against 4 of 22
+    before) did not help; if anything it raised every arm's score together.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -90,7 +103,7 @@ requirements``. Here the comment is a signature:
   * The premise is checked by a real prover. Under ``--verify`` both corpora are
     compiled by the Lean 4 + Mathlib toolchain ``formalization.py`` already
     shells out to. It reports 39 theorems, 0 errors, no ``sorry`` -- and then the
-    audit finds eighteen claims that do not mean what they were written to mean.
+    audit finds twenty claims that do not mean what they were written to mean.
     The verifier's clean bill of health is the setup, not the punchline.
 
 Demonstrates:
@@ -245,12 +258,13 @@ Demonstrates:
 #
 # Known limits of the numbers above, in the order they would need fixing:
 #
-# - Power. 40 items, one run per cell. Detecting an 8-10pp paired effect needs
-#   roughly 200 items; extra runs buy almost nothing at temperature 0, where
-#   repeats are near-deterministic.
-# - Corpus shape. 4 of the 22 faithful claims here are opaque-invariant
-#   projections, against 26 of 27 upstream. The mechanism their benchmark
-#   actually tests is barely present in this one.
+# - Power. 43 items, one run per cell. Detecting an 8-10pp paired effect needs
+#   roughly 200; extra runs buy almost nothing at temperature 0, where repeats
+#   are near-deterministic. n=43 is enough for a *clean* effect -- a 7-0 split
+#   reaches p=0.016 -- but not for the 2-0 and 3-1 splits actually observed.
+# - Corpus shape. 18 of the 23 faithful claims now carry an opaque invariant,
+#   close to upstream's 26 of 27. This was built deliberately to test their
+#   mechanism and it did not reproduce their gap -- see the table above.
 # - Batching. Upstream's two-pass compare is batched per domain, so its
 #   comparator sees the faithful and unfaithful theorem for one requirement side
 #   by side -- a contrastive signal its per-item arms never get. Everything here
@@ -306,30 +320,28 @@ from auditing_naive import NaiveAuditor
 
 ELECTION_CORPUS = r"""import Mathlib
 
+set_option linter.unusedVariables false
+
 /-- Tally: how many of the ballots in `bs` were cast for candidate `c`. -/
 def count : List ℕ → ℕ → ℕ
   | [], _ => 0
   | b :: bs, c => (if b = c then 1 else 0) + count bs c
 
-namespace Audited
+/-- The well-formedness invariant maintained by the ballot box. -/
+def Valid (bs : List ℕ) : Prop :=
+  (∀ b ∈ bs, 0 < b) ∧ (∀ b ∈ bs, b ≤ 100) ∧ bs.length ≤ 10000
 
-theorem empty_election (c : ℕ) : count [] c = 0 := by
-  simp [count]
+-- Unconditional algebra, proved once. These are infrastructure: no requirement
+-- is mapped to them, so they are never audited.
 
-theorem single_ballot_for (c : ℕ) : count [c] c = 1 := by
-  simp [count]
-
-theorem single_ballot_against (c d : ℕ) (h : c ≠ d) : count [c] d = 0 := by
-  simp [count, h]
-
-theorem count_bounded (bs : List ℕ) (c : ℕ) : count bs c ≤ bs.length := by
+theorem count_le_length (bs : List ℕ) (c : ℕ) : count bs c ≤ bs.length := by
   induction bs with
   | nil => simp [count]
   | cons b bs ih =>
     simp only [count, List.length_cons]
     split <;> omega
 
-theorem combine_tallies (a b : List ℕ) (c : ℕ) :
+theorem count_append (a b : List ℕ) (c : ℕ) :
     count (a ++ b) c = count a c + count b c := by
   induction a with
   | nil => simp [count]
@@ -337,97 +349,110 @@ theorem combine_tallies (a b : List ℕ) (c : ℕ) :
     simp only [List.cons_append, count, ih]
     omega
 
-theorem vote_increment (bs : List ℕ) (c : ℕ) :
-    count (bs ++ [c]) c = count bs c + 1 := by
-  rw [combine_tallies, single_ballot_for]
+theorem count_singleton_self (c : ℕ) : count [c] c = 1 := by simp [count]
 
-theorem vote_no_effect (bs : List ℕ) (c d : ℕ) (h : c ≠ d) :
-    count (bs ++ [d]) c = count bs c := by
-  rw [combine_tallies, single_ballot_against d c (Ne.symm h)]
-  omega
+theorem count_singleton_other (c d : ℕ) (h : c ≠ d) : count [c] d = 0 := by
+  simp [count, h]
 
-theorem order_irrelevant {a b : List ℕ} (h : a.Perm b) (c : ℕ) :
-    count a c = count b c := by
+theorem count_perm {a b : List ℕ} (h : a.Perm b) (c : ℕ) : count a c = count b c := by
   induction h with
   | nil => rfl
   | cons x _ ih => simp only [count, ih]
   | swap x y l => simp only [count]; omega
   | trans _ _ ih₁ ih₂ => exact ih₁.trans ih₂
 
-theorem unanimous_tally (bs : List ℕ) (c : ℕ) (h : ∀ x ∈ bs, x = c) :
-    count bs c = bs.length := by
+theorem count_zero_of_pos (bs : List ℕ) (h : ∀ b ∈ bs, 0 < b) : count bs 0 = 0 := by
   induction bs with
   | nil => simp [count]
   | cons b bs ih =>
-    have hb : b = c := h b (by simp)
-    have hrest : ∀ x ∈ bs, x = c := fun x hx => h x (by simp [hx])
-    simp [count, hb, ih hrest]
-    omega
+    have hb : 0 < b := h b (by simp)
+    simp only [count, ih (fun x hx => h x (by simp [hx]))]
+    split <;> omega
 
-theorem unanimous_exclusion (bs : List ℕ) (c d : ℕ) (h : ∀ x ∈ bs, x = c)
-    (hne : d ≠ c) : count bs d = 0 := by
-  induction bs with
-  | nil => simp [count]
-  | cons b bs ih =>
-    have hb : b = c := h b (by simp)
-    have hrest : ∀ x ∈ bs, x = c := fun x hx => h x (by simp [hx])
-    simp [count, hb, Ne.symm hne, ih hrest]
+namespace Audited
 
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) :
+theorem ballots_named (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, 0 < b := h.1
+
+theorem ids_in_range (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≤ 100 := h.2.1
+
+theorem election_bounded (bs : List ℕ) (h : Valid bs) : bs.length ≤ 10000 := h.2.2
+
+theorem zero_is_nobody (bs : List ℕ) (h : Valid bs) : count bs 0 = 0 :=
+  count_zero_of_pos bs h.1
+
+theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) :
+    count bs c ≤ bs.length := count_le_length bs c
+
+theorem tally_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) : count bs c ≤ 10000 :=
+  le_trans (count_le_length bs c) h.2.2
+
+theorem combine_tallies (a b : List ℕ) (c : ℕ) (h : Valid (a ++ b)) :
+    count (a ++ b) c = count a c + count b c := count_append a b c
+
+theorem vote_increment (bs : List ℕ) (c : ℕ) (h : Valid (bs ++ [c])) :
+    count (bs ++ [c]) c = count bs c + 1 := by
+  rw [count_append, count_singleton_self]
+
+theorem vote_no_effect (bs : List ℕ) (c d : ℕ) (hne : c ≠ d)
+    (h : Valid (bs ++ [d])) : count (bs ++ [d]) c = count bs c := by
+  rw [count_append, count_singleton_other d c (Ne.symm hne)]
+  omega
+
+theorem order_irrelevant {a b : List ℕ} (hp : a.Perm b) (c : ℕ) (h : Valid a) :
+    count a c = count b c := count_perm hp c
+
+theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
     count bs c ≤ count (bs ++ [v]) c := by
-  rw [combine_tallies]
+  rw [count_append]
   omega
 
 end Audited
 
 namespace Draft
 
-theorem count_bounded (bs : List ℕ) (c : ℕ) : count bs c ≤ bs.length + 1 := by
-  have := Audited.count_bounded bs c
+theorem ballots_named (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, 0 ≤ b :=
+  fun _ _ => Nat.zero_le _
+
+theorem ids_in_range (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≤ 1000 :=
+  fun x hx => le_trans (h.2.1 x hx) (by omega)
+
+theorem election_bounded (bs : List ℕ) (h : Valid bs) : bs.length ≤ bs.length :=
+  le_refl _
+
+theorem zero_is_nobody (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≠ 0 :=
+  fun x hx => Nat.pos_iff_ne_zero.mp (h.1 x hx)
+
+theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) :
+    count bs c ≤ bs.length + 1 := by
+  have := count_le_length bs c
   omega
 
-theorem vote_increment (bs : List ℕ) (c : ℕ) :
+theorem vote_increment (bs : List ℕ) (c : ℕ) (h : Valid (bs ++ [c])) :
     count (bs ++ [c]) c = count (bs ++ [c]) c := rfl
 
-theorem order_irrelevant (bs : List ℕ) (v c : ℕ) :
+theorem order_irrelevant (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
     count ([v] ++ bs) c = count (bs ++ [v]) c := by
-  rw [Audited.combine_tallies, Audited.combine_tallies]
+  rw [count_append, count_append]
   omega
 
-set_option linter.unusedVariables false in
-theorem unanimous_tally (bs : List ℕ) (c : ℕ) (hbig : 100 < bs.length)
-    (h : ∀ x ∈ bs, x = c) : count bs c = bs.length :=
-  Audited.unanimous_tally bs c h
-
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) : 0 ≤ count (bs ++ [v]) c :=
-  Nat.zero_le _
+theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
+    0 ≤ count (bs ++ [v]) c := Nat.zero_le _
 
 end Draft
 
 namespace Revision
 
-set_option linter.unusedVariables false in
-theorem count_bounded (bs : List ℕ) (c : ℕ) (h : c ∈ bs) :
-    count bs c ≤ bs.length :=
-  Audited.count_bounded bs c
+theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) (hmem : c ∈ bs) :
+    count bs c ≤ bs.length := count_le_length bs c
 
-theorem combine_tallies (a b : List ℕ) (c : ℕ) :
-    count (a ++ b) c ≥ count a c + count b c :=
-  le_of_eq (Audited.combine_tallies a b c).symm
+theorem combine_tallies (a b : List ℕ) (c : ℕ) (h : Valid (a ++ b)) :
+    count (a ++ b) c ≥ count a c + count b c := le_of_eq (count_append a b c).symm
 
-theorem order_irrelevant (a b : List ℕ) (h : a = b) (c : ℕ) :
-    count a c = count b c := by
-  rw [h]
+theorem order_irrelevant (a b : List ℕ) (hab : a = b) (c : ℕ) (h : Valid a) :
+    count a c = count b c := by rw [hab]
 
-theorem unanimous_exclusion (bs : List ℕ) (c d : ℕ) (h : ∀ x ∈ bs, x = c)
-    (hne : d ≠ c) : count bs d ≤ count bs c := by
-  rw [Audited.unanimous_exclusion bs c d h hne]
-  exact Nat.zero_le _
-
-set_option linter.unusedVariables false in
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : v = c) :
-    count bs c ≤ count (bs ++ [v]) c :=
-  Audited.tally_monotonic bs v c
+theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (hv : v = c) (h : Valid (bs ++ [v])) :
+    count bs c ≤ count (bs ++ [v]) c := Audited.tally_monotonic bs v c h
 
 end Revision
 """
@@ -444,6 +469,8 @@ end Revision
 # ---------------------------------------------------------------------------
 
 DELEGATION_CORPUS = r"""import Mathlib
+
+set_option linter.unusedVariables false
 
 /-- A grant: `subject` may act on `resource` up to `level`
     (0 = none, 1 = read, 2 = write). -/
@@ -462,42 +489,28 @@ def authority : Policy → ℕ → ℕ → ℕ
   | g :: rest, s, r =>
       max (if g.subject = s ∧ g.resource = r then g.level else 0) (authority rest s r)
 
-/-- The policy invariant, as a conjunction of three clauses. -/
+/-- The well-formedness invariant every stored policy maintains. -/
 def Wf (p : Policy) : Prop :=
-  (∀ g ∈ p, g.level ≤ 2) ∧ (∀ g ∈ p, 0 < g.subject) ∧ (∀ g ∈ p, 0 < g.resource)
+  (∀ g ∈ p, g.level ≤ 2) ∧
+  (∀ g ∈ p, 0 < g.subject) ∧
+  (∀ g ∈ p, 0 < g.resource) ∧
+  (∀ g ∈ p, 0 < g.level) ∧
+  p.length ≤ 1000
 
 /-- `d` delegates to `t` on resource `r` at level `l`. -/
 def delegate (p : Policy) (t r l : ℕ) : Policy := ⟨t, r, l⟩ :: p
 
 namespace Audited
 
-theorem no_grants_no_authority (s r : ℕ) : authority [] s r = 0 := by
-  simp [authority]
-
-theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.subject ≠ s) : authority (g :: p) s r = authority p s r := by
-  simp [authority, h]
-
-theorem other_resource_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r := by
-  simp [authority, h]
-
-theorem unrelated_grant_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.subject ≠ s ∨ g.resource ≠ r) :
-    authority (g :: p) s r = authority p s r := by
-  cases h with
-  | inl h => simp [authority, h]
-  | inr h => simp [authority, h]
-
-theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ) :
-    authority p s r ≤ authority (g :: p) s r := by
-  simp [authority]
-
 theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ 2 := h.1
 
 theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.subject := h.2.1
 
-theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.resource := h.2.2
+theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.resource := h.2.2.1
+
+theorem no_null_grants (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.level := h.2.2.2.1
+
+theorem policy_bounded (p : Policy) (h : Wf p) : p.length ≤ 1000 := h.2.2.2.2
 
 theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
     authority p s r ≤ 2 := by
@@ -507,9 +520,27 @@ theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
     have hg : g.level ≤ 2 := h.1 g (by simp)
     have hrest : Wf rest :=
       ⟨fun x hx => h.1 x (by simp [hx]), fun x hx => h.2.1 x (by simp [hx]),
-        fun x hx => h.2.2 x (by simp [hx])⟩
+        fun x hx => h.2.2.1 x (by simp [hx]),
+        fun x hx => h.2.2.2.1 x (by simp [hx]), by
+          have := h.2.2.2.2; simp only [List.length_cons] at this; omega⟩
     simp only [authority, max_le_iff]
     exact ⟨by split <;> omega, ih hrest⟩
+
+theorem no_grants_no_authority (s r : ℕ) (h : Wf []) : authority [] s r = 0 := by
+  simp [authority]
+
+theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (hw : Wf (g :: p)) (h : g.subject ≠ s) :
+    authority (g :: p) s r = authority p s r := by
+  simp [authority, h]
+
+theorem other_resource_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r := by
+  simp [authority, h]
+
+theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ) (hw : Wf (g :: p)) :
+    authority p s r ≤ authority (g :: p) s r := by
+  simp [authority]
 
 theorem delegation_no_escalation (p : Policy) (d t r l : ℕ)
     (h : l ≤ authority p d r) :
@@ -519,16 +550,24 @@ theorem delegation_no_escalation (p : Policy) (d t r l : ℕ)
   · split <;> omega
   · omega
 
-theorem grant_bounds_authority (p : Policy) (g : Grant) (s r : ℕ) :
-    authority (g :: p) s r ≤ max (authority p s r) g.level := by
-  simp only [authority, max_le_iff]
-  constructor
-  · split <;> omega
-  · omega
-
 end Audited
 
 namespace Draft
+
+set_option linter.unusedVariables false in
+theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ g.level :=
+  fun _ _ => le_refl _
+
+set_option linter.unusedVariables false in
+theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 ≤ g.subject :=
+  fun _ _ => Nat.zero_le _
+
+theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.subject := h.2.1
+
+theorem no_null_grants (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ 2 := h.1
+
+theorem policy_bounded (p : Policy) (h : Wf p) : p.length ≤ 100000 :=
+  le_trans h.2.2.2.2 (by omega)
 
 theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
     authority p s r ≤ 3 := by
@@ -541,8 +580,9 @@ theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
 
 set_option linter.unusedVariables false in
 theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.subject = s) : authority p s r ≤ authority (g :: p) s r :=
-  Audited.grant_never_reduces p g s r
+    (hw : Wf (g :: p)) (h : g.subject = s) :
+    authority p s r ≤ authority (g :: p) s r :=
+  Audited.grant_never_reduces p g s r hw
 
 theorem delegation_no_escalation (p : Policy) (t r l : ℕ) :
     authority (delegate p t r l) t r ≤ max l (authority p t r) := by
@@ -550,21 +590,6 @@ theorem delegation_no_escalation (p : Policy) (t r l : ℕ) :
   constructor
   · split <;> omega
   · omega
-
-theorem grant_bounds_authority (p : Policy) (g : Grant) (s r : ℕ) :
-    authority (g :: p) s r ≤ authority p s r + g.level := by
-  simp only [authority, max_le_iff]
-  constructor
-  · split <;> omega
-  · omega
-
-set_option linter.unusedVariables false in
-theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ g.level :=
-  fun _ _ => le_refl _
-
-set_option linter.unusedVariables false in
-theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 ≤ g.subject :=
-  fun _ _ => Nat.zero_le _
 
 end Draft
 """
@@ -618,25 +643,43 @@ class Claim:
 
 
 ELECTION_CLAIMS: tuple[Claim, ...] = (
-    # The eleven audited theorems: each says what it was written to say.
+    # Faithful. Every one carries `Valid bs` -- the invariant the ballot box
+    # maintains -- whose three-clause definition is in the corpus and in no
+    # prompt. The first four project it directly; the rest depend on it the way
+    # upstream's lemmas depend on `Inv(m)`.
     Claim(
-        "In an empty election with no ballots, every candidate has zero votes",
-        "Audited.empty_election",
+        "Every ballot in a well-formed election names a real candidate",
+        "Audited.ballots_named",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A single ballot cast for a candidate gives that candidate exactly one vote",
-        "Audited.single_ballot_for",
+        "In a well-formed election every candidate identifier is at most 100",
+        "Audited.ids_in_range",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A single ballot cast for one candidate gives every other candidate zero votes",
-        "Audited.single_ballot_against",
+        "A well-formed election contains at most 10000 ballots",
+        "Audited.election_bounded",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "No ballot in a well-formed election names candidate 0",
+        "Draft.zero_is_nobody",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed election, candidate 0 receives no votes",
+        "Audited.zero_is_nobody",
         Verdict.CONFIRMED,
     ),
     Claim(
         "No candidate can receive more votes than the total number of ballots cast",
         "Audited.count_bounded",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "No candidate's tally can exceed the maximum election size of 10000",
+        "Audited.tally_bounded",
         Verdict.CONFIRMED,
     ),
     Claim(
@@ -652,8 +695,8 @@ ELECTION_CLAIMS: tuple[Claim, ...] = (
         Verdict.CONFIRMED,
     ),
     Claim(
-        "Casting a ballot for one candidate does not change any other candidate's "
-        "tally",
+        "Casting a ballot for one candidate does not change any other "
+        "candidate's tally",
         "Audited.vote_no_effect",
         Verdict.CONFIRMED,
     ),
@@ -663,33 +706,32 @@ ELECTION_CLAIMS: tuple[Claim, ...] = (
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a unanimous election, the winning candidate's tally equals the total "
-        "number of ballots",
-        "Audited.unanimous_tally",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "In a unanimous election, every other candidate receives zero votes",
-        "Audited.unanimous_exclusion",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
         "Adding a ballot to the election cannot cause any candidate's tally to "
         "decrease",
         "Audited.tally_monotonic",
         Verdict.CONFIRMED,
     ),
-    # A faithful theorem against a requirement that asks for strictly more: the
-    # theorem is true and proved, and covers half of what was asked for.
+    # Unfaithful, against the same requirements.
     Claim(
-        "Casting a ballot for a candidate increases that candidate's tally by "
-        "exactly one and leaves every other candidate's tally unchanged",
-        "Audited.vote_increment",
+        "Every ballot in a well-formed election names a real candidate",
+        "Draft.ballots_named",
         Verdict.DISPUTED,
-        "missing-case: covers the chosen candidate only, and says nothing about "
-        "the others",
+        "tautology: concludes each ballot identifier is non-negative, which "
+        "holds of every natural number and does not say it names anyone",
     ),
-    # The five drafted theorems: all proved, none of them the claim intended.
+    Claim(
+        "In a well-formed election every candidate identifier is at most 100",
+        "Draft.ids_in_range",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds identifiers by 1000, ten times the limit "
+        "the requirement names",
+    ),
+    Claim(
+        "A well-formed election contains at most 10000 ballots",
+        "Draft.election_bounded",
+        Verdict.DISPUTED,
+        "tautology: bounds the ballot count by itself, so no size limit is established",
+    ),
     Claim(
         "No candidate can receive more votes than the total number of ballots cast",
         "Draft.count_bounded",
@@ -713,69 +755,85 @@ ELECTION_CLAIMS: tuple[Claim, ...] = (
         "end to the front -- rather than any permutation",
     ),
     Claim(
-        "In a unanimous election, the winning candidate's tally equals the total "
-        "number of ballots",
-        "Draft.unanimous_tally",
-        Verdict.DISPUTED,
-        "narrowed-scope: an extra hypothesis restricts the guarantee to elections "
-        "of more than 100 ballots",
-    ),
-    Claim(
         "Adding a ballot to the election cannot cause any candidate's tally to "
         "decrease",
         "Draft.tally_monotonic",
         Verdict.DISPUTED,
-        "wrong-property: says the new tally is non-negative, which is trivially "
-        "true of a natural number, instead of comparing it to the old one",
+        "wrong-property: says the new tally is non-negative, trivially true of a "
+        "natural number, instead of comparing it to the old one",
     ),
-    # The five revised theorems: a second attempt, and the reason this domain is
-    # not quite as easy as the drafts make it look. Each of these reads correctly
-    # at a glance -- the conclusion is the right shape, and the divergence is a
+    # A second attempt at four of the same requirements. Each reads correctly at
+    # a glance: the conclusion is the right shape and the divergence is a
     # hypothesis that narrows it or a relation symbol that loosens it.
     Claim(
         "No candidate can receive more votes than the total number of ballots cast",
         "Revision.count_bounded",
         Verdict.DISPUTED,
-        "narrowed-scope: the hypothesis restricts the bound to candidates who "
-        "received at least one ballot, so it says nothing about a candidate with "
-        "no votes",
+        "narrowed-scope: an extra hypothesis restricts the bound to candidates "
+        "who received at least one ballot, saying nothing about a candidate "
+        "with no votes",
     ),
     Claim(
         "Merging two ballot boxes produces a tally equal to the sum of the "
         "individual tallies",
         "Revision.combine_tallies",
         Verdict.DISPUTED,
-        "weakened-conclusion: bounds the merged tally below by the sum instead of "
-        "equating them, so it permits the merge to invent votes",
+        "weakened-conclusion: bounds the merged tally below by the sum instead "
+        "of equating them, so it permits the merge to invent votes",
     ),
     Claim(
         "The order in which ballots are counted does not affect the final tally",
         "Revision.order_irrelevant",
         Verdict.DISPUTED,
-        "tautology: the hypothesis is that the two ballot lists are equal, so the "
-        "conclusion is congruence and no reordering is involved",
-    ),
-    Claim(
-        "In a unanimous election, every other candidate receives zero votes",
-        "Revision.unanimous_exclusion",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds the other candidate's tally by the winner's "
-        "rather than pinning it to zero",
+        "tautology: the hypothesis is that the two ballot lists are equal, so "
+        "the conclusion is congruence and no reordering is involved",
     ),
     Claim(
         "Adding a ballot to the election cannot cause any candidate's tally to "
         "decrease",
         "Revision.tally_monotonic",
         Verdict.DISPUTED,
-        "narrowed-scope: the hypothesis restricts the guarantee to the case where "
-        "the added ballot is itself for the candidate in question",
+        "narrowed-scope: an extra hypothesis restricts the guarantee to the "
+        "case where the added ballot is itself for the candidate in question",
     ),
 )
 
 
 DELEGATION_CLAIMS: tuple[Claim, ...] = (
+    # Faithful. `Wf p` is a five-clause conjunction defined in the corpus and
+    # never in a prompt; the first five theorems are literally its conjuncts.
     Claim(
-        "A subject with no grants at all has no authority on any resource",
+        "In a well-formed policy no grant exceeds write level (2)",
+        "Audited.levels_bounded",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy every grant names a real subject",
+        "Audited.subjects_named",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy every grant names a real resource",
+        "Audited.resources_named",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "A well-formed policy stores no grants at level zero",
+        "Audited.no_null_grants",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "A well-formed policy holds at most 1000 grants",
+        "Audited.policy_bounded",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy no subject holds authority above write level (2)",
+        "Audited.wf_bounds_authority",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "A subject has no authority under the empty policy",
         "Audited.no_grants_no_authority",
         Verdict.CONFIRMED,
     ),
@@ -796,37 +854,61 @@ DELEGATION_CLAIMS: tuple[Claim, ...] = (
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy, no subject holds authority above write level (2)",
-        "Audited.wf_bounds_authority",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Delegating a level the delegator actually holds cannot leave the delegate "
-        "with more authority than the delegator has, beyond what the delegate "
-        "already held",
+        "Delegating a level the delegator actually holds cannot leave the "
+        "delegate with more authority than the delegator has, beyond what the "
+        "delegate already held",
         "Audited.delegation_no_escalation",
         Verdict.CONFIRMED,
     ),
+    # Unfaithful. Several project the *wrong conjunct* of the same invariant --
+    # the trap that needs the auditor to reason about a definition it cannot see.
     Claim(
-        "Adding a grant cannot raise a subject's authority above the higher of "
-        "what they already held and the new grant's level",
-        "Audited.grant_bounds_authority",
-        Verdict.CONFIRMED,
+        "In a well-formed policy no grant exceeds write level (2)",
+        "Draft.levels_bounded",
+        Verdict.DISPUTED,
+        "tautology: concludes each grant's level is at most itself, which holds "
+        "of any number and says nothing about the write level",
     ),
     Claim(
-        "In a well-formed policy, no subject holds authority above write level (2)",
+        "In a well-formed policy every grant names a real subject",
+        "Draft.subjects_named",
+        Verdict.DISPUTED,
+        "tautology: concludes each subject identifier is non-negative, automatic "
+        "for a natural number, rather than that it names anyone",
+    ),
+    Claim(
+        "In a well-formed policy every grant names a real resource",
+        "Draft.resources_named",
+        Verdict.DISPUTED,
+        "wrong-property: projects the invariant's subject clause, not its "
+        "resource clause, so it establishes nothing about resources",
+    ),
+    Claim(
+        "A well-formed policy stores no grants at level zero",
+        "Draft.no_null_grants",
+        Verdict.DISPUTED,
+        "wrong-property: projects the upper bound on levels instead of their "
+        "positivity, which is the opposite end of the range",
+    ),
+    Claim(
+        "A well-formed policy holds at most 1000 grants",
+        "Draft.policy_bounded",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds the policy by 100000, a hundred times the "
+        "limit the requirement names",
+    ),
+    Claim(
+        "In a well-formed policy no subject holds authority above write level (2)",
         "Draft.wf_bounds_authority",
         Verdict.DISPUTED,
         "weakened-conclusion: bounds authority by 3, one level above the write "
         "level the requirement names",
     ),
-    # The sharpest trap in either domain: the conclusion is character-for-character
-    # the faithful theorem's, and only the hypothesis names the wrong thing.
     Claim(
         "Granting authority to one subject never changes any other subject's authority",
         "Draft.other_subject_unaffected",
         Verdict.DISPUTED,
-        "wrong-property: the hypothesis separates the grant's *resource* from the "
+        "wrong-property: the hypothesis separates the grant's resource from the "
         "one queried, not its subject, so this is the other-resource property "
         "wearing the other-subject name",
     ),
@@ -834,84 +916,17 @@ DELEGATION_CLAIMS: tuple[Claim, ...] = (
         "Adding a grant to a policy can never reduce anyone's authority",
         "Draft.grant_never_reduces",
         Verdict.DISPUTED,
-        "narrowed-scope: the hypothesis restricts the guarantee to the subject the "
-        "new grant is for, which is the one case nobody doubted",
+        "narrowed-scope: the hypothesis restricts the guarantee to the subject "
+        "the new grant is for, which is the one case nobody doubted",
     ),
     Claim(
-        "Delegating a level the delegator actually holds cannot leave the delegate "
-        "with more authority than the delegator has, beyond what the delegate "
-        "already held",
+        "Delegating a level the delegator actually holds cannot leave the "
+        "delegate with more authority than the delegator has, beyond what the "
+        "delegate already held",
         "Draft.delegation_no_escalation",
         Verdict.DISPUTED,
         "wrong-property: the delegator never appears; the bound is the delegated "
-        "level itself, so it holds however much authority was delegated and "
-        "establishes no non-escalation at all",
-    ),
-    Claim(
-        "Adding a grant cannot raise a subject's authority above the higher of "
-        "what they already held and the new grant's level",
-        "Draft.grant_bounds_authority",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds by the sum of the two rather than their "
-        "maximum, permitting authority the requirement forbids",
-    ),
-    # --- Invariant projections. -------------------------------------------
-    # These are the claims that discriminate, and they are all *faithful*.
-    # `Wf` is a conjunction of three clauses; each theorem below assumes `Wf p`
-    # and concludes one conjunct of it -- so, read as text, the conclusion is
-    # already sitting inside the hypothesis, and the theorem looks vacuous. It
-    # is not: projecting a named invariant onto one of its consequences is the
-    # ordinary way to make an invariant usable, and upstream's prompts say so
-    # explicitly ("a lemma that extracts a concrete consequence from an
-    # invariant is NOT vacuous").
-    #
-    # The definition of `Wf` is in the corpus but never in a prompt, because
-    # only the *statement* is sent. So `Wf p` reaches the model as an opaque
-    # atom, and whether it is judged vacuous turns on whether the model guesses
-    # at the invariant's contents -- which is exactly what having been shown the
-    # requirement first encourages it to do.
-    Claim(
-        "In a well-formed policy, no grant exceeds write level (2)",
-        "Audited.levels_bounded",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "In a well-formed policy, every grant names a real subject",
-        "Audited.subjects_named",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "In a well-formed policy, every grant names a real resource",
-        "Audited.resources_named",
-        Verdict.CONFIRMED,
-    ),
-    # Near-twins of the three above: same shape, same opaque hypothesis, but
-    # these really are empty. A corpus with only the projections would reward a
-    # checker that confirms everything; these punish that.
-    Claim(
-        "In a well-formed policy, no grant exceeds write level (2)",
-        "Draft.levels_bounded",
-        Verdict.DISPUTED,
-        "tautology: concludes that each grant's level is at most itself, which "
-        "holds of any number and says nothing about the write level",
-    ),
-    Claim(
-        "In a well-formed policy, every grant names a real subject",
-        "Draft.subjects_named",
-        Verdict.DISPUTED,
-        "tautology: concludes that each subject identifier is non-negative, "
-        "which is automatic for a natural number and does not say it names "
-        "anyone",
-    ),
-    # Faithful, but *stronger* than the requirement asks -- upstream reports
-    # this "redundant strengthening" as its single largest false-positive class,
-    # and the two items that defeat every one of its single-call variants are
-    # both this shape. The requirement names one case; the theorem covers a
-    # strictly broader one, which the taxonomy says is still a match.
-    Claim(
-        "A grant for a different subject does not change a subject's authority",
-        "Audited.unrelated_grant_unaffected",
-        Verdict.CONFIRMED,
+        "level itself, so it establishes no non-escalation at all",
     ),
 )
 

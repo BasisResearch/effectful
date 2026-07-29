@@ -242,6 +242,13 @@ class Comparator(Agent):
         requirement had better be trivial too. Judge the statement, not its name:
         a theorem called after the property it was meant to prove is no evidence
         that it proves it.
+
+        An invariant hypothesis (a named predicate such as ``Wf p`` or
+        ``Valid bs``, whose definition you have not been shown) is expected and
+        normal -- do not flag it as a narrowing. A theorem that extracts a
+        concrete consequence from an invariant is useful, not vacuous. Only call
+        something vacuous when its conclusion holds for every value of the types
+        involved regardless of the hypotheses.
         """
 
 
@@ -282,4 +289,11 @@ class SinglePassAuditor(Agent):
 
         A theorem stronger than the requirement still matches. Judge the
         statement, not its name.
+
+        An invariant hypothesis (a named predicate such as ``Wf p`` or
+        ``Valid bs``, whose definition you have not been shown) is expected and
+        normal -- do not flag it as a narrowing. A theorem that extracts a
+        concrete consequence from an invariant is useful, not vacuous. Only call
+        something vacuous when its conclusion holds for every value of the types
+        involved regardless of the hypotheses.
         """
