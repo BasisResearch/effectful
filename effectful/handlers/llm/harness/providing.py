@@ -7,9 +7,7 @@ import litellm
 
 from effectful.handlers.llm.harness.hooks import (
     Message,
-    _add_cache_control_to_history,
     _get_history,
-    _tools_in_scope,
     call_assistant,
     call_system,
     call_tool,
@@ -17,11 +15,41 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
     new_agent_call_scope,
 )
+from effectful.handlers.llm.harness.scoping import _tools_in_scope
 from effectful.handlers.llm.types import Template
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 _history_scope = new_agent_call_scope()
+
+
+def _add_cache_control_to_history(
+    history: collections.OrderedDict[str, "Message"],
+) -> None:
+    """Add cache_control to the last user/tool message in an agent's history.
+
+    This enables prompt caching on providers that support it (e.g. Anthropic).
+    Providers that don't support it (e.g. OpenAI) have cache_control stripped
+    by litellm's request transformation, so this is always safe to apply.
+
+    Mutates the history OrderedDict in place.
+    """
+    if not history:
+        return
+    for key in history:
+        msg = history[key]
+        if msg["role"] not in ("user", "tool", "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict) and "cache_control" not in last_block:
+                new_content = list(content)
+                new_content[-1] = {
+                    **last_block,
+                    "cache_control": {"type": "ephemeral"},
+                }
+                history[key] = typing.cast(Message, {**msg, "content": new_content})
 
 
 class LiteLLMProvider(ObjectInterpretation):

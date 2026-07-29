@@ -3,6 +3,8 @@ import os
 import litellm
 import pytest
 
+from effectful.handlers.llm.harness.scoping import _tools_in_scope
+
 EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4o-mini")
 
 _HAS_LLM_API_KEY = litellm.validate_environment(model=EFFECTFUL_LLM_MODEL)[
@@ -67,7 +69,6 @@ def offered_tools(env, *handlers):
     import contextlib
 
     from effectful.handlers.llm.harness.hooks import (
-        _tools_in_scope,
         call_assistant,
     )
     from effectful.ops.semantics import handler

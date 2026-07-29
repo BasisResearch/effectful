@@ -168,63 +168,6 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
 
-def _add_cache_control_to_history(
-    history: collections.OrderedDict[str, "Message"],
-) -> None:
-    """Add cache_control to the last user/tool message in an agent's history.
-
-    This enables prompt caching on providers that support it (e.g. Anthropic).
-    Providers that don't support it (e.g. OpenAI) have cache_control stripped
-    by litellm's request transformation, so this is always safe to apply.
-
-    Mutates the history OrderedDict in place.
-    """
-    if not history:
-        return
-    for key in history:
-        msg = history[key]
-        if msg["role"] not in ("user", "tool", "assistant"):
-            continue
-        content = msg.get("content")
-        if isinstance(content, list) and content:
-            last_block = content[-1]
-            if isinstance(last_block, dict) and "cache_control" not in last_block:
-                new_content = list(content)
-                new_content[-1] = {
-                    **last_block,
-                    "cache_control": {"type": "ephemeral"},
-                }
-                history[key] = typing.cast(Message, {**msg, "content": new_content})
-
-
-def _tools_in_scope(
-    env: collections.abc.Mapping[str, typing.Any],
-) -> collections.abc.Set[Tool]:
-    """Return the tools available to a Template given its lexical context.
-
-    Default rule: real `Tool` and `Template` values bound directly in
-    `env`, plus `Tool` methods discovered through the MRO of any
-    `Agent` instance in `env`.
-
-    Tools are identified by object, so the same `Tool` visible under
-    several bindings appears once.  Names are derived from each tool's
-    `__name__` by :func:`call_assistant`, not from the binding name.
-    """
-    result: set[Tool] = set()
-
-    for obj in env.values():
-        if isinstance(obj, Tool | Template):
-            result.add(obj)
-        elif isinstance(obj, Agent):
-            for cls in type(obj).__mro__:
-                for attr_name in vars(cls):
-                    attr = getattr(obj, attr_name)
-                    if isinstance(attr, Tool):
-                        result.add(attr)
-
-    return result
-
-
 @Operation.define
 @functools.wraps(litellm.completion)
 def completion(*args, **kwargs) -> typing.Any:

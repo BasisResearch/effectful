@@ -4,7 +4,7 @@ import typing
 import pydantic
 
 from effectful.handlers.llm.harness.hooks import call_assistant, call_system
-from effectful.handlers.llm.types import Encodable, Template, Tool
+from effectful.handlers.llm.types import Agent, Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -88,3 +88,31 @@ class LexicalReaders(ObjectInterpretation):
             except Exception:
                 continue
         return fwd(env, response_type, readers, anchor=anchor, force_tool=force_tool)
+
+
+def _tools_in_scope(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> collections.abc.Set[Tool]:
+    """Return the tools available to a Template given its lexical context.
+
+    Default rule: real `Tool` and `Template` values bound directly in
+    `env`, plus `Tool` methods discovered through the MRO of any
+    `Agent` instance in `env`.
+
+    Tools are identified by object, so the same `Tool` visible under
+    several bindings appears once.  Names are derived from each tool's
+    `__name__` by :func:`call_assistant`, not from the binding name.
+    """
+    result: set[Tool] = set()
+
+    for obj in env.values():
+        if isinstance(obj, Tool | Template):
+            result.add(obj)
+        elif isinstance(obj, Agent):
+            for cls in type(obj).__mro__:
+                for attr_name in vars(cls):
+                    attr = getattr(obj, attr_name)
+                    if isinstance(attr, Tool):
+                        result.add(attr)
+
+    return result

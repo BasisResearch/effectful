@@ -40,14 +40,13 @@ from effectful.handlers.llm.harness.hooks import (
     ToolCallDecodingError,
     ToolCallExecutionError,
     _get_history,
-    _tools_in_scope,
     call_assistant,
     call_tool,
     completion,
 )
 from effectful.handlers.llm.harness.providing import LiteLLMProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.scoping import LexicalReaders
+from effectful.handlers.llm.harness.scoping import LexicalReaders, _tools_in_scope
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
