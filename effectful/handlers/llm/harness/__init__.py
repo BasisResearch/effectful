@@ -53,7 +53,7 @@ from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
-from effectful.handlers.llm.harness.observability import LangfuseTracer
+from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.ops.semantics import handler
 
