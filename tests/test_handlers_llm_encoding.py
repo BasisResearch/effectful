@@ -29,8 +29,8 @@ from effectful.handlers.llm.harness.encoding import (
 )
 from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
-    UnsafeEvalProvider,
 )
+from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.types import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
@@ -715,7 +715,7 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
 # ============================================================================
 
 EVAL_PROVIDERS = [
-    pytest.param(UnsafeEvalProvider(), id="unsafe"),
+    pytest.param(UnsafeExecutor(), id="unsafe"),
     pytest.param(RestrictedEvalProvider(), id="restricted"),
 ]
 
@@ -1021,7 +1021,7 @@ def test_encodable_code_compiles_source_to_a_code_object():
     provider, yielding a ready-to-run code object."""
     src = "x = 1\nprint(x)\n"
     adapter = pydantic.TypeAdapter(Encodable[CodeType])
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         decoded = adapter.validate_python(src)
     assert isinstance(decoded, CodeType)
 
@@ -1031,14 +1031,14 @@ def test_encodable_code_round_trips_to_source():
     `linecache`)."""
     src = "a = 2\n"
     adapter = pydantic.TypeAdapter(Encodable[CodeType])
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         decoded = adapter.validate_python(src)
         assert adapter.dump_python(decoded) == src
 
 
 def test_encodable_code_rejects_syntax_error():
     """Source that does not parse is rejected at decode."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises(pydantic.ValidationError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("def f(:")
 
@@ -1046,7 +1046,7 @@ def test_encodable_code_rejects_syntax_error():
 def test_encodable_code_rejects_compile_only_error():
     """`return` outside a function parses but does not compile -- still rejected,
     so the check is `compile`, not merely `ast.parse`."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises(pydantic.ValidationError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("return 5")
 

@@ -47,8 +47,8 @@ from effectful.handlers.llm.harness.coding import (
 )
 from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
-    UnsafeEvalProvider,
 )
+from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.harness.persisting import SQLitePersister
 from effectful.handlers.llm.harness.providing import (
     LiteLLMProvider,
@@ -65,7 +65,7 @@ from effectful.ops.semantics import handler
 # under: `unsafe` runs it with the plain interpreter, `restricted` under
 # RestrictedPython's language subset and a guarded environment.
 EVAL_PROVIDERS: dict[str, typing.Callable[[], typing.Any]] = {
-    "unsafe": UnsafeEvalProvider,
+    "unsafe": UnsafeExecutor,
     "restricted": RestrictedEvalProvider,
 }
 

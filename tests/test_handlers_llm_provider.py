@@ -31,7 +31,7 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
+from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     FinalTool,
@@ -747,7 +747,7 @@ class TestRetryLLMHandler:
         with (
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
         ):
             result = codeadapt("generate_paragraph")
 
@@ -1246,7 +1246,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             add_func = synthesize_adder()
@@ -1264,7 +1264,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(4))),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
             add_func = _MethodSynthesizer().make_adder()
@@ -1278,7 +1278,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a string processing function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             process_func = synthesize_string_processor()
@@ -1293,7 +1293,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a parameterized counting function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
             count_a = synthesize_counter("a")
@@ -1309,7 +1309,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             # Synthesize a function
@@ -1332,7 +1332,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             is_even = synthesize_is_even()
@@ -1353,7 +1353,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             multiply_three = synthesize_three_param_func()
@@ -1486,7 +1486,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = double_it(21)
@@ -1508,7 +1508,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = agent.double(21)
@@ -1529,7 +1529,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = double_it(21)
@@ -1556,7 +1556,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
         ):
@@ -1579,7 +1579,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             # add_numbers is in scope as a lexical tool
@@ -1638,7 +1638,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = triple_it(2)
@@ -1669,7 +1669,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
         ):
@@ -1689,7 +1689,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = triple_it(2)
@@ -1734,7 +1734,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(mock),
         ):
             result = agent.double(21)
@@ -2016,7 +2016,7 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(repl):
+    with handler(_Loop()), handler(UnsafeExecutor()), handler(repl):
         _t()
     return box[0]
 
@@ -2849,7 +2849,7 @@ class TestSyntheticReaderIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(LexicalReaders()),
         ):
@@ -2881,7 +2881,7 @@ class TestPythonReplIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(UnsafeEvalProvider()),
+            handler(UnsafeExecutor()),
             handler(LexicalReaders()),
             handler(StatefulReplSynthesizer()),
         ):

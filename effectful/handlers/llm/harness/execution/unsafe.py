@@ -1,0 +1,59 @@
+import ast
+import builtins
+import linecache
+import types
+import typing
+
+from effectful.handlers.llm.harness.execution import (
+    _mypy_check_region,
+    compile,
+    exec,
+    parse,
+    type_check,
+)
+from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+class UnsafeExecutor(ObjectInterpretation):
+    """UNSAFE provider that handles parse, comple and exec operations
+    by shelling out to python *without* any further checks. Only use for testing."""
+
+    @implements(type_check)
+    def type_check(
+        self,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
+    ) -> None:
+        _mypy_check_region(source, lo, hi, lenient)
+
+    @implements(parse)
+    def parse(self, source: str, filename: str) -> ast.Module:
+        # Cache source under `filename` so inspect.getsource() can retrieve it later.
+        # inspect uses f.__code__.co_filename -> linecache.getlines(filename)
+        linecache.cache[filename] = (
+            len(source),
+            None,
+            source.splitlines(True),
+            filename,
+        )
+
+        return ast.parse(source, filename=filename, mode="exec")
+
+    @implements(compile)
+    def compile(self, module: ast.AST, filename: str) -> types.CodeType:
+        return builtins.compile(typing.cast(typing.Any, module), filename, "exec")
+
+    @implements(exec)
+    def exec(
+        self,
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
+    ) -> None:
+        # Ensure builtins exist in the execution environment.
+        env.setdefault("__builtins__", __builtins__)
+
+        # Execute module-style so top-level defs land in `env`.
+        builtins.exec(bytecode, env, env)

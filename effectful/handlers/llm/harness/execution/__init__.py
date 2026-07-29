@@ -626,7 +626,7 @@ def _run_doctests(
 @contextlib.contextmanager
 def _doctest_compiled_with(
     compiler: collections.abc.Callable[..., types.CodeType],
-) -> collections.abc.Iterator[None]:
+):
     """Run the examples inside this block through ``compiler`` instead of the
     built-in `compile`.
 
@@ -657,53 +657,14 @@ def _doctest_compiled_with(
             doctest.compile = original  # type: ignore[attr-defined]
 
 
-class UnsafeEvalProvider(ObjectInterpretation):
-    """UNSAFE provider that handles parse, comple and exec operations
-    by shelling out to python *without* any further checks. Only use for testing."""
-
-    @implements(type_check)
-    def type_check(
-        self,
-        source: str,
-        lo: int | None = None,
-        hi: int | None = None,
-        *,
-        lenient: bool = False,
-    ) -> None:
-        _mypy_check_region(source, lo, hi, lenient)
-
-    @implements(parse)
-    def parse(self, source: str, filename: str) -> ast.Module:
-        # Cache source under `filename` so inspect.getsource() can retrieve it later.
-        # inspect uses f.__code__.co_filename -> linecache.getlines(filename)
-        linecache.cache[filename] = (
-            len(source),
-            None,
-            source.splitlines(True),
-            filename,
-        )
-
-        return ast.parse(source, filename=filename, mode="exec")
-
-    @implements(compile)
-    def compile(self, module: ast.AST, filename: str) -> types.CodeType:
-        return builtins.compile(typing.cast(typing.Any, module), filename, "exec")
-
-    @implements(exec)
-    def exec(
-        self,
-        bytecode: types.CodeType,
-        env: dict[str, typing.Any],
-    ) -> None:
-        # Ensure builtins exist in the execution environment.
-        env.setdefault("__builtins__", __builtins__)
-
-        # Execute module-style so top-level defs land in `env`.
-        builtins.exec(bytecode, env, env)
-
-    # `run_doctests` is not implemented here: its default rule already runs the
-    # examples with the ordinary Python compiler, which is exactly this provider's
-    # (absent) policy.
+# ----------------------------------------------------------------------------
+# The RestrictedPython policy: what generated code may name, touch and import
+#
+# RestrictedPython's job is to keep generated code away from the interpreter's
+# internals. The names below draw that line once, and both halves of the sandbox
+# read from it: the compile-time policy (`RestrictedPythonPolicy`) and the runtime
+# guards installed in the exec environment (`_guarded_getattr`, `_guarded_import`).
+# ----------------------------------------------------------------------------
 
 
 class _StdoutPrintCollector(PrintCollector):
@@ -715,15 +676,6 @@ class _StdoutPrintCollector(PrintCollector):
         kwargs.setdefault("file", sys.stdout)
         builtins.print(*objects, **kwargs)
 
-
-# ----------------------------------------------------------------------------
-# The RestrictedPython policy: what generated code may name, touch and import
-#
-# RestrictedPython's job is to keep generated code away from the interpreter's
-# internals. The names below draw that line once, and both halves of the sandbox
-# read from it: the compile-time policy (`RestrictedPythonPolicy`) and the runtime
-# guards installed in the exec environment (`_guarded_getattr`, `_guarded_import`).
-# ----------------------------------------------------------------------------
 
 # Names the RestrictedPython transformer itself emits into compiled code -- the
 # guarded accessors (`_getattr_(x, "y")`), the print collector (`_print`), the

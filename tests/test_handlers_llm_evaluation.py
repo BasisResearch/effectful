@@ -23,7 +23,6 @@ from effectful.handlers.llm.harness.encoding import (
 )
 from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
-    UnsafeEvalProvider,
     run_doctests,
     scan_non_nestable,
     splice_into_source,
@@ -33,6 +32,7 @@ from effectful.handlers.llm.harness.execution import (
 from effectful.handlers.llm.harness.execution import compile as compile_op
 from effectful.handlers.llm.harness.execution import exec as exec_op
 from effectful.handlers.llm.harness.execution import parse as parse_op
+from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 
@@ -80,7 +80,7 @@ def _raises(generated_src: str, anchor: Any) -> bool:
     # Splice then type-check as separate steps (the decode path's shape), under a
     # provider so the `type_check` op resolves.
     try:
-        with handler(UnsafeEvalProvider()):
+        with handler(UnsafeExecutor()):
             spliced = splice_into_source(ast.parse(generated_src), anchor)
             if spliced is not None:
                 type_check(*spliced)
@@ -292,7 +292,7 @@ def test_decode_runtime_only_pydantic_model_issue_576():
 
     MyModel = _make_model()
 
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         fn = pydantic.TypeAdapter(
             Encodable[Callable[[MyModel], MyModel]]
         ).validate_python(
@@ -338,7 +338,7 @@ def test_linecache_backed_template_is_checked():
 
 
 def test_decode_with_anchor_typechecks_and_runs():
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
@@ -350,7 +350,7 @@ def test_decode_with_anchor_typechecks_and_runs():
 
 
 def test_decode_with_anchor_rejects_bad_code():
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
@@ -364,7 +364,7 @@ def test_decode_with_anchor_rejects_bad_code():
 def test_decode_without_anchor_skips_typecheck():
     # Argument-path decoding carries no anchor -> the type check is skipped, so
     # even ill-typed code decodes (it is out of scope for this stage).
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
@@ -379,7 +379,7 @@ def test_decode_with_anchor_rejects_non_nestable():
     # The non-nestable scan is a decode-time precondition of the splice: with an
     # anchor, a star import (illegal once nested in the Template body) is rejected
     # before type checking.
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
@@ -514,14 +514,14 @@ def _code(source: str) -> types.CodeType:
 
 def test_repl_seeds_from_lexical_context():
     """Names in the seed context are usable in executed code."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({"readings": [10, 20, 30]})
         assert session.exec_code(_code("print(sum(readings))")) == "60\n"
 
 
 def test_repl_persists_bindings_across_calls():
     """A binding created in one call is visible in the next."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         session.exec_code(_code("total = 41"))
         assert session.exec_code(_code("print(total)")) == "41\n"
@@ -529,7 +529,7 @@ def test_repl_persists_bindings_across_calls():
 
 def test_repl_rebinds_across_calls():
     """A seeded/prior name can be rebound using its prior value."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({"x": 10})
         session.exec_code(_code("x = x + 1"))
         assert session.exec_code(_code("print(x)")) == "11\n"
@@ -538,7 +538,7 @@ def test_repl_rebinds_across_calls():
 def test_repl_runs_complete_multistatement_block():
     """A complete `def` + call in one snippet runs in one shot (the case
     `single`-mode compilation would reject)."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         out = session.exec_code(
             _code("def double(n):\n    return n * 2\nprint(double(21))")
@@ -547,14 +547,14 @@ def test_repl_runs_complete_multistatement_block():
 
 
 def test_repl_captures_print():
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
 def test_repl_rejects_invalid_source_at_construction():
     """Invalid source is rejected when it is decoded to a code object -- before it
     ever reaches the session -- and valid code in the same provider still runs."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("def f(:")
         assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
@@ -563,7 +563,7 @@ def test_repl_rejects_invalid_source_at_construction():
 def test_repl_exception_is_isolated():
     """A runtime exception is reported in the call's output; the session survives
     and retains prior state."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         session.exec_code(_code("kept = 7"))
         out = session.exec_code(_code("print(1 / 0)"))
@@ -575,7 +575,7 @@ def test_repl_system_exit_propagates():
     """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
     other exception (including `KeyboardInterrupt`) is caught and surfaced as
     output rather than escaping the call."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         with pytest.raises(SystemExit):
             session.exec_code(_code("raise SystemExit"))
@@ -587,7 +587,7 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
     """A function defined in an earlier call that raises in a later call formats
     with its *own* source line, not the later call's source -- the per-snippet
     filename keeps each cell's source in linecache."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         session.exec_code(_code("def boom():\n    return 1 / 0"))
         out = session.exec_code(_code("boom()"))
@@ -597,7 +597,7 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
 def test_repl_new_binding_does_not_leak_into_seed_context():
     """A binding created in executed code stays in the session; the seed mapping
     the session was created from is not mutated."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         seed = {"base": 10}
         session = ReplSession(seed)
         session.exec_code(_code("derived = base + 5"))
@@ -610,7 +610,7 @@ def test_repl_binding_is_visible_to_the_rest_of_the_call():
     shared shadow layer of that chain -- so the rest of the Template call sees it
     -- while the read-only lexical layer underneath does not, keeping it scoped to
     the call (mirroring `exec`)."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         lexical = {"base": 10}
         env: ChainMap[str, Any] = ChainMap({}, lexical)
         ReplSession(env).exec_code(_code("shared = base + 5"))
@@ -621,7 +621,7 @@ def test_repl_binding_is_visible_to_the_rest_of_the_call():
 def test_repl_keeps_stdout_and_stderr_separate():
     """stdout (print output) and stderr (tracebacks) accumulate in separate,
     introspectable buffers; `exec_code` returns this call's stdout then stderr."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         out = session.exec_code(_code("print('hi')\n1 / 0"))
         assert session.stdout.getvalue() == "hi\n"
@@ -636,7 +636,7 @@ def test_repl_runsource_routes_through_ops():
     rather than falling back to the native single-mode compiler."""
     with pytest.raises(NotImplementedError):
         ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({})
         assert session.runsource("kept = 7") is False  # complete: compiled + ran
         assert session.locals["kept"] == 7
@@ -1062,7 +1062,7 @@ class TestRunDoctestsThroughCallableDecode:
     """`Encodable[Callable[...]]` runs the synthesized function's doctests."""
 
     def _decode(self, module_code: str, provider=None):
-        provider = provider or UnsafeEvalProvider()
+        provider = provider or UnsafeExecutor()
         with handler(provider):
             return pydantic.TypeAdapter(
                 Encodable[Callable[[str, str], int]]
@@ -1134,7 +1134,7 @@ def _repl_raises(prior: list[str], snippet: str) -> bool:
     prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
     checked = splice_repl_code_into_body(ast.parse(prior_src + snippet), _repl_anchor)
     assert checked is not None
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         try:
             type_check(*checked, lenient=True)
             return False
@@ -1235,7 +1235,7 @@ def test_repl_decode_rejects_illtyped_snippet():
     type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
     fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
     to a code object."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises((pydantic.ValidationError, TypeError)):
             _decode("n: int = 'oops'\nprint(n)", anchor=True)
         assert isinstance(
@@ -1246,14 +1246,14 @@ def test_repl_decode_rejects_illtyped_snippet():
 def test_repl_decode_without_anchor_skips_typecheck():
     """Outside a managed Template call there is no anchor in the decode context, so an
     ill-typed snippet decodes without a type check (it can still run)."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
 
 
 def test_repl_exec_code_runs_and_records_history():
     """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
     records each snippet's source so a later decode can splice the accumulated session."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         session = ReplSession({"readings": [1, 2, 3]})
         assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
         assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
@@ -1265,13 +1265,13 @@ def test_repl_exec_code_runs_and_records_history():
 def test_encodable_code_rejects_future_import():
     """`from __future__ import ...` is illegal once nested in a function body, so it
     is rejected when the code object is decoded, before it can run."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("from __future__ import annotations\nx = 1")
 
 
 def test_encodable_code_rejects_star_import():
     """A star import is likewise rejected at decode."""
-    with handler(UnsafeEvalProvider()):
+    with handler(UnsafeExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("from os import *\nx = 1")
