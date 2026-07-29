@@ -294,7 +294,7 @@ class ReduceOptimum(ObjectInterpretation):
                 return fwd()
             assignment_vars[key] = value.op
 
-        if any(len(stream) == 0 for stream in streams.values()):
+        if any(len(typing.cast(range, stream)) == 0 for stream in streams.values()):
             return monoid.identity
 
         score_fvs = fvsof(body.value)
