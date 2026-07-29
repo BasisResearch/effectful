@@ -188,8 +188,6 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
-CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
-
 
 def _add_cache_control_to_history(
     history: collections.OrderedDict[str, "Message"],
@@ -215,7 +213,7 @@ def _add_cache_control_to_history(
                 new_content = list(content)
                 new_content[-1] = {
                     **last_block,
-                    "cache_control": CACHE_CONTROL_EPHEMERAL,
+                    "cache_control": {"type": "ephemeral"},
                 }
                 history[key] = typing.cast(Message, {**msg, "content": new_content})
 
