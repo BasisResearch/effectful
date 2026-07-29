@@ -37,22 +37,29 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    **This example does not reproduce the blog's ordering.** Measured 2026-07,
-    over seven runs of the full corpus:
+    **This example does not reproduce the blog's ordering.** Measured 2026-07
+    over the full 40-claim corpus, the lower four rows at temperature 0 to match
+    upstream's benchmark:
 
-    ======================================  ========  ===========  =====
-    condition                               two-pass  single-pass  naive
-    ======================================  ========  ===========  =====
-    gpt-5.5                                    40/40        40/40  40/40
-    gpt-5-mini                                 34/34        34/34  34/34
-    gpt-5-mini, ``--reasoning-effort minimal`` 39/40        40/40  40/40
-    ======================================  ========  ===========  =====
+    ==============  ========  ===========  =====
+    model           two-pass  single-pass  naive
+    ==============  ========  ===========  =====
+    gpt-5.5          100.0%       100.0%   100.0%
+    gpt-4.1          100.0%        97.5%   100.0%
+    gpt-4o            90.0%        87.5%    87.5%
+    gpt-4.1-mini      87.5%        90.0%    85.0%
+    ==============  ========  ===========  =====
 
-    The strategies are indistinguishable, and where they do differ it is by one
-    item, in whichever direction the run happens to fall -- at minimal effort the
-    *two-pass* split is the one that loses. See ``Why the ablation does not
-    separate`` below: this turns out to agree with upstream's own data rather
-    than contradict it.
+    The two weaker models land in upstream's own accuracy band (it reports
+    86.1--96.3%), so this is not merely a ceiling effect. But every difference
+    here is exactly one item out of forty -- 2.5pp, against a 10.2pp headline --
+    and the ordering is not stable: two-pass beats naive in three of four models,
+    and loses to *single-pass* in one. Upstream's own matched-model pair
+    (sonnet informalize + sonnet compare, 94.4%, against naive sonnet at 86.1%)
+    is an 8.3pp gap; nothing here gets within a third of it.
+
+    What does reproduce, exactly, is the *shape* of the errors -- see
+    ``Why the ablation does not separate`` below.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -115,6 +122,22 @@ Demonstrates:
 # Worth writing down, because the obvious reading of the numbers above -- "the
 # corpus is too easy" -- is not what the evidence says.
 #
+# - The error *shape* reproduces precisely, even though the accuracy gap does
+#   not. Across the six runs on the two weaker models (30 errors in total),
+#   29 are false disputes of faithful theorems and exactly one is an unfaithful
+#   theorem waved through -- the same asymmetry upstream records across its 446
+#   judgments. Two claims are wrong under every strategy on both models,
+#   `delegation/Audited.other_subject_unaffected` and
+#   `delegation/Audited.delegation_no_escalation`, which is structurally the
+#   finding upstream reports as "GrantSubjectsExist and DelegateNonExistentIsNoop
+#   are irreducibly hard for single-call variants": two items, both from the
+#   authority domain, both faithful, both over-flagged. And the errors land
+#   where the mechanism predicts -- on the invariant projections and on
+#   `unrelated_grant_unaffected`, the deliberately redundant-strengthening claim.
+#   On gpt-4.1-mini the naive strategy disputes two invariant projections that
+#   the two-pass split gets right, which is the predicted direction; on gpt-4o
+#   all three strategies trip on the same one.
+#
 # - The traps were never the discriminator, upstream's included. Reading the
 #   reference implementation's own per-item eval outputs (`eval/results/*.json`):
 #   across 446 recorded judgments there are three false confirms in total, all
@@ -155,14 +178,22 @@ Demonstrates:
 #   is not strictly better... The blind informalization step adds an
 #   interpretation layer that can overcomplicate comparisons."
 #
-# So: three strategies that tie on a modern model is the expected outcome, and
-# this file reports it rather than tuning the corpus until the preferred ordering
-# appears. One real difference from upstream is worth flagging as a caveat in the
-# other direction -- upstream's two-pass compare is *batched* per domain, so its
-# comparator sees the faithful and unfaithful theorem for the same requirement
-# side by side, a contrastive signal the per-item modes never get. Every strategy
-# here is per-item, which makes this a cleaner test of prompt structure alone,
-# and that cleaner test finds nothing.
+# So the picture is: the *failure mode* ClaimCheck targets is real and shows up
+# here exactly as described -- these checkers never wave a cheat through, they
+# over-flag honest theorems, and they do it on invariant projections and on specs
+# stronger than their requirement. The *remedy's* measured advantage is what does
+# not survive: at best one item in forty, unstable in direction, against a
+# published ten-point gap. This file reports that rather than tuning the corpus
+# until the preferred ordering appears.
+#
+# Two caveats in the other direction, both real. Upstream's two-pass compare is
+# *batched* per domain, so its comparator sees the faithful and unfaithful
+# theorem for the same requirement side by side -- a contrastive signal the
+# per-item modes never get. Every strategy here is per-item, which makes this a
+# cleaner test of prompt structure alone. And these are single runs at
+# temperature 0 on a 40-item corpus, where one item is 2.5pp; upstream averaged
+# its two-pass arm over three runs and its comparators over one. Neither its
+# numbers nor these support a difference this small.
 #
 # Other simplifications:
 # - No coverage check. Both here and upstream, a requirement that no theorem
