@@ -675,7 +675,8 @@ class Term[T](abc.ABC):
 
 try:
     from prettyprinter import install_extras, pretty_call, register_pretty
-    from prettyprinter.prettyprinter import general_identifier
+    from prettyprinter.doc import LINE, concat, group, nest
+    from prettyprinter.prettyprinter import general_identifier, pretty_python_value
 
     install_extras({"dataclasses"})
 
@@ -710,9 +711,84 @@ try:
         name, _ = _pretty_operation_name(value, ctx)
         return general_identifier(name)
 
+    # Larger values bind more tightly. Associativity indicates which nested
+    # operand may omit parentheses when it has the same precedence.
+    _BINARY_DUNDER_OPERATORS = {
+        "__or__": ("|", 40, "left"),
+        "__xor__": ("^", 50, "left"),
+        "__and__": ("&", 60, "left"),
+        "__lshift__": ("<<", 70, "left"),
+        "__rshift__": (">>", 70, "left"),
+        "__add__": ("+", 80, "left"),
+        "__sub__": ("-", 80, "left"),
+        "__mul__": ("*", 90, "left"),
+        "__matmul__": ("@", 90, "left"),
+        "__truediv__": ("/", 90, "left"),
+        "__floordiv__": ("//", 90, "left"),
+        "__mod__": ("%", 90, "left"),
+        "__pow__": ("**", 110, "right"),
+        "__eq__": ("==", 30, "none"),
+        "__ne__": ("!=", 30, "none"),
+        "__lt__": ("<", 30, "none"),
+        "__le__": ("<=", 30, "none"),
+        "__gt__": (">", 30, "none"),
+        "__ge__": (">=", 30, "none"),
+    }
+    _UNARY_DUNDER_OPERATORS = {
+        "__pos__": ("+", 100),
+        "__neg__": ("-", 100),
+        "__invert__": ("~", 100),
+    }
+
+    def _parenthesize(doc):
+        return concat(["(", doc, ")"])
+
+    def _pretty_dunder_operand(value, ctx, precedence, associativity, side):
+        doc = pretty_python_value(value, ctx)
+        if not isinstance(value, Term):
+            return doc
+
+        child_name = value.op.__name__
+        if child_name in _BINARY_DUNDER_OPERATORS:
+            child_precedence = _BINARY_DUNDER_OPERATORS[child_name][1]
+        elif child_name in _UNARY_DUNDER_OPERATORS:
+            child_precedence = _UNARY_DUNDER_OPERATORS[child_name][1]
+        else:
+            return doc
+
+        needs_parens = child_precedence < precedence or (
+            child_precedence == precedence
+            and (associativity == "none" or associativity != side)
+        )
+        return _parenthesize(doc) if needs_parens else doc
+
+    def _pretty_dunder(value: Term, ctx):
+        name = value.op.__name__
+        if not value.kwargs and len(value.args) == 1 and name in _UNARY_DUNDER_OPERATORS:
+            symbol, precedence = _UNARY_DUNDER_OPERATORS[name]
+            operand = _pretty_dunder_operand(
+                value.args[0], ctx, precedence, "right", "right"
+            )
+            return concat([symbol, operand])
+
+        if not value.kwargs and len(value.args) == 2 and name in _BINARY_DUNDER_OPERATORS:
+            symbol, precedence, associativity = _BINARY_DUNDER_OPERATORS[name]
+            left = _pretty_dunder_operand(
+                value.args[0], ctx, precedence, associativity, "left"
+            )
+            right = _pretty_dunder_operand(
+                value.args[1], ctx, precedence, associativity, "right"
+            )
+            return group(concat([left, f" {symbol}", nest(4, concat([LINE, right]))]))
+
+        return None
+
     @register_pretty(Term)
     def pretty_term(value: Term, ctx):
         op_name, ctx = _pretty_operation_name(value.op, ctx, value)
+        dunder_doc = _pretty_dunder(value, ctx)
+        if dunder_doc is not None:
+            return dunder_doc
         return pretty_call(ctx, op_name, *value.args, **value.kwargs)
 
 except ImportError:

@@ -21,13 +21,13 @@ def test_prettyprinter_traverses_dataclasses_and_raw_operations():
     def reduce(body: object, streams: object) -> object:
         raise NotHandled
 
-    expr = reduce(Result((x() - 1) ** 2, {x: x()}), {x: range(3)})
+    expr = reduce(Result((x() - 1) ** 2, {x: x()}), {x: (0, 1, 2)})
 
     formatted = prettyprinter.pformat(expr, width=80)
 
-    assert "value=__pow__(__sub__(x(), 1), 2)" in formatted
+    assert "value=(x() - 1) ** 2" in formatted
     assert "assignment={x: x()}" in formatted
-    assert "{x: range(0, 3)}" in formatted
+    assert "{x: (0, 1, 2)}" in formatted
     assert "Operation(" not in formatted
     assert "_IntegralTerm(" not in formatted
 
@@ -37,6 +37,20 @@ def test_prettyprinter_prints_raw_operation_as_its_name():
     x = defop(int, name="x")
 
     assert prettyprinter.pformat(x) == "x"
+
+
+def test_prettyprinter_formats_dunder_operators_with_precedence():
+    prettyprinter = __import__("prettyprinter")
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+
+    assert prettyprinter.pformat(x() + y() * 2) == "x() + y() * 2"
+    assert prettyprinter.pformat((x() + y()) * 2) == "(x() + y()) * 2"
+    assert prettyprinter.pformat(x() - (y() - 2)) == "x() - (y() - 2)"
+    assert prettyprinter.pformat((x() ** y()) ** 2) == "(x() ** y()) ** 2"
+    assert prettyprinter.pformat(x() ** (y() ** 2)) == "x() ** y() ** 2"
+    assert prettyprinter.pformat(-(x() ** 2)) == "-x() ** 2"
+    assert prettyprinter.pformat((-x()) ** 2) == "(-x()) ** 2"
 
 
 def test_interpretation_isinstance():
