@@ -1,6 +1,6 @@
 """Agents and model-boundary types for the ClaimCheck audit in `auditing.py`.
 
-Four agents read Lean theorem statements and judge whether they express a
+Two agents read Lean theorem statements and judge whether they express a
 natural-language requirement, plus the typed values that cross the model
 boundary.
 
@@ -8,10 +8,12 @@ boundary.
 a template's system prompt partly from the source of the module the template is
 defined in (see the prompt-assembly table in
 `effectful.handlers.llm.types.Template`), so everything sharing a file with an
-`Agent` is shown to it verbatim. Keeping these agents in a module of their own is
-what makes it true that the informalizer sees a Lean statement and nothing else.
-Nothing here knows anything about the material being audited; `auditing.py`
-imports this module and is never imported by it.
+`Agent` is shown to it verbatim. Keeping these two agents in a module of their
+own is what makes it true that the informalizer sees a Lean statement and nothing
+else. Nothing here knows anything about the material being audited; `auditing.py`
+imports this module and is never imported by it. The two single-call ablations
+live in `auditing_single` and `auditing_naive` for the same reason: their prompts
+differ from these, and a shared module would show each arm the others'.
 """
 
 import dataclasses

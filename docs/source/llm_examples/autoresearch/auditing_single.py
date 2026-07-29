@@ -6,8 +6,7 @@ in, so an agent defined beside this one would be shown this one's prompt --
 including the invariant caveat below, which upstream gives to its single-pass
 and naive prompts and pointedly *not* to its two-pass comparator. Keeping that
 asymmetry is the whole point of running the arms against each other, and a
-shared module silently destroys it. That is not hypothetical: it happened here,
-and the measurement it produced is retracted in `auditing.py`.
+shared module silently destroys it, in a way nothing in the prompts would show.
 """
 
 from auditing_agents import Comparison
