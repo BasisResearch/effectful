@@ -243,16 +243,13 @@ class Comparator(Agent):
         requirement had better be trivial too. Judge the statement, not its name:
         a theorem called after the property it was meant to prove is no evidence
         that it proves it.
-
-        An invariant hypothesis (a named predicate such as ``Inv m``, whose
-        definition you have not been shown) is expected and normal -- do not flag
-        it as a narrowing. A theorem that extracts a concrete consequence from an
-        invariant is useful, not vacuous. The same goes for a conclusion that is
-        itself a named predicate you have not seen unfolded: judge it on what its
-        name and arguments say, not on your inability to check it. Only call
-        something vacuous when its conclusion holds for every value of the types
-        involved regardless of the hypotheses.
         """
+        # No invariant caveat here, deliberately: upstream's
+        # ROUNDTRIP_COMPARE_PROMPT has none, while its NAIVE_PROMPT and
+        # CLAIMCHECK_PROMPT both do. That asymmetry is upstream's, and handing
+        # this arm a caveat it was never given would be scoring a different
+        # experiment. The blind pass is supposed to be what makes the caveat
+        # unnecessary -- that is the claim under test.
 
 
 # ---------------------------------------------------------------------------
@@ -296,9 +293,9 @@ class SinglePassAuditor(Agent):
         An invariant hypothesis (a named predicate such as ``Inv m``, whose
         definition you have not been shown) is expected and normal -- do not flag
         it as a narrowing. A theorem that extracts a concrete consequence from an
-        invariant is useful, not vacuous. The same goes for a conclusion that is
-        itself a named predicate you have not seen unfolded: judge it on what its
-        name and arguments say, not on your inability to check it. Only call
-        something vacuous when its conclusion holds for every value of the types
-        involved regardless of the hypotheses.
+        invariant is useful, not vacuous: ``(h : Inv m) : 0 ≤ m`` is a real
+        guarantee. But do flag a hypothesis that restricts *when* the property
+        holds.
         """
+        # The caveat above is upstream's CLAIMCHECK_PROMPT, kept because this arm
+        # is a port of that prompt. `Comparator` gets none, matching upstream.

@@ -50,36 +50,63 @@ requirements``. Here the comment is a signature:
     ==============  ========  ===========  ======  ===========
     model           two-pass  single-pass  naive   b-c (p)
     ==============  ========  ===========  ======  ===========
-    gpt-4o             72.2%        94.4%  97.2%   0-9 (0.004)
-    gpt-4.1-mini       91.7%        86.1%  83.3%   3-0 (0.250)
-    gpt-4.1            97.2%        91.7%  94.4%   1-0 (1.000)
-    gpt-5.5            97.2%       100.0%  97.2%   1-1 (1.000)
+    gpt-4o             72.2%        88.9%  94.4%   1-9 (0.021)
+    gpt-4.1-mini       88.9%        91.7%  86.1%   3-2 (1.000)
+    gpt-4.1           100.0%        97.2%  91.7%   3-0 (0.250)
+    gpt-5.5            36.1%       100.0% 100.0%   0-23 (<0.001)
     ==============  ========  ===========  ======  ===========
 
-    The published ordering does not reproduce, and on gpt-4o it *inverts*
-    significantly: the two-pass split scores 25 points below the bare "does this
-    match?" prompt, 0-9 discordant, p=0.004. That survives a Bonferroni
-    correction across the eight cells tested (this run and the one before it),
-    and the direction held in that earlier run too (1-6, p=0.125). The failure is
-    one-sided: 8 of two-pass's 10 errors are faithful theorems disputed, against
-    naive's 0.
+    The published ordering does not reproduce; two of the four cells invert
+    significantly. Every two-pass failure is one-sided -- 8 of gpt-4o's 10 errors
+    and all 23 of gpt-5.5's are faithful theorems *disputed*, against naive's 0
+    in both.
 
-    What *does* reproduce is which items are hard. Six of those eight false
+    The gpt-5.5 cell is the informative one, because it isolates a mechanism.
+    Upstream's ``ROUNDTRIP_COMPARE_PROMPT`` carries no invariant caveat (its
+    ``NAIVE_PROMPT`` and ``CLAIMCHECK_PROMPT`` both do), and this file reproduces
+    that asymmetry exactly. The run before it gave the comparator the caveat
+    anyway, and scored:
+
+    ==============  ========  ===========  ======
+    model           two-pass  single-pass  naive
+    ==============  ========  ===========  ======
+    gpt-4o             72.2%        94.4%  97.2%
+    gpt-4.1-mini       91.7%        86.1%  83.3%
+    gpt-4.1            97.2%        91.7%  94.4%
+    gpt-5.5            97.2%       100.0%  97.2%
+    ==============  ========  ===========  ======
+
+    36.1% to 97.2%. Two corpus items also changed between the runs
+    (``contrast_pair_indices_valid`` regained Dafny's lower bound and
+    ``columns_are_unique`` its opaque predicate), so the two tables are not a
+    clean single-variable ablation -- but those two items are wrong in 1 of 12
+    runs each, and cannot account for a 61-point move. The caveat is what moved
+    it. So the blind pass is not self-sufficient:
+    it produces a reading like "the counter is non-negative -- strength: trivial"
+    for ``(h : Inv m) : 0 ≤ m``, correctly, because a reader who cannot see
+    inside ``Inv`` genuinely cannot tell whether the conclusion restates the
+    hypothesis. The comparator, told that a trivial rating is almost always a
+    mismatch, then disputes a faithful theorem. Something has to rescue it.
+
+    Upstream's rescue is almost certainly the batching. Its comparator sees all
+    of a domain's pairs in one call, so ``ensures m >= 0`` arrives next to
+    ``ensures m == m`` and ``ensures m >= -1`` under the same requirement, and
+    the contrast settles which is trivial. Per-item, that signal is gone. This is
+    a hypothesis this file does not test -- implementing the batch would test it,
+    and is the single most valuable follow-up -- but it is consistent with
+    upstream scoring 96.3% on a prompt that, run per-item, scores 36%.
+
+    What *does* reproduce is which items are hard. Five of gpt-4o's eight false
     disputes -- ``base_hue_in_range``, ``always_five_colors``,
-    ``all_colors_valid``, ``card_in_exactly_one_column``,
-    ``wip_limits_respected``, ``allocator_always_fresh`` -- are on the
-    eleven-item false-dispute list upstream's own weakest arm produces
-    (`eval/results/cc.json`). The port reproduces the *difficulty*; what it does
-    not reproduce is the claim that a blind first pass is what removes it. Here
-    the blind pass is what causes it -- the informalizer rates a statement like
-    ``(h : Inv m) : ValidBaseHue m.baseHue`` trivial or low-confidence, and the
-    comparator, handed a reading it cannot check against the source, disputes.
-    Upstream reports the same reversal on the one non-Dafny corpus it tried
-    (VERINA, N=189 Lean: two-pass 54.0% against a 57.1% baseline).
+    ``all_colors_valid``, ``wip_limits_respected``, ``allocator_always_fresh`` --
+    are on the eleven-item false-dispute list upstream's own weakest arm produces
+    (`eval/results/cc.json`). And upstream reports the same two-pass reversal on
+    the one non-Dafny corpus it tried (VERINA, N=189 Lean: two-pass 54.0% against
+    a 57.1% baseline).
 
     One trap transliterates badly and it is the clearest cost of the port.
     ``grant_non_existent_is_noop_init`` -- upstream's vacuous
-    ``requires m == Init()`` -- is waved through in 9 of 12 runs here, where
+    ``requires m == Init()`` -- is waved through in 8 of 12 runs here, where
     every upstream arm catches it. In Dafny the extra precondition is its own
     line under its own keyword; in Lean ``(hinit : m = Init)`` is one binder
     among five and reads as ordinary. That is a language difference, not a
@@ -145,6 +172,22 @@ Demonstrates:
 # - One call per claim, not one batched call per pass. This is the one place the
 #   port is deliberately *unlike* upstream, and it matters -- see `Batching`
 #   below.
+# - Opacity is redistributed, not preserved item for item. Dafny's
+#   `NoDupSeq(m.cols)` and `ValidColor(m.colors[i])` are opaque names; so are the
+#   Lean versions. But `LaneLen`/`WipOf`/`Keys` are inventions of this port,
+#   because Dafny's `m.lanes[m.cols[i]]` map indexing has no direct Lean form
+#   over association lists -- so `wip_limits_respected` and
+#   `lanes_and_wip_match_columns` are *more* opaque here than in Dafny, while
+#   `all_colors_valid` lost Dafny's odd hard-coded `forall i | 0 <= i < 5` and is
+#   less. Two of the six items cited above as reproducing upstream's difficulty
+#   are on the harder side of that trade, which is a caveat on the claim.
+# - The prompts keep upstream's asymmetry. `NAIVE_PROMPT` and `CLAIMCHECK_PROMPT`
+#   both tell the model that an invariant hypothesis is normal;
+#   `ROUNDTRIP_COMPARE_PROMPT` says nothing of the kind. The three agents here
+#   reproduce that exactly -- `Comparator` gets no caveat. An earlier revision
+#   gave all three one, plus a conclusion-side carve-out upstream has nowhere;
+#   that helped precisely the arm and the items under test, and the numbers above
+#   are from after it was removed.
 
 # The leak
 # --------
@@ -205,23 +248,29 @@ Demonstrates:
 # The first two corpora here were hand-written -- an election tally and an
 # authority policy, in ClaimCheck's spirit but not its letter. They did not
 # reproduce its result, and reading upstream's own per-item eval outputs
-# (`eval/results/*.json`) shows why. Recomputing the error direction over every
-# scored run:
+# (`eval/results/*.json`) shows why. Recomputing the error direction, arm by arm
+# (file names are upstream's; `n` is items x runs):
 #
-#   =================  ===  ======  ==============  ==============
-#   arm                  n     acc  false confirms  false disputes
-#   =================  ===  ======  ==============  ==============
-#   two-pass           108   96.3%               0               4
-#   single-prompt       36   86.1%               0               5
-#   "Claude Code"       36   69.4%               0              11
-#   naive-sonnet       108   88.9%               0              12
-#   naive-opus         108   94.4%               0               2
-#   =================  ===  ======  ==============  ==============
+#   ======================  ===  ======  ==============  ==============
+#   file                      n     acc  false confirms  false disputes
+#   ======================  ===  ======  ==============  ==============
+#   two-pass.json           108   96.3%               0               4
+#   single-prompt.json       36   86.1%               0               5
+#   cc.json                  36   69.4%               0              11
+#   naive-inv-sonnet.json   108   88.9%               0              12
+#   naive-inv-opus.json     108   94.4%               0               6
+#   haiku-haiku.json        108   96.3%               3               1
+#   ======================  ===  ======  ==============  ==============
 #
-# Every arm catches every planted trap, always. The entire spread is over-flagging
-# of *correct* lemmas -- upstream says so in `reports/STRUCTURAL-SEPARATION.md`:
-# "All three variants catch all 8 deliberately bogus lemmas (100%). The accuracy
-# difference comes entirely from false disputes of valid lemmas."
+# Nearly every error in nearly every arm is an over-flag of a *correct* lemma.
+# The exception is the last row -- a two-pass run with a Haiku comparator, which
+# waves `CardPartitionNoDups` through in all three runs -- and those are the only
+# false confirms anywhere in upstream's recorded judgments. Upstream states the
+# pattern in `reports/STRUCTURAL-SEPARATION.md`: "All three variants catch all 8
+# deliberately bogus lemmas (100%). The accuracy difference comes entirely from
+# false disputes of valid lemmas." (Its "8" is a miscount; the mapping files hold
+# nine disputed items. And the claim is true of the three variants it tabulates,
+# not of every run it recorded.)
 #
 # The hand-written corpora measured the opposite thing. Their traps were subtle
 # enough that mid-capability models missed them -- twelve runs produced 69 traps
@@ -277,7 +326,9 @@ Demonstrates:
 #
 # Known limits of the numbers above, in the order they would need fixing:
 #
-# - Batching, and it is the big one. `src/roundtrip.js` makes *two* API calls for
+# - Batching, and it is now the leading explanation, not just a caveat. See the
+#   36.1%-vs-97.2% contrast in the docstring above. `src/roundtrip.js` makes
+#   *two* API calls for
 #   a whole domain -- one informalize-all, one compare-all -- while
 #   `singlePromptCheck` and `naiveCheck` each put their call inside a
 #   `for (const l of lemmas)` loop. So upstream's winning arm sees all of a
@@ -580,7 +631,9 @@ theorem all_colors_valid (m : Model) (h : Inv m) : ∀ c ∈ m.colors, ValidColo
   h.2.2.1
 
 theorem contrast_pair_indices_valid (m : Model) (h : Inv m) :
-    m.contrastPair.1 < 5 ∧ m.contrastPair.2 < 5 := h.2.2.2.1
+    (0 ≤ m.contrastPair.1 ∧ m.contrastPair.1 < 5) ∧
+    (0 ≤ m.contrastPair.2 ∧ m.contrastPair.2 < 5) :=
+  ⟨⟨Nat.zero_le _, h.2.2.2.1.1⟩, ⟨Nat.zero_le _, h.2.2.2.1.2⟩⟩
 
 theorem mood_constraints_satisfied (m : Model) (h : Inv m) (hm : m.mood ≠ Mood.custom) :
     ∀ c ∈ m.colors, ColorSatisfiesMood c m.mood := h.2.2.2.2.1 hm
@@ -740,7 +793,7 @@ def Inv (m : Model) : Prop :=
   (∀ k ∈ m.cols, LaneLen m k ≤ WipOf m k) ∧
   (∀ id ∈ m.cards, id < m.nextId)
 
-theorem columns_are_unique (m : Model) (h : Inv m) : m.cols.Nodup := h.1
+theorem columns_are_unique (m : Model) (h : Inv m) : NoDupSeq m.cols := h.1
 
 theorem card_in_exactly_one_column (m : Model) (h : Inv m) :
     NoDupSeq (AllIds m) ∧ ∀ id, id ∈ m.cards ↔ OccursInLanes m id :=
@@ -797,7 +850,17 @@ def statement_of(corpus: str, qualified: str) -> str:
     # The proof begins at the first `:=` at or after the statement; no statement
     # in this corpus contains one, so the first occurrence is the right one.
     body = section[match.start() :]
-    return textwrap.dedent(body[: body.index(":=")]).strip()
+    # The proof begins at the first `:=`; no statement in this corpus contains
+    # one. Guard it anyway -- a future statement with a `let` or a structure
+    # literal would otherwise be truncated mid-way and sent as a fragment, which
+    # is a wrong answer rather than an error.
+    statement = textwrap.dedent(body[: body.index(":=")]).strip()
+    if statement.count("(") != statement.count(")"):
+        raise ValueError(
+            f"extracting {qualified!r} cut an unbalanced statement at the first "
+            f"`:=`; it probably contains one inside the statement:\n{statement}"
+        )
+    return statement
 
 
 # ---------------------------------------------------------------------------
