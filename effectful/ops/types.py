@@ -764,14 +764,22 @@ try:
 
     def _pretty_dunder(value: Term, ctx):
         name = value.op.__name__
-        if not value.kwargs and len(value.args) == 1 and name in _UNARY_DUNDER_OPERATORS:
+        if (
+            not value.kwargs
+            and len(value.args) == 1
+            and name in _UNARY_DUNDER_OPERATORS
+        ):
             symbol, precedence = _UNARY_DUNDER_OPERATORS[name]
             operand = _pretty_dunder_operand(
                 value.args[0], ctx, precedence, "right", "right"
             )
             return concat([symbol, operand])
 
-        if not value.kwargs and len(value.args) == 2 and name in _BINARY_DUNDER_OPERATORS:
+        if (
+            not value.kwargs
+            and len(value.args) == 2
+            and name in _BINARY_DUNDER_OPERATORS
+        ):
             symbol, precedence, associativity = _BINARY_DUNDER_OPERATORS[name]
             left = _pretty_dunder_operand(
                 value.args[0], ctx, precedence, associativity, "left"
