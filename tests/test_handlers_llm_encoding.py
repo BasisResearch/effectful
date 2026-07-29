@@ -20,18 +20,18 @@ import pytest
 from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
-from effectful.handlers.llm.encoding import (
+from effectful.handlers.llm.harness.execution import (
+    RestrictedEvalProvider,
+    UnsafeEvalProvider,
+)
+from effectful.handlers.llm.harness.serialization import (
     _TOOLS_KEY,
     CONTENT_BLOCK_TYPES,
     TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import (
-    RestrictedEvalProvider,
-    UnsafeEvalProvider,
-)
-from effectful.handlers.llm.template import Encodable, Tool
+from effectful.handlers.llm.types import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term

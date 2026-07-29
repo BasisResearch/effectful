@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.completions import (
+from effectful.handlers.llm.harness.completion import (
     DecodedToolCall,
     FinalTool,
     LexicalReaders,
@@ -45,8 +45,8 @@ from effectful.handlers.llm.completions import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
-from effectful.handlers.llm.template import Encodable
+from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
+from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

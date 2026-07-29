@@ -129,7 +129,7 @@ import typing
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
-from effectful.handlers.llm.template import Agent
+from effectful.handlers.llm.types import Agent
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation

@@ -15,12 +15,7 @@ import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.encoding import (
-    REPL_ANCHOR_KEY,
-    TYPE_CHECK_ANCHOR_KEY,
-    SynthesizedFunction,
-)
-from effectful.handlers.llm.evaluation import (
+from effectful.handlers.llm.harness.execution import (
     ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
@@ -30,10 +25,15 @@ from effectful.handlers.llm.evaluation import (
     splice_repl_code_into_body,
     type_check,
 )
-from effectful.handlers.llm.evaluation import compile as compile_op
-from effectful.handlers.llm.evaluation import exec as exec_op
-from effectful.handlers.llm.evaluation import parse as parse_op
-from effectful.handlers.llm.template import Encodable
+from effectful.handlers.llm.harness.execution import compile as compile_op
+from effectful.handlers.llm.harness.execution import exec as exec_op
+from effectful.handlers.llm.harness.execution import parse as parse_op
+from effectful.handlers.llm.harness.serialization import (
+    REPL_ANCHOR_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
+    SynthesizedFunction,
+)
+from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 
 # ============================================================================

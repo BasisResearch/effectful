@@ -10,7 +10,7 @@ from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.completions import (
+from effectful.handlers.llm.harness.completion import (
     LiteLLMProvider,
     call_assistant,
 )

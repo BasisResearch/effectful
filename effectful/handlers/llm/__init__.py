@@ -38,6 +38,6 @@ dataclasses, etc.) come back as real Python values. A `FinalTool` lets the model
 the loop.
 """
 
-from .template import Agent, Encodable, Template, Tool
+from .types import Agent, Encodable, Template, Tool
 
 __all__ = ["Agent", "Template", "Tool", "Encodable"]

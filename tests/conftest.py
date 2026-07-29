@@ -66,7 +66,7 @@ def offered_tools(env, *handlers):
     """
     import contextlib
 
-    from effectful.handlers.llm.completions import (
+    from effectful.handlers.llm.harness.completion import (
         _tools_in_scope,
         call_assistant,
     )

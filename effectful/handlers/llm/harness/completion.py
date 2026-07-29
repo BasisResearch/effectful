@@ -40,7 +40,8 @@ from litellm import (
     OpenAIChatCompletionUserMessage,
 )
 
-from effectful.handlers.llm.encoding import (
+from effectful.handlers.llm.harness.execution import ReplSession
+from effectful.handlers.llm.harness.serialization import (
     _TOOLS_KEY,
     REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
@@ -51,8 +52,7 @@ from effectful.handlers.llm.encoding import (
     format_as_content_blocks,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import ReplSession
-from effectful.handlers.llm.template import (
+from effectful.handlers.llm.types import (
     Agent,
     Encodable,
     FinalTool,

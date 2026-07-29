@@ -19,7 +19,7 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.completions import (
+from effectful.handlers.llm.harness.completion import (
     LiteLLMProvider,
     RetryLLMHandler,
     SQLitePersister,

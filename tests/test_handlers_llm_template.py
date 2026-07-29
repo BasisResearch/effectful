@@ -14,7 +14,7 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
-from effectful.handlers.llm.completions import (
+from effectful.handlers.llm.harness.completion import (
     LexicalReaders,
     LiteLLMProvider,
     PythonRepl,
@@ -24,8 +24,8 @@ from effectful.handlers.llm.completions import (
     call_user,
     completion,
 )
-from effectful.handlers.llm.encoding import _TOOLS_KEY, DecodedToolCall
-from effectful.handlers.llm.evaluation import UnsafeEvalProvider
+from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
+from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

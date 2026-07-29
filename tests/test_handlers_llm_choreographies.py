@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.choreographies import (
+from effectful.handlers.llm.harness.choreography import (
     Choreography,
     ChoreographyError,
     EndpointProjection,
