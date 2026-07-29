@@ -1,3 +1,4 @@
+import dataclasses
 import inspect
 import typing
 
@@ -14,6 +15,24 @@ def test_interpretation_isinstance():
     assert not isinstance({a: 0, b: "hello"}, Interpretation)
     assert not isinstance([a, b], Interpretation)
     assert not isinstance({"a": lambda: 0, "b": lambda: "hello"}, Interpretation)
+
+
+def test_term_str_hides_traversal_constructors():
+    @dataclasses.dataclass
+    class Box:
+        value: object
+
+    x = defop(int, name="x")
+
+    @defop
+    def outer(value: object) -> object:
+        raise NotHandled
+
+    term = outer({"box": Box(x())})
+
+    assert str(term) == "outer({'box': Box(value=x())})"
+    assert "_as_typ" not in str(term)
+    assert "__apply__" not in str(term)
 
 
 def test_instance_method_signature_excludes_self():
