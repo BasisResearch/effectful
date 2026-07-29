@@ -23,9 +23,9 @@ from effectful.handlers.llm.harness.completions import (
     call_user,
     completion,
 )
+from effectful.handlers.llm.harness.encoding import _TOOLS_KEY, DecodedToolCall
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

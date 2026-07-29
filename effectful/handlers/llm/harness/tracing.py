@@ -5,7 +5,7 @@ import langfuse
 import pydantic
 
 from effectful.handlers.llm.harness.completion import call_tool, completion
-from effectful.handlers.llm.harness.serialization import DecodedToolCall
+from effectful.handlers.llm.harness.encoding import DecodedToolCall
 from effectful.handlers.llm.types import Encodable, Template
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd

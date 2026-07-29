@@ -12,7 +12,7 @@ from effectful.handlers.llm.harness.completions import (
     call_assistant,
     call_tool,
 )
-from effectful.handlers.llm.harness.serialization import DecodedToolCall
+from effectful.handlers.llm.harness.encoding import DecodedToolCall
 from effectful.handlers.llm.types import Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements

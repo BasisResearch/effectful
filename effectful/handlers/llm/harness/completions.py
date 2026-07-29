@@ -16,8 +16,7 @@ import uuid
 import litellm
 import pydantic
 
-from effectful.handlers.llm.harness.execution import ReplSession
-from effectful.handlers.llm.harness.serialization import (
+from effectful.handlers.llm.harness.encoding import (
     _TOOLS_KEY,
     REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
@@ -28,6 +27,7 @@ from effectful.handlers.llm.harness.serialization import (
     format_as_content_blocks,
     to_content_blocks,
 )
+from effectful.handlers.llm.harness.execution import ReplSession
 from effectful.handlers.llm.types import (
     Agent,
     Encodable,
