@@ -63,8 +63,18 @@ subsystem:
 Three domains instantiate it, mirroring the paper's own:
 
   * ``pack`` (single-task, paper 5.3): pack ``n`` circles in the unit square to
-    maximize the sum of radii. The artifact is a ``Packer`` callable; the evaluator is
-    deterministic Python that returns the sum of radii plus geometric diagnostics.
+    maximize the sum of radii, on the paper's own instance with ``--num-circles 26``.
+    This domain is set up to be a genuine attempt at the paper's result rather than an
+    illustration of the loop, so it follows 5.3 and Appendix G closely: the artifact
+    has the paper's signature ``pack(n, time_budget, current_best)`` and is handed the
+    incumbent packing to polish; it may use whatever numeric libraries are actually
+    installed (scipy and numpy here), since the paper's winner is an LP over radii with
+    dual-variable gradients driving a local optimizer over centres; the Pareto
+    objectives are the run-distribution metrics of Mechanism 3 (max, mean, stability,
+    improvement rate over repeated runs) rather than one score; and the search evolves
+    *two* modules on one shared frontier -- the packer and a refiner instruction --
+    which is the leapfrogging of Mechanism 2. The evaluator is deterministic Python
+    throughout, so no model sits in the scoring path.
   * ``prompt`` (generalization, paper A.3): optimize a system prompt for constrained
     writing -- an exact word count, an initial-letter rule, a banned letter -- scored
     by deterministic Python on held-out instances. SI is the paper's design: the
@@ -93,6 +103,12 @@ Demonstrates:
 - Pareto-frontier selection over per-example (multi-task/generalization) or per-metric
   (single-task) objectives, with frontier-frequency sampling and dominated pruning --
   all plain Python, ablatable with ``--selection best``
+- Multi-module search with no engine support at all: the packing domain's artifact is a
+  ``PackSystem`` of code *and* a refiner instruction, and "which module to mutate" is a
+  branch in the domain's proposer, so both modules compete on the one frontier
+- Search over state the evaluator depends on: threading the paper's
+  ``current_best_solution`` makes scoring impure, and ``state_key`` is how a domain
+  declares that so the evaluation cache stays honest
 - The paper's two headline ablations as flags: ``--no-side-info`` (score-only
   feedback) and ``--selection best`` (greedy instead of Pareto)
 - Three optimization modes selected purely by which arguments are supplied, including
@@ -109,22 +125,32 @@ Demonstrates:
 # replications). Where a claim did not reproduce, that is recorded here rather than
 # tuned away:
 #
-#   pack        1.250 -> 1.591 sum of radii for n=10 (8 iterations, 4 accepted), and
-#               the frontier ends holding three candidates that trade total radius
-#               against the smallest radius -- the Pareto diversity of the paper's 6.
-#               Every run reaches 1.5910129 and then makes only sub-1e-6 gains, so
-#               n=10 has a ceiling this budget hits; the interesting instance is the
-#               paper's n=26, at a budget this example does not spend by default.
-#   pack, SI ablation
-#               score-only feedback reached 1.585 against 1.591 with side information
-#               -- 99.6%, where the paper reports 93.96% on circle packing. Both arms
-#               are at the n=10 ceiling, so this run does not test the claim: it is a
-#               statement about the instance, not evidence against the paper.
-#   pack, Pareto vs greedy
-#               ``--selection best`` also reached 1.591 with a three-candidate
-#               frontier. Selection only chooses parents (pruning is by dominance
-#               either way), and at eight iterations on a saturated instance the two
-#               rules are indistinguishable here.
+#   pack, n=26  the paper's own instance, ``--num-circles 26 --time-budget 20``. Three
+#               runs from the 6x6 grid seed at 2.1667 reached 2.6083 (4 iterations),
+#               2.6147 (6 iterations) and 2.6359831 (stopped after 10). The paper
+#               reports 2.63598 for optimize_anything, 2.635 for AlphaEvolve and
+#               2.6307 for OpenEvolve at 200 evaluations, so the best of those runs
+#               matches the paper's figure at the precision it is quoted, in about ten
+#               evaluations. Read that best-of-three carefully: the spread across runs
+#               (2.608 to 2.636) is wider than the gap between the published systems,
+#               so one run of this example is not a ranking of anything.
+#
+#               The winning artifact is an algorithm, not a remembered answer, which
+#               matters because the optimum for n=26 is published and a model could
+#               simply recite it. It builds the 4n wall constraints and n(n-1)/2
+#               separation constraints programmatically over 3n variables, hands them
+#               to SLSQP warm-started from the incumbent packing, repairs every iterate
+#               to exact feasibility before scoring it, and keeps the best -- the same
+#               shape as the paper's evolved artifact, reached in two accepted
+#               proposals. It contains no coordinate table and no special case for 26.
+#   pack, ablations
+#               ``--no-side-info`` reached 1.585 against 1.591, and ``--selection best``
+#               also reached 1.591: both measured at n=10 on the *earlier* version of
+#               this domain, before the incumbent, the numeric libraries and the second
+#               module were added, and both at an instance whose ceiling every arm hits
+#               within a few iterations. They are recorded because they were run, not
+#               because they test the paper's 93.96% -- doing that means re-running them
+#               at n=26 on the current configuration.
 #   prompt      train 0.733 -> 0.867, held-out val 0.800 -> 0.800. The search improved
 #               the prompt on the instances it saw and none of that transferred: a
 #               negative result on the paper's headline generalization claim at this
@@ -142,21 +168,26 @@ Demonstrates:
 #               kernels -- the correctness gate doing its job, and a failure mode the
 #               paper's limitations section predicts.
 #
-# Simplifications vs. the source:
-# - Scale, as above. The paper spends $1-$145 per domain over thousands of metric
-#   calls. ``--num-circles 26`` sets up the paper's circle-packing instance, but
-#   reaching its 2.63598 would take a budget far beyond a demo.
+# Simplifications vs. the source. The ``pack`` domain is deliberately held to the
+# paper's setup -- incumbent threading, real numeric libraries, Mechanism 3's Pareto
+# objectives, Mechanism 2's two modules -- so the gaps below are mostly about the other
+# two domains and about budget:
+# - Scale. The paper spends $1-$145 per domain over thousands of metric calls.
+#   ``--num-circles 26`` is the paper's instance and the defaults are far too small for
+#   it; see the measured note above for what a real attempt reached.
 # - Budget is counted in optimizer iterations, not metric calls or dollars. The
 #   proposer/worker split is a single ``--worker-model`` for both model-in-the-loop
 #   domains, where the paper tunes proposer and target model per domain.
-# - Synthesized packers must use only the standard library. The paper's winning
-#   circle-packing artifact is a 480-line bilevel optimizer built on scipy's linprog
-#   and L-BFGS-B plus CMA-ES; scipy is not a dependency of this repo, so the search
-#   here explores pure-Python strategies and lands well short of the world record.
-# - No island model / MAP-Elites (AlphaEvolve's structure, which the paper also drops)
-#   and no multi-module leapfrogging: the paper optimizes the artifact *and* a refiner
-#   prompt on one shared front (its Mechanism 2), while a run here evolves exactly one
-#   artifact.
+# - ``prompt`` optimizes for constrained writing rather than AIME 2022-2025, and it
+#   selects the winner on the same held-out set it then reports, where the paper keeps
+#   a third split. Read its val number as selection-biased.
+# - ``kernel`` runs pure-Python list transforms on a CPU, not CUDA kernels on a V100
+#   against KernelBench, and scores mean speedup rather than the paper's fast_p(s)
+#   curve. Its side information has no documentation-retrieval channel.
+# - No island model / MAP-Elites -- AlphaEvolve's structure, which the paper also drops.
+# - The four Mechanism-3 objectives are named but not defined in the paper; "stability"
+#   and "improvement rate" here are this example's reading of those names, and only the
+#   ``pack`` domain uses them at all.
 # - Acceptance is a mean-improvement test on the minibatch with no statistical
 #   correction, and dominated candidates are pruned immediately rather than archived
 #   with a novelty criterion.
@@ -165,6 +196,8 @@ Demonstrates:
 # - Cross-task transfer is reported as a post-hoc lineage count over one run, against
 #   one single-task control (``--domain kernel --single-task``) -- not the paper's
 #   MT10/MT20 scaling study, and with no repeats to put an error bar on either arm.
+# - Multi-module search alternates the two modules by a coin flip (``--code-share``);
+#   the paper does not say how it splits attention between them.
 # - The kernel domain's score is a wall-clock ratio, so it is only as reproducible as
 #   the machine is quiet. The baseline is re-timed back to back with every candidate
 #   for exactly this reason (see ``measure_speedup``), which makes the ratio robust to
@@ -172,10 +205,13 @@ Demonstrates:
 
 import argparse
 import bisect
+import collections
 import collections.abc
 import dataclasses
+import importlib.util
 import inspect
 import io
+import linecache
 import math
 import random
 import signal
@@ -303,20 +339,34 @@ type Evaluator[A, E] = collections.abc.Callable[[A, E | None], Evaluation]
 type Reflect[A] = collections.abc.Callable[[A, list[Rollout]], A]
 
 
+def source_of(fn: object) -> str | None:
+    """The source of a synthesized callable, or ``None`` if it cannot be recovered.
+
+    ``inspect.getsource`` tokenizes the block it finds and raises for more reasons than
+    its documented OSError/TypeError -- a synthesized function whose block ends inside
+    a multi-line string raises ``tokenize.TokenError``, and a run once died on exactly
+    that. When block extraction fails the whole synthesized module is still sitting in
+    ``linecache``, and for both of this function's jobs -- keying the cache and showing
+    the user what the search wrote -- the module is as good as the block.
+    """
+    try:
+        return inspect.getsource(fn)  # type: ignore[arg-type]
+    except Exception:
+        pass
+    try:
+        path = inspect.getsourcefile(fn) or fn.__code__.co_filename  # type: ignore[arg-type, attr-defined]
+        lines = linecache.getlines(path)
+        return "".join(lines) or None
+    except Exception:
+        return None
+
+
 def artifact_key(artifact: object) -> str:
     """Content address of an artifact: its source if it is synthesized code, else its
     text. Two candidates with the same key have the same evaluation, which is what
     makes the cache sound."""
     if callable(artifact):
-        try:
-            return inspect.getsource(artifact)
-        except Exception:
-            # Recovering source for synthesized code goes through ``linecache`` and can
-            # fail in more ways than the documented OSError/TypeError -- a block ending
-            # inside a multi-line string raises ``tokenize.TokenError``, for instance.
-            # The identity fallback only costs a cache miss, so catch broadly rather
-            # than let a formatting quirk end the run.
-            return repr(artifact)
+        return source_of(artifact) or repr(artifact)
     return str(artifact)
 
 
@@ -447,6 +497,7 @@ def optimize_anything[A, E: Example](
     use_side_info: bool = True,
     rng: random.Random | None = None,
     task_name: str = "task",
+    state_key: collections.abc.Callable[[], str] | None = None,
 ) -> Result[A, E]:
     """The paper's Algorithm 1, generic in the artifact type.
 
@@ -456,16 +507,27 @@ def optimize_anything[A, E: Example](
     shared frontier), and ``dataset`` + ``valset`` is generalization (search on train,
     select on held-out val). Seedless mode -- ``seed=None`` with an ``objective`` and a
     ``bootstrap`` -- lets the model write candidate zero.
+
+    ``state_key`` names whatever *else* an evaluation depends on. It exists because the
+    paper hands each circle-packing artifact the best solution found so far
+    (``main(timeout, current_best_solution)``), which means the evaluator stops being a
+    pure function of the artifact and a content-addressed cache silently starts serving
+    stale scores. A domain that threads state like that says so here; every other
+    domain leaves it ``None`` and keeps the plain content address.
     """
     rng = rng or random.Random(0)
     mode = mode_of(dataset, valset)
-    cache: dict[tuple[str, str], Evaluation] = {}
+    cache: dict[tuple[str, str, str], Evaluation] = {}
     counters = {"evaluations": 0, "proposals": 0}
 
     def evaluate(artifact: A, example: E | None) -> Evaluation:
         """Content-addressed evaluation: the paper's caching, in three lines. It earns
         its keep because an evaluation can itself be an LLM call."""
-        key = (artifact_key(artifact), example.name if example else task_name)
+        key = (
+            artifact_key(artifact),
+            example.name if example else task_name,
+            state_key() if state_key else "",
+        )
         if key not in cache:
             counters["evaluations"] += 1
             cache[key] = evaluator(artifact, example)
@@ -479,7 +541,11 @@ def optimize_anything[A, E: Example](
         if dataset is None:
             evaluation = evaluate(artifact, None)
             scores = {m.name: m.value for m in evaluation.metrics}
-            scores["score"] = evaluation.score
+            # The headline is only its own objective when the evaluator offers nothing
+            # finer; adding it alongside metrics that already contain it would just
+            # double that dimension's weight in the frontier-frequency sampling.
+            if not scores:
+                scores["score"] = evaluation.score
             return scores
         return {
             e.name: evaluate(artifact, e).score for e in typing.cast(list[E], examples)
@@ -489,7 +555,9 @@ def optimize_anything[A, E: Example](
         """The number a human reads. Averaging heterogeneous sub-scores is meaningless
         in single-task mode, where the artifact's own score is the answer; with a
         dataset the objectives *are* the per-example scores, so the average is right."""
-        return candidate.scores["score"] if dataset is None else candidate.average
+        if dataset is not None:
+            return candidate.average
+        return candidate.scores.get("max_score") or candidate.scores.get("score", 0.0)
 
     pool_examples: list[E] | list[None] = (
         typing.cast(list[E] | list[None], dataset) if dataset is not None else [None]
@@ -633,9 +701,9 @@ def optimize_anything[A, E: Example](
         best_score = statistics.fmean(score for _, _, score in per_task)
         seed_score = root.average
     else:
-        best = max(pool, key=lambda c: c.scores["score"])
-        best_score = best.scores["score"]
-        seed_score = root.scores["score"]
+        best = max(pool, key=headline)
+        best_score = headline(best)
+        seed_score = headline(root)
 
     return Result(
         mode=mode,
@@ -670,9 +738,14 @@ class Circle:
         return f"({self.x:.4f}, {self.y:.4f}) r={self.r:.4f}"
 
 
-# ``pack(n, time_budget)`` returns ``n`` circles and must respect its time budget --
-# the artifact is handed its own budget exactly as the paper's ``main(timeout, ...)``.
-type Packer = collections.abc.Callable[[int, float], list[Circle]]
+# ``pack(n, time_budget, current_best)`` is the paper's artifact signature -- its
+# evolved circle packer is ``main(timeout, current_best_solution)`` (Appendix K.6). The
+# artifact is handed its own time budget *and* the best packing found so far, so a
+# candidate can polish the incumbent instead of starting over every time. That is what
+# lets a search of a few dozen evaluations reach a competitive number, and it is why
+# ``optimize_anything`` needs a ``state_key``: with the incumbent threaded through, an
+# artifact's score depends on when it ran.
+type Packer = collections.abc.Callable[[int, float, list[Circle] | None], list[Circle]]
 
 # A kernel is one list-to-list transform; every task in the multi-task domain shares
 # this signature so a single instruction can drive all of them.
@@ -723,6 +796,36 @@ def total_radius(circles: collections.abc.Sequence[Circle]) -> float:
     return sum(c.r for c in circles)
 
 
+# The paper's winning packer is a bilevel optimizer: an LP over radii whose duals give
+# exact gradients for L-BFGS-B over centres, plus CMA-ES exploration (Appendix K.6).
+# None of that is reachable in the standard library, so the proposer is told what is
+# actually importable here rather than a fixed list -- scipy and numpy arrive in this
+# repo transitively, and the example still runs where they do not.
+NUMERIC_LIBRARIES = [
+    name
+    for name in ("numpy", "scipy.optimize", "scipy.spatial")
+    if importlib.util.find_spec(name) is not None
+]
+
+
+def numeric_toolbox() -> str:
+    """What the synthesized packer may import, as a sentence for the prompt."""
+    if not NUMERIC_LIBRARIES:
+        return (
+            "Only the Python standard library is available -- no numpy, no scipy -- so "
+            "write the numerics yourself."
+        )
+    return (
+        f"These numeric libraries are installed and you should use them: "
+        f"{', '.join(NUMERIC_LIBRARIES)}. A linear program over the radii for fixed "
+        f"centres is exact (maximize the sum subject to r_i + r_j <= |c_i - c_j| and "
+        f"r_i <= the distance to each wall), its dual variables give you the gradient "
+        f"of the objective with respect to the centres, and that gradient drives a "
+        f"local optimizer over the centres. Alternating those two is far stronger "
+        f"than any hand-rolled heuristic."
+    )
+
+
 def feasible_scale(circles: collections.abc.Sequence[Circle]) -> float:
     """The largest factor ``s <= 1`` for which scaling every radius by ``s`` makes the
     packing exactly feasible -- 1.0 for a packing with room to spare, 0.0 for one that
@@ -754,6 +857,46 @@ def feasible_scale(circles: collections.abc.Sequence[Circle]) -> float:
     return max(0.0, min(1.0, scale))
 
 
+@dataclasses.dataclass(frozen=True)
+class PackSystem:
+    """The artifact of the packing domain: *two* modules, not one.
+
+    The paper optimizes the code artifact and a refiner prompt together on a single
+    shared Pareto front (its Mechanism 2, "multi-module Pareto leapfrogging"), and
+    credits that coordination for the circle-packing result: the refiner discovers an
+    LP-based approach while the code module is still a weak heuristic, the code module
+    absorbs it and catches up, the refiner pushes further with sequential LP, the code
+    absorbs that too. Each module's advance is the foundation for the other's next one,
+    and a code mutation that scores zero is recovered rather than lost, because the
+    refiner can rewrite it.
+
+    Modelling that needs nothing from the engine: a candidate is a ``PackSystem``, and
+    the domain's proposer decides on each iteration which module to mutate -- rewrite
+    the packer directly, or rewrite the refiner instruction and apply it to the packer.
+    Both paths produce a new ``PackSystem`` that lands on the same frontier. ``origin``
+    records which module produced it, so the leapfrogging is countable afterwards; it
+    is deliberately left out of ``__str__`` so it does not perturb the cache key.
+    """
+
+    packer: Packer
+    refiner: str
+    origin: str = "seed"
+
+    def __str__(self) -> str:
+        return (
+            f"<packer>\n{artifact_key(self.packer)}\n</packer>\n"
+            f"<refiner_instruction>\n{self.refiner}\n</refiner_instruction>"
+        )
+
+
+# The refiner module's starting point: a generic repair instruction, which the search
+# is free to turn into something specific about packing.
+SEED_REFINER = (
+    "Look at the diagnostics, find the single change that would raise the score the "
+    "most, and make it."
+)
+
+
 class Proposer(Agent):
     """You are a reflective optimizer. You are shown the current artifact, the score
     it achieved, and diagnostic side information explaining *why* it scored that way,
@@ -765,48 +908,61 @@ class Proposer(Agent):
 
     @Template.define
     def propose_packer(
-        self, current: Packer, feedback: list[Rollout], n: int
+        self, current: Packer, feedback: list[Rollout], n: int, toolbox: str
     ) -> Packer:
-        """Write an improved ``pack(n, time_budget)`` that packs {n} non-overlapping
-        circles into the unit square [0,1]x[0,1], maximizing the SUM OF THE RADII.
-        The circles may have different radii. Return a list of ``Circle(x, y, r)``.
+        """Write an improved ``pack(n, time_budget, current_best)`` that packs {n}
+        non-overlapping circles into the unit square [0,1]x[0,1], maximizing the SUM OF
+        THE RADII. The circles may have different radii. Return a list of
+        ``Circle(x, y, r)``.
 
         The current artifact scored as follows. Read the diagnostics before you write
-        anything: they tell you which circles are stuck, where the slack is, and
-        whether the packing is even feasible.
+        anything: they tell you which circles are jammed, where the slack is, how the
+        score varied across repeated runs, and whether the packing is even feasible.
 
         <feedback>
         {feedback}
         </feedback>
 
-        The current implementation is above; improve on it. Some directions that pay
-        off, roughly in order: give up on equal radii (a few large circles plus small
-        corner fillers beat a uniform grid); place centres first, then compute each
-        radius as the largest value that violates neither the square nor an already
-        placed circle; then iterate -- perturb centres, recompute radii, keep the
-        change if the sum improved. A random-restart or simulated-annealing loop over
-        that inner step is usually worth the whole time budget.
+        Your arguments:
+        - ``n``: how many circles. Read it; never hardcode a table for one size.
+        - ``time_budget``: seconds you may spend. Poll ``time.monotonic()`` and return
+          your best packing before it expires. Spend it -- returning early wastes
+          search you were given.
+        - ``current_best``: the best packing found so far (a list of ``Circle``), or
+          ``None`` on the first call. POLISH IT. Starting from the incumbent and
+          improving it is how a handful of evaluations reaches a strong number;
+          restarting from scratch every time throws that away. Keep it as one of your
+          starting configurations even when you also try fresh ones, and never return
+          something worse than what you were handed.
 
-        Constraints on your code:
-        - Standard library only (``math``, ``random``, ``itertools``, ``time`` ...).
-          No numpy, no scipy.
-        - ``pack`` must respect ``time_budget`` (seconds): poll ``time.monotonic()``
-          and return your best packing before it expires. Never loop unbounded.
-        - Seed any randomness deterministically so the same call returns the same
-          packing; the evaluator caches by source and will not re-run you.
-        - It must work for ANY ``n``, not just {n}: read the argument. The evaluator
-          also reports how you do on a size you were not asked about, so a table of
-          coordinates for one ``n`` is visible as such and cannot be improved.
-        - You are scored on the sum of radii AFTER the whole packing is shrunk to
-          exact feasibility, so an overlap costs you proportionally and padding a
-          radius to sit just inside a tolerance gains you nothing: it is scaled
-          straight back out, and it shrinks every other circle with it.
+        {toolbox}
+
+        What actually wins here, in rough order of value: alternate between solving for
+        the radii given the centres (exact, and cheap) and moving the centres to make
+        room (local optimization from the radii problem's sensitivities); keep several
+        structurally different starting configurations -- hexagonal, edge-biased,
+        corner-anchored, farthest-point -- because the good packings for different
+        ``n`` look nothing alike; give up on equal radii entirely, since a few large
+        circles with small fillers in the gaps beats any uniform arrangement; and when
+        progress stalls, relocate the smallest circles into corners and re-solve rather
+        than nudging everything.
+
+        Other constraints:
+        - You are scored on the sum of radii AFTER the whole packing is shrunk to exact
+          feasibility, so an overlap costs you proportionally and padding a radius to
+          sit just inside a tolerance gains you nothing: it is scaled straight back
+          out, and it shrinks every other circle with it.
+        - The evaluator runs you several times and looks at the distribution, so
+          randomness is fine and a stable, repeatable method is worth more than a lucky
+          one.
+        - It must work for ANY ``n``: the evaluator also reports how you do on a size
+          you were not asked about.
 
         Your function's docstring MUST contain doctests certifying the contract, and
         they are run before your artifact is accepted -- this is the decode-time gate
         the paper builds a separate "refiner" stage for. ``Circle``, ``feasible``,
         ``total_radius`` and ``worst_violation`` are in scope. Write at least a
-        doctest that binds ``cs = pack(5, 0.5)`` and checks
+        doctest that binds ``cs = pack(5, 0.5, None)`` and checks
         ``len(cs) == 5 and feasible(cs)``, prefixing each input line with the doctest
         prompt (three ``>`` characters and a space; it is spelled out rather than
         shown so that this instruction is not itself collected as a test).
@@ -816,18 +972,23 @@ class Proposer(Agent):
         recursively -- routed to your own submission, so it costs nothing -- and runs
         the packer that comes back.
 
-        >>> _packer = Proposer().propose_packer(seed_packer, [], 4)
-        >>> _circles = _packer(4, 0.5)
+        >>> _packer = Proposer().propose_packer(seed_packer, [], 4, numeric_toolbox())
+        >>> _circles = _packer(4, 0.5, None)
         >>> len(_circles) == 4 and feasible(_circles)
         True
         """
 
     @Template.define
     def propose_packer_visual(
-        self, current: Packer, feedback: list[Rollout], n: int, render: Image.Image
+        self,
+        current: Packer,
+        feedback: list[Rollout],
+        n: int,
+        toolbox: str,
+        render: Image.Image,
     ) -> Packer:
-        """Write an improved ``pack(n, time_budget)`` that packs {n} non-overlapping
-        circles into the unit square, maximizing the SUM OF THE RADII.
+        """Write an improved ``pack(n, time_budget, current_best)`` that packs {n}
+        non-overlapping circles into the unit square, maximizing the SUM OF THE RADII.
 
         Here is what the current packing actually looks like:
 
@@ -839,32 +1000,107 @@ class Proposer(Agent):
         {feedback}
         </feedback>
 
-        Use the picture: wasted space, circles that could grow, and regions that want
-        a different arrangement are visible in it in a way they are not in the
-        numbers. Then apply the same rules as before -- standard library only, respect
-        ``time_budget``, work for any ``n``, deterministic, never return an infeasible
-        packing -- and put doctests in your docstring certifying that
-        ``cs = pack(5, 0.5)`` yields ``len(cs) == 5 and feasible(cs)``, each input
-        line prefixed with the doctest prompt (three ``>`` characters and a space).
-        ``Circle``, ``feasible``, ``total_radius`` and ``worst_violation`` are in
-        scope.
+        Use the picture: wasted space, circles that could grow, and regions that want a
+        different arrangement are visible in it in a way they are not in the numbers.
+
+        {toolbox}
+
+        Then apply the same rules as before -- read ``n``, spend ``time_budget``,
+        polish the ``current_best`` you are handed rather than restarting, never return
+        an infeasible packing -- and put doctests in your docstring certifying that
+        ``cs = pack(5, 0.5, None)`` yields ``len(cs) == 5 and feasible(cs)``, each
+        input line prefixed with the doctest prompt (three ``>`` characters and a
+        space). ``Circle``, ``feasible``, ``total_radius`` and ``worst_violation`` are
+        in scope.
         """
 
     @Template.define
-    def bootstrap_packer(self, objective: str, n: int) -> Packer:
+    def refine_packer(
+        self,
+        current: Packer,
+        instruction: str,
+        feedback: list[Rollout],
+        n: int,
+        toolbox: str,
+    ) -> Packer:
+        """Apply a refinement instruction to a packing algorithm.
+
+        This is the *refiner module* being spent: another module of the search evolved
+        the instruction below, and your job is to carry it out on the current
+        ``pack(n, time_budget, current_best)`` faithfully -- not to substitute your own
+        plan for it.
+
+        <refinement_instruction>
+        {instruction}
+        </refinement_instruction>
+
+        Here is how the current packer scored, for context on what the instruction is
+        reacting to:
+
+        <feedback>
+        {feedback}
+        </feedback>
+
+        {toolbox}
+
+        Return the revised packer for n={n}. It keeps the same contract: read ``n``,
+        spend ``time_budget``, polish ``current_best`` rather than discarding it, never
+        return an infeasible packing, and carry doctests in the docstring certifying
+        that ``cs = pack(5, 0.5, None)`` yields ``len(cs) == 5 and feasible(cs)`` (each
+        input line prefixed with the doctest prompt -- three ``>`` characters and a
+        space). If the packer you were given is broken, repair it: recovering a failed
+        mutation is exactly what this module is for. ``Circle``, ``feasible``,
+        ``total_radius`` and ``worst_violation`` are in scope.
+        """
+
+    @Template.define
+    def propose_refiner(
+        self, current: str, packer: Packer, feedback: list[Rollout]
+    ) -> str:
+        """You are optimizing the REFINER INSTRUCTION -- the second module of this
+        search. It is a short natural-language directive that another model applies to
+        the current packing algorithm to produce the next one, so it is where a
+        *strategy* can be discovered and held even while the code lags behind it.
+
+        <current_instruction>
+        {current}
+        </current_instruction>
+
+        The algorithm it will be applied to is above, and here is how that algorithm
+        scored:
+
+        <feedback>
+        {feedback}
+        </feedback>
+
+        Write a better instruction. It should name the specific structural change worth
+        making next -- switch how the radii are solved for, change how the centres
+        move, add a different seeding strategy, escape a saturated configuration, or
+        repair a broken implementation -- in enough detail that a competent programmer
+        could carry it out without guessing, while still being an instruction rather
+        than the code itself. Aim past the current implementation: this module is
+        valuable precisely when it is ahead of the code.
+
+        Return the instruction as plain text, nothing else.
+        """
+
+    @Template.define
+    def bootstrap_packer(self, objective: str, n: int, toolbox: str) -> Packer:
         """Seedless mode: there is no artifact yet, only a goal.
 
         <objective>
         {objective}
         </objective>
 
-        Write the first version of ``pack(n, time_budget)`` for n={n}: it returns a
-        list of ``Circle(x, y, r)`` filling the unit square without overlaps. Standard
-        library only, respect ``time_budget``, work for any ``n``, be deterministic.
-        Your docstring MUST contain doctests certifying that ``cs = pack(5, 0.5)``
-        yields ``len(cs) == 5 and feasible(cs)``, each input line prefixed with the
-        doctest prompt (three ``>`` characters and a space). ``Circle``, ``feasible``
-        and ``total_radius`` are in scope.
+        {toolbox}
+
+        Write the first version of ``pack(n, time_budget, current_best)`` for n={n}: it
+        returns a list of ``Circle(x, y, r)`` filling the unit square without overlaps.
+        Read ``n``, spend ``time_budget``, and start from ``current_best`` when it is
+        not ``None``. Your docstring MUST contain doctests certifying that
+        ``cs = pack(5, 0.5, None)`` yields ``len(cs) == 5 and feasible(cs)``, each
+        input line prefixed with the doctest prompt (three ``>`` characters and a
+        space). ``Circle``, ``feasible`` and ``total_radius`` are in scope.
         """
 
     @Template.define
@@ -939,11 +1175,12 @@ class _Timeout(Exception):
 
 
 def _run_packer(
-    packer: Packer, n: int, time_budget: float
+    packer: Packer, n: int, time_budget: float, current_best: list[Circle] | None
 ) -> tuple[list[Circle], float]:
     """Run a synthesized packer under a hard wall-clock backstop, returning its
-    circles and how long it took. The artifact is *given* its budget and expected to
-    honour it; the alarm only catches one that does not."""
+    circles and how long it took. The artifact is *given* its budget and the incumbent
+    packing, and is expected to honour both; the alarm only catches one that does not.
+    """
 
     def _alarm(signum: int, frame: object) -> None:
         raise _Timeout(f"pack() ignored its {time_budget}s budget")
@@ -951,10 +1188,10 @@ def _run_packer(
     guarded = threading.current_thread() is threading.main_thread()
     if guarded:
         previous = signal.signal(signal.SIGALRM, _alarm)
-        signal.setitimer(signal.ITIMER_REAL, time_budget * 3.0)
+        signal.setitimer(signal.ITIMER_REAL, time_budget * 3.0 + 5.0)
     start = time.perf_counter()
     try:
-        circles = list(packer(n, time_budget))
+        circles = list(packer(n, time_budget, current_best))
     finally:
         elapsed = time.perf_counter() - start
         if guarded:
@@ -963,15 +1200,29 @@ def _run_packer(
     return circles, elapsed
 
 
+def packing_score(circles: collections.abc.Sequence[Circle], n: int) -> float:
+    """The one number: the sum of radii after shrinking the packing to exact
+    feasibility, and zero for a packing of the wrong size.
+
+    >>> packing_score([Circle(0.25, 0.25, 0.25), Circle(0.75, 0.75, 0.25)], 2)
+    0.5
+    >>> packing_score([Circle(0.5, 0.5, 1.0)], 1)
+    0.5
+    """
+    if len(circles) != n:
+        return 0.0
+    return feasible_scale(circles) * total_radius(circles)
+
+
 def generality_check(packer: Packer, n: int) -> Diagnostic:
     """Side information only, never scored: how the packer does on an instance size it
     was not asked about. A genuine algorithm keeps its edge here; a table of
     coordinates for one ``n`` falls back to whatever it does by default, and the
     proposer gets to see that it did."""
     other = n + 3
-    baseline = total_radius(seed_packer(other, 0.1))
+    baseline = total_radius(seed_packer(other, 0.1, None))
     try:
-        circles, _ = _run_packer(packer, other, min(0.5, 1.0))
+        circles, _ = _run_packer(packer, other, 0.5, None)
     except Exception as exc:
         return Diagnostic(
             "generality", f"pack({other}, ...) raised {type(exc).__name__}: {exc}"
@@ -981,7 +1232,7 @@ def generality_check(packer: Packer, n: int) -> Diagnostic:
             "generality",
             f"pack({other}, ...) returned {len(circles)} circles, not {other}",
         )
-    achieved = feasible_scale(circles) * total_radius(circles)
+    achieved = packing_score(circles, other)
     return Diagnostic(
         "generality",
         f"on the unrequested size n={other} this packer scores {achieved:.6f} vs "
@@ -994,60 +1245,140 @@ def generality_check(packer: Packer, n: int) -> Diagnostic:
     )
 
 
-def evaluate_packing(packer: Packer, n: int, time_budget: float) -> Evaluation:
+def trajectory_metrics(scores: list[float]) -> list[Metric]:
+    """The Pareto objectives of the paper's single-task search.
+
+    Its Mechanism 3 says the front is kept across "max score, mean score, EMA
+    stability, improvement rate", and that this is what keeps greedy, LP, SLP, bilevel
+    L-BFGS and CMA-ES candidates alive at once. Those are properties of a *run
+    distribution*, not of one packing, so the evaluator runs each packer several times
+    and reports the shape of the result:
+
+      * ``max_score``    -- the best packing it found, the headline number
+      * ``mean_score``   -- what it achieves typically, not at its luckiest
+      * ``stability``    -- negated mean absolute change between consecutive runs, so
+                            a method that lands in the same place every time scores 0
+                            and an erratic one scores negative
+      * ``improvement``  -- how much the best improves from the first run to the last,
+                            per extra run: the value of giving this artifact more time
+
+    The paper names these four but does not define them, so the last two are this
+    example's reading of the names. All four are higher-is-better, which the Pareto
+    machinery requires.
+
+    >>> [str(m) for m in trajectory_metrics([1.0, 1.0, 1.0])]
+    ['max_score=1', 'mean_score=1', 'stability=0', 'improvement=0']
+    """
+    if not scores:
+        return [
+            Metric("max_score", 0.0),
+            Metric("mean_score", 0.0),
+            Metric("stability", 0.0),
+            Metric("improvement", 0.0),
+        ]
+    deltas = [abs(b - a) for a, b in zip(scores, scores[1:])]
+    drift = statistics.fmean(deltas) if deltas else 0.0
+    return [
+        Metric("max_score", max(scores)),
+        Metric("mean_score", statistics.fmean(scores)),
+        Metric("stability", -drift if drift else 0.0),  # not -0.0
+        Metric(
+            "improvement",
+            (max(scores) - scores[0]) / len(scores) if len(scores) > 1 else 0.0,
+        ),
+    ]
+
+
+PACKING_REPEATS = 3
+
+
+def evaluate_packing(
+    packer: Packer, n: int, time_budget: float, current_best: list[Circle] | None
+) -> tuple[Evaluation, list[Circle]]:
     """Score a packer and explain the score.
 
-    Ground truth, deterministic and re-runnable. The score is the sum of radii *after
-    shrinking the packing to exact feasibility* (see ``feasible_scale``), so overlap
-    is paid for proportionally rather than at a cliff and there is no tolerance to
-    exploit. Everything else the evaluator knows -- which circles are jammed, where
-    the slack is, whether the radii are suspiciously uniform, how it fares on an
-    instance size it was not asked about, how long it ran, and the traceback if it
-    crashed -- goes back as Side Information, which is the paper's whole thesis about
-    why LLM search beats score-only search.
+    Ground truth, deterministic Python: the score is the sum of radii after shrinking
+    the packing to exact feasibility (see ``feasible_scale``), so overlap is paid for
+    proportionally rather than at a cliff and there is no tolerance to exploit.
+
+    The packer is run ``PACKING_REPEATS`` times, each time handed the incumbent, and
+    the run distribution becomes the Pareto objectives (``trajectory_metrics``). The
+    repeats are not redundancy: these artifacts use randomised restarts, so "how good
+    is it typically" and "does it stay there" are different questions from "how good
+    was its best run", and the paper keeps candidates that win any of them.
+
+    Everything the evaluator learns on the way -- which circles are jammed, where the
+    slack is, whether the radii are suspiciously uniform, the spread across repeats,
+    how it fares on a size it was not asked about, and the traceback if it crashed --
+    goes back as Side Information. The best packing found is returned alongside the
+    evaluation so the caller can make it the incumbent without paying for another run.
     """
-    try:
-        circles, elapsed = _run_packer(packer, n, time_budget)
-    except Exception:
-        return Evaluation(
-            score=0.0,
-            metrics=[
-                Metric("sum_radii", 0.0),
-                Metric("min_radius", 0.0),
-                Metric("feasibility", -1.0),
-            ],
-            diagnostics=[
-                Diagnostic("crash", traceback.format_exc(limit=3).strip()),
-                Diagnostic(
-                    "fix", "pack() must return a list of Circle without raising"
-                ),
-            ],
-        )
+    scores: list[float] = []
+    best: list[Circle] = []
+    elapsed = 0.0
+    for _ in range(PACKING_REPEATS):
+        try:
+            circles, seconds = _run_packer(packer, n, time_budget, current_best)
+        except Exception:
+            return Evaluation(
+                score=0.0,
+                metrics=trajectory_metrics([0.0]),
+                diagnostics=[
+                    Diagnostic("crash", traceback.format_exc(limit=3).strip()),
+                    Diagnostic(
+                        "fix",
+                        "pack(n, time_budget, current_best) must return a list of "
+                        "Circle without raising",
+                    ),
+                ],
+            ), []
+        elapsed = max(elapsed, seconds)
+        scores.append(packing_score(circles, n))
+        if scores[-1] >= max(scores):
+            best = circles
 
+    metrics = trajectory_metrics(scores)
+    score = max(scores)
     diagnostics: list[Diagnostic] = [
-        Diagnostic("runtime", f"{elapsed:.2f}s of a {time_budget:.2f}s budget")
+        Diagnostic(
+            "repeats",
+            f"{PACKING_REPEATS} runs scored "
+            + ", ".join(f"{s:.6f}" for s in scores)
+            + f"; the score is the best of them ({score:.6f})",
+        ),
+        Diagnostic("runtime", f"{elapsed:.2f}s of a {time_budget:.2f}s budget per run"),
     ]
-    if len(circles) != n:
-        return Evaluation(
-            score=0.0,
-            metrics=[
-                Metric("sum_radii", 0.0),
-                Metric("min_radius", 0.0),
-                Metric("feasibility", -1.0),
-            ],
-            diagnostics=diagnostics
-            + [Diagnostic("count", f"returned {len(circles)} circles, expected {n}")],
+    if current_best is not None:
+        incumbent = packing_score(current_best, n)
+        diagnostics.append(
+            Diagnostic(
+                "incumbent",
+                f"the packing handed to you scored {incumbent:.6f}; this artifact "
+                + (
+                    f"improved it by {score - incumbent:.6f}"
+                    if score > incumbent
+                    else "did not improve on it, which means the time went nowhere -- "
+                    "start from what you are given"
+                ),
+            )
         )
 
-    violation = worst_violation(circles)
-    total = total_radius(circles)
-    scale = feasible_scale(circles)
-    score = scale * total
-    smallest = min(c.r for c in circles)
+    if len(best) != n:
+        return Evaluation(
+            score=0.0,
+            metrics=metrics,
+            diagnostics=diagnostics
+            + [Diagnostic("count", f"returned {len(best)} circles, expected {n}")],
+        ), []
+
+    violation = worst_violation(best)
+    total = total_radius(best)
+    scale = feasible_scale(best)
+    smallest = min(c.r for c in best)
     diagnostics.append(generality_check(packer, n))
 
     if violation > 1e-9:
-        offenders = sorted(circles, key=lambda c: -c.r)[:3]
+        offenders = sorted(best, key=lambda c: -c.r)[:3]
         diagnostics += [
             Diagnostic(
                 "infeasible",
@@ -1059,24 +1390,16 @@ def evaluate_packing(packer: Packer, n: int, time_budget: float) -> Evaluation:
             ),
             Diagnostic("largest circles", ", ".join(str(c) for c in offenders)),
         ]
-        return Evaluation(
-            score=score,
-            metrics=[
-                Metric("sum_radii", total),
-                Metric("min_radius", smallest),
-                Metric("feasibility", -violation),
-            ],
-            diagnostics=diagnostics,
-        )
+        return Evaluation(score=score, metrics=metrics, diagnostics=diagnostics), best
 
     # Feasible: report where the slack is, so the proposer knows what to grow.
     slacks = []
-    for i, a in enumerate(circles):
+    for i, a in enumerate(best):
         gap = min(
             [a.x - a.r, a.y - a.r, 1.0 - a.x - a.r, 1.0 - a.y - a.r]
             + [
                 math.hypot(a.x - b.x, a.y - b.y) - a.r - b.r
-                for j, b in enumerate(circles)
+                for j, b in enumerate(best)
                 if j != i
             ]
         )
@@ -1097,35 +1420,38 @@ def evaluate_packing(packer: Packer, n: int, time_budget: float) -> Evaluation:
         ),
         Diagnostic(
             "radius spread",
-            f"largest {max(c.r for c in circles):.4f}, smallest {smallest:.4f} -- "
-            f"{'nearly uniform, which is usually suboptimal' if max(c.r for c in circles) - smallest < 0.01 else 'non-uniform'}",
+            f"largest {max(c.r for c in best):.4f}, smallest {smallest:.4f} -- "
+            + (
+                "nearly uniform, which is usually suboptimal"
+                if max(c.r for c in best) - smallest < 0.01
+                else "non-uniform"
+            ),
         ),
     ]
-    return Evaluation(
-        score=score,
-        metrics=[
-            Metric("sum_radii", total),
-            Metric("min_radius", smallest),
-            Metric("feasibility", 0.0),
-        ],
-        diagnostics=diagnostics,
-    )
+    return Evaluation(score=score, metrics=metrics, diagnostics=diagnostics), best
 
 
-def seed_packer(n: int, time_budget: float) -> list[Circle]:
+def seed_packer(
+    n: int, time_budget: float, current_best: list[Circle] | None
+) -> list[Circle]:
     """The naive baseline every packing run starts from: equal circles on the
-    tightest square grid that fits them.
+    tightest square grid that fits them, unless it is handed something better.
 
-    >>> cs = seed_packer(4, 0.1)
+    >>> cs = seed_packer(4, 0.1, None)
     >>> len(cs) == 4 and feasible(cs)
     True
     """
     side = math.ceil(math.sqrt(n))
     r = 1.0 / (2 * side)
-    return [
+    grid = [
         Circle(x=(i % side) * 2 * r + r, y=(i // side) * 2 * r + r, r=r)
         for i in range(n)
     ]
+    if current_best is not None and packing_score(current_best, n) > packing_score(
+        grid, n
+    ):
+        return list(current_best)
+    return grid
 
 
 def render_packing(circles: collections.abc.Sequence[Circle], n: int) -> Image.Image:
@@ -1723,9 +2049,7 @@ def evaluate_instruction(
         Diagnostic("small-case timing", f"{len(cases)} cases in {elapsed * 1e3:.2f}ms")
     )
     diagnostics.append(
-        Diagnostic("code under test", inspect.getsource(kernel).strip())
-        if _source_available(kernel)
-        else Diagnostic("code under test", "(source unavailable)")
+        Diagnostic("code under test", (source_of(kernel) or "(unavailable)").strip())
     )
     diagnostics.append(
         Diagnostic(
@@ -1745,16 +2069,6 @@ def evaluate_instruction(
     )
 
 
-def _source_available(fn: object) -> bool:
-    """Whether a synthesized callable's source can be recovered for display -- see the
-    note in ``artifact_key`` on why this catches broadly."""
-    try:
-        inspect.getsource(fn)  # type: ignore[arg-type]
-        return True
-    except Exception:
-        return False
-
-
 # ---------------------------------------------------------------------------
 # Wiring the domains to the one loop. This is the paper's declarative API claim: the
 # only thing that differs between "optimize a packing algorithm" and "optimize a
@@ -1763,27 +2077,79 @@ def _source_available(fn: object) -> bool:
 
 
 def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
+    """Single-task search over a two-module system, with the incumbent threaded through.
+
+    Three things here are the paper's setup rather than a simplification of it: the
+    artifact is handed the best packing found so far, the Pareto objectives are the
+    run-distribution metrics of its Mechanism 3, and the search alternates between two
+    modules on one shared frontier (Mechanism 2). The incumbent is ordinary mutable
+    state in this closure -- and because it makes an evaluation depend on more than the
+    artifact, it is declared to the engine as a ``state_key``.
+    """
     n, budget = args.num_circles, args.time_budget
+    toolbox = numeric_toolbox()
+    incumbent: list[list[Circle]] = [[]]  # a one-slot cell: the best packing so far
 
-    def evaluator(packer: Packer, _: None) -> Evaluation:
-        return evaluate_packing(packer, n, budget)
+    def state_key() -> str:
+        return f"{packing_score(incumbent[0], n):.12f}"
 
-    def proposer(packer: Packer, feedback: list[Rollout]) -> Packer:
+    def evaluator(system: PackSystem, _: None) -> Evaluation:
+        evaluation, best = evaluate_packing(
+            system.packer, n, budget, incumbent[0] or None
+        )
+        # Whatever the candidate managed becomes the incumbent for everything after it,
+        # so later artifacts start where this one stopped -- the paper's
+        # ``current_best_solution``, which is why this domain declares a ``state_key``.
+        if packing_score(best, n) > packing_score(incumbent[0], n):
+            incumbent[0] = best
+        return evaluation
+
+    def mutate_code(system: PackSystem, feedback: list[Rollout]) -> PackSystem:
         if not args.visual_si:
-            return Proposer().propose_packer(packer, feedback, n)
-        try:
-            circles, _ = _run_packer(packer, n, budget)
-        except Exception:  # a packer that crashes has nothing to show
-            return Proposer().propose_packer(packer, feedback, n)
-        return Proposer().propose_packer_visual(
-            packer, feedback, n, render_packing(circles, n)
+            packer = Proposer().propose_packer(system.packer, feedback, n, toolbox)
+        else:
+            try:
+                circles, _ = _run_packer(system.packer, n, budget, incumbent[0] or None)
+                packer = Proposer().propose_packer_visual(
+                    system.packer, feedback, n, toolbox, render_packing(circles, n)
+                )
+            except Exception:  # a packer that crashes has nothing to show
+                packer = Proposer().propose_packer(system.packer, feedback, n, toolbox)
+        return PackSystem(packer=packer, refiner=system.refiner, origin="code")
+
+    def mutate_refiner(system: PackSystem, feedback: list[Rollout]) -> PackSystem:
+        # The refiner module advances in two steps: rewrite the instruction, then spend
+        # it on the current code. The instruction can therefore describe a strategy the
+        # code does not implement yet -- which is exactly the leapfrogging the paper
+        # describes, and also how a broken packer gets repaired instead of abandoned.
+        instruction = Proposer().propose_refiner(
+            system.refiner, system.packer, feedback
+        )
+        packer = Proposer().refine_packer(
+            system.packer, instruction, feedback, n, toolbox
+        )
+        return PackSystem(packer=packer, refiner=instruction, origin="refiner")
+
+    def proposer(system: PackSystem, feedback: list[Rollout]) -> PackSystem:
+        mutate = mutate_code if rng.random() < args.code_share else mutate_refiner
+        return mutate(system, feedback)
+
+    def bootstrap(objective: str) -> PackSystem:
+        return PackSystem(
+            packer=Proposer().bootstrap_packer(objective, n, toolbox),
+            refiner=SEED_REFINER,
+            origin="bootstrap",
         )
 
     return optimize_anything(
         evaluator=evaluator,
         proposer=proposer,
-        seed=None if args.seedless else seed_packer,
-        bootstrap=(lambda objective: Proposer().bootstrap_packer(objective, n)),
+        seed=(
+            None
+            if args.seedless
+            else PackSystem(packer=seed_packer, refiner=SEED_REFINER)
+        ),
+        bootstrap=bootstrap,
         objective=(
             f"Pack {n} non-overlapping circles into the unit square so that the sum "
             f"of their radii is as large as possible."
@@ -1793,6 +2159,7 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
         use_side_info=not args.no_side_info,
         rng=rng,
         task_name=f"pack-{n}",
+        state_key=state_key,
     )
 
 
@@ -1899,10 +2266,28 @@ def report(result: Result, args: argparse.Namespace) -> None:
             + (f" ({', '.join(transferred)})" if transferred else "")
         )
 
+    if any(isinstance(c.artifact, PackSystem) for c in result.pool):
+        # Multi-module search: which module each surviving candidate came from is the
+        # paper's leapfrogging, and the only way to see it is to count.
+        origins = collections.Counter(
+            c.artifact.origin for c in result.pool if isinstance(c.artifact, PackSystem)
+        )
+        winner = result.best.artifact
+        print(
+            "\nModules on the shared frontier: "
+            + ", ".join(f"{k} {v}" for k, v in sorted(origins.items()))
+            + f"; the best candidate came from the "
+            f"{winner.origin if isinstance(winner, PackSystem) else 'unknown'} module"
+        )
+
     print("\nBest artifact:")
     artifact = result.best.artifact
-    if callable(artifact) and _source_available(artifact):
-        print(inspect.getsource(artifact).rstrip())
+    if isinstance(artifact, PackSystem):
+        print(f"--- refiner instruction ---\n{artifact.refiner}\n")
+        print("--- packer ---")
+        artifact = artifact.packer
+    if callable(artifact):
+        print((source_of(artifact) or repr(artifact)).rstrip())
     else:
         print(artifact)
 
@@ -1935,6 +2320,13 @@ def main() -> None:
         type=float,
         default=2.0,
         help="Seconds a synthesized packer is given per call",
+    )
+    parser.add_argument(
+        "--code-share",
+        type=float,
+        default=0.5,
+        help="Pack domain: fraction of iterations that mutate the code module rather "
+        "than the refiner module (both live on the one shared frontier)",
     )
     parser.add_argument(
         "--selection",
