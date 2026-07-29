@@ -42,7 +42,6 @@ import litellm
 import tenacity
 
 from effectful.handlers.llm.harness.completion import (
-    LangfuseTracer,
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
@@ -54,6 +53,7 @@ from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
+from effectful.handlers.llm.harness.observability import LangfuseTracer
 from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.ops.semantics import handler
 
