@@ -1,0 +1,630 @@
+"""Kernel instructions: multi-task search over a shared frontier (optimize_anything 5.2).
+
+A dataset of related problems is supplied but no validation set, which selects the
+paper's multi-task mode -- the one no prior LLM-evolution framework has. The frontier is
+shared across tasks so a pattern discovered while working on one is available as a
+parent when proposing for another, and at output time each task independently picks its
+own best candidate off that frontier. Multi-task search therefore produces N specialized
+artifacts that have all benefited from a common search, which is the distinction the
+paper draws against generalization mode's single artifact.
+
+The artifact is the *instruction that drives code generation*, exactly as the paper
+evolves the prompt behind its CUDA kernels rather than the kernels themselves. Each
+evaluation hands that instruction to a cheaper programmer model (``--worker-model``),
+which writes the function, and scores what comes back.
+
+Scoring is the paper's KernelBench metric in miniature: correctness against a reference
+implementation, then wall-clock speedup against it. That is not decoration. Every model
+tried here writes a correct list transform on the first attempt -- measured, 5/5 tasks
+from the bare seed instruction -- so correctness is the floor and speed is the only
+thing left to optimize. The reference is deliberately written the plain way, with
+explicit loops and ``append``, which is what "the straightforward implementation"
+means and what the paper's unoptimized PyTorch baseline is.
+
+The five tasks share their *failure modes* rather than their algorithm, which is what
+makes cross-transfer possible: three have a naive formulation that rescans the whole
+prefix and is quadratic, and two turn on degenerate inputs the specification states and
+a hurried implementation skips. An instruction that learns either lesson on one task
+collects points on the others.
+
+Demonstrates:
+- Multi-task mode: per-task Pareto objectives on one shared frontier, per-task winners
+  at output time, and a post-hoc count of how many of those winners were last refined
+  while the proposer was looking at a *different* task
+- A single-task control (``--single-task``) that re-optimizes each task independently
+  at the same per-problem budget, which is the comparison the paper's 5.4 reports
+- Side Information as compiler-style feedback: failing cases with expected and actual
+  values, measured times and speedup, the traceback, and the code itself
+- A correctness gate that a search for speed can and does fall foul of
+
+Measured on 2026-07-29 with gpt-5.5 proposing and gpt-4.1-mini writing kernels, 10
+iterations: mean speedup over the reference 1.134 -> 1.603 across five tasks, with
+per-task winners drawn from *different* candidates on the shared frontier and 3 of the 5
+last refined while looking at another task. The single-task control at the same two
+iterations per problem went 1.224 -> 1.285. Multi-task ahead of single-task at equal
+per-problem budget is the direction of the paper's 5.4, though the two arms start from
+differently-timed seeds, so compare the gains (+41% vs +5%) rather than the endpoints.
+Several iterations scored zero because an instruction pushing for speed made the worker
+write incorrect kernels -- the correctness gate doing its job, and a failure mode the
+paper's limitations section predicts.
+"""
+
+# Simplifications vs. the source:
+# - Pure-Python list transforms on a CPU, not CUDA kernels on a V100 against
+#   KernelBench's 31 PyTorch operations, and no NVCC in the loop.
+# - The score is mean speedup rather than the paper's fast_p(s) curve, and the side
+#   information has no documentation-retrieval channel.
+# - Budget is counted in optimizer iterations, not metric calls or dollars; the paper
+#   spends ~3000 metric calls and $140 on this domain.
+# - Cross-task transfer is a post-hoc lineage count over one run against one control,
+#   not the paper's MT10/MT20 scaling study, and with no repeats to put an error bar on
+#   either arm.
+# - The score is a wall-clock ratio, so it is only as reproducible as the machine is
+#   quiet. The baseline is re-timed back to back with every candidate for exactly this
+#   reason (see `measure_speedup`), which makes the ratio robust to a loaded machine but
+#   not to one whose speed changes mid-measurement.
+
+import argparse
+import bisect
+import collections.abc
+import math
+import random
+import signal
+import statistics
+import threading
+import time
+import traceback
+
+import pydantic.dataclasses
+
+from docs.source.llm_examples.optimization.library import (
+    WORKER_MODEL,
+    Candidate,
+    Diagnostic,
+    Evaluation,
+    Metric,
+    Result,
+    Rollout,
+    optimize_anything,
+    report,
+    source_of,
+    worker,
+)
+from effectful.handlers.llm import Agent, Template
+
+# A kernel is one list-to-list transform; every task in the family shares this
+# signature so a single instruction can drive all of them.
+type Kernel = collections.abc.Callable[[list[float]], list[float]]
+
+
+class _Timeout(Exception):
+    pass
+
+
+@pydantic.dataclasses.dataclass(frozen=True)
+class KernelTask:
+    """One task in the family: what the transform must compute. The test cases are
+    hidden -- they live in ``KERNEL_TESTS``, and reach the proposer only as the
+    specific failures reported in Side Information."""
+
+    name: str
+    spec: str
+
+
+# A family that shares its *failure modes* rather than its algorithm, which is what
+# makes cross-transfer possible at all. Two lessons run through it. Three of the tasks
+# have a naive formulation that recomputes over the whole prefix or window and is
+# quadratic -- correct on the small cases, far too slow on the timed one -- so the
+# transferable lesson is "carry running state instead of rescanning". The other two
+# turn on degenerate inputs the specification states and a hurried implementation
+# skips. An instruction that learns either lesson on one task collects points on the
+# others, exactly as the paper's CUDA instruction learns coalescing once and spends it
+# across 31 kernels.
+KERNEL_TASKS: list[KernelTask] = [
+    KernelTask(
+        "count_smaller_before",
+        "For each position i, output the number of earlier positions j < i whose value "
+        "is strictly smaller than the value at i. The output has the same length as "
+        "the input; an empty input gives an empty output.",
+    ),
+    KernelTask(
+        "window_sum_101",
+        "For each position i, output the sum of the values from index max(0, i - 100) "
+        "through i inclusive -- a trailing window of up to 101 values, shorter near "
+        "the start. The output has the same length as the input; an empty input gives "
+        "an empty output.",
+    ),
+    KernelTask(
+        "distinct_prefix_counts",
+        "For each position i, output how many distinct values occur in the input up to "
+        "and including position i. The output has the same length as the input; an "
+        "empty input gives an empty output.",
+    ),
+    KernelTask(
+        "l2_normalize",
+        "Divide every value by the Euclidean (L2) norm of the whole input, so the "
+        "result has unit norm. If that norm is exactly zero, every output value is "
+        "0.0. The output has the same length as the input; an empty input gives an "
+        "empty output.",
+    ),
+    KernelTask(
+        "zscore",
+        "Standardize the input: subtract the mean and divide by the population "
+        "standard deviation. If that standard deviation is exactly zero, every output "
+        "value is 0.0. The output has the same length as the input; an empty input "
+        "gives an empty output.",
+    ),
+]
+
+type Case = tuple[list[float], list[float]]
+
+# The small cases are the contract, written out so the edge semantics are readable
+# rather than implied by a reference implementation.
+KERNEL_TESTS: dict[str, list[Case]] = {
+    "count_smaller_before": [
+        ([], []),
+        ([5.0], [0.0]),
+        ([3.0, 1.0, 2.0], [0.0, 0.0, 1.0]),
+        ([2.0, 2.0, 1.0, 4.0], [0.0, 0.0, 0.0, 3.0]),
+    ],
+    "window_sum_101": [
+        ([], []),
+        ([5.0], [5.0]),
+        ([1.0, 2.0, 3.0], [1.0, 3.0, 6.0]),
+        ([-1.0, 1.0, -1.0, 1.0], [-1.0, 0.0, -1.0, 0.0]),
+    ],
+    "distinct_prefix_counts": [
+        ([], []),
+        ([5.0], [1.0]),
+        ([1.0, 1.0, 2.0], [1.0, 1.0, 2.0]),
+        ([3.0, 1.0, 3.0, 2.0], [1.0, 2.0, 2.0, 3.0]),
+    ],
+    "l2_normalize": [
+        ([], []),
+        ([0.0, 0.0], [0.0, 0.0]),
+        ([3.0, 4.0], [0.6, 0.8]),
+        ([-3.0, 4.0], [-0.6, 0.8]),
+    ],
+    "zscore": [
+        ([], []),
+        ([5.0, 5.0, 5.0], [0.0, 0.0, 0.0]),
+        ([2.0], [0.0]),
+        ([1.0, 2.0, 3.0], [-1.224744871391589, 0.0, 1.224744871391589]),
+    ],
+}
+
+
+# Written the plain way on purpose: explicit loops, ``append`` per element, arithmetic
+# spelled out. This is the "straightforward implementation" a competent programmer
+# reaches for first, and it is the baseline the score is a ratio against -- the role
+# KernelBench's unoptimized PyTorch reference plays in the paper. Rewriting these with
+# comprehensions, ``itertools.accumulate``, locally bound methods or a reciprocal
+# multiply is exactly the headroom the search is asked to find. (The ``noqa``s below
+# are load-bearing: ruff is right that a comprehension would be faster, and being
+# slower than that is precisely this code's job.)
+
+
+def _count_smaller_before(values: list[float]) -> list[float]:
+    counts: list[float] = []
+    seen: list[float] = []
+    for x in values:
+        counts.append(float(bisect.bisect_left(seen, x)))
+        bisect.insort(seen, x)
+    return counts
+
+
+def _window_sum_101(values: list[float]) -> list[float]:
+    out: list[float] = []
+    running = 0.0
+    for i in range(len(values)):
+        running = running + values[i]
+        if i >= 101:
+            running = running - values[i - 101]
+        out.append(running)
+    return out
+
+
+def _distinct_prefix_counts(values: list[float]) -> list[float]:
+    out: list[float] = []
+    seen: set[float] = set()
+    for i in range(len(values)):
+        seen.add(values[i])
+        out.append(float(len(seen)))
+    return out
+
+
+def _l2_normalize(values: list[float]) -> list[float]:
+    total = 0.0
+    for i in range(len(values)):
+        total = total + values[i] * values[i]
+    norm = math.sqrt(total)
+    out: list[float] = []
+    for i in range(len(values)):
+        out.append(0.0 if norm == 0.0 else values[i] / norm)  # noqa: PERF401
+    return out
+
+
+def _zscore(values: list[float]) -> list[float]:
+    if not values:
+        return []
+    total = 0.0
+    for i in range(len(values)):
+        total = total + values[i]
+    mean = total / len(values)
+    variance = 0.0
+    for i in range(len(values)):
+        variance = variance + (values[i] - mean) * (values[i] - mean)
+    deviation = math.sqrt(variance / len(values))
+    out: list[float] = []
+    for i in range(len(values)):
+        out.append(  # noqa: PERF401
+            0.0 if deviation == 0.0 else (values[i] - mean) / deviation
+        )
+    return out
+
+
+# The baseline every candidate is measured against -- the straightforward linear
+# implementation a competent programmer writes without thinking about speed. It is
+# never shown to the model; it supplies the expected output of the timed case and the
+# denominator of the speedup, exactly as KernelBench's PyTorch baseline does in the
+# paper's 5.2.
+REFERENCE: dict[str, Kernel] = {
+    "count_smaller_before": _count_smaller_before,
+    "window_sum_101": _window_sum_101,
+    "distinct_prefix_counts": _distinct_prefix_counts,
+    "l2_normalize": _l2_normalize,
+    "zscore": _zscore,
+}
+
+# Size of the timed input per task, and the wall-clock ceiling that stops a quadratic
+# implementation instead of letting it hang the run. The sizes are chosen so the
+# reference finishes in tens of milliseconds and a rescanning implementation cannot
+# finish at all: 30k elements of prefix rescanning is ~450M comparisons.
+KERNEL_PERF: dict[str, tuple[int, float]] = {
+    "count_smaller_before": (30_000, 5.0),
+    "window_sum_101": (300_000, 5.0),
+    "distinct_prefix_counts": (300_000, 5.0),
+    "l2_normalize": (300_000, 5.0),
+    "zscore": (300_000, 5.0),
+}
+
+TIMING_REPEATS = 3  # best of three: the standard robust estimator for a short run
+
+
+def perf_input(task: str) -> list[float]:
+    """The timed case's input: deterministic pseudo-random values, so every candidate
+    is timed on exactly the same work."""
+    rng = random.Random(len(task))
+    return [rng.uniform(-1.0, 1.0) for _ in range(KERNEL_PERF[task][0])]
+
+
+def check_reference_agrees() -> bool:
+    """The reference implementations must reproduce the written-out contract, or the
+    timed case would be testing a different function than the small cases do.
+
+    >>> check_reference_agrees()
+    True
+    """
+    for name, cases in KERNEL_TESTS.items():
+        for values, expected in cases:
+            produced = REFERENCE[name](list(values))
+            assert len(produced) == len(expected) and all(
+                math.isclose(p, e, rel_tol=1e-9, abs_tol=1e-9)
+                for p, e in zip(produced, expected)
+            ), f"reference for {name} disagrees with the contract on {values}"
+    return True
+
+
+SEED_INSTRUCTION = "Write a Python function that implements the specification."
+
+
+class Programmer(Agent):
+    """You are an expert Python programmer. You implement exactly the specification
+    you are given, following the engineering instruction you are handed, and you
+    answer with code rather than prose."""
+
+    @Template.define
+    def write_kernel(self, instruction: str, task: KernelTask) -> Kernel:
+        """Write ``kernel(values)``: a function taking a ``list[float]`` and returning
+        a ``list[float]``, implementing this specification exactly.
+
+        <specification>
+        {task.spec}
+        </specification>
+
+        Follow this engineering instruction while you write it:
+
+        <instruction>
+        {instruction}
+        </instruction>
+
+        Standard library only. It is checked against hidden cases, including
+        degenerate inputs, and then TIMED on a large input: a correct implementation
+        scores the ratio of a straightforward reference implementation's time to
+        yours, and an incorrect one scores zero however fast it is. Write it to be
+        both right and fast.
+        """
+
+
+def _time_kernel(
+    kernel: Kernel, values: list[float], ceiling: float
+) -> tuple[list[float], float]:
+    """Best-of-``TIMING_REPEATS`` wall-clock time for one kernel on one input, with an
+    alarm so a quadratic implementation is stopped rather than left to hang."""
+
+    def _alarm(signum: int, frame: object) -> None:
+        raise _Timeout(f"exceeded the {ceiling}s ceiling on {len(values)} values")
+
+    guarded = threading.current_thread() is threading.main_thread()
+    best, produced = math.inf, []
+    if guarded:
+        previous = signal.signal(signal.SIGALRM, _alarm)
+    try:
+        for _ in range(TIMING_REPEATS):
+            if guarded:
+                signal.setitimer(signal.ITIMER_REAL, ceiling)
+            start = time.perf_counter()
+            produced = list(kernel(list(values)))
+            best = min(best, time.perf_counter() - start)
+            if guarded:
+                signal.setitimer(signal.ITIMER_REAL, 0.0)
+    finally:
+        if guarded:
+            signal.setitimer(signal.ITIMER_REAL, 0.0)
+            signal.signal(signal.SIGALRM, previous)
+    return produced, best
+
+
+def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
+    """Correctness-gated speedup over the reference on the large input.
+
+    This is the paper's KernelBench metric in miniature: a kernel that is wrong scores
+    nothing, and a kernel that is right scores how many times faster than the baseline
+    it runs. It is also what keeps this domain from saturating -- every model writes a
+    correct list transform on the first try, but "correct" is the floor here, not the
+    goal.
+
+    The baseline is re-timed next to every candidate rather than measured once and
+    cached. That looks wasteful and is not: a wall-clock *ratio* is only meaningful if
+    both sides saw the same machine, and timing the reference on an idle process while
+    candidates are timed under load produces scores that swing by 5x with nothing about
+    the code having changed. Interleaving the two costs milliseconds and makes the
+    number reproducible.
+    """
+    values, (size, ceiling) = perf_input(task), KERNEL_PERF[task]
+    expected, baseline = _time_kernel(REFERENCE[task], values, ceiling)
+    try:
+        produced, seconds = _time_kernel(kernel, values, ceiling)
+    except Exception as exc:
+        return 0.0, Diagnostic(
+            "speed",
+            f"on {size} values this raised {type(exc).__name__}: {exc}. Rescanning "
+            f"earlier values for every position is quadratic; carry running state.",
+        )
+    if len(produced) != len(expected) or not all(
+        math.isclose(p, e, rel_tol=1e-7, abs_tol=1e-7)
+        for p, e in zip(produced, expected)
+    ):
+        return 0.0, Diagnostic(
+            "speed", f"wrong output on the {size}-value input, so speed does not count"
+        )
+    return baseline / seconds, Diagnostic(
+        "speed",
+        f"{size} values in {seconds * 1e3:.1f}ms against the reference "
+        f"implementation's {baseline * 1e3:.1f}ms measured back to back -- "
+        f"{baseline / seconds:.2f}x",
+    )
+
+
+def evaluate_instruction(
+    instruction: str, task: KernelTask | None, model: str
+) -> Evaluation:
+    """Synthesize a kernel under the candidate instruction, check it, and time it.
+
+    The score is the measured speedup over the reference implementation, gated on
+    correctness: any failing case scores zero, however fast the code is. That is the
+    paper's KernelBench setup (correctness against the reference, then wall-clock
+    against the PyTorch baseline), and it is what gives this domain something to climb
+    -- correctness is the floor, not the target. The Side Information is the failing
+    cases with expected and actual values, the measured times and speedup, the
+    traceback if it crashed, and the code itself.
+    """
+    assert task is not None, "the kernel domain always has a dataset"
+    try:
+        with worker(model):
+            kernel = Programmer().write_kernel(instruction, task)
+    except Exception:
+        return Evaluation(
+            score=0.0,
+            diagnostics=[
+                Diagnostic("task", f"{task.name}: {task.spec}"),
+                Diagnostic("synthesis failed", traceback.format_exc(limit=2).strip()),
+            ],
+        )
+
+    cases = KERNEL_TESTS[task.name]
+    passed = 0
+    failures: list[Diagnostic] = []
+    start = time.perf_counter()
+    for values, expected in cases:
+        try:
+            produced = list(kernel(list(values)))
+            ok = len(produced) == len(expected) and all(
+                math.isclose(p, e, rel_tol=1e-9, abs_tol=1e-9)
+                for p, e in zip(produced, expected)
+            )
+        except Exception as exc:
+            ok, produced = False, f"raised {type(exc).__name__}: {exc}"  # type: ignore[assignment]
+        if ok:
+            passed += 1
+        elif len(failures) < 2:  # the first couple of failures are the useful ones
+            failures.append(
+                Diagnostic(
+                    "failing case",
+                    f"kernel({values}) returned {produced}, expected {expected}",
+                )
+            )
+    elapsed = time.perf_counter() - start
+
+    speedup, timing = measure_speedup(kernel, task.name)
+    correct = passed == len(cases) and speedup > 0.0
+
+    diagnostics = [Diagnostic("task", f"{task.name}: {task.spec}")]
+    diagnostics += failures or [Diagnostic("correctness", "all small cases passed")]
+    diagnostics.append(timing)
+    diagnostics.append(
+        Diagnostic("small-case timing", f"{len(cases)} cases in {elapsed * 1e3:.2f}ms")
+    )
+    diagnostics.append(
+        Diagnostic("code under test", (source_of(kernel) or "(unavailable)").strip())
+    )
+    diagnostics.append(
+        Diagnostic(
+            "verdict",
+            f"correct, and {speedup:.2f}x the reference implementation's speed -- the "
+            f"score IS that ratio, so a correct but ordinary implementation scores "
+            f"about 1.0 and only a faster one improves"
+            if correct
+            else f"{passed}/{len(cases)} small cases passed; an incorrect kernel "
+            f"scores zero no matter how fast it is",
+        )
+    )
+    return Evaluation(
+        score=speedup if correct else 0.0,
+        metrics=[Metric("cases_passed", float(passed))],
+        diagnostics=diagnostics,
+    )
+
+
+class Proposer(Agent):
+    """You are a reflective optimizer. You are shown the current instruction, the
+    scores the code written under it achieved, and diagnostic side information
+    explaining *why*, and you return a better instruction. You do not mutate blindly:
+    you first read the diagnostics to decide which failure mode is costing the most,
+    then you write the guidance that addresses it."""
+
+    @Template.define
+    def propose_instruction(self, current: str, feedback: list[Rollout]) -> str:
+        """You are optimizing the INSTRUCTION handed to a programmer model that
+        implements small list-transform functions. The instruction below is the
+        artifact -- it is reused for every task in a family, so it must say things
+        that are true of all of them.
+
+        <current_instruction>
+        {current}
+        </current_instruction>
+
+        Here is how the code written under it fared on a couple of tasks, including
+        the specific test cases that failed:
+
+        <feedback>
+        {feedback}
+        </feedback>
+
+        Diagnose the failures, then rewrite the instruction so a programmer following
+        it would not make them again. Prefer transferable engineering discipline
+        (which degenerate inputs to handle explicitly, what to check before dividing,
+        how to treat boundaries) over anything specific to one task -- an instruction
+        that solves one task by naming its answer is worthless on the others.
+
+        Return the improved instruction as plain text, nothing else.
+        """
+
+
+# ---------------------------------------------------------------------------
+# Wiring and main
+# ---------------------------------------------------------------------------
+
+
+def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
+    """Multi-task by default. ``--single-task`` runs the paper's control instead: each
+    task optimized independently with the same per-task budget, which is the
+    comparison its 5.4 ablation reports."""
+    proposer = lambda instruction, feedback: Proposer().propose_instruction(  # noqa: E731
+        instruction, feedback
+    )
+    if not args.single_task:
+        return optimize_anything(
+            evaluator=lambda i, t: evaluate_instruction(i, t, args.worker_model),
+            proposer=proposer,
+            seed=SEED_INSTRUCTION,
+            dataset=KERNEL_TASKS,
+            budget=args.budget,
+            minibatch_size=args.minibatch,
+            selection=args.selection,
+            use_side_info=not args.no_side_info,
+            rng=rng,
+        )
+
+    per_task: list[tuple[str, Candidate, float]] = []
+    seeds: list[float] = []
+    merged: Result | None = None
+    per_problem = max(1, args.budget // len(KERNEL_TASKS))
+    for task in KERNEL_TASKS:
+        print(f"\n[single-task control] {task.name} ({per_problem} iterations)")
+        result = optimize_anything(
+            evaluator=lambda i, t: evaluate_instruction(i, t, args.worker_model),
+            proposer=proposer,
+            seed=SEED_INSTRUCTION,
+            dataset=[task],
+            budget=per_problem,
+            minibatch_size=1,
+            selection=args.selection,
+            use_side_info=not args.no_side_info,
+            rng=rng,
+        )
+        per_task.append((task.name, result.best, result.best_score))
+        seeds.append(result.seed_score)
+        merged = result
+    assert merged is not None
+    merged.per_task = per_task
+    merged.mode = "multi-task (single-task control)"
+    merged.best_score = statistics.fmean(s for _, _, s in per_task)
+    merged.seed_score = statistics.fmean(seeds)
+    return merged
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--budget", type=int, default=10, help="Optimizer iterations")
+    parser.add_argument(
+        "--minibatch", type=int, default=2, help="Tasks per reflection step"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Seed for selection and minibatches"
+    )
+    parser.add_argument(
+        "--worker-model",
+        default=WORKER_MODEL,
+        help="Model that writes the kernels; the harness's --model is the proposer, "
+        "as in the paper's proposer/worker split",
+    )
+    parser.add_argument(
+        "--selection",
+        choices=["pareto", "best"],
+        default="pareto",
+        help="Candidate selection; 'best' is the paper's greedy ablation",
+    )
+    parser.add_argument(
+        "--no-side-info",
+        action="store_true",
+        help="Score-only feedback: the paper's SI ablation",
+    )
+    parser.add_argument(
+        "--single-task",
+        action="store_true",
+        help="Run the single-task control instead of multi-task search: each task "
+        "optimized independently at the same per-problem budget",
+    )
+    args = parser.parse_args()
+
+    assert check_reference_agrees()
+    result = run_kernel(args, random.Random(args.seed))
+    report(result, selection=args.selection, side_info=not args.no_side_info)
+    assert result.best_score >= result.seed_score, (
+        f"optimization went backwards: {result.seed_score} -> {result.best_score}"
+    )
+
+
+if __name__ == "__main__":
+    main()
