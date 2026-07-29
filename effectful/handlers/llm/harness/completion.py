@@ -31,14 +31,6 @@ import rich.styled
 import rich.syntax
 import rich.text
 import tenacity
-from litellm import (
-    ChatCompletionFunctionMessage,
-    ChatCompletionMessageToolCall,
-    ChatCompletionToolMessage,
-    OpenAIChatCompletionAssistantMessage,
-    OpenAIChatCompletionSystemMessage,
-    OpenAIChatCompletionUserMessage,
-)
 
 from effectful.handlers.llm.harness.execution import ReplSession
 from effectful.handlers.llm.harness.serialization import (
@@ -65,23 +57,23 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
-class AssistantMessage(OpenAIChatCompletionAssistantMessage):
+class AssistantMessage(litellm.OpenAIChatCompletionAssistantMessage):
     id: str
 
 
-class ToolMessage(ChatCompletionToolMessage):
+class ToolMessage(litellm.ChatCompletionToolMessage):
     id: str
 
 
-class FunctionMessage(ChatCompletionFunctionMessage):
+class FunctionMessage(litellm.ChatCompletionFunctionMessage):
     id: str
 
 
-class SystemMessage(OpenAIChatCompletionSystemMessage):
+class SystemMessage(litellm.OpenAIChatCompletionSystemMessage):
     id: str
 
 
-class UserMessage(OpenAIChatCompletionUserMessage):
+class UserMessage(litellm.OpenAIChatCompletionUserMessage):
     id: str
 
 
@@ -131,7 +123,7 @@ class ToolCallDecodingError[E: Exception](DecodingError[E]):
 
     original_error: E
     raw_message: Message
-    raw_tool_call: ChatCompletionMessageToolCall
+    raw_tool_call: litellm.ChatCompletionMessageToolCall
 
     def __str__(self) -> str:
         return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
