@@ -5,7 +5,7 @@ import pickle
 import sqlite3
 import typing
 
-from effectful.handlers.llm.harness.completion import new_agent_call_scope
+from effectful.handlers.llm.harness.completions import new_agent_call_scope
 from effectful.handlers.llm.types import Agent, Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements

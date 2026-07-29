@@ -331,7 +331,7 @@ def _pydantic_type_code(ty):
             # Imported lazily (not at module load) to avoid an import cycle: `completions`
             # imports this module. `repl_history` returns the managed session's prior
             # snippets, or `[]` when no REPL is in scope.
-            from effectful.handlers.llm.harness.completion import PythonRepl
+            from effectful.handlers.llm.harness.completions import PythonRepl
 
             # Prepend the already-run (type-clean) session snippets so their bindings
             # resolve; `value` is the current snippet. The whole cumulative body is

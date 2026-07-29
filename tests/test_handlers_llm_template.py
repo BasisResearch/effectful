@@ -14,7 +14,7 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
-from effectful.handlers.llm.harness.completion import (
+from effectful.handlers.llm.harness.completions import (
     LexicalReaders,
     LiteLLMProvider,
     PythonRepl,

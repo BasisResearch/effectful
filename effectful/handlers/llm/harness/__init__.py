@@ -41,7 +41,7 @@ import typing
 import litellm
 import tenacity
 
-from effectful.handlers.llm.harness.completion import (
+from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
@@ -53,8 +53,8 @@ from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
-from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them
