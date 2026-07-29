@@ -12,7 +12,6 @@ from hypothesis import strategies as st
 import effectful.handlers.jax.monoid  # noqa: F401
 from effectful.ops.monoid import (
     And,
-    Assignment,
     CartesianProduct,
     CartesianProductPlus,
     EliminateSingletonStreams,
@@ -567,17 +566,6 @@ def test_plus_zero(monoid, backend: Backend):
     rhs = monoid.zero
     backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule={})
     backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
-
-
-def test_assignment_plus_disjoint_merge():
-    with handler(EvaluateIntp):
-        assert Assignment.plus({"x": 1}, {"y": 2}) == {"x": 1, "y": 2}
-        assert Assignment.plus() == {}
-
-
-def test_assignment_plus_rejects_duplicate_keys():
-    with handler(EvaluateIntp), pytest.raises(ValueError, match="Duplicate key"):
-        Assignment.plus({"x": 1}, {"x": 1})
 
 
 def test_plus_partial():
@@ -1356,6 +1344,86 @@ def test_reduce_weighted_factorization(backend: Backend):
         Sum.reduce(Product.plus(w_a(a()), Product.plus(f(a()))), {a: A()}),
         Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
     )
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
+    )
+
+
+def test_reduce_argmin_weighted_factorization(backend: Backend):
+    """Factoring a separable argmin preserves both minimizing assignments."""
+    x, xx, y, yy, v = backend.define_vars("x", "xx", "y", "yy", "v", ret="scalar")
+
+    lhs = Min.reduce(
+        Sum.plus(Optimum((x() - 1) ** 2, {}), Optimum((y() - 2) ** 2, {})),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(4), deffn(Optimum(Sum.identity, {yy: v()}), v)),
+        },
+    )
+    rhs = Sum.plus(
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {xx: x()}),
+                Sum.plus(Optimum((x() - 1) ** 2, {})),
+            ),
+            {x: range(3)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {yy: y()}),
+                Sum.plus(Optimum((y() - 2) ** 2, {})),
+            ),
+            {y: range(4)},
+        ),
+    )
+
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
+    )
+
+
+def test_reduce_argmin_weighted_repeated_factorization(backend: Backend):
+    """Factoring repeatedly preserves every weighted minimizing assignment."""
+    x, xx, y, yy, z, zz, v = backend.define_vars(
+        "x", "xx", "y", "yy", "z", "zz", "v", ret="scalar"
+    )
+
+    lhs = Min.reduce(
+        Sum.plus(
+            Optimum((x() - 1) ** 2, {}),
+            Optimum((y() - 2) ** 2, {}),
+            Optimum((z() - 3) ** 2, {}),
+        ),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(4), deffn(Optimum(Sum.identity, {yy: v()}), v)),
+            z: Sum.weighted(range(5), deffn(Optimum(Sum.identity, {zz: v()}), v)),
+        },
+    )
+    rhs = Sum.plus(
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {xx: x()}),
+                Sum.plus(Optimum((x() - 1) ** 2, {})),
+            ),
+            {x: range(3)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {yy: y()}),
+                Sum.plus(Optimum((y() - 2) ** 2, {})),
+            ),
+            {y: range(4)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {zz: z()}),
+                Sum.plus(Optimum((z() - 3) ** 2, {})),
+            ),
+            {z: range(5)},
+        ),
+    )
+
     backend.check_rewrite(
         lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
     )
