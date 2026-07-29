@@ -68,7 +68,7 @@ from effectful.ops.monoid import (
     solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import as_dict, ite, range_, syntactic_eq
+from effectful.ops.syntax import as_dict, deffn, ite, range_, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -1637,22 +1637,45 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
 
 
 def test_reduce_argmin(backend: Backend):
-    x = backend.define_vars("x", ret="scalar")
-
-    def record_assignment(value):
-        return Optimum(Sum.identity, {x: value})
+    x, v = backend.define_vars("x", "v", ret="scalar")
 
     expr = Min.reduce(
         (x() - 1) ** 2,
-        {x: Sum.weighted(range(3), record_assignment)},
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v))},
     )
-
-    with handler(NormalizeIntp):
-        norm_expr = evaluate(expr)
-
-    breakpoint()
 
     with handler(NormalizeIntp), handler(EvaluateIntp):
         result = evaluate(expr)
 
     assert result == Optimum(0, {x: 1})
+
+
+def test_reduce_argmin_sum(backend: Backend):
+    x, v = backend.define_vars("x", "v", ret="scalar")
+
+    expr = Min.reduce(
+        Sum.plus((x() - 1) ** 2, 2 * (x() - 2) ** 2),
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v))},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(1, {x: 2})
+
+
+def test_reduce_argmin_sum_disjoint(backend: Backend):
+    x, y, v = backend.define_vars("x", "y", "v", ret="scalar")
+
+    expr = Min.reduce(
+        Sum.plus((x() - 1) ** 2, (y() - 2) ** 2),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v)),
+            y: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {y: v()}), v)),
+        },
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(0, {x: 1, y: 2})
