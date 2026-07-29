@@ -315,7 +315,3 @@ def main(argv: list[str] | None = None) -> None:
                 pdb.post_mortem()
         else:
             runpy.run_path(ns.script, run_name="__main__")
-
-
-if __name__ == "__main__":
-    main()
