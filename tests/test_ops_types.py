@@ -1,9 +1,42 @@
+import dataclasses
 import inspect
 import typing
 
 from effectful.ops.semantics import typeof
 from effectful.ops.syntax import defop
 from effectful.ops.types import Interpretation, NotHandled
+
+
+def test_prettyprinter_traverses_dataclasses_and_raw_operations():
+    prettyprinter = __import__("prettyprinter")
+
+    @dataclasses.dataclass
+    class Result:
+        value: object
+        assignment: object
+
+    x = defop(int, name="x")
+
+    @defop
+    def reduce(body: object, streams: object) -> object:
+        raise NotHandled
+
+    expr = reduce(Result((x() - 1) ** 2, {x: x()}), {x: range(3)})
+
+    formatted = prettyprinter.pformat(expr, width=80)
+
+    assert "value=__pow__(__sub__(x(), 1), 2)" in formatted
+    assert "assignment={x: x()}" in formatted
+    assert "{x: range(0, 3)}" in formatted
+    assert "Operation(" not in formatted
+    assert "_IntegralTerm(" not in formatted
+
+
+def test_prettyprinter_prints_raw_operation_as_its_name():
+    prettyprinter = __import__("prettyprinter")
+    x = defop(int, name="x")
+
+    assert prettyprinter.pformat(x) == "x"
 
 
 def test_interpretation_isinstance():

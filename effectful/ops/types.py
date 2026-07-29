@@ -675,24 +675,45 @@ class Term[T](abc.ABC):
 
 try:
     from prettyprinter import install_extras, pretty_call, register_pretty
+    from prettyprinter.prettyprinter import general_identifier
 
     install_extras({"dataclasses"})
 
+    def _pretty_operation_name(value: Operation, ctx, expr=None):
+        """Give an operation a short name that is unique within the output."""
+        default_name = str(value)
+        fresh_by_name = ctx.get("fresh_by_name")
+        if fresh_by_name is None:
+            fresh_by_name = {}
+            ctx = ctx.assoc("fresh_by_name", fresh_by_name)
+
+            # Seed the shared name table from the entire expression.  Besides
+            # terms, fvsof traverses mappings, sequences, and dataclasses via
+            # collection constructor operations, so raw Operation values get
+            # the same name when prettyprinter reaches them later.
+            if expr is not None:
+                from effectful.ops.semantics import fvsof
+
+                operations = (value, *(op for op in fvsof(expr) if op is not value))
+                for op in operations:
+                    same_name = fresh_by_name.setdefault(str(op), {})
+                    same_name.setdefault(op, len(same_name))
+
+        fresh = fresh_by_name.setdefault(default_name, {})
+        fresh_ctr = fresh.setdefault(value, len(fresh))
+        name = default_name + (f"!{fresh_ctr}" if fresh_ctr > 0 else "")
+        return name, ctx
+
+    @register_pretty(Operation)
+    def pretty_operation(value: Operation, ctx):
+        """Pretty print raw operations, including those nested in collections."""
+        name, _ = _pretty_operation_name(value, ctx)
+        return general_identifier(name)
+
     @register_pretty(Term)
     def pretty_term(value: Term, ctx):
-        default_op_name = str(value.op)
-
-        fresh_by_name = ctx.get("fresh_by_name") or {}
-        new_ctx = ctx.assoc("fresh_by_name", fresh_by_name)
-
-        fresh = fresh_by_name.get(default_op_name, {})
-        fresh_by_name[default_op_name] = fresh
-
-        fresh_ctr = fresh.get(value.op, len(fresh))
-        fresh[value.op] = fresh_ctr
-
-        op_name = str(value.op) + (f"!{fresh_ctr}" if fresh_ctr > 0 else "")
-        return pretty_call(new_ctx, op_name, *value.args, **value.kwargs)
+        op_name, ctx = _pretty_operation_name(value.op, ctx, value)
+        return pretty_call(ctx, op_name, *value.args, **value.kwargs)
 
 except ImportError:
     pass
