@@ -80,8 +80,9 @@ class Informalization:
     )
     scope: str = dataclasses.field(
         metadata={
-            "description": "What the guarantee ranges over: all ballot sequences, "
-            "one particular sequence, sequences satisfying some restriction, etc."
+            "description": "What the guarantee ranges over: every state of the "
+            "system, one particular state, states satisfying some restriction, "
+            "etc."
         }
     )
     strength: Strength = dataclasses.field(
@@ -243,10 +244,12 @@ class Comparator(Agent):
         a theorem called after the property it was meant to prove is no evidence
         that it proves it.
 
-        An invariant hypothesis (a named predicate such as ``Wf p`` or
-        ``Valid bs``, whose definition you have not been shown) is expected and
-        normal -- do not flag it as a narrowing. A theorem that extracts a
-        concrete consequence from an invariant is useful, not vacuous. Only call
+        An invariant hypothesis (a named predicate such as ``Inv m``, whose
+        definition you have not been shown) is expected and normal -- do not flag
+        it as a narrowing. A theorem that extracts a concrete consequence from an
+        invariant is useful, not vacuous. The same goes for a conclusion that is
+        itself a named predicate you have not seen unfolded: judge it on what its
+        name and arguments say, not on your inability to check it. Only call
         something vacuous when its conclusion holds for every value of the types
         involved regardless of the hypotheses.
         """
@@ -290,10 +293,12 @@ class SinglePassAuditor(Agent):
         A theorem stronger than the requirement still matches. Judge the
         statement, not its name.
 
-        An invariant hypothesis (a named predicate such as ``Wf p`` or
-        ``Valid bs``, whose definition you have not been shown) is expected and
-        normal -- do not flag it as a narrowing. A theorem that extracts a
-        concrete consequence from an invariant is useful, not vacuous. Only call
+        An invariant hypothesis (a named predicate such as ``Inv m``, whose
+        definition you have not been shown) is expected and normal -- do not flag
+        it as a narrowing. A theorem that extracts a concrete consequence from an
+        invariant is useful, not vacuous. The same goes for a conclusion that is
+        itself a named predicate you have not seen unfolded: judge it on what its
+        name and arguments say, not on your inability to check it. Only call
         something vacuous when its conclusion holds for every value of the types
         involved regardless of the hypotheses.
         """

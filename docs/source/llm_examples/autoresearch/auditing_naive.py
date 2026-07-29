@@ -80,7 +80,7 @@ class NaiveAuditor(Agent):
         - **NOT_JUSTIFIED** if there is a meaningful discrepancy: the theorem is
           weaker, proves something different, is vacuous, or misses key aspects.
 
-        Invariant hypotheses (e.g. ``Wf p``) are expected and normal -- don't
+        Invariant hypotheses (e.g. ``Inv m``) are expected and normal -- don't
         count them as discrepancies. A theorem that extracts a concrete
         consequence from an invariant is useful, not vacuous.
         """

@@ -41,53 +41,49 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    Measured 2026-07 over the full 43-claim corpus, the first three rows at
+    Measured 2026-07 over the full 36-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
     rejects temperature 0, so it runs at the provider default). ``b-c`` is the
     discordant split for two-pass against naive -- items two-pass alone got right,
     then items naive alone got right -- with an exact McNemar p:
 
-    ==============  ========  ===========  ======  =========
+    ==============  ========  ===========  ======  ===========
     model           two-pass  single-pass  naive   b-c (p)
-    ==============  ========  ===========  ======  =========
-    gpt-4o             81.4%        72.1%  81.4%   2-2 (1.00)
-    gpt-4.1            88.4%        83.7%  83.7%   2-0 (0.50)
-    gpt-4.1-mini       81.4%        76.7%  81.4%   1-1 (1.00)
-    gpt-5.5            88.4%        95.3%  93.0%   0-2 (0.50)
-    ==============  ========  ===========  ======  =========
+    ==============  ========  ===========  ======  ===========
+    gpt-4o             72.2%        94.4%  97.2%   0-9 (0.004)
+    gpt-4.1-mini       91.7%        86.1%  83.3%   3-0 (0.250)
+    gpt-4.1            97.2%        91.7%  94.4%   1-0 (1.000)
+    gpt-5.5            97.2%       100.0%  97.2%   1-1 (1.000)
+    ==============  ========  ===========  ======  ===========
 
-    **Nothing here is significant, and the published gap does not reproduce.**
-    Two-pass leads single-pass in three of four models and naive in one, but every
-    split is within noise at this n.
+    The published ordering does not reproduce, and on gpt-4o it *inverts*
+    significantly: the two-pass split scores 25 points below the bare "does this
+    match?" prompt, 0-9 discordant, p=0.004. That survives a Bonferroni
+    correction across the eight cells tested (this run and the one before it),
+    and the direction held in that earlier run too (1-6, p=0.125). The failure is
+    one-sided: 8 of two-pass's 10 errors are faithful theorems disputed, against
+    naive's 0.
 
-    That conclusion survived a deliberate attempt to break it. Five corpus
-    configurations were run, twelve runs each:
+    What *does* reproduce is which items are hard. Six of those eight false
+    disputes -- ``base_hue_in_range``, ``always_five_colors``,
+    ``all_colors_valid``, ``card_in_exactly_one_column``,
+    ``wip_limits_respected``, ``allocator_always_fresh`` -- are on the
+    eleven-item false-dispute list upstream's own weakest arm produces
+    (`eval/results/cc.json`). The port reproduces the *difficulty*; what it does
+    not reproduce is the claim that a blind first pass is what removes it. Here
+    the blind pass is what causes it -- the informalizer rates a statement like
+    ``(h : Inv m) : ValidBaseHue m.baseHue`` trivial or low-confidence, and the
+    comparator, handed a reading it cannot check against the source, disputes.
+    Upstream reports the same reversal on the one non-Dafny corpus it tried
+    (VERINA, N=189 Lean: two-pass 54.0% against a 57.1% baseline).
 
-    ===========================================  ==========================
-    corpus                                       significant results
-    ===========================================  ==========================
-    mixed, 4/22 faithful invariant-carrying      gpt-4o 7-0, p=0.016
-    78% invariant-carrying, invariant caveat     none
-    78% invariant-carrying, no caveat            none
-    ...plus subtle traps, no caveat              gpt-4.1 5-0, p=0.062
-    ...plus subtle traps and caveat (this file)  none
-    ===========================================  ==========================
-
-    The one significant cell did not replicate under any of the four later
-    variants. Across roughly forty tests at alpha=0.05 a single p=0.016 is what
-    chance produces, so it is reported here as a false positive rather than as a
-    finding -- an earlier revision of this docstring claimed on its basis that the
-    published ordering had reproduced, and that claim is withdrawn.
-
-    Two things did hold up across configurations. Two-pass is ahead of
-    single-pass in 3 of 4 models in the final run and led in most cells
-    throughout, a directional trend too small to resolve at n=43. And the items
-    that discriminate are consistently the *subtle weakenings* --
-    ``Revision.order_irrelevant``, ``Revision.tally_monotonic``,
-    ``Revision.count_bounded`` -- not the invariant projections that upstream's
-    benchmark is mostly made of. Concentrating the projection shape (18 of 23
-    faithful claims carry an opaque ``Wf p`` or ``Valid bs``, against 4 of 22
-    before) did not help; if anything it raised every arm's score together.
+    One trap transliterates badly and it is the clearest cost of the port.
+    ``grant_non_existent_is_noop_init`` -- upstream's vacuous
+    ``requires m == Init()`` -- is waved through in 9 of 12 runs here, where
+    every upstream arm catches it. In Dafny the extra precondition is its own
+    line under its own keyword; in Lean ``(hinit : m = Init)`` is one binder
+    among five and reads as ordinary. That is a language difference, not a
+    strategy difference.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -100,11 +96,11 @@ requirements``. Here the comment is a signature:
     theorems have the same conclusion -- are a loop over typed
     ``Informalization`` values, not a model call.
 
-  * The premise is checked by a real prover. Under ``--verify`` both corpora are
-    compiled by the Lean 4 + Mathlib toolchain ``formalization.py`` already
-    shells out to. It reports 39 theorems, 0 errors, no ``sorry`` -- and then the
-    audit finds twenty claims that do not mean what they were written to mean.
-    The verifier's clean bill of health is the setup, not the punchline.
+  * The premise is checked by a real prover. Under ``--verify`` all five corpora
+    are compiled by the Lean 4 + Mathlib toolchain ``formalization.py`` already
+    shells out to. It reports 36 theorems, 0 errors, no ``sorry`` -- and then the
+    audit finds nine claims that do not mean what they were written to mean. The
+    verifier's clean bill of health is the setup, not the punchline.
 
 Demonstrates:
 - Structural separation as *lexical scope*: an agent that cannot see a value
@@ -114,36 +110,41 @@ Demonstrates:
   a self-contradictory answer into a `RetryLLMHandler` retry
 - Reuse of a sibling example's real external verifier (`formalization.py`'s
   `LeanKernel`) to establish a premise, rather than asserting it
-- Two labelled corpora and an accuracy report that separates the two error
-  directions -- which is what shows that every strategy here errs only ever by
-  over-flagging, the same asymmetry upstream's own eval outputs record
+- Five labelled corpora and an accuracy report that separates the two error
+  directions, which is what makes the comparison against upstream's per-item
+  results possible at all
 - Fan-out over independent audits with ``asyncio.gather`` + ``asyncio.to_thread``
 - Per-field guidance carried on the types as ``field(metadata={"description": ...})``
 """
 
-# Simplifications vs. the source:
-# - Lean 4 + Mathlib, not Dafny. The election corpus is a re-authored port of
-#   upstream's demo (`demo/election0.dfy`, `demo/election.dfy`) plus planted
-#   variants adapted from its `counter` test domain; the delegation corpus is
-#   modelled on the shape of its `delegation-auth` domain. Lean was chosen
+# Differences from the source, and what each costs:
+# - Lean 4 + Mathlib, not Dafny. All five domains are transliterated item for
+#   item from `test/integration/claims/*.dfy`: same 36 pairs, same 27/9 split,
+#   same requirement sentences, same lemma names in snake_case. Lean was chosen
 #   because a real, already-built toolchain is reachable from this repo, so
-#   "every one of these theorems is proved" is a compile and not a claim. The
-#   mapping is close: Dafny's `requires`/`ensures` split becomes hypotheses and
-#   conclusion, and `nat` becoming `ℕ` preserves the original tautology traps
-#   (`0 ≤ count ...` is as vacuous in Lean as `Count(...) >= 0` was in Dafny).
+#   "every one of these theorems is proved" is a compile and not a claim.
+#   Dafny's `requires`/`ensures` split becomes hypotheses and conclusion. Two
+#   traps needed the signed integers Dafny's `int` gives and Lean's `ℕ` does not,
+#   so `counter`'s `Model` is `ℤ`; that keeps `-1 ≤ m` a real weakening.
+#   Three concessions to the language: Dafny's `to` and `from` are reserved
+#   tokens in Lean (the delegation edge's fields are `dst` and `frm`), Dafny's
+#   maps become association lists, and each domain sits in a namespace because
+#   `Inv`, `Action` and `Init` collide with Mathlib. None of the three is visible
+#   in an extracted statement.
 # - Statements are sent, proofs are not. Upstream sends the Dafny lemma body
 #   along with its contract; here only the statement crosses the boundary, as
 #   upstream's own `lemmascript` preset does ("only the signature + requires +
 #   ensures is sent, never a body"). In Lean the meaning is entirely in the
-#   statement, and ClaimCheck explicitly does not audit the proof.
-# - Two domains, one model. The blog runs 5 domains and splits the passes across
-#   two models (Haiku informalizes, Sonnet compares), reporting that the weaker
-#   informalizer is sufficient. Both passes here run on whatever model the
-#   harness was given, so that model-asymmetry result is *not* reproduced.
-# - One call per claim, not one batched call per pass. Upstream batches every
-#   lemma into a single request for throughput; auditing each claim separately
-#   keeps the blindness argument obvious and lets the fan-out be the demo. This
-#   also removes a confound -- see below.
+#   statement, and ClaimCheck explicitly does not audit the proof. This does
+#   remove one signal: upstream's bodies are almost all literally `{ }`, which
+#   is itself a hint that the lemma may be a restatement of its own hypothesis.
+# - One model, not two. The blog splits the passes across two models (Haiku
+#   informalizes, Sonnet compares), reporting that the weaker informalizer is
+#   sufficient. Both passes here run on whatever model the harness was given, so
+#   that model-asymmetry result is *not* reproduced.
+# - One call per claim, not one batched call per pass. This is the one place the
+#   port is deliberately *unlike* upstream, and it matters -- see `Batching`
+#   below.
 
 # The leak
 # --------
@@ -152,11 +153,12 @@ Demonstrates:
 # prompt partly from the source of the module the template is defined in (the
 # prompt-assembly table in `effectful.handlers.llm.types.Template` documents this
 # plainly), so every agent -- including the informalizer whose whole job is not to
-# know -- received all 40 `Claim(...)` entries with their expected verdicts and
-# the written reason for each, both Lean corpora with the `Draft`/`Audited`
-# namespaces that `statement_of` exists to strip, and the body of `Wf`, the
-# invariant that is supposed to arrive as an opaque atom. A dump measured 78,909
-# bytes of system prompt, 81% of it this file.
+# know -- received every `Claim(...)` entry with its expected verdict and the
+# written reason for each, the Lean corpora complete with the namespaces
+# `statement_of` exists to strip, and the body of the invariant that is supposed
+# to arrive as an opaque atom. A dump measured 78,909 bytes of system prompt, 81%
+# of it this file. (That was an earlier, hand-written corpus, since replaced by
+# the port below; the leak is a property of the file layout, not of the corpus.)
 #
 # The models used it. In those runs they returned discrepancy text matching the
 # answer key's `why` strings word for word, including cases where the key for a
@@ -171,9 +173,9 @@ Demonstrates:
 # this framework **the module is the confidentiality boundary**, which is why the
 # agents now live in `auditing_agents.py` and this file is never imported by
 # them. Any scored example that carries its own answer key needs the same split.
-# Second, the corrected numbers are materially different in both directions:
-# accuracies fell across the board (gpt-5.5 from 100% to 95%), and the ablation
-# that showed nothing now shows two-pass ahead in most cells.
+# Second, the corrected numbers were materially different: accuracies fell across
+# the board once the key was gone (gpt-5.5 from 100% to 95%), and the ablation
+# moved. Every number in this file is from after the fix.
 #
 # Two further defects, both found only because the first fix forced a re-run:
 #
@@ -198,39 +200,58 @@ Demonstrates:
 # the unit of exposure is the module, not the function, the parameter list or the
 # return type.
 #
-# What did *not* survive the fixes is the error-direction finding. With the key
-# visible, every strategy over-flagged; with it gone, the twelve runs produce 69
-# unfaithful theorems waved through against 6 faithful ones disputed. That is the
-# reverse of upstream, which records essentially no false confirms at all. The honest reading is that this Lean corpus and
-# upstream's Dafny one fail in opposite directions: its planted flaws were all
-# caught by every variant and the contest was over false alarms, whereas these
-# planted flaws are genuinely hard for a mid-capability model to catch. That is a
-# difference in corpus, not a difference in architecture, and it means the
-# mechanism upstream's benchmark actually measures is not the one measured here.
+# Why this corpus is a port and not an invention
+# ----------------------------------------------
+# The first two corpora here were hand-written -- an election tally and an
+# authority policy, in ClaimCheck's spirit but not its letter. They did not
+# reproduce its result, and reading upstream's own per-item eval outputs
+# (`eval/results/*.json`) shows why. Recomputing the error direction over every
+# scored run:
 #
-# Notes on upstream's own numbers, which still stand:
+#   =================  ===  ======  ==============  ==============
+#   arm                  n     acc  false confirms  false disputes
+#   =================  ===  ======  ==============  ==============
+#   two-pass           108   96.3%               0               4
+#   single-prompt       36   86.1%               0               5
+#   "Claude Code"       36   69.4%               0              11
+#   naive-sonnet       108   88.9%               0              12
+#   naive-opus         108   94.4%               0               2
+#   =================  ===  ======  ==============  ==============
 #
-# - The traps were never the discriminator, upstream's included. Reading the
-#   reference implementation's own per-item eval outputs (`eval/results/*.json`):
-#   across 446 recorded judgments there are three false confirms in total, all
-#   from one misconfiguration. Every other error in every mode is an *over-flag
-#   of a faithful lemma*. Upstream states it plainly in
-#   `reports/STRUCTURAL-SEPARATION.md`: "All three variants catch all 8
-#   deliberately bogus lemmas (100%). The accuracy difference comes entirely from
-#   false disputes of valid lemmas -- structural separation reduces false
-#   positives." So a corpus whose unfaithful theorems are all caught by all three
-#   strategies is reproducing upstream's result, not failing to.
+# Every arm catches every planted trap, always. The entire spread is over-flagging
+# of *correct* lemmas -- upstream says so in `reports/STRUCTURAL-SEPARATION.md`:
+# "All three variants catch all 8 deliberately bogus lemmas (100%). The accuracy
+# difference comes entirely from false disputes of valid lemmas."
 #
-# - What actually discriminates there is the *invariant projection*: a faithful
-#   lemma of the form `requires Inv(m); ensures <one conjunct of Inv>`, whose
-#   conclusion is textually already inside its own hypothesis. 18 of upstream's
-#   27 faithful pairs are this shape. A single-call model, having been shown the
-#   requirement, infers what `Inv` must contain and rules the lemma vacuous; the
-#   blind informalizer sees `Inv(m)` as an opaque atom and cannot form that
-#   hypothesis at all. The DELEGATION_CLAIMS below include this shape (`Wf p`,
-#   whose definition is in the corpus and in no prompt) precisely because it is
-#   the mechanism -- and gpt-5.5 confirms every one of them under all three
-#   strategies anyway.
+# The hand-written corpora measured the opposite thing. Their traps were subtle
+# enough that mid-capability models missed them -- twelve runs produced 69 traps
+# waved through against 6 faithful theorems disputed. Two-pass cannot help there:
+# its mechanism is to make the model *more* credulous (the blind informalizer
+# reads a statement at face value and the comparator then matches it), which is a
+# precision gain with nothing to gain on a recall benchmark.
+#
+# So the corpus is now a transliteration rather than a homage, and the properties
+# it was rebuilt to carry are upstream's, not ones chosen here:
+#
+# - The items that actually discriminate are faithful lemmas whose formal
+#   statement is an odd-looking rendering of the requirement -- a projection
+#   (`ensures forall sc :: sc in m.grants ==> sc.0 in m.subjects` against "All
+#   granted capabilities reference existing subjects"), a hypothesis *stronger*
+#   than the requirement (`DelegateNonExistentIsNoop`), or a decomposition into
+#   conjuncts (`CardInExactlyOneColumn`). Read with the requirement in hand the
+#   honest answer is "I cannot confirm that covers all of it" and the model
+#   disputes; read blind it is face value and the model confirms. Those two
+#   delegation items are the only ones every single-call arm gets wrong on every
+#   model upstream tried.
+#
+# - Nine of upstream's 36 conclusions are a bare named predicate whose definition
+#   is not in the prompt -- and in upstream's case not even in its repository,
+#   since the domain modules its claims files `include` are absent from the
+#   clone. `AllEdgesValid`, `NoDupSeq (AllIds m)`, `ValidColor`,
+#   `HuesMatchHarmony` are reproduced here for that reason.
+#
+# - 27 of 36 items are faithful. A confirm-biased strategy gets a free lift from
+#   that majority class, and two-pass is confirm-biased by construction.
 #
 # - The effect upstream measures is small and capability-bound. Only two of its
 #   36 items are wrong for every single-call variant across both models it tried
@@ -250,25 +271,30 @@ Demonstrates:
 #   is not strictly better... The blind informalization step adds an
 #   interpretation layer that can overcomplicate comparisons."
 #
-# So: upstream's effect is small, capability-bound, and rests on four discordant
-# items; this replication, once its own leak was fixed, puts two-pass ahead in
-# most cells but on far too little data to call either way. What this file can
-# honestly claim is the pipeline and the failure mode, not a verdict on the
-# remedy.
+# So: upstream's effect is small, capability-bound, and rests on a handful of
+# discordant items. What this file can honestly claim is the pipeline and the
+# failure mode, not a verdict on the remedy.
 #
 # Known limits of the numbers above, in the order they would need fixing:
 #
-# - Power. 43 items, one run per cell. Detecting an 8-10pp paired effect needs
-#   roughly 200; extra runs buy almost nothing at temperature 0, where repeats
-#   are near-deterministic. n=43 is enough for a *clean* effect -- a 7-0 split
-#   reaches p=0.016 -- but not for the 2-0 and 3-1 splits actually observed.
-# - Corpus shape. 18 of the 23 faithful claims now carry an opaque invariant,
-#   close to upstream's 26 of 27. This was built deliberately to test their
-#   mechanism and it did not reproduce their gap -- see the table above.
-# - Batching. Upstream's two-pass compare is batched per domain, so its
-#   comparator sees the faithful and unfaithful theorem for one requirement side
-#   by side -- a contrastive signal its per-item arms never get. Everything here
-#   is per-item, which is the cleaner test but not the same test.
+# - Batching, and it is the big one. `src/roundtrip.js` makes *two* API calls for
+#   a whole domain -- one informalize-all, one compare-all -- while
+#   `singlePromptCheck` and `naiveCheck` each put their call inside a
+#   `for (const l of lemmas)` loop. So upstream's winning arm sees all of a
+#   domain's lemmas side by side, including the four `counter` lemmas that share
+#   one requirement string, one faithful and three weakened. Its losing arms judge
+#   each in isolation. Upstream advertises this as "Batching is a free lunch"
+#   without treating it as a confound. Everything here is per-item for all three
+#   strategies, which is the cleaner test and not the same test.
+# - Power. 36 items, one run per cell. Against the correct comparator the target
+#   effect is 2-7pp (see the accuracy table above), which needs roughly 200 paired
+#   items; extra runs buy almost nothing at temperature 0, where repeats are
+#   near-deterministic. n=36 is enough for a *clean* effect -- a 7-0 split reaches
+#   p=0.016 -- but not for the 2-0 and 3-1 splits actually observed.
+# - No per-item results are committed here, only the aggregate table above, so the
+#   claim about which items discriminate cannot be checked from this repository
+#   the way upstream's can from `eval/results/*.json`. Upstream's practice is the
+#   better one.
 #
 # Other simplifications:
 # - No coverage check. Both here and upstream, a requirement that no theorem
@@ -305,293 +331,448 @@ from auditing_agents import (
 from auditing_naive import NaiveAuditor
 
 # ---------------------------------------------------------------------------
-# The corpus. A verified election tally: `count` tallies the ballots cast for a
-# candidate, and each theorem below was written to formalize one plain-English
-# requirement. Every one of them compiles (see `--verify`).
+# The corpora. Five domains, ported item for item from upstream's benchmark
+# (`test/integration/claims/*.dfy` for the lemmas,
+# `test/integration/mappings/*.json` for the labels): the same 36
+# requirement/theorem pairs, the same 27-faithful / 9-planted split, upstream's
+# requirement sentences verbatim, and its lemma names transliterated to Lean's
+# snake_case. Every one of them compiles (see `--verify`).
 #
-# The two namespaces are two versions of the same specification file, the way
-# upstream's demo has `election0.dfy` and the `election.dfy` that replaced it.
-# `Draft` is what was shipped; `Audited` is what survived review. They use the
-# same theorem names deliberately -- a developer names a theorem after the
-# property they *meant* to prove, which is exactly why the name is no evidence
-# that they proved it. Only the statement is ever shown to the model, so neither
-# the namespace nor this commentary reaches it.
+# Three properties of the Dafny original are load-bearing and are reproduced
+# deliberately, because a first attempt at this example invented its own corpus
+# and lost all three:
+#
+#  1. `Inv m` is an opaque atom. Its body is in the corpus and in no prompt, so a
+#     faithful theorem of the shape `(h : Inv m) : <one conjunct of Inv>` cannot
+#     be checked -- only trusted. That is the judgment anchoring corrupts.
+#  2. Several conclusions are *themselves* named predicates the auditor has never
+#     seen unfolded (`AllEdgesValid`, `NoDupSeq (AllIds m)`, `ValidColor`,
+#     `HuesMatchHarmony`). Upstream's are imported from domain modules that are
+#     not even present in its own repository.
+#  3. Requirements are vague and un-operationalized -- "Hues follow the selected
+#     harmony pattern", not "every hue equals the base plus a fixed offset mod
+#     360". Three of the 36 contain a numeral.
+#
+# The planted flaws are upstream's, and note what they are *not*: not mangled
+# conclusions. Seven of the nine are an added `requires`, a dropped `ensures`
+# conjunct, or a conclusion compared to itself. Two of them --
+# `no_card_duplicates` and `card_partition_no_dups` -- are the *same statement*
+# under two different requirements, faithful for one and unfaithful for the
+# other, which is the sharpest item in the benchmark and impossible to get right
+# by reading the theorem alone.
 # ---------------------------------------------------------------------------
-
-ELECTION_CORPUS = r"""import Mathlib
+COUNTER_CORPUS = r"""import Mathlib
 
 set_option linter.unusedVariables false
 
-/-- Tally: how many of the ballots in `bs` were cast for candidate `c`. -/
-def count : List ℕ → ℕ → ℕ
-  | [], _ => 0
-  | b :: bs, c => (if b = c then 1 else 0) + count bs c
+namespace Counter
 
-/-- The well-formedness invariant maintained by the ballot box. -/
-def Valid (bs : List ℕ) : Prop :=
-  (∀ b ∈ bs, 0 < b) ∧ (∀ b ∈ bs, b ≤ 100) ∧ bs.length ≤ 10000
+/-- The counter's state. -/
+abbrev Model := ℤ
 
--- Unconditional algebra, proved once. These are infrastructure: no requirement
--- is mapped to them, so they are never audited.
+inductive Action where
+  | inc
+  | dec
+  | reset
 
-theorem count_le_length (bs : List ℕ) (c : ℕ) : count bs c ≤ bs.length := by
-  induction bs with
-  | nil => simp [count]
-  | cons b bs ih =>
-    simp only [count, List.length_cons]
-    split <;> omega
+def Init : Model := 0
 
-theorem count_append (a b : List ℕ) (c : ℕ) :
-    count (a ++ b) c = count a c + count b c := by
-  induction a with
-  | nil => simp [count]
-  | cons x xs ih =>
-    simp only [List.cons_append, count, ih]
-    omega
+def Apply (m : Model) (a : Action) : Model :=
+  match a with
+  | .inc => m + 1
+  | .dec => m - 1
+  | .reset => 0
 
-theorem count_singleton_self (c : ℕ) : count [c] c = 1 := by simp [count]
+def Normalize (m : Model) : Model := max m 0
 
-theorem count_singleton_other (c d : ℕ) (h : c ≠ d) : count [c] d = 0 := by
-  simp [count, h]
+def Inv (m : Model) : Prop := 0 ≤ m
 
-theorem count_perm {a b : List ℕ} (h : a.Perm b) (c : ℕ) : count a c = count b c := by
-  induction h with
-  | nil => rfl
-  | cons x _ ih => simp only [count, ih]
-  | swap x y l => simp only [count]; omega
-  | trans _ _ ih₁ ih₂ => exact ih₁.trans ih₂
+theorem counter_non_negative (m : Model) (h : Inv m) : 0 ≤ m := h
 
-theorem count_zero_of_pos (bs : List ℕ) (h : ∀ b ∈ bs, 0 < b) : count bs 0 = 0 := by
-  induction bs with
-  | nil => simp [count]
-  | cons b bs ih =>
-    have hb : 0 < b := h b (by simp)
-    simp only [count, ih (fun x hx => h x (by simp [hx]))]
-    split <;> omega
+theorem init_satisfies_invariant : Inv Init := by
+  simp [Inv, Init]
 
-namespace Audited
+theorem step_preserves_invariant (m : Model) (a : Action) (h : Inv m) :
+    Inv (Normalize (Apply m a)) := by
+  simp [Inv, Normalize]
 
-theorem ballots_named (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, 0 < b := h.1
+theorem dec_at_zero_keeps_zero (m : Model) (h : Inv m) (hz : m = 0) :
+    Normalize (Apply m .dec) = 0 := by
+  subst hz
+  simp [Normalize, Apply]
 
-theorem ids_in_range (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≤ 100 := h.2.1
+theorem counter_non_neg_alt (m : Model) (h : Inv m) : m = m := rfl
 
-theorem election_bounded (bs : List ℕ) (h : Valid bs) : bs.length ≤ 10000 := h.2.2
+theorem counter_non_neg_large (m : Model) (h : Inv m) (hb : 100 < m) : 0 ≤ m := h
 
-theorem zero_is_nobody (bs : List ℕ) (h : Valid bs) : count bs 0 = 0 :=
-  count_zero_of_pos bs h.1
+theorem counter_lower_bound (m : Model) (h : Inv m) : -1 ≤ m :=
+  le_trans (by norm_num) (show (0 : ℤ) ≤ m from h)
 
-theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) :
-    count bs c ≤ bs.length := count_le_length bs c
-
-theorem tally_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) : count bs c ≤ 10000 :=
-  le_trans (count_le_length bs c) h.2.2
-
-theorem combine_tallies (a b : List ℕ) (c : ℕ) (h : Valid (a ++ b)) :
-    count (a ++ b) c = count a c + count b c := count_append a b c
-
-theorem vote_increment (bs : List ℕ) (c : ℕ) (h : Valid (bs ++ [c])) :
-    count (bs ++ [c]) c = count bs c + 1 := by
-  rw [count_append, count_singleton_self]
-
-theorem vote_no_effect (bs : List ℕ) (c d : ℕ) (hne : c ≠ d)
-    (h : Valid (bs ++ [d])) : count (bs ++ [d]) c = count bs c := by
-  rw [count_append, count_singleton_other d c (Ne.symm hne)]
-  omega
-
-theorem order_irrelevant {a b : List ℕ} (hp : a.Perm b) (c : ℕ) (h : Valid a) :
-    count a c = count b c := count_perm hp c
-
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
-    count bs c ≤ count (bs ++ [v]) c := by
-  rw [count_append]
-  omega
-
-end Audited
-
-namespace Draft
-
-theorem ballots_named (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, 0 ≤ b :=
-  fun _ _ => Nat.zero_le _
-
-theorem ids_in_range (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≤ 1000 :=
-  fun x hx => le_trans (h.2.1 x hx) (by omega)
-
-theorem election_bounded (bs : List ℕ) (h : Valid bs) : bs.length ≤ bs.length :=
-  le_refl _
-
-theorem zero_is_nobody (bs : List ℕ) (h : Valid bs) : ∀ b ∈ bs, b ≠ 0 :=
-  fun x hx => Nat.pos_iff_ne_zero.mp (h.1 x hx)
-
-theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) :
-    count bs c ≤ bs.length + 1 := by
-  have := count_le_length bs c
-  omega
-
-theorem vote_increment (bs : List ℕ) (c : ℕ) (h : Valid (bs ++ [c])) :
-    count (bs ++ [c]) c = count (bs ++ [c]) c := rfl
-
-theorem order_irrelevant (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
-    count ([v] ++ bs) c = count (bs ++ [v]) c := by
-  rw [count_append, count_append]
-  omega
-
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : Valid (bs ++ [v])) :
-    0 ≤ count (bs ++ [v]) c := Nat.zero_le _
-
-end Draft
-
-namespace Revision
-
-theorem count_bounded (bs : List ℕ) (c : ℕ) (h : Valid bs) (hmem : c ∈ bs) :
-    count bs c ≤ bs.length := count_le_length bs c
-
-theorem combine_tallies (a b : List ℕ) (c : ℕ) (h : Valid (a ++ b)) :
-    count (a ++ b) c ≥ count a c + count b c := le_of_eq (count_append a b c).symm
-
-theorem order_irrelevant (a b : List ℕ) (hab : a = b) (c : ℕ) (h : Valid a) :
-    count a c = count b c := by rw [hab]
-
-theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (hv : v = c) (h : Valid (bs ++ [v])) :
-    count bs c ≤ count (bs ++ [v]) c := Audited.tally_monotonic bs v c h
-
-end Revision
+end Counter
 """
+CANON_CORPUS = r"""import Mathlib
 
-# ---------------------------------------------------------------------------
-# A second, harder domain: authority over resources, with an invariant. Closer
-# in shape to the blog's own `delegation-auth` domain, and harder for three
-# reasons -- the statements are longer, several carry an invariant hypothesis
-# (`Wf p`), which upstream is explicit that an auditor should *expect* and not
-# flag, and the divergences are in the hypotheses rather than the conclusions.
-# `Draft.other_subject_unaffected` is the sharpest of them: its conclusion is
-# character-for-character the faithful theorem's, and only the hypothesis names
-# the wrong thing.
-# ---------------------------------------------------------------------------
+set_option linter.unusedVariables false
 
+namespace Canon
+
+abbrev NodeId := ℕ
+
+structure Node where
+  id : NodeId
+  x : ℤ
+  y : ℤ
+deriving DecidableEq
+
+structure Edge where
+  src : NodeId
+  dst : NodeId
+deriving DecidableEq
+
+structure Constraint where
+  target : NodeId
+  kind : ℕ
+deriving DecidableEq
+
+structure Model where
+  nodes : List Node
+  edges : List Edge
+  constraints : List Constraint
+deriving DecidableEq
+
+def NodeIds (ns : List Node) : List NodeId := ns.map (·.id)
+
+def AllConstraintsValid (cs : List Constraint) (ns : List Node) : Prop :=
+  ∀ c ∈ cs, c.target ∈ NodeIds ns
+
+def AllEdgesValid (es : List Edge) (ns : List Node) : Prop :=
+  ∀ e ∈ es, e.src ∈ NodeIds ns ∧ e.dst ∈ NodeIds ns
+
+def NoneMatch (cs : List Constraint) (id : NodeId) : Prop :=
+  ∀ c ∈ cs, c.target ≠ id
+
+def NoEdgesMention (es : List Edge) (id : NodeId) : Prop :=
+  ∀ e ∈ es, e.src ≠ id ∧ e.dst ≠ id
+
+inductive Action where
+  | addNode (id : NodeId) (x y : ℤ)
+  | removeNode (id : NodeId)
+
+def Apply (m : Model) (a : Action) : Model :=
+  match a with
+  | .addNode id x y =>
+      if id ∈ NodeIds m.nodes then m
+      else { m with nodes := ⟨id, x, y⟩ :: m.nodes }
+  | .removeNode id =>
+      { m with nodes := m.nodes.filter (fun n => n.id != id) }
+
+/-- Drop every constraint and edge that mentions a node the board no longer has. -/
+def Normalize (m : Model) : Model :=
+  { nodes := m.nodes
+    edges := m.edges.filter (fun e =>
+      decide (e.src ∈ NodeIds m.nodes) && decide (e.dst ∈ NodeIds m.nodes))
+    constraints := m.constraints.filter (fun c => decide (c.target ∈ NodeIds m.nodes)) }
+
+def Inv (m : Model) : Prop :=
+  AllConstraintsValid m.constraints m.nodes ∧
+  AllEdgesValid m.edges m.nodes ∧
+  (NodeIds m.nodes).Nodup
+
+theorem constraint_targets_exist (m : Model) (h : Inv m) :
+    AllConstraintsValid m.constraints m.nodes := h.1
+
+theorem edge_endpoints_exist (m : Model) (h : Inv m) :
+    AllEdgesValid m.edges m.nodes := h.2.1
+
+theorem add_existing_node_is_noop (m : Model) (id : NodeId) (x y : ℤ) (h : Inv m)
+    (hid : id ∈ NodeIds m.nodes) : Apply m (.addNode id x y) = m := by
+  simp [Apply, hid]
+
+theorem remove_node_cleans_up (m : Model) (id : NodeId) (h : Inv m)
+    (hid : id ∈ NodeIds m.nodes) :
+    id ∉ NodeIds (Normalize (Apply m (.removeNode id))).nodes ∧
+    NoneMatch (Normalize (Apply m (.removeNode id))).constraints id ∧
+    NoEdgesMention (Normalize (Apply m (.removeNode id))).edges id := by
+  have hgone : id ∉ NodeIds (Apply m (.removeNode id)).nodes := by
+    simp [Apply, NodeIds]
+  refine ⟨by simpa [Normalize] using hgone, ?_, ?_⟩
+  · intro c hc hct
+    simp only [Normalize, List.mem_filter, decide_eq_true_eq] at hc
+    exact hgone (hct ▸ hc.2)
+  · intro e he
+    simp only [Normalize, List.mem_filter, Bool.and_eq_true,
+      decide_eq_true_eq] at he
+    exact ⟨fun hx => hgone (hx ▸ he.2.1), fun hx => hgone (hx ▸ he.2.2)⟩
+
+theorem remove_node_drops_id (m : Model) (id : NodeId) (h : Inv m)
+    (hid : id ∈ NodeIds m.nodes) :
+    id ∉ NodeIds (Normalize (Apply m (.removeNode id))).nodes := by
+  simp [Normalize, Apply, NodeIds]
+
+theorem constraint_targets_exist_empty (m : Model) (h : Inv m)
+    (hc : m.constraints.length = 0) :
+    AllConstraintsValid m.constraints m.nodes := h.1
+
+end Canon
+"""
+COLORWHEEL_CORPUS = r"""import Mathlib
+
+set_option linter.unusedVariables false
+
+namespace ColorWheel
+
+inductive Harmony where
+  | analogous
+  | complementary
+  | triadic
+deriving DecidableEq
+
+inductive Mood where
+  | custom
+  | calm
+  | vibrant
+deriving DecidableEq
+
+structure Color where
+  hue : ℕ
+  sat : ℕ
+  light : ℕ
+deriving DecidableEq
+
+structure Model where
+  colors : List Color
+  baseHue : ℕ
+  harmony : Harmony
+  mood : Mood
+  contrastPair : ℕ × ℕ
+
+def ValidBaseHue (h : ℕ) : Prop := h < 360
+
+def ValidColor (c : Color) : Prop := c.sat ≤ 100 ∧ c.light ≤ 100
+
+def ColorSatisfiesMood (c : Color) (md : Mood) : Prop :=
+  match md with
+  | .custom => True
+  | .calm => c.sat ≤ 50
+  | .vibrant => 50 ≤ c.sat
+
+def HueOffsets : Harmony → List ℕ
+  | .analogous => [0, 30, 60, 90, 120]
+  | .complementary => [0, 180, 0, 180, 0]
+  | .triadic => [0, 120, 240, 120, 240]
+
+def HuesMatchHarmony (cs : List Color) (base : ℕ) (h : Harmony) : Prop :=
+  ∀ i, ∀ hi : i < cs.length, (cs.get ⟨i, hi⟩).hue = (base + (HueOffsets h).getD i 0) % 360
+
+def Inv (m : Model) : Prop :=
+  m.colors.length = 5 ∧
+  ValidBaseHue m.baseHue ∧
+  (∀ c ∈ m.colors, ValidColor c) ∧
+  (m.contrastPair.1 < 5 ∧ m.contrastPair.2 < 5) ∧
+  (m.mood ≠ Mood.custom → ∀ c ∈ m.colors, ColorSatisfiesMood c m.mood) ∧
+  HuesMatchHarmony m.colors m.baseHue m.harmony
+
+theorem base_hue_in_range (m : Model) (h : Inv m) : ValidBaseHue m.baseHue := h.2.1
+
+theorem always_five_colors (m : Model) (h : Inv m) : m.colors.length = 5 := h.1
+
+theorem all_colors_valid (m : Model) (h : Inv m) : ∀ c ∈ m.colors, ValidColor c :=
+  h.2.2.1
+
+theorem contrast_pair_indices_valid (m : Model) (h : Inv m) :
+    m.contrastPair.1 < 5 ∧ m.contrastPair.2 < 5 := h.2.2.2.1
+
+theorem mood_constraints_satisfied (m : Model) (h : Inv m) (hm : m.mood ≠ Mood.custom) :
+    ∀ c ∈ m.colors, ColorSatisfiesMood c m.mood := h.2.2.2.2.1 hm
+
+theorem hues_follow_harmony (m : Model) (h : Inv m) :
+    HuesMatchHarmony m.colors m.baseHue m.harmony := h.2.2.2.2.2
+
+theorem palette_non_empty (m : Model) (h : Inv m) : 1 ≤ m.colors.length := by
+  have := h.1
+  omega
+
+end ColorWheel
+"""
 DELEGATION_CORPUS = r"""import Mathlib
 
 set_option linter.unusedVariables false
 
-/-- A grant: `subject` may act on `resource` up to `level`
-    (0 = none, 1 = read, 2 = write). -/
-structure Grant where
-  subject : ℕ
-  resource : ℕ
-  level : ℕ
+namespace DelegationAuth
 
-/-- A policy is a list of grants. -/
-abbrev Policy := List Grant
+abbrev Subject := ℕ
+abbrev Capability := ℕ
+abbrev EdgeId := ℕ
 
-/-- The authority a subject holds on a resource: the highest level any grant
-    in the policy gives them there. -/
-def authority : Policy → ℕ → ℕ → ℕ
-  | [], _, _ => 0
-  | g :: rest, s, r =>
-      max (if g.subject = s ∧ g.resource = r then g.level else 0) (authority rest s r)
+/-- One delegation edge: `frm` lets `dst` use `cap`. -/
+structure Edge where
+  id : EdgeId
+  frm : Subject
+  dst : Subject
+  cap : Capability
 
-/-- The well-formedness invariant every stored policy maintains. -/
-def Wf (p : Policy) : Prop :=
-  (∀ g ∈ p, g.level ≤ 2) ∧
-  (∀ g ∈ p, 0 < g.subject) ∧
-  (∀ g ∈ p, 0 < g.resource) ∧
-  (∀ g ∈ p, 0 < g.level) ∧
-  p.length ≤ 1000
+structure Model where
+  subjects : List Subject
+  grants : List (Subject × Capability)
+  delegations : List Edge
+  nextEdge : EdgeId
 
-/-- `d` delegates to `t` on resource `r` at level `l`. -/
-def delegate (p : Policy) (t r l : ℕ) : Policy := ⟨t, r, l⟩ :: p
+def Init : Model := ⟨[], [], [], 0⟩
 
-namespace Audited
+inductive Action where
+  | grant (s : Subject) (c : Capability)
+  | delegate (frm dst : Subject) (c : Capability)
+  | revoke (e : EdgeId)
 
-theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ 2 := h.1
+def Apply (m : Model) (a : Action) : Model :=
+  match a with
+  | .grant s c =>
+      if s ∈ m.subjects then { m with grants := (s, c) :: m.grants } else m
+  | .delegate f t c =>
+      if f ∈ m.subjects ∧ t ∈ m.subjects then
+        { m with
+          delegations := ⟨m.nextEdge, f, t, c⟩ :: m.delegations
+          nextEdge := m.nextEdge + 1 }
+      else m
+  | .revoke e =>
+      if e ∈ m.delegations.map (·.id) then
+        { m with delegations := m.delegations.filter (fun ed => ed.id != e) }
+      else m
 
-theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.subject := h.2.1
+def Inv (m : Model) : Prop :=
+  (∀ sc ∈ m.grants, sc.1 ∈ m.subjects) ∧
+  (∀ ed ∈ m.delegations, ed.frm ∈ m.subjects ∧ ed.dst ∈ m.subjects) ∧
+  (∀ ed ∈ m.delegations, ed.id < m.nextEdge)
 
-theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.resource := h.2.2.1
+theorem grant_subjects_exist (m : Model) (h : Inv m) :
+    ∀ sc ∈ m.grants, sc.1 ∈ m.subjects := h.1
 
-theorem no_null_grants (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.level := h.2.2.2.1
+theorem delegation_endpoints_exist (m : Model) (h : Inv m) :
+    ∀ ed ∈ m.delegations, ed.frm ∈ m.subjects ∧ ed.dst ∈ m.subjects := h.2.1
 
-theorem policy_bounded (p : Policy) (h : Wf p) : p.length ≤ 1000 := h.2.2.2.2
+theorem edge_ids_fresh (m : Model) (h : Inv m) :
+    ∀ ed ∈ m.delegations, ed.id < m.nextEdge := h.2.2
 
-theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
-    authority p s r ≤ 2 := by
-  induction p with
-  | nil => simp [authority]
-  | cons g rest ih =>
-    have hg : g.level ≤ 2 := h.1 g (by simp)
-    have hrest : Wf rest :=
-      ⟨fun x hx => h.1 x (by simp [hx]), fun x hx => h.2.1 x (by simp [hx]),
-        fun x hx => h.2.2.1 x (by simp [hx]),
-        fun x hx => h.2.2.2.1 x (by simp [hx]), by
-          have := h.2.2.2.2; simp only [List.length_cons] at this; omega⟩
-    simp only [authority, max_le_iff]
-    exact ⟨by split <;> omega, ih hrest⟩
+theorem grant_non_existent_is_noop (m : Model) (s : Subject) (c : Capability)
+    (h : Inv m) (hs : s ∉ m.subjects) : Apply m (.grant s c) = m := by
+  simp [Apply, hs]
 
-theorem no_grants_no_authority (s r : ℕ) (h : Wf []) : authority [] s r = 0 := by
-  simp [authority]
+theorem delegate_non_existent_is_noop (m : Model) (f t : Subject) (c : Capability)
+    (h : Inv m) (hs : ¬(f ∈ m.subjects ∧ t ∈ m.subjects)) :
+    Apply m (.delegate f t c) = m := by
+  simp [Apply, hs]
 
-theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (hw : Wf (g :: p)) (h : g.subject ≠ s) :
-    authority (g :: p) s r = authority p s r := by
-  simp [authority, h]
+theorem revoke_non_existent_is_noop (m : Model) (e : EdgeId) (h : Inv m)
+    (he : e ∉ m.delegations.map (·.id)) : Apply m (.revoke e) = m := by
+  simp [Apply, he]
 
-theorem other_resource_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r := by
-  simp [authority, h]
+theorem grant_non_existent_is_noop_init (m : Model) (s : Subject) (c : Capability)
+    (h : Inv m) (hinit : m = Init) (hs : s ∉ m.subjects) :
+    Apply m (.grant s c) = m := by
+  simp [Apply, hs]
 
-theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ) (hw : Wf (g :: p)) :
-    authority p s r ≤ authority (g :: p) s r := by
-  simp [authority]
+end DelegationAuth
+"""
+KANBAN_CORPUS = r"""import Mathlib
 
-theorem delegation_no_escalation (p : Policy) (d t r l : ℕ)
-    (h : l ≤ authority p d r) :
-    authority (delegate p t r l) t r ≤ max (authority p d r) (authority p t r) := by
-  simp only [delegate, authority, max_le_iff]
-  constructor
-  · split <;> omega
-  · omega
+set_option linter.unusedVariables false
 
-end Audited
+namespace Kanban
 
-namespace Draft
+abbrev CardId := ℕ
+abbrev ColId := ℕ
 
-set_option linter.unusedVariables false in
-theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ g.level :=
-  fun _ _ => le_refl _
+structure Model where
+  cols : List ColId
+  cards : List CardId
+  lanes : List (ColId × List CardId)
+  wip : List (ColId × ℕ)
+  nextId : CardId
 
-set_option linter.unusedVariables false in
-theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 ≤ g.subject :=
-  fun _ _ => Nat.zero_le _
+def Keys {α : Type} (l : List (ColId × α)) : List ColId := l.map (·.1)
 
-theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.subject := h.2.1
+def AllIds (m : Model) : List CardId := (m.lanes.map (·.2)).flatten
 
-theorem no_null_grants (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ 2 := h.1
+def NoDupSeq (l : List CardId) : Prop := l.Nodup
 
-theorem policy_bounded (p : Policy) (h : Wf p) : p.length ≤ 100000 :=
-  le_trans h.2.2.2.2 (by omega)
+def OccursInLanes (m : Model) (id : CardId) : Prop := ∃ e ∈ m.lanes, id ∈ e.2
 
-theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
-    authority p s r ≤ 3 := by
-  have := Audited.wf_bounds_authority p s r h
-  omega
+def LaneLen (m : Model) (k : ColId) : ℕ :=
+  (((m.lanes.find? (fun e => e.1 == k)).map (·.2)).getD []).length
 
-theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
-    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r :=
-  Audited.other_resource_unaffected p g s r h
+def WipOf (m : Model) (k : ColId) : ℕ :=
+  ((m.wip.find? (fun e => e.1 == k)).map (·.2)).getD 0
 
-set_option linter.unusedVariables false in
-theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ)
-    (hw : Wf (g :: p)) (h : g.subject = s) :
-    authority p s r ≤ authority (g :: p) s r :=
-  Audited.grant_never_reduces p g s r hw
+inductive Action where
+  | addCard (col : ColId)
+  | moveCard (id : CardId) (toCol : ColId)
 
-theorem delegation_no_escalation (p : Policy) (t r l : ℕ) :
-    authority (delegate p t r l) t r ≤ max l (authority p t r) := by
-  simp only [delegate, authority, max_le_iff]
-  constructor
-  · split <;> omega
-  · omega
+def pushInto (lanes : List (ColId × List CardId)) (k : ColId) (id : CardId) :
+    List (ColId × List CardId) :=
+  lanes.map (fun e => if e.1 == k then (e.1, id :: e.2) else e)
 
-end Draft
+def dropFrom (lanes : List (ColId × List CardId)) (id : CardId) :
+    List (ColId × List CardId) :=
+  lanes.map (fun e => (e.1, e.2.filter (fun x => x != id)))
+
+def Apply (m : Model) (a : Action) : Model :=
+  match a with
+  | .addCard col =>
+      if col ∈ m.cols ∧ LaneLen m col < WipOf m col then
+        { m with
+          cards := m.nextId :: m.cards
+          lanes := pushInto m.lanes col m.nextId
+          nextId := m.nextId + 1 }
+      else m
+  | .moveCard id toCol =>
+      if toCol ∈ m.cols ∧ LaneLen m toCol < WipOf m toCol then
+        { m with lanes := pushInto (dropFrom m.lanes id) toCol id }
+      else m
+
+def Normalize (m : Model) : Model :=
+  { m with lanes := m.lanes.filter (fun e => decide (e.1 ∈ m.cols)) }
+
+def Inv (m : Model) : Prop :=
+  m.cols.Nodup ∧
+  NoDupSeq (AllIds m) ∧
+  (∀ id, id ∈ m.cards ↔ OccursInLanes m id) ∧
+  (Keys m.lanes = m.cols ∧ Keys m.wip = m.cols) ∧
+  (∀ k ∈ m.cols, LaneLen m k ≤ WipOf m k) ∧
+  (∀ id ∈ m.cards, id < m.nextId)
+
+theorem columns_are_unique (m : Model) (h : Inv m) : m.cols.Nodup := h.1
+
+theorem card_in_exactly_one_column (m : Model) (h : Inv m) :
+    NoDupSeq (AllIds m) ∧ ∀ id, id ∈ m.cards ↔ OccursInLanes m id :=
+  ⟨h.2.1, h.2.2.1⟩
+
+theorem no_card_duplicates (m : Model) (h : Inv m) : NoDupSeq (AllIds m) := h.2.1
+
+theorem wip_limits_respected (m : Model) (h : Inv m) :
+    ∀ k ∈ m.cols, LaneLen m k ≤ WipOf m k := h.2.2.2.2.1
+
+theorem add_card_to_full_column_is_noop (m : Model) (col : ColId) (h : Inv m)
+    (hc : col ∈ m.cols) (hfull : WipOf m col ≤ LaneLen m col) :
+    Apply m (.addCard col) = m := by
+  have hneg : ¬(col ∈ m.cols ∧ LaneLen m col < WipOf m col) := by
+    rintro ⟨-, hlt⟩
+    omega
+  simp [Apply, hneg]
+
+theorem allocator_always_fresh (m : Model) (h : Inv m) :
+    ∀ id ∈ m.cards, id < m.nextId := h.2.2.2.2.2
+
+theorem lanes_and_wip_match_columns (m : Model) (h : Inv m) :
+    Keys m.lanes = m.cols ∧ Keys m.wip = m.cols := h.2.2.2.1
+
+theorem move_card_preserves_total (m : Model) (id : CardId) (toCol : ColId)
+    (h : Inv m) :
+    (AllIds (Normalize (Apply m (.moveCard id toCol)))).length =
+      (AllIds (Normalize (Apply m (.moveCard id toCol)))).length := rfl
+
+theorem card_partition_no_dups (m : Model) (h : Inv m) : NoDupSeq (AllIds m) := h.2.1
+
+end Kanban
 """
 
 
@@ -620,10 +801,12 @@ def statement_of(corpus: str, qualified: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The mapping: which theorem was written to formalize which requirement, plus
-# the ground truth. Upstream's `test/integration/mappings/*.json` carry exactly
-# these `expected`/`reason` labels, which is what makes the audit scoreable
-# rather than merely demonstrable.
+# The mapping: which theorem was written to formalize which requirement,
+# plus the ground truth. Upstream's `test/integration/mappings/*.json`
+# carry exactly these `expected`/`reason` labels, which is what makes the
+# audit scoreable rather than merely demonstrable. Requirement strings are
+# copied from those files unchanged, deliberately: their vagueness is the
+# variable under test.
 # ---------------------------------------------------------------------------
 
 
@@ -642,291 +825,236 @@ class Claim:
     why: str = ""
 
 
-ELECTION_CLAIMS: tuple[Claim, ...] = (
-    # Faithful. Every one carries `Valid bs` -- the invariant the ballot box
-    # maintains -- whose three-clause definition is in the corpus and in no
-    # prompt. The first four project it directly; the rest depend on it the way
-    # upstream's lemmas depend on `Inv(m)`.
+COUNTER_CLAIMS: tuple[Claim, ...] = (
+    # Upstream's `counter`. The state is an `Int`, not a `Nat`, which is what
+    # makes `0 <= m` a real claim and `-1 <= m` a real weakening -- the trap
+    # would be unavailable over the naturals. `counter_non_negative` is the
+    # item that separates the strategies most often upstream: its conclusion
+    # *is* the invariant it assumes, so an auditor who has been told what the
+    # requirement wants can talk itself into calling it circular.
     Claim(
-        "Every ballot in a well-formed election names a real candidate",
-        "Audited.ballots_named",
+        "The counter value is always non-negative",
+        "counter_non_negative",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed election every candidate identifier is at most 100",
-        "Audited.ids_in_range",
+        "The initial state satisfies the invariant",
+        "init_satisfies_invariant",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A well-formed election contains at most 10000 ballots",
-        "Audited.election_bounded",
+        "Every action preserves the invariant after normalization",
+        "step_preserves_invariant",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "No ballot in a well-formed election names candidate 0",
-        "Draft.zero_is_nobody",
+        "Decrementing at zero keeps the counter at zero",
+        "dec_at_zero_keeps_zero",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed election, candidate 0 receives no votes",
-        "Audited.zero_is_nobody",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "No candidate can receive more votes than the total number of ballots cast",
-        "Audited.count_bounded",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "No candidate's tally can exceed the maximum election size of 10000",
-        "Audited.tally_bounded",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Merging two ballot boxes produces a tally equal to the sum of the "
-        "individual tallies",
-        "Audited.combine_tallies",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Casting a ballot for a candidate increases that candidate's tally by "
-        "exactly one",
-        "Audited.vote_increment",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Casting a ballot for one candidate does not change any other "
-        "candidate's tally",
-        "Audited.vote_no_effect",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "The order in which ballots are counted does not affect the final tally",
-        "Audited.order_irrelevant",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Adding a ballot to the election cannot cause any candidate's tally to "
-        "decrease",
-        "Audited.tally_monotonic",
-        Verdict.CONFIRMED,
-    ),
-    # Unfaithful, against the same requirements.
-    Claim(
-        "Every ballot in a well-formed election names a real candidate",
-        "Draft.ballots_named",
+        "The counter value is always non-negative",
+        "counter_non_neg_alt",
         Verdict.DISPUTED,
-        "tautology: concludes each ballot identifier is non-negative, which "
-        "holds of every natural number and does not say it names anyone",
+        "tautology: `m = m` proves nothing about non-negativity",
     ),
     Claim(
-        "In a well-formed election every candidate identifier is at most 100",
-        "Draft.ids_in_range",
+        "The counter value is always non-negative",
+        "counter_non_neg_large",
         Verdict.DISPUTED,
-        "weakened-conclusion: bounds identifiers by 1000, ten times the limit "
-        "the requirement names",
+        "vacuous precondition: `100 < m` narrows scope, doesn't cover m = 0",
     ),
     Claim(
-        "A well-formed election contains at most 10000 ballots",
-        "Draft.election_bounded",
+        "The counter value is always non-negative",
+        "counter_lower_bound",
         Verdict.DISPUTED,
-        "tautology: bounds the ballot count by itself, so no size limit is established",
-    ),
-    Claim(
-        "No candidate can receive more votes than the total number of ballots cast",
-        "Draft.count_bounded",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds the tally by one more than the number of "
-        "ballots, permitting a candidate to exceed it",
-    ),
-    Claim(
-        "Casting a ballot for a candidate increases that candidate's tally by "
-        "exactly one",
-        "Draft.vote_increment",
-        Verdict.DISPUTED,
-        "tautology: both sides of the equation are the same term, so nothing is "
-        "claimed about the increment",
-    ),
-    Claim(
-        "The order in which ballots are counted does not affect the final tally",
-        "Draft.order_irrelevant",
-        Verdict.DISPUTED,
-        "narrowed-scope: only one reordering -- moving a single ballot from the "
-        "end to the front -- rather than any permutation",
-    ),
-    Claim(
-        "Adding a ballot to the election cannot cause any candidate's tally to "
-        "decrease",
-        "Draft.tally_monotonic",
-        Verdict.DISPUTED,
-        "wrong-property: says the new tally is non-negative, trivially true of a "
-        "natural number, instead of comparing it to the old one",
-    ),
-    # A second attempt at four of the same requirements. Each reads correctly at
-    # a glance: the conclusion is the right shape and the divergence is a
-    # hypothesis that narrows it or a relation symbol that loosens it.
-    Claim(
-        "No candidate can receive more votes than the total number of ballots cast",
-        "Revision.count_bounded",
-        Verdict.DISPUTED,
-        "narrowed-scope: an extra hypothesis restricts the bound to candidates "
-        "who received at least one ballot, saying nothing about a candidate "
-        "with no votes",
-    ),
-    Claim(
-        "Merging two ballot boxes produces a tally equal to the sum of the "
-        "individual tallies",
-        "Revision.combine_tallies",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds the merged tally below by the sum instead "
-        "of equating them, so it permits the merge to invent votes",
-    ),
-    Claim(
-        "The order in which ballots are counted does not affect the final tally",
-        "Revision.order_irrelevant",
-        Verdict.DISPUTED,
-        "tautology: the hypothesis is that the two ballot lists are equal, so "
-        "the conclusion is congruence and no reordering is involved",
-    ),
-    Claim(
-        "Adding a ballot to the election cannot cause any candidate's tally to "
-        "decrease",
-        "Revision.tally_monotonic",
-        Verdict.DISPUTED,
-        "narrowed-scope: an extra hypothesis restricts the guarantee to the "
-        "case where the added ballot is itself for the candidate in question",
+        "weakened postcondition: concludes `-1 <= m` instead of `0 <= m`",
     ),
 )
 
+CANON_CLAIMS: tuple[Claim, ...] = (
+    # Upstream's `canon`. Two conclusions are opaque predicates
+    # (`AllConstraintsValid`, `AllEdgesValid`); `remove_node_cleans_up` is
+    # the three-conjunct conclusion whose first conjunct alone is
+    # `remove_node_drops_id`.
+    Claim(
+        "All constraint targets reference existing nodes",
+        "constraint_targets_exist",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "All edge endpoints reference existing nodes",
+        "edge_endpoints_exist",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Adding a node with an existing ID is a no-op",
+        "add_existing_node_is_noop",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Removing a node cleans up related constraints and edges",
+        "remove_node_cleans_up",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Removing a node cleans up related constraints and edges",
+        "remove_node_drops_id",
+        Verdict.DISPUTED,
+        "missing conjunct: only checks the node is removed, doesn't verify "
+        "constraint/edge cleanup",
+    ),
+    Claim(
+        "All constraint targets reference existing nodes",
+        "constraint_targets_exist_empty",
+        Verdict.DISPUTED,
+        "vacuous precondition: requiring no constraints makes the conclusion trivially "
+        "true",
+    ),
+)
+
+COLORWHEEL_CLAIMS: tuple[Claim, ...] = (
+    # Upstream's `colorwheel`. The domain where the weakest arm falls apart
+    # upstream, and the split is legible: it confirms the two theorems whose
+    # conclusions are visible arithmetic (`always_five_colors`,
+    # `contrast_pair_indices_valid`) and disputes the four whose conclusions
+    # are named predicates it has never seen unfolded.
+    Claim(
+        "The base hue is always in valid range",
+        "base_hue_in_range",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "There are always exactly 5 colors in the palette",
+        "always_five_colors",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Every color has valid saturation and lightness values",
+        "all_colors_valid",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Contrast pair indices are valid (between 0 and 4)",
+        "contrast_pair_indices_valid",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "When a mood is set (not Custom), all colors satisfy the mood constraints",
+        "mood_constraints_satisfied",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Hues follow the selected harmony pattern",
+        "hues_follow_harmony",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "There are always exactly 5 colors in the palette",
+        "palette_non_empty",
+        Verdict.DISPUTED,
+        "weakened postcondition: concludes the palette is non-empty instead of exactly "
+        "5",
+    ),
+)
 
 DELEGATION_CLAIMS: tuple[Claim, ...] = (
-    # Faithful. `Wf p` is a five-clause conjunction defined in the corpus and
-    # never in a prompt; the first five theorems are literally its conjuncts.
+    # Upstream's `delegation-auth`. `delegate_non_existent_is_noop` is one of
+    # only two items every single-call arm gets wrong on every model upstream
+    # tried: the requirement reads as 'both subjects missing' and the
+    # hypothesis says 'at least one missing', so the theorem is *stronger*
+    # than what was asked -- which still counts as expressing it.
     Claim(
-        "In a well-formed policy no grant exceeds write level (2)",
-        "Audited.levels_bounded",
+        "All granted capabilities reference existing subjects",
+        "grant_subjects_exist",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy every grant names a real subject",
-        "Audited.subjects_named",
+        "Delegation endpoints (from, to) must be existing subjects",
+        "delegation_endpoints_exist",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy every grant names a real resource",
-        "Audited.resources_named",
+        "Edge IDs are always less than the next allocator (freshness)",
+        "edge_ids_fresh",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A well-formed policy stores no grants at level zero",
-        "Audited.no_null_grants",
+        "Granting a capability to a non-existent subject is a no-op",
+        "grant_non_existent_is_noop",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A well-formed policy holds at most 1000 grants",
-        "Audited.policy_bounded",
+        "Delegating between non-existent subjects is a no-op",
+        "delegate_non_existent_is_noop",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy no subject holds authority above write level (2)",
-        "Audited.wf_bounds_authority",
+        "Revoking a non-existent delegation is a no-op",
+        "revoke_non_existent_is_noop",
         Verdict.CONFIRMED,
     ),
     Claim(
-        "A subject has no authority under the empty policy",
-        "Audited.no_grants_no_authority",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Granting authority to one subject never changes any other subject's authority",
-        "Audited.other_subject_unaffected",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "A grant concerning one resource never changes authority on a different "
-        "resource",
-        "Audited.other_resource_unaffected",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Adding a grant to a policy can never reduce anyone's authority",
-        "Audited.grant_never_reduces",
-        Verdict.CONFIRMED,
-    ),
-    Claim(
-        "Delegating a level the delegator actually holds cannot leave the "
-        "delegate with more authority than the delegator has, beyond what the "
-        "delegate already held",
-        "Audited.delegation_no_escalation",
-        Verdict.CONFIRMED,
-    ),
-    # Unfaithful. Several project the *wrong conjunct* of the same invariant --
-    # the trap that needs the auditor to reason about a definition it cannot see.
-    Claim(
-        "In a well-formed policy no grant exceeds write level (2)",
-        "Draft.levels_bounded",
+        "Granting a capability to a non-existent subject is a no-op",
+        "grant_non_existent_is_noop_init",
         Verdict.DISPUTED,
-        "tautology: concludes each grant's level is at most itself, which holds "
-        "of any number and says nothing about the write level",
+        "vacuous precondition: `m = Init` restricts the claim to the empty policy only",
+    ),
+)
+
+KANBAN_CLAIMS: tuple[Claim, ...] = (
+    # Upstream's `kanban`, and the sharpest pair in the benchmark:
+    # `no_card_duplicates` and `card_partition_no_dups` have identical
+    # statements. Which one is faithful depends entirely on the requirement
+    # it is set against, so no amount of reading the Lean decides it.
+    Claim(
+        "Column names are unique (no duplicate columns)",
+        "columns_are_unique",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy every grant names a real subject",
-        "Draft.subjects_named",
-        Verdict.DISPUTED,
-        "tautology: concludes each subject identifier is non-negative, automatic "
-        "for a natural number, rather than that it names anyone",
+        "Every card appears in exactly one column (exact partition)",
+        "card_in_exactly_one_column",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy every grant names a real resource",
-        "Draft.resources_named",
-        Verdict.DISPUTED,
-        "wrong-property: projects the invariant's subject clause, not its "
-        "resource clause, so it establishes nothing about resources",
+        "No card ID appears twice across all lanes (no duplicates)",
+        "no_card_duplicates",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "A well-formed policy stores no grants at level zero",
-        "Draft.no_null_grants",
-        Verdict.DISPUTED,
-        "wrong-property: projects the upper bound on levels instead of their "
-        "positivity, which is the opposite end of the range",
+        "Each column respects its WIP limit (number of cards does not exceed the "
+        "limit)",
+        "wip_limits_respected",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "A well-formed policy holds at most 1000 grants",
-        "Draft.policy_bounded",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds the policy by 100000, a hundred times the "
-        "limit the requirement names",
+        "Adding a card to a full column is a no-op",
+        "add_card_to_full_column_is_noop",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "In a well-formed policy no subject holds authority above write level (2)",
-        "Draft.wf_bounds_authority",
-        Verdict.DISPUTED,
-        "weakened-conclusion: bounds authority by 3, one level above the write "
-        "level the requirement names",
+        "The card allocator is always fresh (no allocated ID reused)",
+        "allocator_always_fresh",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "Granting authority to one subject never changes any other subject's authority",
-        "Draft.other_subject_unaffected",
-        Verdict.DISPUTED,
-        "wrong-property: the hypothesis separates the grant's resource from the "
-        "one queried, not its subject, so this is the other-resource property "
-        "wearing the other-subject name",
+        "Lanes and WIP maps are defined exactly for existing columns",
+        "lanes_and_wip_match_columns",
+        Verdict.CONFIRMED,
     ),
     Claim(
-        "Adding a grant to a policy can never reduce anyone's authority",
-        "Draft.grant_never_reduces",
+        "Moving a card preserves the total number of cards",
+        "move_card_preserves_total",
         Verdict.DISPUTED,
-        "narrowed-scope: the hypothesis restricts the guarantee to the subject "
-        "the new grant is for, which is the one case nobody doubted",
+        "tautology: compares one expression to itself",
     ),
     Claim(
-        "Delegating a level the delegator actually holds cannot leave the "
-        "delegate with more authority than the delegator has, beyond what the "
-        "delegate already held",
-        "Draft.delegation_no_escalation",
+        "Every card appears in exactly one column (exact partition)",
+        "card_partition_no_dups",
         Verdict.DISPUTED,
-        "wrong-property: the delegator never appears; the bound is the delegated "
-        "level itself, so it establishes no non-escalation at all",
+        "missing conjunct: proves only that IDs are distinct, not the bidirectional "
+        "membership that makes it a partition",
     ),
 )
 
@@ -941,8 +1069,11 @@ class Domain:
 
 
 DOMAINS: dict[str, Domain] = {
-    "election": Domain("election", ELECTION_CORPUS, ELECTION_CLAIMS),
+    "counter": Domain("counter", COUNTER_CORPUS, COUNTER_CLAIMS),
+    "canon": Domain("canon", CANON_CORPUS, CANON_CLAIMS),
+    "colorwheel": Domain("colorwheel", COLORWHEEL_CORPUS, COLORWHEEL_CLAIMS),
     "delegation": Domain("delegation", DELEGATION_CORPUS, DELEGATION_CLAIMS),
+    "kanban": Domain("kanban", KANBAN_CORPUS, KANBAN_CLAIMS),
 }
 
 
@@ -1246,8 +1377,7 @@ def main() -> None:
         "--domain",
         choices=[*DOMAINS, "all"],
         default="all",
-        help="Which corpus to audit: the election tally, the harder "
-        "authority/delegation policy, or both",
+        help="Which of upstream's five benchmark domains to audit, or all of them",
     )
     parser.add_argument(
         "--limit",
