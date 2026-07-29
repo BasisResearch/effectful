@@ -8,44 +8,66 @@ and the one the paper extends beyond prompts.
 
 The artifact is a plain ``str``, the evaluator is itself a model call, and -- as in the
 paper -- the prompt is optimized *for a cheaper model* (``--worker-model``) than the one
-proposing it. Every domain the paper reports does this: a prompt for GPT-4.1-mini, an
-agent architecture for Gemini Flash. In effectful "run this call on a different model"
-is a scoped handler, so `library.worker` is the entire mechanism.
+proposing it, here GPT-4.1-mini, which is A.3's target model too. In effectful "run this
+call on a different model" is a scoped handler, so `library.worker` is the entire
+mechanism.
 
 The task is constrained writing -- an exact word count, an initial-letter rule, a banned
-letter -- scored by deterministic Python. That choice is forced. The paper optimizes
-prompts for AIME, and a 2026-class model, including the cheap ones, answers any short
-arithmetic or number-theory question a self-contained example can carry: measured here,
-GPT-4.1-mini scored 12/12 on a set of counting and number-theory problems from the bare
-seed prompt, so the search had nothing to climb. Constraint tracking is a task these
-models genuinely fail, the checker is exact, and the lever a better prompt supplies is
-real method -- count before answering, verify each constraint separately, revise once --
-rather than an output convention.
+letter -- scored by deterministic Python, and that substitution needs stating plainly
+rather than defending. AIME itself would have been the faithful choice and has ample
+headroom: the paper measures GPT-4.1-mini at 46.67% on AIME 2025 from a generic prompt.
+What ruled it out is that the problems cannot be embedded here -- the set is large, and
+writing a dozen substitutes is not AIME. Two attempts at such a substitute saturated:
+GPT-4.1-mini scored 12/12 on hand-written counting and number-theory problems from the
+bare seed prompt, leaving the search nothing to climb. Constraint tracking is a task
+these models do fail, the checker is exact, and the lever a better prompt supplies is
+method -- count before answering, verify each constraint separately, revise once.
+Nothing measured here transfers to a claim about AIME.
 
 Demonstrates:
 - Generalization mode: per-example Pareto objectives over the training instances, so a
   prompt that is best at *something* survives, and selection on a held-out set
-- Side Information in the paper's design for this domain -- the instance, the model's
-  reasoning, what it produced, and a per-constraint account of what went wrong, rather
-  than a bare right/wrong
+- Side Information following the paper's design for this domain as far as the task
+  allows -- the instance, the model's reasoning, what it produced, and a per-constraint
+  account of what went wrong. A.3 also returns the ground-truth answer, which has no
+  analogue here: constrained writing has no reference sentence, only constraints
 - The proposer/target-model split as a scoped handler nested inside the harness's stack
 - Partial credit as a search gradient: a 0/1 verdict would make most of the run invisible
 
 Measured on 2026-07-29 with gpt-5.5 proposing and gpt-4.1-mini writing, 8 iterations:
 training score 0.733 -> 0.867, held-out 0.800 -> 0.800. The search improved the prompt
-on the instances it saw and none of that transferred -- a negative result on the paper's
-headline generalization claim at this scale, on five training instances, left standing
-rather than tuned away.
+on the instances it saw and none of that carried, which is left standing rather than
+tuned away -- but it is a weak observation, not a negative result. Five validation
+instances scored in thirds resolve nothing below about 0.07, one run gives no variance
+estimate, and the held-out score is also the set the winner was selected on. It says
+this run did not show transfer, and no more than that.
 """
 
 # Simplifications vs. the source:
 # - The task is constrained writing, not AIME 2022-2025, for the reason above.
-# - Five training and five validation instances, against the paper's ~45 and 15.
+# - Five training and five validation instances. The paper trains on AIME 2022-2024
+#   and tests on AIME 2025 -- on the order of a hundred problems and thirty, with
+#   Figure 7's 57.78% validation score implying a 45-problem validation split.
 # - The winner is selected on the same held-out set this script then reports, where the
 #   paper keeps a third split and reports the test score. Read the val number as
 #   selection-biased.
-# - Budget is counted in optimizer iterations, not metric calls or dollars; the paper
-#   spends ~350 metric calls and $6.44 on this domain.
+# - Budget is counted in optimizer iterations, not metric calls or dollars: about 60
+#   evaluator calls here against the paper's ~350 and $6.44. `report` prints the count.
+# - There is no baseline optimizer. A.3's actual claim is 60.0% against MIPROv2's
+#   51.33% on the same benchmark; nothing here compares against any other optimizer,
+#   or even against best-of-N hand-written prompts, so that claim is untouched.
+# - The candidate is spliced ahead of the question in a user message rather than being
+#   a system prompt, and the answer comes back as a typed ``Answer(reasoning, final)``.
+#   The type therefore supplies two of the things the paper's evolved prompt had to
+#   learn -- an explicit reasoning step, and isolating the final answer (its rule 6) --
+#   so roughly a third of Appendix J's content is unreachable as a lever here.
+# - One run, one sample per instance, frozen thereafter by the evaluation cache: no
+#   repeats, no seed sweep, no variance estimate.
+# - The winner is a maximum over the frontier's validation scores while the seed is a
+#   single validation measurement, so the reported delta is biased upward. Only
+#   frontier candidates are validated at all, so a candidate that the training set
+#   dominates can never be selected however well it generalizes.
+# - One proposer model; the paper also reports a weaker-proposer arm (its Table 8).
 
 import argparse
 import random
@@ -324,9 +346,15 @@ def main() -> None:
 
     result = run_prompt(args, random.Random(args.seed))
     report(result, selection=args.selection, side_info=not args.no_side_info)
-    assert result.best_score >= result.seed_score, (
-        f"optimization went backwards: {result.seed_score} -> {result.best_score}"
-    )
+    # No assertion that the score improved. In generalization mode the seed can be
+    # pruned as training-dominated while every surviving candidate is worse on the
+    # held-out set, and that is a legitimate outcome of a search this small -- the
+    # result to report, not a failure to raise on.
+    if result.best_score <= result.seed_score:
+        print(
+            "\nThe search did not improve the held-out score. On five validation "
+            "instances that is as likely to be the budget as the method."
+        )
 
 
 if __name__ == "__main__":

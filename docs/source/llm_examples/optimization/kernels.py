@@ -13,52 +13,102 @@ evolves the prompt behind its CUDA kernels rather than the kernels themselves. E
 evaluation hands that instruction to a cheaper programmer model (``--worker-model``),
 which writes the function, and scores what comes back.
 
-Scoring is the paper's KernelBench metric in miniature: correctness against a reference
-implementation, then wall-clock speedup against it. That is not decoration. Every model
-tried here writes a correct list transform on the first attempt -- measured, 5/5 tasks
-from the bare seed instruction -- so correctness is the floor and speed is the only
-thing left to optimize. The reference is deliberately written the plain way, with
-explicit loops and ``append``, which is what "the straightforward implementation"
-means and what the paper's unoptimized PyTorch baseline is.
+Scoring borrows KernelBench's *shape* -- correctness against a reference
+implementation, then wall-clock speedup against it -- and that shape is what makes the
+domain optimizable at all: the worker writes a correct list transform from the bare
+seed instruction on all five tasks, so correctness alone would saturate immediately.
+Correctness is not, however, a floor the search stays above. An instruction that pushes
+hard for speed makes the worker write kernels that fail, and those score zero; the gate
+is a cliff the search repeatedly falls off, which the measured numbers below show.
+
+Read the speedups with the baseline in mind, because it is not the paper's. KernelBench
+compares against PyTorch, which is cuDNN and cuBLAS -- vendor-tuned code, and the reason
+"87% match or beat the baseline" is a strong claim. The reference implementations here
+are deliberately plain Python, explicit loops and ``append``, slow enough that ruff
+objects to them in as many words. Beating them by 1.6x is beating unoptimized
+interpreter code, not a tuned library, and the two numbers are not comparable.
 
 The five tasks share their *failure modes* rather than their algorithm, which is what
-makes cross-transfer possible: three have a naive formulation that rescans the whole
-prefix and is quadratic, and two turn on degenerate inputs the specification states and
-a hurried implementation skips. An instruction that learns either lesson on one task
-collects points on the others.
+gives cross-transfer something to transfer: three have a naive formulation that rescans
+the whole prefix and is quadratic, and two turn on degenerate inputs a hurried
+implementation skips. Both lessons are worth less than they sound. The references
+already carry running state, so an instruction that teaches it recovers the baseline
+rather than beating it -- 0.0 to about 1.0, a timeout fix wearing a speedup's clothes --
+and the degenerate cases are stated in the specification text the worker is handed, so
+the transferable insight there is "read the specification".
 
 Demonstrates:
 - Multi-task mode: per-task Pareto objectives on one shared frontier, per-task winners
-  at output time, and a post-hoc count of how many of those winners were last refined
-  while the proposer was looking at a *different* task
-- A single-task control (``--single-task``) that re-optimizes each task independently
-  at the same per-problem budget, which is the comparison the paper's 5.4 reports
+  at output time, and a count of how many of those winners were last refined while the
+  proposer was looking at a *different* task -- reported against the count chance alone
+  would produce, because on five tasks with a two-task minibatch that null is 3.0 and
+  the raw count says nothing on its own
+- A single-task control (``--single-task``) that re-optimizes each task independently,
+  which is the comparison the paper's 5.4 reports -- though see the simplifications on
+  what "equivalent budget" does and does not mean here
 - Side Information as compiler-style feedback: failing cases with expected and actual
   values, measured times and speedup, the traceback, and the code itself
 - A correctness gate that a search for speed can and does fall foul of
 
 Measured on 2026-07-29 with gpt-5.5 proposing and gpt-4.1-mini writing kernels, 10
-iterations: mean speedup over the reference 1.134 -> 1.603 across five tasks, with
-per-task winners drawn from *different* candidates on the shared frontier and 3 of the 5
-last refined while looking at another task. The single-task control at the same two
-iterations per problem went 1.224 -> 1.285. Multi-task ahead of single-task at equal
-per-problem budget is the direction of the paper's 5.4, though the two arms start from
-differently-timed seeds, so compare the gains (+41% vs +5%) rather than the endpoints.
-Several iterations scored zero because an instruction pushing for speed made the worker
-write incorrect kernels -- the correctness gate doing its job, and a failure mode the
-paper's limitations section predicts.
+iterations per arm. Mean speedup over the reference implementation:
+
+    multi-task            1.336 -> 1.399   (31 evaluator calls)
+      best single artifact       1.349     (the matched comparison; see below)
+    single-task control   1.194 -> 1.407   (15 evaluator calls, 2 iterations per task)
+
+The paper's 5.4 finding -- multi-task ahead of single-task at equivalent per-problem
+budget -- does not reproduce here, and on this evidence nothing else does either. The
+control ends slightly ahead on the headline number and well ahead on the gain (+17.9%
+against +4.7%), while spending half the evaluator calls. Cross-task transfer came out
+at 3 of 5 winners refined on another task against a chance expectation of exactly 3.0,
+which is no signal at all.
+
+None of that is a refutation of the paper, and it should not be read as one. The two
+arms' seed measurements differ by 12% (1.336 against 1.194) for the *same* instruction
+on the *same* five tasks, so the noise floor here is wider than either effect; the
+multi-task headline is a maximum over a pool while the control's is a maximum over five
+smaller pools; and one run of each, with 5 tasks against the paper's 31, cannot
+separate a real difference from timing jitter. What this domain demonstrates is the
+machinery -- a shared frontier, per-task selection off it, a control to compare against,
+and a transfer statistic reported against its null -- not a result.
+
+An earlier version of this file reported 1.134 -> 1.603 for multi-task and treated 3 of
+5 as evidence of transfer. Both were artifacts: the evaluator's side information then
+contained the sentence "rescanning earlier values for every position is quadratic;
+carry running state", which handed the proposer the exact lesson the run was then
+credited with discovering, and the transfer count was never compared against chance.
+Removing the hint and stating the null is what the numbers above cost.
 """
 
 # Simplifications vs. the source:
 # - Pure-Python list transforms on a CPU, not CUDA kernels on a V100 against
-#   KernelBench's 31 PyTorch operations, and no NVCC in the loop.
+#   KernelBench's 31 PyTorch operations, and no NVCC in the loop. The baseline is
+#   plain Python rather than a vendor-tuned library, so a speedup here is not the same
+#   quantity the paper reports (see the header).
 # - The score is mean speedup rather than the paper's fast_p(s) curve, and the side
-#   information has no documentation-retrieval channel.
+#   information has no documentation-retrieval channel. With five tasks, fast_p could
+#   be reported in 20% increments from the same per-task scores; it is not.
 # - Budget is counted in optimizer iterations, not metric calls or dollars; the paper
 #   spends ~3000 metric calls and $140 on this domain.
-# - Cross-task transfer is a post-hoc lineage count over one run against one control,
-#   not the paper's MT10/MT20 scaling study, and with no repeats to put an error bar on
-#   either arm.
+# - The two arms are NOT budget-matched in the paper's currency. Matching iterations,
+#   as ``--single-task`` does by default, leaves multi-task with roughly three times the
+#   evaluator calls -- it spends a full evaluation across all five tasks whenever a
+#   proposal is accepted, while the control spends two calls on one task. ``report``
+#   prints each arm's evaluation count, and ``--control-iterations`` exists to match on
+#   that instead. Multi-task also takes its per-task maximum over a larger pool, which
+#   favours it for reasons unrelated to transfer.
+# - The headline gain is upward-biased on the multi-task side and cannot be negative
+#   there: the result is a per-task maximum over the whole pool while the seed is a
+#   single candidate's mean, so per-task max is >= the seed's score on every task by
+#   construction. The report prints the best *single* artifact's mean alongside it,
+#   which is the matched one-artifact-to-one-artifact comparison.
+# - No repeats on either arm, and no variance estimate. The two seed measurements in
+#   the numbers above differ by several percent for the same instruction on the same
+#   tasks, which bounds the noise floor and is not far below the effects being compared.
+# - Cross-task transfer is a lineage count over one run against one control, not the
+#   paper's MT10/MT20 scaling study. It inspects only the last refinement rather than
+#   full ancestry, so it is reported against its null expectation rather than alone.
 # - The score is a wall-clock ratio, so it is only as reproducible as the machine is
 #   quiet. The baseline is re-timed back to back with every candidate for exactly this
 #   reason (see `measure_speedup`), which makes the ratio robust to a loaded machine but
@@ -74,6 +124,7 @@ import statistics
 import threading
 import time
 import traceback
+import zlib
 
 import pydantic.dataclasses
 
@@ -293,8 +344,10 @@ TIMING_REPEATS = 3  # best of three: the standard robust estimator for a short r
 
 def perf_input(task: str) -> list[float]:
     """The timed case's input: deterministic pseudo-random values, so every candidate
-    is timed on exactly the same work."""
-    rng = random.Random(len(task))
+    is timed on exactly the same work. Seeded from a checksum of the task name rather
+    than its length, which silently gave two tasks the same input the moment their
+    names happened to match in length."""
+    rng = random.Random(zlib.crc32(task.encode()))
     return [rng.uniform(-1.0, 1.0) for _ in range(KERNEL_PERF[task][0])]
 
 
@@ -395,11 +448,18 @@ def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
     expected, baseline = _time_kernel(REFERENCE[task], values, ceiling)
     try:
         produced, seconds = _time_kernel(kernel, values, ceiling)
+    except _Timeout as exc:
+        # Report the ceiling being hit and nothing else. An earlier version appended
+        # "rescanning earlier values for every position is quadratic; carry running
+        # state" here, which was a mistake twice over: it handed the proposer the very
+        # lesson this domain then credited the search with discovering, and it was
+        # attached to every exception type, so a ZeroDivisionError was told it had a
+        # complexity problem. Diagnosing the cause is the proposer's job; the
+        # evaluator's job is to say accurately what happened.
+        return 0.0, Diagnostic("speed", f"on {size} values: {exc}")
     except Exception as exc:
         return 0.0, Diagnostic(
-            "speed",
-            f"on {size} values this raised {type(exc).__name__}: {exc}. Rescanning "
-            f"earlier values for every position is quadratic; carry running state.",
+            "speed", f"on {size} values this raised {type(exc).__name__}: {exc}"
         )
     if len(produced) != len(expected) or not all(
         math.isclose(p, e, rel_tol=1e-7, abs_tol=1e-7)
@@ -444,7 +504,7 @@ def evaluate_instruction(
 
     cases = KERNEL_TESTS[task.name]
     passed = 0
-    failures: list[Diagnostic] = []
+    missed: list[Diagnostic] = []
     start = time.perf_counter()
     for values, expected in cases:
         try:
@@ -457,8 +517,8 @@ def evaluate_instruction(
             ok, produced = False, f"raised {type(exc).__name__}: {exc}"  # type: ignore[assignment]
         if ok:
             passed += 1
-        elif len(failures) < 2:  # the first couple of failures are the useful ones
-            failures.append(
+        else:
+            missed.append(
                 Diagnostic(
                     "failing case",
                     f"kernel({values}) returned {produced}, expected {expected}",
@@ -469,6 +529,17 @@ def evaluate_instruction(
     speedup, timing = measure_speedup(kernel, task.name)
     correct = passed == len(cases) and speedup > 0.0
 
+    # Only the first couple of failures go back: a wall of them buries the signal. Say
+    # how many were withheld, so the proposer is not told a partial list is the whole one.
+    failures = missed[:2]
+    if len(missed) > len(failures):
+        failures.append(
+            Diagnostic(
+                "further failures",
+                f"{len(missed) - len(failures)} more case(s) also failed and are not "
+                f"shown here",
+            )
+        )
     diagnostics = [Diagnostic("task", f"{task.name}: {task.spec}")]
     diagnostics += failures or [Diagnostic("correctness", "all small cases passed")]
     diagnostics.append(timing)
@@ -538,8 +609,14 @@ class Proposer(Agent):
 
 def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
     """Multi-task by default. ``--single-task`` runs the paper's control instead: each
-    task optimized independently with the same per-task budget, which is the
-    comparison its 5.4 ablation reports."""
+    task optimized independently, which is the comparison its 5.4 ablation reports.
+
+    The two arms are matched on optimizer iterations, not on evaluator calls, and those
+    are not the same thing -- multi-task pays for a full five-task evaluation whenever a
+    proposal is accepted. ``--control-iterations`` sets the control's per-task budget
+    directly, which is how to match on the evaluation counts ``report`` prints for both
+    arms.
+    """
     proposer = lambda instruction, feedback: Proposer().propose_instruction(  # noqa: E731
         instruction, feedback
     )
@@ -556,10 +633,13 @@ def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
             rng=rng,
         )
 
+    # The control is five independent runs, and its report has to be an aggregate of
+    # all five. An earlier version kept the last run's Result and overwrote four of its
+    # fields, so the printed frontier, iteration count and "best artifact" were one
+    # task's, presented as the whole control's.
+    runs: list[Result] = []
     per_task: list[tuple[str, Candidate, float]] = []
-    seeds: list[float] = []
-    merged: Result | None = None
-    per_problem = max(1, args.budget // len(KERNEL_TASKS))
+    per_problem = args.control_iterations or max(1, args.budget // len(KERNEL_TASKS))
     for task in KERNEL_TASKS:
         print(f"\n[single-task control] {task.name} ({per_problem} iterations)")
         result = optimize_anything(
@@ -573,15 +653,28 @@ def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
             use_side_info=not args.no_side_info,
             rng=rng,
         )
+        runs.append(result)
         per_task.append((task.name, result.best, result.best_score))
-        seeds.append(result.seed_score)
-        merged = result
-    assert merged is not None
-    merged.per_task = per_task
-    merged.mode = "multi-task (single-task control)"
-    merged.best_score = statistics.fmean(s for _, _, s in per_task)
-    merged.seed_score = statistics.fmean(seeds)
-    return merged
+
+    best_run = max(runs, key=lambda r: r.best_score)
+    return Result(
+        mode=f"single-task control ({len(runs)} independent runs)",
+        # No pool and no objectives: this arm has five separate frontiers over five
+        # disjoint objective sets, and there is no honest way to merge them. Pooling
+        # the candidates would ask the Pareto machinery to compare a count_smaller_before
+        # score against a zscore one -- it raises, and it should. An empty pool tells
+        # `report` there is no shared frontier here, which is exactly the difference
+        # from the multi-task arm that this control exists to isolate.
+        pool=[],
+        history=[step for r in runs for step in r.history],
+        objectives=[],
+        seed_score=statistics.fmean(r.seed_score for r in runs),
+        best=best_run.best,
+        best_score=statistics.fmean(score for _, _, score in per_task),
+        per_task=per_task,
+        evaluations=sum(r.evaluations for r in runs),
+        proposals=sum(r.proposals for r in runs),
+    )
 
 
 def main() -> None:
@@ -611,6 +704,13 @@ def main() -> None:
         help="Score-only feedback: the paper's SI ablation",
     )
     parser.add_argument(
+        "--control-iterations",
+        type=int,
+        default=0,
+        help="Per-task iterations for --single-task; 0 divides --budget across the "
+        "tasks, which matches the arms on iterations rather than evaluator calls",
+    )
+    parser.add_argument(
         "--single-task",
         action="store_true",
         help="Run the single-task control instead of multi-task search: each task "
@@ -621,9 +721,11 @@ def main() -> None:
     assert check_reference_agrees()
     result = run_kernel(args, random.Random(args.seed))
     report(result, selection=args.selection, side_info=not args.no_side_info)
-    assert result.best_score >= result.seed_score, (
-        f"optimization went backwards: {result.seed_score} -> {result.best_score}"
-    )
+    # No assertion that the score improved: in multi-task mode it cannot go down. The
+    # headline is a per-task maximum over the pool and the seed is one candidate in it,
+    # so ``best_score >= seed_score`` holds however badly the search does, and asserting
+    # it would only look like a check. `report` prints the matched single-artifact
+    # comparison next to it, which can go down and is the number to read.
 
 
 if __name__ == "__main__":

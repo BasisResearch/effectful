@@ -78,11 +78,13 @@ import pydantic.dataclasses
 from effectful.handlers.llm.harness.providing import LiteLLMProvider
 from effectful.ops.semantics import handler
 
-# The one piece of handler boilerplate in this file, and it is load-bearing. Every
-# domain the paper reports optimizes an artifact *for a specific model*: a prompt for
-# GPT-4.1-mini, an agent architecture for Gemini Flash, kernels behind GPT-5. The
-# proposer is strong; the model the artifact runs on is cheap, and the whole point is
-# to lift the cheap one. In effectful "run this call on a different model" is a scoped
+# The one piece of handler boilerplate in this file, and it is load-bearing wherever a
+# model sits inside the evaluator. In those domains the paper optimizes an artifact
+# *for a specific model* -- a prompt for GPT-4.1-mini, an agent architecture for Gemini
+# Flash -- with a strong proposer and a cheap target, the whole point being to lift the
+# cheap one. (Its other domains have no target model at all: in circle packing, the
+# Optuna comparison and the scheduling algorithms, the artifact is the solution and the
+# evaluator is code.) In effectful "run this call on a different model" is a scoped
 # handler, so ``worker(...)`` is all the machinery that split needs -- no config
 # system, no per-template model registry.
 #
@@ -279,8 +281,14 @@ def pareto_select[A](
 def best_select[A](
     pool: list[Candidate[A]], objectives: list[str], rng: random.Random
 ) -> Candidate[A]:
-    """The ablation the paper argues against: always mutate the best average, which
-    collapses the frontier's complementary strengths into one number."""
+    """Always mutate the best average, collapsing the frontier's complementary
+    strengths into one number.
+
+    This is the naive alternative the paper's 4.3 argues against -- "averaging hides
+    which aspects are strong and which are weak" -- not an ablation it runs. The
+    scripts expose it as ``--selection best`` so the argument can be checked here, and
+    none of them has yet spent the budget to check it.
+    """
     return max(pool, key=lambda c: c.average)
 
 
@@ -316,14 +324,6 @@ class Result[A, E]:
 
     def frontier(self) -> list[Candidate[A]]:
         return pareto_frontier(self.pool, self.objectives)
-
-    def iterations_to(self, threshold: float) -> int | None:
-        """First iteration whose best-so-far reached ``threshold`` -- the convergence
-        measure the paper's SI ablation reports as a speedup."""
-        for step in self.history:
-            if step.best >= threshold:
-                return step.iteration
-        return None
 
 
 def mode_of(dataset: object, valset: object) -> str:
@@ -574,6 +574,40 @@ def optimize_anything[A, E: Example](
 # ---------------------------------------------------------------------------
 
 
+def transfer_note(result: "Result") -> str:
+    """How many per-task winners were last refined while the proposer was looking at a
+    different task -- stated against the count chance alone would produce.
+
+    The raw count is close to meaningless on its own, and reporting it alone was a real
+    mistake in an earlier version of this file. A winner is "transferred" here unless
+    its task was in the minibatch that produced it, so under a null where any candidate
+    is equally likely to win any task, the expected count is already
+    ``tasks * (1 - minibatch/tasks)``. On five tasks with a two-task minibatch that is
+    3.0 -- exactly the figure the first run reported as evidence of transfer. Printing
+    the null next to the observation is the least that makes the number readable; it is
+    still one run, and it still looks only at the last refinement rather than at
+    ancestry.
+    """
+    winners = result.per_task
+    transferred = [
+        name for name, candidate, _ in winners if name not in candidate.refined_on
+    ]
+    sizes = [len(c.refined_on) for _, c, _ in winners if c.refined_on]
+    minibatch = statistics.fmean(sizes) if sizes else 0.0
+    expected = len(winners) * (1.0 - minibatch / len(winners)) if winners else 0.0
+    verdict = (
+        "above chance"
+        if len(transferred) > expected
+        else "at or below chance, so this run is no evidence of transfer"
+    )
+    return (
+        f"\nCross-task transfer: {len(transferred)}/{len(winners)} winning artifacts "
+        f"were last refined while looking at a *different* task"
+        + (f" ({', '.join(transferred)})" if transferred else "")
+        + f"; chance alone would give {expected:.1f} -- {verdict}"
+    )
+
+
 def report(
     result: "Result",
     *,
@@ -601,27 +635,40 @@ def report(
     )
     accepted = sum(step.accepted for step in result.history)
     print(f"accepted proposals: {accepted}/{len(result.history)}")
+    # The multi-task headline is a per-task maximum over the pool while the seed is a
+    # single candidate, so it cannot be negative and is biased upward by the size of the
+    # pool. The best single artifact's mean is the matched comparison: one artifact
+    # against one artifact, on the same tasks. It is only meaningful when every
+    # candidate was scored on the same objectives, which is false for an arm that
+    # aggregates independent runs.
+    comparable = result.pool and all(
+        set(c.scores) == set(result.objectives) for c in result.pool
+    )
+    if result.per_task and comparable:
+        best_single = max(c.average for c in result.pool)
+        print(
+            f"best single artifact (matched comparison, since the headline above is a "
+            f"per-task maximum over {len(result.pool)} candidates): {best_single:.6g}"
+        )
 
-    frontier = result.frontier()
-    print(f"\nPareto frontier ({len(frontier)} candidate(s) survive):")
-    for c in sorted(frontier, key=lambda c: -c.average):
-        scores = ", ".join(f"{k}={v:.4g}" for k, v in sorted(c.scores.items()))
-        print(f"  #{c.index} (gen {c.generation}, parent {c.parent}): {scores}")
+    if result.pool:
+        frontier = result.frontier()
+        print(f"\nPareto frontier ({len(frontier)} candidate(s) survive):")
+        for c in sorted(frontier, key=lambda c: -c.average):
+            scores = ", ".join(f"{k}={v:.4g}" for k, v in sorted(c.scores.items()))
+            print(f"  #{c.index} (gen {c.generation}, parent {c.parent}): {scores}")
+    else:
+        print("\n(no shared frontier: this run is several independent searches)")
 
     if result.per_task:
-        print("\nPer-task winners (multi-task selects off the shared frontier):")
+        print("\nPer-task winners:")
         for name, candidate, score in result.per_task:
             print(f"  {name}: candidate #{candidate.index} scored {score:.4g}")
-        transferred = [
-            name
-            for name, candidate, _ in result.per_task
-            if candidate.refined_on and name not in candidate.refined_on
-        ]
-        print(
-            f"\nCross-task transfer: {len(transferred)}/{len(result.per_task)} winning "
-            f"artifacts were last refined while looking at a *different* task"
-            + (f" ({', '.join(transferred)})" if transferred else "")
-        )
+        # Cross-task transfer is only a question where there was one frontier to
+        # transfer across; for independent runs it is zero by construction, and saying
+        # so as though it were a measurement would be worse than not saying it.
+        if result.pool:
+            print(transfer_note(result))
 
     for note in notes:
         print(f"\n{note}")
