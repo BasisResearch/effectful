@@ -45,14 +45,16 @@ from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
     PythonRepl,
     SynthesizeAndCall,
-    SystemPromptDumper,
-    TerminalRenderer,
 )
 from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.rendering import (
+    SystemPromptDumper,
+    RichTerminalRenderer,
+)
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.ops.semantics import handler
@@ -151,7 +153,7 @@ class harness(contextlib.ContextDecorator):
             )
         )
         if self.render:
-            stack.enter_context(handler(TerminalRenderer()))
+            stack.enter_context(handler(RichTerminalRenderer()))
         if self.dump_system_prompt:
             stack.enter_context(
                 handler(SystemPromptDumper(path=pathlib.Path(self.dump_system_prompt)))
