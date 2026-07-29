@@ -23,7 +23,7 @@ from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
     completion,
 )
-from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.persisting import SQLitePersister
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
