@@ -15,7 +15,7 @@ from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
 from effectful.handlers.llm.harness.coding import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.completions import (
+from effectful.handlers.llm.harness.providing import (
     LiteLLMProvider,
     _get_history,
     call_system,

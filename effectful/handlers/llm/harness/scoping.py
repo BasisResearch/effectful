@@ -3,14 +3,14 @@ import typing
 
 import pydantic
 
-from effectful.handlers.llm.harness.completions import call_assistant, call_system
+from effectful.handlers.llm.harness.providing import call_assistant, call_system
 from effectful.handlers.llm.types import Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 if typing.TYPE_CHECKING:
-    from effectful.handlers.llm.harness.completions import AssistantResult
+    from effectful.handlers.llm.harness.providing import AssistantResult
 
 
 class LexicalReaders(ObjectInterpretation):

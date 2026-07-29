@@ -10,7 +10,7 @@ import linecache
 import types
 import typing
 
-from effectful.handlers.llm.harness.completions import (
+from effectful.handlers.llm.harness.providing import (
     AssistantResult,
     call_assistant,
     call_system,

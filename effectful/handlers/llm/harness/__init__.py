@@ -45,7 +45,7 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.completions import (
+from effectful.handlers.llm.harness.providing import (
     LiteLLMProvider,
 )
 from effectful.handlers.llm.harness.execution import (
