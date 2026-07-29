@@ -15,13 +15,13 @@ import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
+from effectful.handlers.llm.harness.coding import ReplSession
 from effectful.handlers.llm.harness.encoding import (
     REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
     SynthesizedFunction,
 )
 from effectful.handlers.llm.harness.execution import (
-    ReplSession,
     RestrictedEvalProvider,
     UnsafeEvalProvider,
     run_doctests,

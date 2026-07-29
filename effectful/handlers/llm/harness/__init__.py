@@ -41,10 +41,12 @@ import typing
 import litellm
 import tenacity
 
+from effectful.handlers.llm.harness.coding import (
+    FinalBodySynthesizer,
+    StatefulReplSynthesizer,
+)
 from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
-    PythonRepl,
-    SynthesizeAndCall,
 )
 from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
@@ -159,8 +161,8 @@ class harness(contextlib.ContextDecorator):
                 handler(SystemPromptDumper(path=pathlib.Path(self.dump_system_prompt)))
             )
         stack.enter_context(handler(EVAL_PROVIDERS[self.eval_provider]()))
-        stack.enter_context(handler(PythonRepl()))
-        stack.enter_context(handler(SynthesizeAndCall()))
+        stack.enter_context(handler(StatefulReplSynthesizer()))
+        stack.enter_context(handler(FinalBodySynthesizer()))
         stack.enter_context(
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(self.num_retries)))
         )

@@ -27,13 +27,15 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm.harness.coding import (
+    FinalBodySynthesizer,
+    StatefulReplSynthesizer,
+)
 from effectful.handlers.llm.harness.completions import (
     DecodedToolCall,
     FinalTool,
     LiteLLMProvider,
-    PythonRepl,
     ResultDecodingError,
-    SynthesizeAndCall,
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
@@ -1484,7 +1486,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1506,7 +1508,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1527,7 +1529,7 @@ class TestSynthesizeAndCall:
         mock = MockCompletionHandler([make_text_response(json.dumps({"value": 99}))])
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1554,7 +1556,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1577,7 +1579,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1597,7 +1599,7 @@ class TestSynthesizeAndCall:
             raise NotHandled
 
         with pytest.raises(NotImplementedError, match="variadic"):
-            SynthesizeAndCall._SynthesisFinalTool.define(
+            FinalBodySynthesizer._SynthesisFinalTool.define(
                 variadic, variadic.__signature__.bind()
             )
 
@@ -1636,7 +1638,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1667,7 +1669,7 @@ class TestSynthesizeAndCallDoctests:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1687,7 +1689,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -1732,7 +1734,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
-            handler(SynthesizeAndCall()),
+            handler(FinalBodySynthesizer()),
             handler(UnsafeEvalProvider()),
             handler(mock),
         ):
@@ -2002,7 +2004,7 @@ def _drive_repl(body):
     `RetryLLMHandler`) around the call.  Returns `body`'s result.
     """
     box = []
-    repl = PythonRepl()
+    repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
@@ -2882,7 +2884,7 @@ class TestPythonReplIntegration:
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(UnsafeEvalProvider()),
             handler(LexicalReaders()),
-            handler(PythonRepl()),
+            handler(StatefulReplSynthesizer()),
         ):
             result = outlier_count()
 

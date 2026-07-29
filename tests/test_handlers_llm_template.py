@@ -14,9 +14,9 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
+from effectful.handlers.llm.harness.coding import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
-    PythonRepl,
     _get_history,
     call_system,
     call_user,
@@ -1976,19 +1976,19 @@ def test_lexical_readers_handler_enables_collection():
 
 def test_python_repl_off_by_default():
     """Without `PythonRepl`, `exec_code` is not collected."""
-    assert PythonRepl().exec_code not in offered_tools({"x": 1})
+    assert StatefulReplSynthesizer().exec_code not in offered_tools({"x": 1})
 
 
 def test_python_repl_exposes_exec_code():
     """With `PythonRepl` installed, `exec_code` is collected alongside the
     base tools."""
-    repl = PythonRepl()
+    repl = StatefulReplSynthesizer()
     assert repl.exec_code in offered_tools({"x": 1}, repl)
 
 
 def test_python_repl_composes_with_lexical_readers():
     """Readers and the REPL tool coexist when both handlers are installed."""
-    repl = PythonRepl()
+    repl = StatefulReplSynthesizer()
     tools = offered_tools({"data": [1, 2, 3]}, LexicalReaders(), repl)
     assert repl.exec_code in tools  # the REPL tool
     readers = [t for t in tools if isinstance(t, LexicalReaders._LexicalVariableTool)]
@@ -2005,7 +2005,7 @@ def _drive_repl(body):
     `__history__`.  Returns `body`'s result.
     """
     box = []
-    repl = PythonRepl()
+    repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
         @implements(Template.__apply__)
