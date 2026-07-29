@@ -53,7 +53,7 @@ from effectful.handlers.llm.harness.execution import (
     UnsafeEvalProvider,
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
-from effectful.handlers.llm.harness.retrying import RetryLLMHandler
+from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.ops.semantics import handler
 
@@ -160,7 +160,7 @@ class harness(contextlib.ContextDecorator):
         stack.enter_context(handler(PythonRepl()))
         stack.enter_context(handler(SynthesizeAndCall()))
         stack.enter_context(
-            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(self.num_retries)))
+            handler(TenacityRetryer(stop=tenacity.stop_after_attempt(self.num_retries)))
         )
         # stack.enter_context(handler(LexicalReaders()))
         if self.persist_db is not None:

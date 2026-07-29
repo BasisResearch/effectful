@@ -24,7 +24,7 @@ from effectful.handlers.llm.harness.completions import (
     completion,
 )
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
-from effectful.handlers.llm.harness.retrying import RetryLLMHandler
+from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -461,7 +461,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(LiteLLMProvider()),
-            handler(RetryLLMHandler()),
+            handler(TenacityRetryer()),
             handler(mock),
         ):
             assert RetryAgent().pick_number() == 7
@@ -659,7 +659,7 @@ class TestAgentWithRetryHandler:
 
         with (
             handler(LiteLLMProvider()),
-            handler(RetryLLMHandler()),
+            handler(TenacityRetryer()),
             handler(mock),
         ):
             result = agent.pick_number()

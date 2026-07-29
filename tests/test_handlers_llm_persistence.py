@@ -24,7 +24,7 @@ from effectful.handlers.llm.harness.completions import (
     completion,
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
-from effectful.handlers.llm.harness.retrying import RetryLLMHandler
+from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -636,7 +636,7 @@ class TestHandlerComposition:
         with (
             handler(LiteLLMProvider(model="test")),
             handler(mock),
-            handler(RetryLLMHandler()),
+            handler(TenacityRetryer()),
             handler(SQLitePersister(db_path)),
         ):
             bot = _Bot(agent_id="compose1")

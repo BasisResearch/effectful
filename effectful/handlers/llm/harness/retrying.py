@@ -21,7 +21,7 @@ if typing.TYPE_CHECKING:
     from effectful.handlers.llm.harness.completions import AssistantResult, ToolResult
 
 
-class RetryLLMHandler(ObjectInterpretation):
+class TenacityRetryer(ObjectInterpretation):
     """Retries LLM requests if tool call or result decoding fails.
 
     This handler intercepts `call_assistant` and catches `ToolCallDecodingError`
