@@ -1,6 +1,5 @@
 import functools
 import math
-import numbers
 import operator
 import sys
 import typing
@@ -30,6 +29,7 @@ from effectful.ops.monoid import (
     MonoidOverMapping,
     MonoidOverSequence,
     NormalizeIntp,
+    Optimum,
     Or,
     PlusAssoc,
     PlusCastIterable,
@@ -1637,20 +1637,22 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
 
 
 def test_reduce_argmin(backend: Backend):
-    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
-    X, Y, Z = backend.define_vars("X", "Y", "Z", ret="stream")
+    x = backend.define_vars("x", ret="scalar")
 
-    class ArgValue[T: numbers.Number]:
-        score: T = Sum.identity
-        assignment: Mapping[Operation, Any]
+    def record_assignment(value):
+        return Optimum(Sum.identity, {x: value})
 
-    ArgSum = Monoid(name="ArgSum", identity=ArgValue())
-
-    lhs = Min.reduce(
+    expr = Min.reduce(
         (x() - 1) ** 2,
-        {
-            x: ArgSum.weighted(
-                range(3),
-            )
-        },
+        {x: Sum.weighted(range(3), record_assignment)},
     )
+
+    with handler(NormalizeIntp):
+        norm_expr = evaluate(expr)
+
+    breakpoint()
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(0, {x: 1})

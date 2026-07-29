@@ -203,6 +203,42 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+class Optimum[T]:
+    """A value together with an assignment that attains it."""
+
+    __slots__ = ("assignment", "value")
+
+    def __init__(self, value: T, assignment: Mapping[Operation, Any] | None):
+        self.value = value
+        self.assignment = assignment
+
+    @property
+    def feasible(self) -> bool:
+        return self.assignment is not None
+
+    def __eq__(self, other: object) -> bool:
+        return (
+            isinstance(other, Optimum)
+            and self.value == other.value
+            and self.assignment == other.assignment
+        )
+
+    def __repr__(self) -> str:
+        return f"Optimum(value={self.value!r}, assignment={self.assignment!r})"
+
+
+@evaluate.register(Optimum)
+def _evaluate_optimum(expr: Optimum, **kwargs) -> Optimum:
+    """Evaluate an optimum's score and assignment values, preserving variable keys."""
+
+    assignment = (
+        None
+        if expr.assignment is None
+        else {variable: evaluate(value) for variable, value in expr.assignment.items()}
+    )
+    return Optimum(evaluate(expr.value), assignment)
+
+
 class ProductMonoid[L, R](Monoid[tuple[L, R]]):
     """The componentwise product of two monoids.
 
@@ -1612,6 +1648,24 @@ class ArgMinPlus(ObjectInterpretation):
         return min(args, key=lambda a: a[0])
 
 
+class MinOptimumPlus(ObjectInterpretation):
+    """Lift :data:`Min` to values carrying minimizing assignments."""
+
+    @implements(Min.plus)
+    def plus(self, *args):
+        if not args or not all(isinstance(a, Optimum) for a in args):
+            return fwd()
+        feasible = [a for a in args if a.feasible]
+        if not feasible:
+            return Optimum(Min.identity, None)
+        if any(isinstance(a.value, Term) for a in feasible):
+            return fwd()
+        try:
+            return min(feasible, key=lambda a: a.value)
+        except (TypeError, ValueError):
+            return fwd()
+
+
 class ArgMaxPlus(ObjectInterpretation):
     """Scalar score implementation of :data:`ArgMax`."""
 
@@ -1774,6 +1828,35 @@ class PlusCastFloat(ObjectInterpretation):
                 for (a, t) in zip(args, typs, strict=True)
             ]
             return monoid.plus(*args)
+        return fwd()
+
+
+class SumOptimumPlus(ObjectInterpretation):
+    """Lift :data:`Sum` to values carrying minimizing assignments."""
+
+    @implements(Sum.plus)
+    def plus(self, *args):
+        if not args or not all(isinstance(arg, Optimum) for arg in args):
+            return fwd()
+        if any(not arg.feasible for arg in args):
+            return Optimum(float("inf"), None)
+        return Optimum(
+            Sum.plus(*(arg.value for arg in args)),
+            _disjoint_merge(*(typing.cast(Mapping, arg.assignment) for arg in args)),
+        )
+
+
+class PlusCastOptimum(ObjectInterpretation):
+    """Promote plain scores when adding an assignment-carrying weight."""
+
+    @implements(Sum.plus)
+    def plus(self, *args):
+        if any(isinstance(arg, Optimum) for arg in args) and any(
+            not isinstance(arg, Optimum) for arg in args
+        ):
+            return Sum.plus(
+                *(arg if isinstance(arg, Optimum) else Optimum(arg, {}) for arg in args)
+            )
         return fwd()
 
 
@@ -2188,7 +2271,10 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
+    SumOptimumPlus(),
+    PlusCastOptimum(),
     MinPlus(),
+    MinOptimumPlus(),
     MaxPlus(),
     ProductPlus(),
     AssignmentPlus(),
@@ -2249,6 +2335,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusOrder(),
     PlusCastFloat(),
     PlusCastIterable(),
+    SumOptimumPlus(),
+    PlusCastOptimum(),
     MaskFusion(),
     MaskBool(),
     WhereHoist(),
