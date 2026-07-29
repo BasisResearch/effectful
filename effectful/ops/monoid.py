@@ -213,8 +213,6 @@ class Optimum[T]:
 
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
-ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
-ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Group(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
 LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
@@ -1665,20 +1663,6 @@ class OptimumPlus(ObjectInterpretation):
         if not args or not any(isinstance(arg, Optimum) for arg in args):
             return fwd()
         return monoid.plus(*(a.value if isinstance(a, Optimum) else a for a in args))
-
-
-class AssignmentPlus(ObjectInterpretation):
-    """Disjoint-union implementation of :data:`Assignment`."""
-
-    @implements(Assignment.plus)
-    def plus(self, *args):
-        if not args:
-            return Assignment.identity
-        if any(isinstance(arg, Term) for arg in args):
-            return fwd()
-        if not all(isinstance(arg, Mapping) for arg in args):
-            return fwd()
-        return _disjoint_merge(*args)
 
 
 class CartesianProductPlus(ObjectInterpretation):
