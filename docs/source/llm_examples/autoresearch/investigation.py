@@ -218,7 +218,6 @@ class Workspace:
     safely surface any of it to the model. The discovered solution *callable* is
     held by the ``Writer`` and passed to the audit, not stored here."""
 
-    task: Task
     references: list[Reference]
     log: dict[str, float] = dataclasses.field(default_factory=dict)
 
@@ -642,7 +641,11 @@ async def majority_verdict(
 
 
 async def coe_audit(
-    paper: Paper, workspace: Workspace, solution: Solution, *, votes: int = 3
+    task: Task,
+    paper: Paper,
+    solution: Solution,
+    *,
+    votes: int = 3,
 ) -> dict[str, AuditVerdict]:
     """Run all four integrity checks over the finished artifact bundle. I1 (re-run
     the evaluator) and I3's existence check re-derive evidence deterministically; I2,
@@ -652,7 +655,7 @@ async def coe_audit(
     output (this example runs only ScientistOne).
     """
     # I1: score verification -- re-run the evaluator and compare to every result.
-    reproduced = evaluate(workspace.task, solution)
+    reproduced = evaluate(task, solution)
     bad_scores = [c for c in paper.results if abs(c.value - reproduced) > 1e-9]
     i1 = AuditVerdict(
         passed=not bad_scores,
@@ -665,7 +668,7 @@ async def coe_audit(
 
     # I3 content, I2, and I4 are majority-vote LLM judges; run them all concurrently.
     # I3 keeps a deterministic existence check (re-resolve every cited key).
-    by_key = {r.key: r for r in workspace.references}
+    by_key = {r.key: r for r in WORKSPACE.get().references}
     hallucinated = [c.bibkey for c in paper.background if c.bibkey not in by_key]
     resolving = [c for c in paper.background if c.bibkey in by_key]
     *supported, i2, i4 = await asyncio.gather(
@@ -710,7 +713,7 @@ def investigate(
     audit_votes: int = 3,
 ) -> tuple[Paper, dict[str, AuditVerdict]]:
     """Literature grounding -> discovery -> writing -> post-hoc audit."""
-    ws = Workspace(task=task, references=list(REFERENCES))
+    ws = Workspace(references=list(REFERENCES))
     token = WORKSPACE.set(ws)  # bind the bundle for this pipeline's dynamic extent
     try:
         # Stage 1: ground the work in the literature -- retrieve over the corpus,
@@ -738,7 +741,7 @@ def investigate(
                 break
 
         # Post-hoc CoE Audit over the finished bundle.
-        verdicts = asyncio.run(coe_audit(paper, ws, solve, votes=audit_votes))
+        verdicts = asyncio.run(coe_audit(task, paper, solve, votes=audit_votes))
         return paper, verdicts
     finally:
         WORKSPACE.reset(token)
@@ -754,9 +757,7 @@ def demo_fabrication() -> None:
     not a well-typed ``Claim``, and under the harness that rejection is fed back
     (via ``RetryLLMHandler``) so the model must ground the claim before it stands.
     """
-    ws = Workspace(
-        task=Task((3, 4, 5), 9), references=list(REFERENCES), log={"score": 9.0}
-    )
+    ws = Workspace(references=list(REFERENCES), log={"score": 9.0})
     WORKSPACE.set(ws)
 
     # 1. The certification predicate rejects every kind of fabrication. No LLM here:
