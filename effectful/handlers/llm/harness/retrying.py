@@ -3,7 +3,8 @@ import typing
 
 import tenacity
 
-from effectful.handlers.llm.harness.providing import (
+from effectful.handlers.llm.harness.encoding import DecodedToolCall
+from effectful.handlers.llm.harness.hooks import (
     ResultDecodingError,
     ToolCallDecodingError,
     ToolCallExecutionError,
@@ -12,13 +13,12 @@ from effectful.handlers.llm.harness.providing import (
     call_assistant,
     call_tool,
 )
-from effectful.handlers.llm.harness.encoding import DecodedToolCall
 from effectful.handlers.llm.types import Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 if typing.TYPE_CHECKING:
-    from effectful.handlers.llm.harness.providing import AssistantResult, ToolResult
+    from effectful.handlers.llm.harness.hooks import AssistantResult, ToolResult
 
 
 class TenacityRetryer(ObjectInterpretation):

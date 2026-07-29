@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pydantic import BaseModel, Field
 
 from effectful.handlers.llm import Template, Tool
-from effectful.handlers.llm.harness.providing import LiteLLMProvider, call_assistant
+from effectful.handlers.llm.harness.hooks import LiteLLMProvider, call_assistant
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

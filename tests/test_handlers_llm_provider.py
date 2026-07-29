@@ -31,7 +31,8 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.providing import (
+from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
+from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     FinalTool,
     LiteLLMProvider,
@@ -45,7 +46,6 @@ from effectful.handlers.llm.harness.providing import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.scoping import LexicalReaders
 from effectful.handlers.llm.types import Encodable
