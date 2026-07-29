@@ -11,6 +11,7 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
+    Interpretation,
     NotHandled,
     Operation,
     Term,
@@ -361,16 +362,22 @@ class Scoped(Annotation):
                 elif param_ordinal:  # Only process if there's a Scoped annotation
                     # We can't use flatten here because we want to be able
                     # to see dict keys
-                    def extract_operations(obj):
+                    def extract_operations(obj, _seen=None):
+                        if _seen is None:
+                            _seen = set()
+                        obj_id = id(obj)
+                        if obj_id in _seen:
+                            return
+                        _seen.add(obj_id)
                         if isinstance(obj, Operation):
                             param_bound_vars.add(obj)
                         elif isinstance(obj, dict):
                             for k, v in obj.items():
-                                extract_operations(k)
-                                extract_operations(v)
+                                extract_operations(k, _seen)
+                                extract_operations(v, _seen)
                         elif isinstance(obj, list | set | tuple):
                             for v in obj:
-                                extract_operations(v)
+                                extract_operations(v, _seen)
 
                     extract_operations(param_value)
 
@@ -424,6 +431,26 @@ def deffn[T, A, B](
 
     """
     raise NotHandled
+
+
+def _build_term[T](
+    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    op: Operation[..., T],
+    *args,
+    **kwargs,
+) -> Expr[T]:
+    """Build a single node from arguments whose bound variables are already renamed.
+
+    This is :func:`defdata` without the renaming step: it computes the node's
+    type from the types of its arguments and dispatches on that type to pick a
+    constructor.
+    """
+    from effectful.ops.semantics import _simple_type, _typeof
+
+    typed_args = tuple(_typeof(arg) for arg in args)
+    typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
+    dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
+    return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
 
 
 @_CustomSingleDispatchCallable
@@ -485,7 +512,7 @@ def defdata[T](
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
     from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import _simple_type, _typeof, apply, evaluate
+    from effectful.ops.semantics import apply, evaluate
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -508,7 +535,16 @@ def defdata[T](
         # Note: coproduct cannot be used to compose these interpretations
         # because evaluate will only do operation replacement when the handler
         # is operation typed, which coproduct does not satisfy.
-        with interpreter({apply: defdata} | renaming_ctx):
+        #
+        # Rebuild with ``_build_term`` rather than ``defdata``: the subterm was
+        # already renamed when it was first built, so re-entering ``defdata``
+        # here would recompute binders and rename each child again at every
+        # level, re-traversing the subtree once per level of nesting.
+        rebuild = functools.partial(_build_term, __dispatch)
+        with interpreter(
+            {apply: rebuild, ConstructorOperation.__apply__: apply.__default_rule__}
+            | renaming_ctx
+        ):
             return evaluate(expr)
 
     renamed_args = op.__signature__.bind(*args, **kwargs)
@@ -523,12 +559,7 @@ def defdata[T](
         for (k, v) in renamed_args.kwargs.items()
     }
 
-    # Build the final term using the cached type analysis of its children.
-    typed_args = tuple(_typeof(arg) for arg in args_)
-    typed_kwargs = {k: _typeof(v) for k, v in kwargs_.items()}
-    full_type = op.__type_rule__(*typed_args, **typed_kwargs)
-    dispatch_type = _simple_type(full_type)
-    return __dispatch(dispatch_type)(dispatch_type, op, *args_, **kwargs_)
+    return _build_term(__dispatch, op, *args_, **kwargs_)
 
 
 def _construct_dataclass_term[T](
@@ -949,14 +980,23 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
         return self.implementations[item].__get__(self, type(self))
 
 
-class PureInterpretation[T, V](ObjectInterpretation[T, V]):
-    def __hash__(self):
-        return hash(frozenset(self.implementations.items()))
+class PureInterpretation[T, V](Mapping[Operation[..., T], Callable[..., V]]):
+    """Mark an interpretation as pure so its evaluation results can be cached."""
 
-    def __eq__(self, other):
-        return isinstance(other, PureInterpretation) and frozenset(
-            self.implementations.items()
-        ) == frozenset(other.implementations.items())
+    def __init__(self, intp: Interpretation[T, V]):
+        self.intp = intp
+
+    def __iter__(self):
+        return iter(self.intp)
+
+    def __len__(self):
+        return len(self.intp)
+
+    def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
+        return self.intp[item]
+
+    __hash__ = object.__hash__
+    __eq__ = object.__eq__
 
 
 class _ImplementedOperation[**P, **Q, T, V]:
@@ -1357,3 +1397,23 @@ class _IntegralTerm[T: numbers.Integral](_RationalTerm[T]):
 @defdata.register(bool)
 class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
     pass
+
+
+class ConstructorOperation[**Q, V](Operation[Q, V]):
+    @classmethod
+    @functools.cache
+    def define[T](
+        cls, constructor: type[T] | Callable[..., T]
+    ) -> "ConstructorOperation[Any, T]":
+        if not isinstance(constructor, type):
+            return typing.cast(
+                ConstructorOperation[Any, T], super().define(constructor)
+            )
+
+        def _as_typ(*args, **kwargs) -> constructor:  # type: ignore[valid-type]
+            return constructor(*args, **kwargs)
+
+        return typing.cast(ConstructorOperation[Any, T], super().define(_as_typ))
+
+
+class DataclassConstructorOperation[**Q, V](ConstructorOperation): ...

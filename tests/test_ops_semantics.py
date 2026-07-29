@@ -481,7 +481,7 @@ def test_memoized_interpretation():
 
     term = node(node(1))
 
-    class Intp(PureInterpretation):
+    class Intp(ObjectInterpretation):
         def __init__(self):
             self.calls = 0
 
@@ -490,32 +490,34 @@ def test_memoized_interpretation():
             self.calls += 1
             return (op.__name__, args, kwargs)
 
-    intp = Intp()
+    intp_impl = Intp()
+    intp = PureInterpretation(intp_impl)
     expected = ("node", (("node", (1,), {}),), {})
 
     assert interpreter(intp)(evaluate)(term) == expected
-    assert intp.calls == 2
+    assert intp_impl.calls == 2
 
     # The root cache is checked before its children are traversed, including
     # when evaluation is expressed directly through a handler.
     with interpreter(intp):
         assert evaluate(term) == expected
-    assert intp.calls == 2
+    assert intp_impl.calls == 2
 
     # Child results are cached independently and can be reused directly.
     assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
-    assert intp.calls == 2
+    assert intp_impl.calls == 2
 
     # A composition has a distinct identity even when its added handler is not
     # used while evaluating this term.
     combined_intp = coproduct(intp, {plus_1: lambda x: x})
     assert interpreter(combined_intp)(evaluate)(term) == expected
-    assert intp.calls == 4
+    assert intp_impl.calls == 4
 
-    # An identical memoized interpretation is in the same cache namespace.
-    other_intp = Intp()
+    # A separate pure interpretation has its own cache namespace.
+    other_intp_impl = Intp()
+    other_intp = PureInterpretation(other_intp_impl)
     assert interpreter(other_intp)(evaluate)(term) == expected
-    assert intp.calls == 4
+    assert other_intp_impl.calls == 2
 
 
 def test_memoized_interpretation_does_not_cache_failures():
@@ -527,7 +529,7 @@ def test_memoized_interpretation_does_not_cache_failures():
 
     term = node()
 
-    class Intp(PureInterpretation):
+    class Intp(ObjectInterpretation):
         def __init__(self):
             self.calls = 0
 
@@ -538,28 +540,38 @@ def test_memoized_interpretation_does_not_cache_failures():
                 raise ValueError("failed analysis")
             return "success"
 
-    intp = Intp()
+    intp_impl = Intp()
+    intp = PureInterpretation(intp_impl)
     with pytest.raises(ValueError, match="failed analysis"):
         interpreter(intp)(evaluate)(term)
 
     assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp.calls == 2
+    assert intp_impl.calls == 2
     assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp.calls == 2
+    assert intp_impl.calls == 2
 
 
-def test_ctxof():
-    x = defop(object)
-    y = defop(object)
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        lambda x, y: (x(), y()),
+        lambda x, y: ([x()], y()),
+        lambda x, y: ([x()], [y()]),
+        lambda x, y: (([x()], [y()]),),
+    ],
+)
+def test_ctxof(build_args):
+    x = defop(object, name="x")
+    y = defop(object, name="y")
 
     @defop
     def Nested(*args, **kwargs):
         raise NotHandled
 
-    assert fvsof(Nested(x(), y())) >= {x, y}
-    assert fvsof(Nested([x()], y())) >= {x, y}
-    assert fvsof(Nested([x()], [y()])) >= {x, y}
-    assert fvsof(Nested((x(), y()))) >= {x, y}
+    term = Nested(*build_args(x, y))
+    actual = fvsof(term)
+    expected = {x, y, Nested}
+    assert actual >= expected
 
 
 def test_handler_typing() -> None:
@@ -813,8 +825,15 @@ def test_fvsof_binder():
         raise NotHandled
 
     term = Lam2(add(x(), add(y(), z())), x, y)
-    assert not {x, y} <= fvsof(term)
-    assert fvsof(term) == {z, Lam2, add}
+    actual = fvsof(term)
+    assert not ({x, y} & actual)
+    assert actual >= {z, Lam2, add}
+
+
+def test_fvsof_collection_does_not_include_apply():
+    x = defop(int, name="x")
+
+    assert fvsof((x(),)) == {x}
 
 
 def test_interpretation_typing():
@@ -865,6 +884,83 @@ def test_typeof_literal():
         typeof(get_mixed())
 
 
+def test_evaluate_dag_no_exponential_blowup():
+    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n)."""
+    call_count = 0
+
+    @defop
+    def counted() -> int:
+        raise NotHandled
+
+    def counted_handler():
+        nonlocal call_count
+        call_count += 1
+        return 42
+
+    # Build a DAG of nested tuples: each level shares the same child object.
+    # As a tree this would have 2^depth leaves; as a DAG it's depth+1 objects.
+    depth = 20
+    node = counted()
+    for _ in range(depth):
+        node = (node, node)
+
+    call_count = 0
+    with handler({counted: counted_handler}):
+        result = evaluate(node)
+
+    deffn(node, counted)(0)
+
+    # The handler should only be called once (the shared Term)
+    assert call_count == 1
+    # The result should be nested tuples of 42
+    leaf = result
+    for _ in range(depth):
+        assert isinstance(leaf, tuple) and len(leaf) == 2
+        assert leaf[0] is leaf[1]  # memoization returns same object
+        leaf = leaf[0]
+    assert leaf == 42
+
+
+def test_evaluate_dag_cache_isolation():
+    """Different interpretations produce different results for the same expr."""
+    x = defop(int, name="x")
+    shared = x()
+    expr = (shared, shared)
+
+    assert evaluate(expr, intp={x: lambda: 1}) == (1, 1)
+    assert evaluate(expr, intp={x: lambda: 99}) == (99, 99)
+
+
+def test_evaluate_dag_nested_different_intp():
+    """evaluate(expr, intp=...) inside a handler gets its own cache."""
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+
+    shared = x()
+    inner_expr = (shared, shared)
+
+    result = evaluate(y(), intp={y: lambda: evaluate(inner_expr, intp={x: lambda: 7})})
+    assert result == (7, 7)
+
+
+def test_evaluate_dag_matches_tree():
+    """DAG evaluation produces the same result as evaluating an equivalent tree."""
+    x = defop(int, name="x")
+
+    @defop
+    def mul(a: int, b: int) -> int:
+        raise NotHandled
+
+    shared = x()
+    dag = (mul(shared, shared), mul(shared, shared))
+
+    # Equivalent tree with distinct Term objects
+    tree = (mul(x(), x()), mul(x(), x()))
+
+    intp = {x: lambda: 3, mul: lambda a, b: a * b}
+    assert evaluate(dag, intp=intp) == evaluate(tree, intp=intp) == (9, 9)
+
+
 def test_fvsof_dataclass() -> None:
     @dataclasses.dataclass
     class A:
@@ -875,7 +971,29 @@ def test_fvsof_dataclass() -> None:
             self.x = x
 
     v = Operation.define(int)
-    assert fvsof(A(v())) == {v}
+    actual = fvsof(A(v()))
+    assert actual == {v}
+
+
+def test_defdata_dataclass_init_effects() -> None:
+    @Operation.define
+    def f(x: int):
+        raise NotHandled
+
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+        def __init__(self, x: int):
+            self.x = f(x)
+
+    @Operation.define
+    def g(a: A):
+        raise NotHandled
+
+    v = Operation.define(int)
+    t = g(A(v()))
+    assert isinstance(t.args[0].x, Term)
 
 
 def test_instanceop_super() -> None:
@@ -907,6 +1025,31 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+def test_instanceop_dataclass() -> None:
+    """Dataclasses with no free variables get instance operations."""
+
+    @dataclasses.dataclass
+    class A:
+        @Operation.define
+        def f(self):
+            raise NotHandled
+
+    assert isinstance(A.f, Operation)
+    assert isinstance(A().f, Operation)
+
+    @dataclasses.dataclass
+    class B:
+        x: int
+
+        @Operation.define
+        def g(self):
+            raise NotHandled
+
+    assert isinstance(B.g, Operation)
+    fv = Operation.define(int)()
+    assert not isinstance(B(fv).g, Operation)
 
 
 def test_coproduct_fwd_chain(benchmark):

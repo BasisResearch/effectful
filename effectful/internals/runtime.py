@@ -2,12 +2,17 @@ import contextlib
 import contextvars
 import functools
 import inspect
+import typing
 from collections.abc import Callable, Mapping
 
 from effectful.ops.types import Interpretation, Operation
 
 _INTERPRETATION: "contextvars.ContextVar[Interpretation]" = contextvars.ContextVar(
     "effectful_interpretation", default={}
+)
+
+_EVAL_CACHE: "contextvars.ContextVar[dict[int, typing.Any] | None]" = (
+    contextvars.ContextVar("effectful_eval_cache", default=None)
 )
 
 
@@ -17,11 +22,17 @@ def get_interpretation() -> "Interpretation":
 
 @contextlib.contextmanager
 def interpreter(intp: "Interpretation"):
-    token = _INTERPRETATION.set(intp)
+    old_intp = _INTERPRETATION.get()
+    old_cache = _EVAL_CACHE.get()
+    cache_token = _EVAL_CACHE.set(
+        old_cache if old_intp is intp and old_cache is not None else {}
+    )
+    intp_token = _INTERPRETATION.set(intp)
     try:
         yield intp
     finally:
-        _INTERPRETATION.reset(token)
+        _INTERPRETATION.reset(intp_token)
+        _EVAL_CACHE.reset(cache_token)
 
 
 @Operation.define
