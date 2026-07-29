@@ -46,7 +46,6 @@ from effectful.handlers.llm.harness.completion import (
     LiteLLMProvider,
     PythonRepl,
     RetryLLMHandler,
-    SQLitePersister,
     SynthesizeAndCall,
     SystemPromptDumper,
     TerminalRenderer,
@@ -55,6 +54,7 @@ from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
+from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them

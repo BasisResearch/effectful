@@ -22,9 +22,9 @@ from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.harness.completion import (
     LiteLLMProvider,
     RetryLLMHandler,
-    SQLitePersister,
     completion,
 )
+from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

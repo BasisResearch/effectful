@@ -471,7 +471,7 @@ class Agent(abc.ABC):
             # module, so this can only be resolved at call time, not at module
             # load time. The query below and `SQLitePersister.__init__`'s
             # `CREATE TABLE checkpoints` must be kept in sync.
-            from effectful.handlers.llm.harness.completion import SQLitePersister
+            from effectful.handlers.llm.harness.persistence import SQLitePersister
 
             conn = SQLitePersister._checkpoint_connection()
             if conn is not None:
