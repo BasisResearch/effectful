@@ -14,7 +14,7 @@ from effectful.handlers.llm.harness.execution import (
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
-class UnsafeExecutor(ObjectInterpretation):
+class BuiltinExecutor(ObjectInterpretation):
     """UNSAFE provider that handles parse, comple and exec operations
     by shelling out to python *without* any further checks. Only use for testing."""
 
