@@ -27,8 +27,8 @@ from effectful.handlers.llm.harness.encoding import (
     DecodedToolCall,
     to_content_blocks,
 )
-from effectful.handlers.llm.harness.execution import (
-    RestrictedEvalProvider,
+from effectful.handlers.llm.harness.execution.restricted import (
+    RestrictedPythonExecutor,
 )
 from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.types import Encodable, Tool
@@ -716,7 +716,7 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
 
 EVAL_PROVIDERS = [
     pytest.param(UnsafeExecutor(), id="unsafe"),
-    pytest.param(RestrictedEvalProvider(), id="restricted"),
+    pytest.param(RestrictedPythonExecutor(), id="restricted"),
 ]
 
 # (callable_type, function, ctx, test_args, expected_result)

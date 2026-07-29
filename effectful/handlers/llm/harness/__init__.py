@@ -45,8 +45,8 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.execution import (
-    RestrictedEvalProvider,
+from effectful.handlers.llm.harness.execution.restricted import (
+    RestrictedPythonExecutor,
 )
 from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.harness.persisting import SQLitePersister
@@ -66,7 +66,7 @@ from effectful.ops.semantics import handler
 # RestrictedPython's language subset and a guarded environment.
 EVAL_PROVIDERS: dict[str, typing.Callable[[], typing.Any]] = {
     "unsafe": UnsafeExecutor,
-    "restricted": RestrictedEvalProvider,
+    "restricted": RestrictedPythonExecutor,
 }
 
 

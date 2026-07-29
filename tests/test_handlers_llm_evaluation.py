@@ -21,17 +21,17 @@ from effectful.handlers.llm.harness.encoding import (
     TYPE_CHECK_ANCHOR_KEY,
     SynthesizedFunction,
 )
+from effectful.handlers.llm.harness.execution import compile as compile_op
+from effectful.handlers.llm.harness.execution import exec as exec_op
+from effectful.handlers.llm.harness.execution import parse as parse_op
 from effectful.handlers.llm.harness.execution import (
-    RestrictedEvalProvider,
     run_doctests,
     scan_non_nestable,
     splice_into_source,
     splice_repl_code_into_body,
     type_check,
 )
-from effectful.handlers.llm.harness.execution import compile as compile_op
-from effectful.handlers.llm.harness.execution import exec as exec_op
-from effectful.handlers.llm.harness.execution import parse as parse_op
+from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.execution.unsafe import UnsafeExecutor
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
@@ -414,7 +414,7 @@ def test_restricted_blocks_private_attribute_access():
     )
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
-        with handler(RestrictedEvalProvider()):
+        with handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
                 source, context={}
             )
@@ -432,7 +432,7 @@ def test_restricted_with_custom_policy():
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
-    with handler(RestrictedEvalProvider(policy=CustomPolicy)):
+    with handler(RestrictedPythonExecutor(policy=CustomPolicy)):
         fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
             source, context={}
         )
@@ -457,7 +457,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
-        with handler(RestrictedEvalProvider()):
+        with handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
                 source_open, context=dangerous_ctx
             )
@@ -470,7 +470,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return os.name"""
     )
     with pytest.raises(Exception):
-        with handler(RestrictedEvalProvider()):
+        with handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
                 source_import, context=dangerous_ctx
             )
@@ -481,7 +481,7 @@ def test_builtins_in_env_does_not_bypass_security():
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
             source_safe, context=dangerous_ctx
         )
@@ -493,7 +493,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
-        with handler(RestrictedEvalProvider()):
+        with handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
                 source_private, context=dangerous_ctx
             )
@@ -648,14 +648,14 @@ def test_repl_runsource_routes_through_ops():
 
 
 def test_repl_rebinds_across_calls_restricted():
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         session = ReplSession({"x": 10})
         session.exec_code(_code("x = x + 1"))
         assert session.exec_code(_code("print(x)")) == "11\n"
 
 
 def test_repl_captures_print_restricted():
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
@@ -667,7 +667,7 @@ def test_repl_captures_print_restricted():
 def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
     """Run one snippet through the parse/compile/exec ops under
     RestrictedEvalProvider, optionally capturing stdout."""
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         code = compile_op(parse_op(source, "<f>"), "<f>")
         if capture:
             buf = io.StringIO()
@@ -950,7 +950,7 @@ def test_restricted_runs_doctests_under_the_same_policy():
         return x
 
     run_doctests(peek, {"peek": peek})  # unrestricted: the example is just Python
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         with pytest.raises(TypeError, match="doctest failed"):
             run_doctests(peek, {"peek": peek})
 
@@ -969,7 +969,7 @@ def test_restricted_doctest_can_print_and_import():
         """
         return sum(xs)
 
-    with handler(RestrictedEvalProvider()):
+    with handler(RestrictedPythonExecutor()):
         run_doctests(summarize, {"summarize": summarize})
 
 
@@ -1102,7 +1102,7 @@ class TestRunDoctestsThroughCallableDecode:
             "    2\n"
             '    """\n'
             "    return s.count(c)\n",
-            provider=RestrictedEvalProvider(),
+            provider=RestrictedPythonExecutor(),
         )
         assert fn("hello", "l") == 2
 
