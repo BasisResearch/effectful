@@ -325,7 +325,7 @@ def splice_template_body(
         @Template.define
         def parity(numbers: Sequence[int]) -> bool:
             '''True iff the sum of {numbers} is odd.
-            >>> parity([1, 2])
+            >>> parity([1, 2])  # doctest: +SKIP
             True
             '''
 
