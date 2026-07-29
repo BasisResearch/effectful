@@ -50,67 +50,97 @@ requirements``. Here the comment is a signature:
     ==============  ========  ===========  ======  ===========
     model           two-pass  single-pass  naive   b-c (p)
     ==============  ========  ===========  ======  ===========
-    gpt-4o             72.2%        88.9%  94.4%   1-9 (0.021)
-    gpt-4.1-mini       88.9%        91.7%  86.1%   3-2 (1.000)
-    gpt-4.1           100.0%        97.2%  91.7%   3-0 (0.250)
-    gpt-5.5            36.1%       100.0% 100.0%   0-23 (<0.001)
+    gpt-4o             75.0%        94.4%  94.4%   1-8 (0.039)
+    gpt-4.1-mini       88.9%        94.4%  83.3%   4-2 (0.688)
+    gpt-4.1            94.4%       100.0%  91.7%   3-2 (1.000)
+    gpt-5.5            77.8%       100.0%  94.4%   1-7 (0.070)
     ==============  ========  ===========  ======  ===========
 
-    The published ordering does not reproduce; two of the four cells invert
-    significantly. Every two-pass failure is one-sided -- 8 of gpt-4o's 10 errors
-    and all 23 of gpt-5.5's are faithful theorems *disputed*, against naive's 0
-    in both.
+    Pooled: two-pass 84.0%, single-pass 97.2%, naive 91.0%. **The published
+    ordering does not reproduce; it comes out backwards.** Two-pass is last or
+    equal-last in three of four models, one cell reaches significance and one is
+    marginal, and the failure is entirely one-sided -- 21 of two-pass's 23 errors
+    across the four models are faithful theorems *disputed*, against naive's 4.
+    Single-pass, which is upstream's ``CLAIMCHECK_PROMPT`` ported per-item, is
+    the best arm here.
 
-    The gpt-5.5 cell is the informative one, because it isolates a mechanism.
-    Upstream's ``ROUNDTRIP_COMPARE_PROMPT`` carries no invariant caveat (its
-    ``NAIVE_PROMPT`` and ``CLAIMCHECK_PROMPT`` both do), and this file reproduces
-    that asymmetry exactly. The run before it gave the comparator the caveat
-    anyway, and scored:
+    The mechanism is not the one an earlier revision of this file published, and
+    that claim is withdrawn. It said the blind informalizer rates an
+    invariant-projection lemma "trivial" and the comparator's trivial rule then
+    fires. The transcripts refute it: of gpt-5.5's disputes only three had a
+    trivial back-translation and all three were genuinely planted items, scored
+    correctly. What actually happens is visible in the report:
 
-    ==============  ========  ===========  ======
-    model           two-pass  single-pass  naive
-    ==============  ========  ===========  ======
-    gpt-4o             72.2%        94.4%  97.2%
-    gpt-4.1-mini       91.7%        86.1%  83.3%
-    gpt-4.1            97.2%        91.7%  94.4%
-    gpt-5.5            97.2%       100.0%  97.2%
-    ==============  ========  ===========  ======
+        [MISS] counter/counter_non_negative: disputed [narrowed-scope]
+          statement:   theorem counter_non_negative (m : Model) (h : Inv m) : 0 ≤ m
+          read as:     For every Model m, if m satisfies the invariant Inv, then
+                       m is non-negative. (strength: moderate)
+          discrepancy: ...the theorem only guarantees non-negativity for models
+                       satisfying the extra hypothesis Inv m.
 
-    36.1% to 97.2%. Two corpus items also changed between the runs
-    (``contrast_pair_indices_valid`` regained Dafny's lower bound and
-    ``columns_are_unique`` its opaque predicate), so the two tables are not a
-    clean single-variable ablation -- but those two items are wrong in 1 of 12
-    runs each, and cannot account for a 61-point move. The caveat is what moved
-    it. So the blind pass is not self-sufficient:
-    it produces a reading like "the counter is non-negative -- strength: trivial"
-    for ``(h : Inv m) : 0 ≤ m``, correctly, because a reader who cannot see
-    inside ``Inv`` genuinely cannot tell whether the conclusion restates the
-    hypothesis. The comparator, told that a trivial rating is almost always a
-    mismatch, then disputes a faithful theorem. Something has to rescue it.
+    The blind pass did its job -- that back-translation is correct and rated
+    moderate. The comparator then disputes the *hypothesis*. Since 36 of 36
+    statements carry ``Inv``, an arm that treats an invariant hypothesis as a
+    narrowing loses most of the faithful items, and only the two arms upstream
+    gives a caveat to are protected. That is upstream's asymmetry, reproduced.
 
-    Upstream's rescue is almost certainly the batching. Its comparator sees all
-    of a domain's pairs in one call, so ``ensures m >= 0`` arrives next to
-    ``ensures m == m`` and ``ensures m >= -1`` under the same requirement, and
-    the contrast settles which is trivial. Per-item, that signal is gone. This is
-    a hypothesis this file does not test -- implementing the batch would test it,
-    and is the single most valuable follow-up -- but it is consistent with
-    upstream scoring 96.3% on a prompt that, run per-item, scores 36%.
+  * Two measurement defects found by review, both mine, both after the first
+    leak was supposedly fixed:
 
-    What *does* reproduce is which items are hard. Five of gpt-4o's eight false
-    disputes -- ``base_hue_in_range``, ``always_five_colors``,
-    ``all_colors_valid``, ``wip_limits_respected``, ``allocator_always_fresh`` --
-    are on the eleven-item false-dispute list upstream's own weakest arm produces
-    (`eval/results/cc.json`). And upstream reports the same two-pass reversal on
-    the one non-Dafny corpus it tried (VERINA, N=189 Lean: two-pass 54.0% against
-    a 57.1% baseline).
+    - The ``narrowed-scope`` description read "an extra hypothesis, or a less
+      general shape, restricts the guarantee". Upstream's says only "lemma only
+      covers a subset of cases the requirement describes" -- nothing about
+      hypotheses. Handing that clause to a corpus where every statement has an
+      extra hypothesis licensed exactly the failure above. Corrected to
+      upstream's wording; it moved gpt-5.5 two-pass from 36.1% to 77.8%.
+    - ``SinglePassAuditor`` still shared a module with ``Comparator``, so the
+      comparator's system prompt carried the single-pass arm's invariant caveat
+      through the module source -- 12,847 bytes of it, including a comment
+      announcing the experiment. A published 36.1%-vs-97.2% "caveat ablation"
+      was therefore measuring prompt position, not caveat presence, and is
+      withdrawn. Each arm now has its own module and a dump shows each carries
+      only its own text. Third instance of the same lesson: **the unit of
+      exposure is the module.**
 
-    One trap transliterates badly and it is the clearest cost of the port.
-    ``grant_non_existent_is_noop_init`` -- upstream's vacuous
-    ``requires m == Init()`` -- is waved through in 8 of 12 runs here, where
-    every upstream arm catches it. In Dafny the extra precondition is its own
-    line under its own keyword; in Lean ``(hinit : m = Init)`` is one binder
-    among five and reads as ordinary. That is a language difference, not a
-    strategy difference.
+  * What the published ladder is made of. Upstream's 69.4 -> 86.1 -> 96.3 is not
+    three prompts. `eval/bench-cc.js` sets
+    ``useSinglePrompt = !useTwoPass && !useNaive``, and `cc.json` records
+    ``mode: "claude-code"`` -- so the 69.4% arm runs the *byte-identical*
+    single-prompt text through `claude -p --max-turns 3` with an agent system
+    prompt and no temperature control. It is a transport change labelled as an
+    architecture change. Upstream did run a real no-separation prompt and did not
+    put it in the headline. At matched transport and matched run count:
+
+    ==================================  ======
+    arm (Anthropic API, per-item, n=36)  acc
+    ==================================  ======
+    naive (`naive-sonnet.json`)          86.1%
+    single-prompt (`single-prompt.json`) 86.1%
+    ==================================  ======
+
+    Prompt-level separation beats no separation by 0.0 points. And at matched
+    model, upstream's batched two-pass on Opus (`opus-opus.json`, 93.5%) *loses*
+    to its per-item naive on Opus (`naive-opus.json`, 94.4%). Against the best
+    legitimate comparator the published effect is +1.9pp -- under one item in 36
+    -- and paired exact McNemar on upstream's own per-item outputs gives p=1.00.
+
+    Upstream's repository also already contains a per-item Lean replication of
+    its own claim that fails at five times the sample size: `bench-verina.js`
+    over 189 VERINA specs, two-pass 54.0% against a 57.1% baseline
+    (`reports/VERINA.md`: "Two-pass is not strictly better... The blind
+    informalization step adds an interpretation layer that can overcomplicate
+    comparisons"). The result in the table above is a third observation of that.
+
+  * So the honest summary: the published ordering is largely an artifact of arm
+    labelling, batching and run-count asymmetry, and this file's own earlier
+    numbers were partly an artifact of two prompt defects. What survives on both
+    sides is that **nobody has varied blindness with everything else held
+    constant.** The decisive experiment is inside upstream's own `roundtrip.js`:
+    keep the batching, the model split, the transport and pass 2 byte-identical,
+    and toggle only whether `INFORMALIZE_PROMPT` has the requirements
+    interpolated into it. Run it on VERINA's 189 items, not on 36. Until then the
+    claim that blind informalization improves faithfulness auditing is untested,
+    not refuted.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -326,8 +356,7 @@ Demonstrates:
 #
 # Known limits of the numbers above, in the order they would need fixing:
 #
-# - Batching, and it is now the leading explanation, not just a caveat. See the
-#   36.1%-vs-97.2% contrast in the docstring above. `src/roundtrip.js` makes
+# - Batching, and it is the leading explanation. `src/roundtrip.js` makes
 #   *two* API calls for
 #   a whole domain -- one informalize-all, one compare-all -- while
 #   `singlePromptCheck` and `naiveCheck` each put their call inside a
@@ -374,12 +403,12 @@ from auditing_agents import (
     Comparison,
     Informalization,
     Informalizer,
-    SinglePassAuditor,
     Strength,
     Verdict,
     Weakening,
 )
 from auditing_naive import NaiveAuditor
+from auditing_single import SinglePassAuditor
 
 # ---------------------------------------------------------------------------
 # The corpora. Five domains, ported item for item from upstream's benchmark

@@ -230,9 +230,8 @@ class Comparator(Agent):
            every value of the types involved, so nothing is established.
         2. **weakened-conclusion** -- the theorem guarantees less than was asked
            (a looser bound, a weaker relation).
-        3. **narrowed-scope** -- an extra hypothesis, or a less general shape,
-           restricts the guarantee to a subset of the cases the requirement
-           covers.
+        3. **narrowed-scope** -- the theorem only covers a subset of the
+           cases the requirement describes.
         4. **missing-case** -- the requirement asks for several things and the
            theorem delivers some of them.
         5. **wrong-property** -- the theorem is about something else, however
@@ -244,58 +243,3 @@ class Comparator(Agent):
         a theorem called after the property it was meant to prove is no evidence
         that it proves it.
         """
-        # No invariant caveat here, deliberately: upstream's
-        # ROUNDTRIP_COMPARE_PROMPT has none, while its NAIVE_PROMPT and
-        # CLAIMCHECK_PROMPT both do. That asymmetry is upstream's, and handing
-        # this arm a caveat it was never given would be scoring a different
-        # experiment. The blind pass is supposed to be what makes the caveat
-        # unnecessary -- that is the claim under test.
-
-
-# ---------------------------------------------------------------------------
-# The ablations. Both collapse the two passes into one call, so the requirement
-# is in scope at the moment the model reads the formal statement and its reading
-# of that statement can be shaped by it. That is the failure mode the split
-# exists to prevent; whether it actually costs anything is what `--strategy`
-# measures.
-# ---------------------------------------------------------------------------
-
-
-class SinglePassAuditor(Agent):
-    """You audit whether a formal theorem expresses a natural-language
-    requirement, informalizing the theorem and then comparing, in one pass. You
-    assume the proof is correct and audit the claim."""
-
-    @Template.define
-    def audit(self, requirement: str, statement: str) -> Comparison:
-        """Check whether this theorem expresses this requirement.
-
-        **The theorem:**
-        ```lean
-        {statement}
-        ```
-
-        First, state to yourself what the theorem guarantees and under what
-        hypotheses, in plain English, before you read any further.
-
-        **Requirement:** {requirement}
-
-        Now compare the two, watching for a conclusion that restates a
-        hypothesis or holds trivially (**tautology**), one that guarantees less
-        than was asked (**weakened-conclusion**), an extra hypothesis or less
-        general shape (**narrowed-scope**), a requirement only partly delivered
-        (**missing-case**), or a theorem about something else entirely
-        (**wrong-property**).
-
-        A theorem stronger than the requirement still matches. Judge the
-        statement, not its name.
-
-        An invariant hypothesis (a named predicate such as ``Inv m``, whose
-        definition you have not been shown) is expected and normal -- do not flag
-        it as a narrowing. A theorem that extracts a concrete consequence from an
-        invariant is useful, not vacuous: ``(h : Inv m) : 0 ≤ m`` is a real
-        guarantee. But do flag a hypothesis that restricts *when* the property
-        holds.
-        """
-        # The caveat above is upstream's CLAIMCHECK_PROMPT, kept because this arm
-        # is a port of that prompt. `Comparator` gets none, matching upstream.
