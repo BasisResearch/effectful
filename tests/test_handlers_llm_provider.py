@@ -259,10 +259,13 @@ def test_agent_tool_names_are_valid_integration():
     assert all(re.fullmatch(r"[a-zA-Z0-9_-]+", name) for name in names)
 
     # End-to-end provider call. If tool names violate the schema, this raises BadRequest.
+    # `max_tokens` only has to be big enough for the model to say something: a reply
+    # truncated to empty content is decoded as "no final response" and fails the call
+    # for a reason that has nothing to do with tool names.
     with (
         handler(
             LiteLLMProvider(
-                model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=16
+                model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=64
             )
         ),
         handler(LimitLLMCallsHandler(max_calls=1)),
@@ -2652,11 +2655,18 @@ class TestAgentSystemMessageDeduplication:
 
 
 def _has_cache_control(msg: dict) -> bool:
-    """Check if a message dict contains cache_control in any content block."""
+    """Check if a message is marked for prompt caching.
+
+    Either form litellm accepts counts: a `cache_control` key on a content block,
+    or one on the message itself -- which is how a message whose content is a
+    plain string (the assembled Markdown system prompt) carries it. See
+    `test_anthropic_receives_cache_control_from_message_level_key` for the
+    litellm transformation that consumes the message-level form.
+    """
     content = msg.get("content")
     if isinstance(content, list):
         return any(isinstance(b, dict) and "cache_control" in b for b in content)
-    return False
+    return "cache_control" in msg
 
 
 class CachingAgent(Agent):
@@ -2729,11 +2739,39 @@ class TestPromptCaching:
             simple_prompt("test")
 
         for msg in capture.received_messages[0]:
+            if "cache_control" in msg:
+                assert msg["cache_control"] == {"type": "ephemeral"}
             content = msg.get("content")
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and "cache_control" in block:
                         assert block["cache_control"] == {"type": "ephemeral"}
+
+    def test_anthropic_receives_cache_control_from_message_level_key(self):
+        """The system message carries `cache_control` as a message-level key, since
+        `call_system` assembles its content as one Markdown string rather than a list
+        of blocks. Verify litellm still forwards it to Anthropic as a cached system
+        block -- the message-level form is what makes that shape cacheable."""
+        from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+        msgs = [
+            {
+                "role": "system",
+                "content": "Hi.",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
+        ]
+        transformed = AnthropicConfig().transform_request(
+            model="claude-sonnet-4-5",
+            messages=msgs,
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+        assert transformed["system"] == [
+            {"type": "text", "text": "Hi.", "cache_control": {"type": "ephemeral"}}
+        ]
 
     def test_litellm_strips_cache_control_for_openai(self):
         """Verify litellm strips cache_control when transforming for OpenAI."""
@@ -2775,10 +2813,17 @@ class TestPromptCaching:
                 for block in content:
                     assert "cache_control" not in block
 
+    # `simple_prompt` is a module-level Template, so every other Template in this
+    # module is in its lexical scope and is offered to the model as a tool. What
+    # these two tests assert is that the provider accepts a request carrying
+    # cache_control, so `tool_choice="none"` keeps the model from wandering off
+    # into one of those tools (e.g. a synthesis Template, which needs an eval
+    # provider installed) on a request that has nothing to do with them.
+
     @requires_openai
     def test_openai_accepts_cache_control_via_litellm(self):
         """OpenAI works fine with cache_control (litellm strips it)."""
-        provider = LiteLLMProvider(model="gpt-4o-mini")
+        provider = LiteLLMProvider(model="gpt-4o-mini", tool_choice="none")
         with handler(provider):
             result = simple_prompt("math")
         assert isinstance(result, str)
@@ -2786,7 +2831,9 @@ class TestPromptCaching:
     @requires_anthropic
     def test_anthropic_accepts_cache_control(self):
         """Anthropic should accept messages with cache_control."""
-        provider = LiteLLMProvider(model="claude-opus-4-6", max_tokens=20)
+        provider = LiteLLMProvider(
+            model="claude-opus-4-6", max_tokens=20, tool_choice="none"
+        )
         with handler(provider):
             result = simple_prompt("math")
         assert isinstance(result, str)

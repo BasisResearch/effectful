@@ -511,13 +511,16 @@ def _mypy_check_region(
     omitted), so pre-existing errors elsewhere in `source` never block synthesis.
 
     When ``lenient`` (for REPL code spliced into a Template body): allow a variable to be
-    redefined with a new type across cells (``--allow-redefinition``), a def/class/import
-    to be redefined (``no-redef``), and the body not to return the Template's declared type
-    (``return``/``empty-body``). All normal for an incrementally-built REPL, not real errors.
+    redefined with a new type across cells (``--allow-redefinition-new``, which supersedes
+    the narrower ``--allow-redefinition`` and requires ``--local-partial-types``), a
+    def/class/import to be redefined (``no-redef``), and the body not to return the
+    Template's declared type (``return``/``empty-body``). All normal for an
+    incrementally-built REPL, not real errors.
     """
     lenient_flags = (
         [
-            "--allow-redefinition",
+            "--allow-redefinition-new",
+            "--local-partial-types",
             "--disable-error-code=no-redef",
             "--disable-error-code=return",
             "--disable-error-code=empty-body",

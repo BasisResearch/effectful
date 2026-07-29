@@ -928,25 +928,27 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
         "Response", value=(Encodable[ty], ...)
     )
     response_format = litellm.utils.type_to_response_format_param(response_model)
-    response = litellm.completion(
-        model=EFFECTFUL_LLM_MODEL,
-        response_format=response_format,
-        messages=[
-            {
-                "role": "user",
-                "content": f"Return an instance of {getattr(ty, '__name__', repr(ty))}.",
-            }
-        ],
-        max_tokens=400,
-    )
-    assert isinstance(response, litellm.ModelResponse)
+    name = getattr(ty, "__name__", repr(ty))
+    # What's under test is that the type survives as a response_model -- the schema is
+    # accepted and what comes back decodes. A model that answers with nothing says
+    # nothing about that either way, so retry an empty completion rather than read it
+    # as a failure of the type. (Seen occasionally on degenerate schemas, e.g. the
+    # empty tuple, whose schema admits exactly one instance: `{"value": {}}`.)
+    for _attempt in range(3):
+        response = litellm.completion(
+            model=EFFECTFUL_LLM_MODEL,
+            response_format=response_format,
+            messages=[{"role": "user", "content": f"Return an instance of {name}."}],
+            max_tokens=400,
+        )
+        assert isinstance(response, litellm.ModelResponse)
 
-    choice = response.choices[0]
-    assert isinstance(choice, litellm.Choices)
-    content = choice.message.content
-    assert content is not None, (
-        f"Expected content in response for {getattr(ty, '__name__', repr(ty))}"
-    )
+        choice = response.choices[0]
+        assert isinstance(choice, litellm.Choices)
+        content = choice.message.content
+        if content:
+            break
+    assert content, f"Expected content in response for {name}"
 
     deserialized = json.loads(content)["value"]
     decoded = enc.validate_python(deserialized, context=ctx or {})
