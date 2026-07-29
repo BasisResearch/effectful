@@ -63,7 +63,6 @@ from effectful.ops.monoid import (
     as_iterable,
     distributes_over,
     is_commutative,
-    is_idempotent,
     solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
