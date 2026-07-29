@@ -37,12 +37,22 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    On *this* corpus the three do not separate: gpt-5.5 and gpt-5-mini both score
-    17/17 under all three strategies (measured, 2026-07). The traps here are
-    detectable even naively, so the structural separation is not load-bearing at
-    this scale, and the blog's ordering is not reproduced -- see the note in the
-    simplifications below. The ablation is wired up as instrumentation for a
-    harder corpus, not as a result this file demonstrates.
+    **This example does not reproduce the blog's ordering.** Measured 2026-07,
+    over seven runs of the full corpus:
+
+    ======================================  ========  ===========  =====
+    condition                               two-pass  single-pass  naive
+    ======================================  ========  ===========  =====
+    gpt-5.5                                    40/40        40/40  40/40
+    gpt-5-mini                                 34/34        34/34  34/34
+    gpt-5-mini, ``--reasoning-effort minimal`` 39/40        40/40  40/40
+    ======================================  ========  ===========  =====
+
+    The strategies are indistinguishable, and where they do differ it is by one
+    item, in whichever direction the run happens to fall -- at minimal effort the
+    *two-pass* split is the one that loses. See ``Why the ablation does not
+    separate`` below: this turns out to agree with upstream's own data rather
+    than contradict it.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -55,11 +65,11 @@ requirements``. Here the comment is a signature:
     theorems have the same conclusion -- are a loop over typed
     ``Informalization`` values, not a model call.
 
-  * The premise is checked by a real prover. Under ``--verify`` the whole corpus
-    is compiled by the Lean 4 + Mathlib toolchain ``formalization.py`` already
-    shells out to. It reports 16 theorems, 0 errors, no ``sorry`` -- and then the
-    audit finds six of them that do not mean what they were written to mean. The
-    verifier's clean bill of health is the setup, not the punchline.
+  * The premise is checked by a real prover. Under ``--verify`` both corpora are
+    compiled by the Lean 4 + Mathlib toolchain ``formalization.py`` already
+    shells out to. It reports 39 theorems, 0 errors, no ``sorry`` -- and then the
+    audit finds eighteen claims that do not mean what they were written to mean.
+    The verifier's clean bill of health is the setup, not the punchline.
 
 Demonstrates:
 - Structural separation as *lexical scope*: an agent that cannot see a value
@@ -69,16 +79,18 @@ Demonstrates:
   a self-contradictory answer into a `RetryLLMHandler` retry
 - Reuse of a sibling example's real external verifier (`formalization.py`'s
   `LeanKernel`) to establish a premise, rather than asserting it
-- A labelled corpus and an accuracy report that separates the two error
-  directions, since waving a weak theorem through is the failure that matters
+- Two labelled corpora and an accuracy report that separates the two error
+  directions -- which is what shows that every strategy here errs only ever by
+  over-flagging, the same asymmetry upstream's own eval outputs record
 - Fan-out over independent audits with ``asyncio.gather`` + ``asyncio.to_thread``
 - Per-field guidance carried on the types as ``field(metadata={"description": ...})``
 """
 
 # Simplifications vs. the source:
-# - Lean 4 + Mathlib, not Dafny. The corpus is a re-authored port of upstream's
-#   election-tally demo (`demo/election0.dfy`, `demo/election.dfy`) plus three
-#   planted variants adapted from its `counter` test domain. Lean was chosen
+# - Lean 4 + Mathlib, not Dafny. The election corpus is a re-authored port of
+#   upstream's demo (`demo/election0.dfy`, `demo/election.dfy`) plus planted
+#   variants adapted from its `counter` test domain; the delegation corpus is
+#   modelled on the shape of its `delegation-auth` domain. Lean was chosen
 #   because a real, already-built toolchain is reachable from this repo, so
 #   "every one of these theorems is proved" is a compile and not a claim. The
 #   mapping is close: Dafny's `requires`/`ensures` split becomes hypotheses and
@@ -89,28 +101,73 @@ Demonstrates:
 #   upstream's own `lemmascript` preset does ("only the signature + requires +
 #   ensures is sent, never a body"). In Lean the meaning is entirely in the
 #   statement, and ClaimCheck explicitly does not audit the proof.
-# - One domain, one model. The blog runs 5 domains and splits the passes across
+# - Two domains, one model. The blog runs 5 domains and splits the passes across
 #   two models (Haiku informalizes, Sonnet compares), reporting that the weaker
 #   informalizer is sufficient. Both passes here run on whatever model the
-#   harness was given, so that model-asymmetry result is *not* reproduced -- only
-#   the structural separation is.
+#   harness was given, so that model-asymmetry result is *not* reproduced.
 # - One call per claim, not one batched call per pass. Upstream batches every
 #   lemma into a single request for throughput; auditing each claim separately
-#   keeps the blindness argument obvious and lets the fan-out be the demo.
+#   keeps the blindness argument obvious and lets the fan-out be the demo. This
+#   also removes a confound -- see below.
+
+# Why the ablation does not separate
+# ----------------------------------
+# Worth writing down, because the obvious reading of the numbers above -- "the
+# corpus is too easy" -- is not what the evidence says.
+#
+# - The traps were never the discriminator, upstream's included. Reading the
+#   reference implementation's own per-item eval outputs (`eval/results/*.json`):
+#   across 446 recorded judgments there are three false confirms in total, all
+#   from one misconfiguration. Every other error in every mode is an *over-flag
+#   of a faithful lemma*. Upstream states it plainly in
+#   `reports/STRUCTURAL-SEPARATION.md`: "All three variants catch all 8
+#   deliberately bogus lemmas (100%). The accuracy difference comes entirely from
+#   false disputes of valid lemmas -- structural separation reduces false
+#   positives." So a corpus whose unfaithful theorems are all caught by all three
+#   strategies is reproducing upstream's result, not failing to.
+#
+# - What actually discriminates there is the *invariant projection*: a faithful
+#   lemma of the form `requires Inv(m); ensures <one conjunct of Inv>`, whose
+#   conclusion is textually already inside its own hypothesis. 18 of upstream's
+#   27 faithful pairs are this shape. A single-call model, having been shown the
+#   requirement, infers what `Inv` must contain and rules the lemma vacuous; the
+#   blind informalizer sees `Inv(m)` as an opaque atom and cannot form that
+#   hypothesis at all. The DELEGATION_CLAIMS below include this shape (`Wf p`,
+#   whose definition is in the corpus and in no prompt) precisely because it is
+#   the mechanism -- and gpt-5.5 confirms every one of them under all three
+#   strategies anyway.
+#
+# - The effect upstream measures is small and capability-bound. Only two of its
+#   36 items are wrong for every single-call variant across both models it tried
+#   -- 5.6pp, against a 27pp headline. Its own strongest-model run
+#   (`naive-inv-opus.json`) scores 94.4% naive against two-pass's 96.3%, so the
+#   gap had already nearly closed a model generation ago. The headline also
+#   compares three runs of two-pass against one run each of the others, on 36
+#   items where one item is 2.8pp.
+#
+# - And the 69.4% "Claude Code" arm is not a prompt ablation: `bench-cc.js` runs
+#   the byte-identical single-prompt text over a different transport (agent
+#   system prompt, no temperature control, JSON-schema instead of a forced tool
+#   call). Upstream's `cc-twopass.json` scores 100% through that same transport.
+#
+# - On Lean specifically, upstream's own result reverses: its VERINA run (N=189,
+#   Lean 4) has two-pass at 54.0% against a 57.1% baseline, concluding "Two-pass
+#   is not strictly better... The blind informalization step adds an
+#   interpretation layer that can overcomplicate comparisons."
+#
+# So: three strategies that tie on a modern model is the expected outcome, and
+# this file reports it rather than tuning the corpus until the preferred ordering
+# appears. One real difference from upstream is worth flagging as a caveat in the
+# other direction -- upstream's two-pass compare is *batched* per domain, so its
+# comparator sees the faithful and unfaithful theorem for the same requirement
+# side by side, a contrastive signal the per-item modes never get. Every strategy
+# here is per-item, which makes this a cleaner test of prompt structure alone,
+# and that cleaner test finds nothing.
+#
+# Other simplifications:
 # - No coverage check. Both here and upstream, a requirement that no theorem
 #   addresses at all goes undetected: the audit only ever judges pairs it is
 #   handed. Upstream lists this as a known limitation.
-# - The corpus is saturated, so the ablation does not reproduce the blog's
-#   ordering. 17 claims over one small self-contained domain is a demonstration,
-#   not a benchmark: every planted flaw here is coarse enough to be caught
-#   without the two-pass split, and both models tried score 17/17 under all three
-#   strategies. The blog's gap came from five domains of invariant-laden Dafny,
-#   where a statement is long enough that a model shown the requirement first can
-#   read the formal text through it. Making these traps subtle enough to separate
-#   the strategies would mean planting divergences whose *labels* are arguable,
-#   which would make the answer key worse, not the example better. If you want
-#   the ablation to bite, extend MAPPING with a harder domain rather than
-#   sharpening these.
 
 import argparse
 import asyncio
@@ -140,7 +197,7 @@ from effectful.handlers.llm import Agent, Template
 # the namespace nor this commentary reaches it.
 # ---------------------------------------------------------------------------
 
-CORPUS = r"""import Mathlib
+ELECTION_CORPUS = r"""import Mathlib
 
 /-- Tally: how many of the ballots in `bs` were cast for candidate `c`. -/
 def count : List ℕ → ℕ → ℕ
@@ -239,6 +296,170 @@ theorem tally_monotonic (bs : List ℕ) (v c : ℕ) : 0 ≤ count (bs ++ [v]) c 
   Nat.zero_le _
 
 end Draft
+
+namespace Revision
+
+set_option linter.unusedVariables false in
+theorem count_bounded (bs : List ℕ) (c : ℕ) (h : c ∈ bs) :
+    count bs c ≤ bs.length :=
+  Audited.count_bounded bs c
+
+theorem combine_tallies (a b : List ℕ) (c : ℕ) :
+    count (a ++ b) c ≥ count a c + count b c :=
+  le_of_eq (Audited.combine_tallies a b c).symm
+
+theorem order_irrelevant (a b : List ℕ) (h : a = b) (c : ℕ) :
+    count a c = count b c := by
+  rw [h]
+
+theorem unanimous_exclusion (bs : List ℕ) (c d : ℕ) (h : ∀ x ∈ bs, x = c)
+    (hne : d ≠ c) : count bs d ≤ count bs c := by
+  rw [Audited.unanimous_exclusion bs c d h hne]
+  exact Nat.zero_le _
+
+set_option linter.unusedVariables false in
+theorem tally_monotonic (bs : List ℕ) (v c : ℕ) (h : v = c) :
+    count bs c ≤ count (bs ++ [v]) c :=
+  Audited.tally_monotonic bs v c
+
+end Revision
+"""
+
+# ---------------------------------------------------------------------------
+# A second, harder domain: authority over resources, with an invariant. Closer
+# in shape to the blog's own `delegation-auth` domain, and harder for three
+# reasons -- the statements are longer, several carry an invariant hypothesis
+# (`Wf p`), which upstream is explicit that an auditor should *expect* and not
+# flag, and the divergences are in the hypotheses rather than the conclusions.
+# `Draft.other_subject_unaffected` is the sharpest of them: its conclusion is
+# character-for-character the faithful theorem's, and only the hypothesis names
+# the wrong thing.
+# ---------------------------------------------------------------------------
+
+DELEGATION_CORPUS = r"""import Mathlib
+
+/-- A grant: `subject` may act on `resource` up to `level`
+    (0 = none, 1 = read, 2 = write). -/
+structure Grant where
+  subject : ℕ
+  resource : ℕ
+  level : ℕ
+
+/-- A policy is a list of grants. -/
+abbrev Policy := List Grant
+
+/-- The authority a subject holds on a resource: the highest level any grant
+    in the policy gives them there. -/
+def authority : Policy → ℕ → ℕ → ℕ
+  | [], _, _ => 0
+  | g :: rest, s, r =>
+      max (if g.subject = s ∧ g.resource = r then g.level else 0) (authority rest s r)
+
+/-- The policy invariant, as a conjunction of three clauses. -/
+def Wf (p : Policy) : Prop :=
+  (∀ g ∈ p, g.level ≤ 2) ∧ (∀ g ∈ p, 0 < g.subject) ∧ (∀ g ∈ p, 0 < g.resource)
+
+/-- `d` delegates to `t` on resource `r` at level `l`. -/
+def delegate (p : Policy) (t r l : ℕ) : Policy := ⟨t, r, l⟩ :: p
+
+namespace Audited
+
+theorem no_grants_no_authority (s r : ℕ) : authority [] s r = 0 := by
+  simp [authority]
+
+theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.subject ≠ s) : authority (g :: p) s r = authority p s r := by
+  simp [authority, h]
+
+theorem other_resource_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r := by
+  simp [authority, h]
+
+theorem unrelated_grant_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.subject ≠ s ∨ g.resource ≠ r) :
+    authority (g :: p) s r = authority p s r := by
+  cases h with
+  | inl h => simp [authority, h]
+  | inr h => simp [authority, h]
+
+theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ) :
+    authority p s r ≤ authority (g :: p) s r := by
+  simp [authority]
+
+theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ 2 := h.1
+
+theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.subject := h.2.1
+
+theorem resources_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 < g.resource := h.2.2
+
+theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
+    authority p s r ≤ 2 := by
+  induction p with
+  | nil => simp [authority]
+  | cons g rest ih =>
+    have hg : g.level ≤ 2 := h.1 g (by simp)
+    have hrest : Wf rest :=
+      ⟨fun x hx => h.1 x (by simp [hx]), fun x hx => h.2.1 x (by simp [hx]),
+        fun x hx => h.2.2 x (by simp [hx])⟩
+    simp only [authority, max_le_iff]
+    exact ⟨by split <;> omega, ih hrest⟩
+
+theorem delegation_no_escalation (p : Policy) (d t r l : ℕ)
+    (h : l ≤ authority p d r) :
+    authority (delegate p t r l) t r ≤ max (authority p d r) (authority p t r) := by
+  simp only [delegate, authority, max_le_iff]
+  constructor
+  · split <;> omega
+  · omega
+
+theorem grant_bounds_authority (p : Policy) (g : Grant) (s r : ℕ) :
+    authority (g :: p) s r ≤ max (authority p s r) g.level := by
+  simp only [authority, max_le_iff]
+  constructor
+  · split <;> omega
+  · omega
+
+end Audited
+
+namespace Draft
+
+theorem wf_bounds_authority (p : Policy) (s r : ℕ) (h : Wf p) :
+    authority p s r ≤ 3 := by
+  have := Audited.wf_bounds_authority p s r h
+  omega
+
+theorem other_subject_unaffected (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.resource ≠ r) : authority (g :: p) s r = authority p s r :=
+  Audited.other_resource_unaffected p g s r h
+
+set_option linter.unusedVariables false in
+theorem grant_never_reduces (p : Policy) (g : Grant) (s r : ℕ)
+    (h : g.subject = s) : authority p s r ≤ authority (g :: p) s r :=
+  Audited.grant_never_reduces p g s r
+
+theorem delegation_no_escalation (p : Policy) (t r l : ℕ) :
+    authority (delegate p t r l) t r ≤ max l (authority p t r) := by
+  simp only [delegate, authority, max_le_iff]
+  constructor
+  · split <;> omega
+  · omega
+
+theorem grant_bounds_authority (p : Policy) (g : Grant) (s r : ℕ) :
+    authority (g :: p) s r ≤ authority p s r + g.level := by
+  simp only [authority, max_le_iff]
+  constructor
+  · split <;> omega
+  · omega
+
+set_option linter.unusedVariables false in
+theorem levels_bounded (p : Policy) (h : Wf p) : ∀ g ∈ p, g.level ≤ g.level :=
+  fun _ _ => le_refl _
+
+set_option linter.unusedVariables false in
+theorem subjects_named (p : Policy) (h : Wf p) : ∀ g ∈ p, 0 ≤ g.subject :=
+  fun _ _ => Nat.zero_le _
+
+end Draft
 """
 
 
@@ -304,7 +525,7 @@ class Claim:
     why: str = ""
 
 
-MAPPING: tuple[Claim, ...] = (
+ELECTION_CLAIMS: tuple[Claim, ...] = (
     # The eleven audited theorems: each says what it was written to say.
     Claim(
         "In an empty election with no ballots, every candidate has zero votes",
@@ -415,7 +636,207 @@ MAPPING: tuple[Claim, ...] = (
         "wrong-property: says the new tally is non-negative, which is trivially "
         "true of a natural number, instead of comparing it to the old one",
     ),
+    # The five revised theorems: a second attempt, and the reason this domain is
+    # not quite as easy as the drafts make it look. Each of these reads correctly
+    # at a glance -- the conclusion is the right shape, and the divergence is a
+    # hypothesis that narrows it or a relation symbol that loosens it.
+    Claim(
+        "No candidate can receive more votes than the total number of ballots cast",
+        "Revision.count_bounded",
+        Verdict.DISPUTED,
+        "narrowed-scope: the hypothesis restricts the bound to candidates who "
+        "received at least one ballot, so it says nothing about a candidate with "
+        "no votes",
+    ),
+    Claim(
+        "Merging two ballot boxes produces a tally equal to the sum of the "
+        "individual tallies",
+        "Revision.combine_tallies",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds the merged tally below by the sum instead of "
+        "equating them, so it permits the merge to invent votes",
+    ),
+    Claim(
+        "The order in which ballots are counted does not affect the final tally",
+        "Revision.order_irrelevant",
+        Verdict.DISPUTED,
+        "tautology: the hypothesis is that the two ballot lists are equal, so the "
+        "conclusion is congruence and no reordering is involved",
+    ),
+    Claim(
+        "In a unanimous election, every other candidate receives zero votes",
+        "Revision.unanimous_exclusion",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds the other candidate's tally by the winner's "
+        "rather than pinning it to zero",
+    ),
+    Claim(
+        "Adding a ballot to the election cannot cause any candidate's tally to "
+        "decrease",
+        "Revision.tally_monotonic",
+        Verdict.DISPUTED,
+        "narrowed-scope: the hypothesis restricts the guarantee to the case where "
+        "the added ballot is itself for the candidate in question",
+    ),
 )
+
+
+DELEGATION_CLAIMS: tuple[Claim, ...] = (
+    Claim(
+        "A subject with no grants at all has no authority on any resource",
+        "Audited.no_grants_no_authority",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Granting authority to one subject never changes any other subject's authority",
+        "Audited.other_subject_unaffected",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "A grant concerning one resource never changes authority on a different "
+        "resource",
+        "Audited.other_resource_unaffected",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Adding a grant to a policy can never reduce anyone's authority",
+        "Audited.grant_never_reduces",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy, no subject holds authority above write level (2)",
+        "Audited.wf_bounds_authority",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Delegating a level the delegator actually holds cannot leave the delegate "
+        "with more authority than the delegator has, beyond what the delegate "
+        "already held",
+        "Audited.delegation_no_escalation",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "Adding a grant cannot raise a subject's authority above the higher of "
+        "what they already held and the new grant's level",
+        "Audited.grant_bounds_authority",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy, no subject holds authority above write level (2)",
+        "Draft.wf_bounds_authority",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds authority by 3, one level above the write "
+        "level the requirement names",
+    ),
+    # The sharpest trap in either domain: the conclusion is character-for-character
+    # the faithful theorem's, and only the hypothesis names the wrong thing.
+    Claim(
+        "Granting authority to one subject never changes any other subject's authority",
+        "Draft.other_subject_unaffected",
+        Verdict.DISPUTED,
+        "wrong-property: the hypothesis separates the grant's *resource* from the "
+        "one queried, not its subject, so this is the other-resource property "
+        "wearing the other-subject name",
+    ),
+    Claim(
+        "Adding a grant to a policy can never reduce anyone's authority",
+        "Draft.grant_never_reduces",
+        Verdict.DISPUTED,
+        "narrowed-scope: the hypothesis restricts the guarantee to the subject the "
+        "new grant is for, which is the one case nobody doubted",
+    ),
+    Claim(
+        "Delegating a level the delegator actually holds cannot leave the delegate "
+        "with more authority than the delegator has, beyond what the delegate "
+        "already held",
+        "Draft.delegation_no_escalation",
+        Verdict.DISPUTED,
+        "wrong-property: the delegator never appears; the bound is the delegated "
+        "level itself, so it holds however much authority was delegated and "
+        "establishes no non-escalation at all",
+    ),
+    Claim(
+        "Adding a grant cannot raise a subject's authority above the higher of "
+        "what they already held and the new grant's level",
+        "Draft.grant_bounds_authority",
+        Verdict.DISPUTED,
+        "weakened-conclusion: bounds by the sum of the two rather than their "
+        "maximum, permitting authority the requirement forbids",
+    ),
+    # --- Invariant projections. -------------------------------------------
+    # These are the claims that discriminate, and they are all *faithful*.
+    # `Wf` is a conjunction of three clauses; each theorem below assumes `Wf p`
+    # and concludes one conjunct of it -- so, read as text, the conclusion is
+    # already sitting inside the hypothesis, and the theorem looks vacuous. It
+    # is not: projecting a named invariant onto one of its consequences is the
+    # ordinary way to make an invariant usable, and upstream's prompts say so
+    # explicitly ("a lemma that extracts a concrete consequence from an
+    # invariant is NOT vacuous").
+    #
+    # The definition of `Wf` is in the corpus but never in a prompt, because
+    # only the *statement* is sent. So `Wf p` reaches the model as an opaque
+    # atom, and whether it is judged vacuous turns on whether the model guesses
+    # at the invariant's contents -- which is exactly what having been shown the
+    # requirement first encourages it to do.
+    Claim(
+        "In a well-formed policy, no grant exceeds write level (2)",
+        "Audited.levels_bounded",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy, every grant names a real subject",
+        "Audited.subjects_named",
+        Verdict.CONFIRMED,
+    ),
+    Claim(
+        "In a well-formed policy, every grant names a real resource",
+        "Audited.resources_named",
+        Verdict.CONFIRMED,
+    ),
+    # Near-twins of the three above: same shape, same opaque hypothesis, but
+    # these really are empty. A corpus with only the projections would reward a
+    # checker that confirms everything; these punish that.
+    Claim(
+        "In a well-formed policy, no grant exceeds write level (2)",
+        "Draft.levels_bounded",
+        Verdict.DISPUTED,
+        "tautology: concludes that each grant's level is at most itself, which "
+        "holds of any number and says nothing about the write level",
+    ),
+    Claim(
+        "In a well-formed policy, every grant names a real subject",
+        "Draft.subjects_named",
+        Verdict.DISPUTED,
+        "tautology: concludes that each subject identifier is non-negative, "
+        "which is automatic for a natural number and does not say it names "
+        "anyone",
+    ),
+    # Faithful, but *stronger* than the requirement asks -- upstream reports
+    # this "redundant strengthening" as its single largest false-positive class,
+    # and the two items that defeat every one of its single-call variants are
+    # both this shape. The requirement names one case; the theorem covers a
+    # strictly broader one, which the taxonomy says is still a match.
+    Claim(
+        "A grant for a different subject does not change a subject's authority",
+        "Audited.unrelated_grant_unaffected",
+        Verdict.CONFIRMED,
+    ),
+)
+
+
+@dataclasses.dataclass(frozen=True)
+class Domain:
+    """One body of Lean and the claims made about it."""
+
+    name: str
+    corpus: str
+    claims: tuple[Claim, ...]
+
+
+DOMAINS: dict[str, Domain] = {
+    "election": Domain("election", ELECTION_CORPUS, ELECTION_CLAIMS),
+    "delegation": Domain("delegation", DELEGATION_CORPUS, DELEGATION_CLAIMS),
+}
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +1123,7 @@ class Mode(enum.StrEnum):
 class Audit:
     """One claim's result: what the pipeline decided, and what it read on the way."""
 
+    domain: str
     claim: Claim
     statement: str
     comparison: Comparison
@@ -711,27 +1133,42 @@ class Audit:
     def correct(self) -> bool:
         return self.comparison.verdict is self.claim.expected
 
+    @property
+    def label(self) -> str:
+        return f"{self.domain}/{self.claim.theorem}"
 
-def audit_claim(claim: Claim, mode: Mode) -> Audit:
+
+def audit_claim(domain: Domain, claim: Claim, mode: Mode) -> Audit:
     """Audit one requirement/theorem pair under the given mode."""
-    statement = statement_of(CORPUS, claim.theorem)
+    statement = statement_of(domain.corpus, claim.theorem)
 
     if mode is Mode.TWO_PASS:
         # Pass 1 receives `statement`. There is nowhere in this call for
         # `claim.requirement` to go.
         back = Informalizer().informalize(statement)
         comparison = Comparator().compare(claim.requirement, statement, back)
-        return Audit(claim, statement, comparison, back)
+        return Audit(domain.name, claim, statement, comparison, back)
 
     auditor = SinglePassAuditor() if mode is Mode.SINGLE_PASS else NaiveAuditor()
-    return Audit(claim, statement, auditor.audit(claim.requirement, statement), None)
+    return Audit(
+        domain.name,
+        claim,
+        statement,
+        auditor.audit(claim.requirement, statement),
+        None,
+    )
 
 
-async def audit_all(claims: typing.Sequence[Claim], mode: Mode) -> list[Audit]:
-    """Audit every claim concurrently -- they are independent by construction."""
+async def audit_all(domains: typing.Sequence[Domain], mode: Mode) -> list[Audit]:
+    """Audit every claim in every domain concurrently -- independent by
+    construction, since each gets its own agent instances."""
     return list(
         await asyncio.gather(
-            *(asyncio.to_thread(audit_claim, claim, mode) for claim in claims)
+            *(
+                asyncio.to_thread(audit_claim, domain, claim, mode)
+                for domain in domains
+                for claim in domain.claims
+            )
         )
     )
 
@@ -754,13 +1191,13 @@ def pre_checks(audits: typing.Sequence[Audit]) -> list[str]:
             continue
         if back.strength is Strength.TRIVIAL:
             notes.append(
-                f"{audit.claim.theorem} was read as a trivial claim ({back.conclusion})"
+                f"{audit.label} was read as a trivial claim ({back.conclusion})"
             )
-        key = " ".join(back.conclusion.lower().split())
+        key = f"{audit.domain}: {' '.join(back.conclusion.lower().split())}"
         if (earlier := seen.get(key)) is not None:
             if earlier.requirement != audit.claim.requirement:
                 notes.append(
-                    f"{audit.claim.theorem} and {earlier.theorem} were read as "
+                    f"{audit.label} and {earlier.theorem} were read as "
                     "guaranteeing the same thing, but formalize different "
                     "requirements"
                 )
@@ -787,7 +1224,7 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
             if audit.comparison.weakening is Weakening.NONE
             else f" [{audit.comparison.weakening.value}]"
         )
-        print(f"[{mark}] {audit.claim.theorem}: {got.value}{category}")
+        print(f"[{mark}] {audit.label}: {got.value}{category}")
         print(f"       requirement: {audit.claim.requirement}")
         print(f"       statement:   {' '.join(audit.statement.split())}")
         if audit.back_translation is not None:
@@ -816,17 +1253,24 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
         a for a in audits if a.claim.expected is Verdict.CONFIRMED and not a.correct
     ]
     correct = sum(a.correct for a in audits)
+
+    # Per-domain accuracy as well as overall: the domains differ in difficulty,
+    # and an aggregate hides which one a strategy actually struggles with.
+    by_domain: dict[str, list[Audit]] = {}
+    for audit in audits:
+        by_domain.setdefault(audit.domain, []).append(audit)
+    if len(by_domain) > 1:
+        for name, group in by_domain.items():
+            hits = sum(a.correct for a in group)
+            print(f"  {name:12} {hits}/{len(group)} ({hits / len(group):.1%})")
+
     print(
         f"Accuracy: {correct}/{len(audits)} "
         f"({correct / len(audits):.1%})\n"
         f"  unfaithful theorems waved through: {len(missed)}"
-        + (f" ({', '.join(a.claim.theorem for a in missed)})" if missed else "")
+        + (f" ({', '.join(a.label for a in missed)})" if missed else "")
         + f"\n  faithful theorems disputed:        {len(false_alarms)}"
-        + (
-            f" ({', '.join(a.claim.theorem for a in false_alarms)})"
-            if false_alarms
-            else ""
-        )
+        + (f" ({', '.join(a.label for a in false_alarms)})" if false_alarms else "")
     )
 
 
@@ -840,8 +1284,8 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
 # ---------------------------------------------------------------------------
 
 
-def verify_corpus() -> bool:
-    """Compile the whole corpus with Lean, and report what it proves."""
+def verify_corpus(domains: typing.Sequence[Domain]) -> bool:
+    """Compile each domain's corpus with Lean, and report what it proves."""
     # The examples are importable as ``docs.source.llm_examples...`` from the
     # repository root, which is on ``sys.path`` under the harness but not when
     # this file is run directly; add it so both invocations work.
@@ -861,17 +1305,26 @@ def verify_corpus() -> bool:
         )
         return False
 
-    theorems = re.findall(r"^theorem (\w+)", CORPUS, re.MULTILINE)
-    print(f"Compiling {len(theorems)} theorems with Lean 4 + Mathlib ...")
-    result = kernel.compile(CORPUS)
-    if not result.ok:
-        raise SystemExit(f"The corpus does not compile:\n{result.messages}")
-    if _SORRY.search(CORPUS):
-        raise SystemExit("The corpus contains `sorry`; its theorems are not proved.")
+    total = 0
+    for domain in domains:
+        theorems = re.findall(r"^theorem (\w+)", domain.corpus, re.MULTILINE)
+        print(
+            f"Compiling {domain.name} ({len(theorems)} theorems) with "
+            "Lean 4 + Mathlib ..."
+        )
+        result = kernel.compile(domain.corpus)
+        if not result.ok:
+            raise SystemExit(
+                f"The {domain.name} corpus does not compile:\n{result.messages}"
+            )
+        if _SORRY.search(domain.corpus):
+            raise SystemExit(
+                f"The {domain.name} corpus contains `sorry`; it is not proved."
+            )
+        total += len(theorems)
     print(
-        f"VERIFIED: {len(theorems)} theorems, 0 errors, no `sorry`. Every claim "
-        "below is proved.\n"
-        "The audit that follows is not about whether they are true.\n"
+        f"VERIFIED: {total} theorems, 0 errors, no `sorry`. Every claim below is "
+        "proved.\nThe audit that follows is not about whether they are true.\n"
     )
     return True
 
@@ -906,21 +1359,33 @@ def main() -> None:
         help="Compile the corpus and exit, without calling any model",
     )
     parser.add_argument(
+        "--domain",
+        choices=[*DOMAINS, "all"],
+        default="all",
+        help="Which corpus to audit: the election tally, the harder "
+        "authority/delegation policy, or both",
+    )
+    parser.add_argument(
         "--limit",
         type=int,
         default=None,
-        help="Audit only the first N claims (a cheap smoke test)",
+        help="Audit only the first N claims of each domain (a cheap smoke test)",
     )
     args = parser.parse_args()
 
+    domains = list(DOMAINS.values()) if args.domain == "all" else [DOMAINS[args.domain]]
+    if args.limit:
+        domains = [
+            dataclasses.replace(d, claims=d.claims[: args.limit]) for d in domains
+        ]
+
     if args.verify_only:
-        verify_corpus()
+        verify_corpus(domains)
         return
     if args.verify:
-        verify_corpus()
+        verify_corpus(domains)
 
-    claims = MAPPING[: args.limit] if args.limit else MAPPING
-    report(asyncio.run(audit_all(claims, args.strategy)), args.strategy)
+    report(asyncio.run(audit_all(domains, args.strategy)), args.strategy)
 
 
 if __name__ == "__main__":
