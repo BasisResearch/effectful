@@ -45,8 +45,8 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.execution.restricted import (
+from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.executing.restricted import (
     RestrictedPythonExecutor,
 )
 from effectful.handlers.llm.harness.persisting import SQLitePersister

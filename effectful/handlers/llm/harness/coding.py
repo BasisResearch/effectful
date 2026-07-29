@@ -15,7 +15,7 @@ from effectful.handlers.llm.harness.encoding import (
     TemplateBody,
     _callable_type_from_signature,
 )
-from effectful.handlers.llm.harness.execution import compile, exec, parse
+from effectful.handlers.llm.harness.executing import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     call_assistant,

@@ -32,7 +32,7 @@ from openai.types.chat import (
 )
 from PIL import Image
 
-import effectful.handlers.llm.harness.execution as execution
+import effectful.handlers.llm.harness.executing as executing
 from effectful.handlers.llm.types import Encodable, Template, Tool
 from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
 from effectful.ops.semantics import fwd, handler
@@ -310,11 +310,11 @@ def _pydantic_type_code(ty):
             )
         filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
         try:
-            module = execution.parse(value, filename)
+            module = executing.parse(value, filename)
             # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
             # function body, so such a snippet can't be spliced into the Template for
             # type checking.
-            execution.scan_non_nestable(module)
+            executing.scan_non_nestable(module)
         except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source is not valid REPL code: {exc}") from exc
 
@@ -339,11 +339,11 @@ def _pydantic_type_code(ty):
             prior = StatefulReplSynthesizer.repl_history()
             prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
             session = ast.parse(prior_src + value)
-            checked = execution.splice_repl_code_into_body(session, anchor)
+            checked = executing.splice_repl_code_into_body(session, anchor)
             if checked is not None:
-                execution.type_check(*checked, lenient=True)
+                executing.type_check(*checked, lenient=True)
         try:
-            return execution.compile(module, filename)
+            return executing.compile(module, filename)
         except (SyntaxError, ValueError) as exc:
             raise ValueError(f"source does not compile: {exc}") from exc
 
@@ -850,7 +850,7 @@ def _synthesize_callable(
     is a structured-output result, else the lenient REPL splice.
     """
     filename = f"<synthesis:{id(module_code)}>"
-    module: ast.Module = execution.parse(module_code, filename)
+    module: ast.Module = executing.parse(module_code, filename)
 
     if template_body:
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
@@ -859,21 +859,21 @@ def _synthesize_callable(
             # is the final answer, so -- unlike incrementally-built REPL code -- it
             # must honor the Template's declared types and gets no redefinition slack
             # (no name reuse with a new type, no duplicate definitions).
-            spliced = execution.splice_template_body(module, anchor)
+            spliced = executing.splice_template_body(module, anchor)
             if spliced is not None:
-                execution.type_check(*spliced)
+                executing.type_check(*spliced)
     elif ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
-        spliced = execution.splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
+        spliced = executing.splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
         if spliced is not None:
-            execution.type_check(*spliced)
+            executing.type_check(*spliced)
     elif ctx.get(REPL_ANCHOR_KEY) is not None:
-        spliced = execution.splice_repl_code_into_body(module, ctx[REPL_ANCHOR_KEY])
+        spliced = executing.splice_repl_code_into_body(module, ctx[REPL_ANCHOR_KEY])
         if spliced is not None:
-            execution.type_check(*spliced, lenient=True)
+            executing.type_check(*spliced, lenient=True)
 
-    bytecode: types.CodeType = execution.compile(module, filename)
+    bytecode: types.CodeType = executing.compile(module, filename)
     g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
-    execution.exec(bytecode, g)
+    executing.exec(bytecode, g)
     result = g[module.body[-1].name]  # type: ignore
     return result, g
 
@@ -929,7 +929,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
             value.module_code, info.context or {}, template_body=False
         )
         _reject_param_count_mismatch(result, ty)
-        execution.run_doctests(result, g)
+        executing.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)
@@ -975,14 +975,14 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
         result, g = _synthesize_callable(value.module_code, ctx, template_body=True)
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
         if anchor is None:
-            execution.run_doctests(result, g)
+            executing.run_doctests(result, g)
             return result
         # Shadow the global name the doctests call and route the Template op back
         # into the synthesized function.
         result = functools.wraps(anchor)(result)
         g.update({anchor.__name__: result})
         with handler({anchor: result}):
-            execution.run_doctests(result, g)
+            executing.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)
@@ -1029,7 +1029,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
         anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
         class_template = _class_template_of(anchor) if anchor is not None else None
         if class_template is None:
-            execution.run_doctests(result, g)
+            executing.run_doctests(result, g)
             return result
         # A fresh instance's `agent.method(...)` dispatches through
         # `Template.__apply__`, which we intercept and redirect to the synthesized
@@ -1043,7 +1043,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
             return class_template(instance, *args, **kwargs)
 
         with handler({Template.__apply__: _doctest_apply, class_template: result}):
-            execution.run_doctests(result, g)
+            executing.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)

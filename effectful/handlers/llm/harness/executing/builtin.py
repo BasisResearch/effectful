@@ -4,7 +4,7 @@ import linecache
 import types
 import typing
 
-from effectful.handlers.llm.harness.execution import (
+from effectful.handlers.llm.harness.executing import (
     _mypy_check_region,
     compile,
     exec,

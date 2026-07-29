@@ -26,7 +26,7 @@ from RestrictedPython.transformer import (
     copy_locations,
 )
 
-from effectful.handlers.llm.harness.execution import (
+from effectful.handlers.llm.harness.executing import (
     _mypy_check_region,
     _run_doctests,
     compile,

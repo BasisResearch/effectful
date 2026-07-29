@@ -31,7 +31,7 @@ from effectful.handlers.llm.harness.coding import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
-from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     FinalTool,
