@@ -34,7 +34,6 @@ from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
     PythonRepl,
     ResultDecodingError,
-    RetryLLMHandler,
     SynthesizeAndCall,
     Tool,
     ToolCallDecodingError,
@@ -46,6 +45,7 @@ from effectful.handlers.llm.harness.completions import (
     completion,
 )
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
+from effectful.handlers.llm.harness.retrying import RetryLLMHandler
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements

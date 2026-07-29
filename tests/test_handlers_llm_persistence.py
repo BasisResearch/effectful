@@ -21,10 +21,10 @@ from litellm import ModelResponse
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
-    RetryLLMHandler,
     completion,
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.retrying import RetryLLMHandler
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

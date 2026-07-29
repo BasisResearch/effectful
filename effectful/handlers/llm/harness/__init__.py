@@ -44,7 +44,6 @@ import tenacity
 from effectful.handlers.llm.harness.completions import (
     LiteLLMProvider,
     PythonRepl,
-    RetryLLMHandler,
     SynthesizeAndCall,
     SystemPromptDumper,
     TerminalRenderer,
@@ -54,6 +53,7 @@ from effectful.handlers.llm.harness.execution import (
     UnsafeEvalProvider,
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.retrying import RetryLLMHandler
 from effectful.handlers.llm.harness.tracing import LangfuseTracer
 from effectful.ops.semantics import handler
 
