@@ -33,6 +33,9 @@ class Weakening(enum.StrEnum):
     NONE = "none"
     TAUTOLOGY = "tautology"
     WEAKENED_CONCLUSION = "weakened-conclusion"
+    NARROWED_SCOPE = "narrowed-scope"
+    MISSING_CASE = "missing-case"
+    WRONG_PROPERTY = "wrong-property"
 
 
 # ---------------------------------------------------------------------------
@@ -279,23 +282,4 @@ class SinglePassAuditor(Agent):
 
         A theorem stronger than the requirement still matches. Judge the
         statement, not its name.
-        """
-
-
-class NaiveAuditor(Agent):
-    """You check whether formal theorems match the requirements they are said to
-    formalize."""
-
-    @Template.define
-    def audit(self, requirement: str, statement: str) -> Comparison:
-        """Does this Lean theorem faithfully capture the requirement below?
-
-        **Requirement:** {requirement}
-
-        ```lean
-        {statement}
-        ```
-
-        Answer with a match verdict; if it does not match, categorize how and say
-        what is missing.
         """

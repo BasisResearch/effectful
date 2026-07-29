@@ -41,29 +41,40 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    Measured 2026-07 over the full 40-claim corpus, the lower three rows at
+    Measured 2026-07 over the full 40-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
     rejects temperature 0, so it runs at the provider default):
 
     ==============  ========  ===========  =====
     model           two-pass  single-pass  naive
     ==============  ========  ===========  =====
-    gpt-5.5            95.0%        95.0%  95.0%
-    gpt-4.1            85.0%        90.0%  85.0%
-    gpt-4o             85.0%        70.0%  82.5%
-    gpt-4.1-mini       72.5%        70.0%  70.0%
+    gpt-4o             90.0%        72.5%  72.5%
+    gpt-4.1            90.0%        90.0%  75.0%
+    gpt-4.1-mini       82.5%        77.5%  80.0%
+    *mean, above*     *87.5%*      *80.0%* *75.8%*
+    gpt-5.5            90.0%        97.5%  95.0%
     ==============  ========  ===========  =====
 
-    Two-pass is ahead of naive in two of four models and never behind it; ahead
-    of single-pass in two, tied in one, and 5pp behind in one. The one large
-    effect -- gpt-4o, two-pass over single-pass, +15pp, six items -- is in the
-    predicted direction and bigger than upstream's 10.2pp headline. But it is one
-    model in one run, and the model directly above it in capability goes the
-    other way. Four models is not enough to call this, and n=40 at one run per
-    cell has roughly a 13% chance of detecting an 8pp effect even if real.
+    On the three non-reasoning models the published ordering holds -- two-pass
+    ahead of single-pass ahead of naive, by 7.5 and 4.2 points on the mean, with
+    two individual gaps over naive of 17.5 and 15 points. Upstream reports
+    96.3 / 86.1 / 69.4; this is the same shape at a lower level.
 
-    **An earlier version of this table was wrong, and how it was wrong is worth
-    more than the table.** See ``The leak`` below.
+    gpt-5.5 reverses it, and that is the same reversal upstream's own data shows
+    at the top of the capability range: its strongest single-call run scores
+    94.4% naive against 93.5% for two-pass with the same model on both passes,
+    and its Lean benchmark (VERINA, N=189) has two-pass losing outright. The
+    blind informalization step is a scaffold: worth a lot to a model that needs
+    it, a net cost to one that does not.
+
+    Caveats that still bind. n=40 at one run per cell; the three non-reasoning
+    rows are one run each, so a 2.5pp difference is one item and only the
+    double-digit gaps are worth anything. And the corpus is not upstream's: 4 of
+    its 22 faithful claims are opaque-invariant projections against 26 of 27
+    there, so this measures the architecture on a different task.
+
+    **Two earlier versions of this table were wrong.** See ``The leak`` below --
+    the way they were wrong is the most transferable thing in this file.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -151,11 +162,33 @@ Demonstrates:
 # accuracies fell across the board (gpt-5.5 from 100% to 95%), and the ablation
 # that showed nothing now shows two-pass ahead in most cells.
 #
-# What did *not* survive the fix is the error-direction finding. With the key
-# visible, every strategy over-flagged; with it gone, the six runs on the two
-# weaker models produce 49 unfaithful theorems waved through against 5 faithful
-# ones disputed. That is the reverse of upstream, which records essentially no
-# false confirms at all. The honest reading is that this Lean corpus and
+# Two further defects, both found only because the first fix forced a re-run:
+#
+# - Splitting the agents out by hand truncated the `Weakening` enum to three of
+#   its six members, so `narrowed-scope`, `missing-case` and `wrong-property`
+#   were unavailable while `Comparison.__post_init__` still demanded a category
+#   for every mismatch. The models were being asked to classify into a taxonomy
+#   with the relevant boxes missing; that produced retry-exhausted claims and
+#   depressed every arm. Restoring it took gpt-4o two-pass from 85.0% to 92.5%
+#   and its undecodable claims from 3 to 0.
+#
+# - The naive arm was not actually impoverished. Giving it a bare yes/no return
+#   type was not enough, because it still *shared a module* with `Comparison`,
+#   `Weakening` and the richer agents -- so the five-category taxonomy and the
+#   other arms' prompts reached it through the module source anyway. A dump
+#   confirmed every category name in the naive arm's system prompt. It now lives
+#   in `auditing_naive.py`, alone, and the dump shows zero. That single change
+#   cost the naive arm 10 points on gpt-4.1 and 10 on gpt-4o: most of what had
+#   looked like "naive does fine" was the taxonomy leaking into it.
+#
+# Same lesson each time, which is why the file keeps saying it: in this framework
+# the unit of exposure is the module, not the function, the parameter list or the
+# return type.
+#
+# What did *not* survive the fixes is the error-direction finding. With the key
+# visible, every strategy over-flagged; with it gone, the twelve runs produce 69
+# unfaithful theorems waved through against 6 faithful ones disputed. That is the
+# reverse of upstream, which records essentially no false confirms at all. The honest reading is that this Lean corpus and
 # upstream's Dafny one fail in opposite directions: its planted flaws were all
 # caught by every variant and the contest was over false alarms, whereas these
 # planted flaws are genuinely hard for a mid-capability model to catch. That is a
@@ -218,10 +251,6 @@ Demonstrates:
 # - Corpus shape. 4 of the 22 faithful claims here are opaque-invariant
 #   projections, against 26 of 27 upstream. The mechanism their benchmark
 #   actually tests is barely present in this one.
-# - Schema asymmetry. The naive arm returns the same `Comparison` type as the
-#   others, so it gets the five-category weakening taxonomy for free; upstream's
-#   `NAIVE_TOOL` is a bare yes/no with no taxonomy. This example's naive arm is
-#   better equipped than upstream's, which would understate any gap.
 # - Batching. Upstream's two-pass compare is batched per domain, so its
 #   comparator sees the faithful and unfaithful theorem for one requirement side
 #   by side -- a contrastive signal its per-item arms never get. Everything here
@@ -254,12 +283,12 @@ from auditing_agents import (
     Comparison,
     Informalization,
     Informalizer,
-    NaiveAuditor,
     SinglePassAuditor,
     Strength,
     Verdict,
     Weakening,
 )
+from auditing_naive import NaiveAuditor
 
 # ---------------------------------------------------------------------------
 # The corpus. A verified election tally: `count` tallies the ballots cast for a
@@ -927,16 +956,15 @@ class Audit:
     domain: str
     claim: Claim
     statement: str
-    comparison: Comparison | None
+    verdict: Verdict | None
+    explanation: str
+    comparison: Comparison | None  # None in naive mode, which has no taxonomy
     back_translation: Informalization | None  # None outside two-pass mode
     error: str | None = None
 
     @property
     def correct(self) -> bool:
-        return (
-            self.comparison is not None
-            and self.comparison.verdict is self.claim.expected
-        )
+        return self.verdict is self.claim.expected
 
     @property
     def label(self) -> str:
@@ -952,22 +980,34 @@ def audit_claim(domain: Domain, claim: Claim, mode: Mode) -> Audit:
     """
     statement = statement_of(domain.corpus, claim.theorem)
     back: Informalization | None = None
+    comparison: Comparison | None = None
     try:
-        if mode is Mode.TWO_PASS:
-            # Pass 1 receives `statement`. There is nowhere in this call for
-            # `claim.requirement` to go.
-            back = Informalizer().informalize(statement)
-            comparison = Comparator().compare(claim.requirement, statement, back)
+        if mode is Mode.NAIVE:
+            # The impoverished arm: a yes/no and a sentence, no taxonomy.
+            judgement = NaiveAuditor().audit(claim.requirement, statement)
+            match, explanation = judgement.match, judgement.explanation
         else:
-            auditor = (
-                SinglePassAuditor() if mode is Mode.SINGLE_PASS else NaiveAuditor()
-            )
-            comparison = auditor.audit(claim.requirement, statement)
+            if mode is Mode.TWO_PASS:
+                # Pass 1 receives `statement`. There is nowhere in this call for
+                # `claim.requirement` to go.
+                back = Informalizer().informalize(statement)
+                comparison = Comparator().compare(claim.requirement, statement, back)
+            else:
+                comparison = SinglePassAuditor().audit(claim.requirement, statement)
+            match, explanation = comparison.match, comparison.explanation
     except Exception as exc:
         return Audit(
-            domain.name, claim, statement, None, back, f"{type(exc).__name__}: {exc}"
+            domain.name,
+            claim,
+            statement,
+            None,
+            "",
+            comparison,
+            back,
+            f"{type(exc).__name__}: {exc}",
         )
-    return Audit(domain.name, claim, statement, comparison, back)
+    verdict = Verdict.CONFIRMED if match else Verdict.DISPUTED
+    return Audit(domain.name, claim, statement, verdict, explanation, comparison, back)
 
 
 async def audit_all(domains: typing.Sequence[Domain], mode: Mode) -> list[Audit]:
@@ -1029,15 +1069,14 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
 
     for audit in audits:
         mark = "ok " if audit.correct else "MISS"
-        if audit.comparison is None:
-            print(f"[{mark}] {audit.label}: error")
-        else:
-            category = (
-                ""
-                if audit.comparison.weakening is Weakening.NONE
-                else f" [{audit.comparison.weakening.value}]"
-            )
-            print(f"[{mark}] {audit.label}: {audit.comparison.verdict.value}{category}")
+        category = (
+            f" [{audit.comparison.weakening.value}]"
+            if audit.comparison is not None
+            and audit.comparison.weakening is not Weakening.NONE
+            else ""
+        )
+        decided = "error" if audit.verdict is None else audit.verdict.value
+        print(f"[{mark}] {audit.label}: {decided}{category}")
         print(f"       requirement: {audit.claim.requirement}")
         print(f"       statement:   {' '.join(audit.statement.split())}")
         if audit.back_translation is not None:
@@ -1048,6 +1087,8 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
             )
         if audit.comparison is not None and audit.comparison.discrepancy:
             print(f"       discrepancy: {audit.comparison.discrepancy}")
+        elif audit.explanation:
+            print(f"       reasoning:   {audit.explanation}")
         if audit.error:
             print(f"       no verdict:  {audit.error}")
         if not audit.correct:
@@ -1063,18 +1104,18 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
     # A "missed dispute" is an unfaithful theorem the audit confirmed. Claims the
     # pipeline never returned a verdict for are counted apart from both error
     # directions -- they are a failure of the harness, not of judgment.
-    errored = [a for a in audits if a.comparison is None]
+    errored = [a for a in audits if a.verdict is None]
     missed = [
         a
         for a in audits
-        if a.comparison is not None
+        if a.verdict is not None
         and a.claim.expected is Verdict.DISPUTED
         and not a.correct
     ]
     false_alarms = [
         a
         for a in audits
-        if a.comparison is not None
+        if a.verdict is not None
         and a.claim.expected is Verdict.CONFIRMED
         and not a.correct
     ]
