@@ -23,12 +23,16 @@ reference implementation enforces it by hand-assembling prompt strings, under a
 comment reading ``CRITICAL: This prompt must NOT include the original
 requirements``. Here the comment is a signature:
 
-  * Blindness by construction. ``Informalizer.informalize`` takes one argument, a
-    Lean statement. There is no parameter through which a requirement could
-    arrive, its ``Agent`` history holds no turn in which one appeared, and nothing
-    in its lexical scope can fetch one. The instruction "do not look at the
-    requirement" is not in the prompt because it does not need to be -- the same
-    encapsulation ``review.py`` uses for tools, applied to data.
+  * Blindness by construction -- but the construction is the *module*, not the
+    signature. ``Informalizer.informalize`` takes one argument, a Lean statement,
+    and its ``Agent`` history holds no turn in which a requirement appeared. That
+    is necessary and it is not sufficient: the harness puts the source of the
+    template's defining module into the system prompt, so the agents live in
+    ``auditing_agents.py`` and the corpora, the mapping and the expected verdicts
+    live here, in a module they never import. Getting this wrong the first time
+    is what ``The leak`` below is about. The instruction "do not look at the
+    requirement" is still absent from the prompt -- it just takes a file boundary
+    rather than a parameter list to make that safe.
 
   * ...and the ablation is visible in the signature too. ``--strategy
     single-pass`` asks one template to informalize-then-compare, so
@@ -37,29 +41,29 @@ requirements``. Here the comment is a signature:
     what is in scope for the model at the moment it commits to a reading of the
     formal statement -- a difference in the type signature, not in the wording.
 
-    **This example does not reproduce the blog's ordering.** Measured 2026-07
-    over the full 40-claim corpus, the lower four rows at temperature 0 to match
-    upstream's benchmark:
+    Measured 2026-07 over the full 40-claim corpus, the lower three rows at
+    temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
+    rejects temperature 0, so it runs at the provider default):
 
     ==============  ========  ===========  =====
     model           two-pass  single-pass  naive
     ==============  ========  ===========  =====
-    gpt-5.5          100.0%       100.0%   100.0%
-    gpt-4.1          100.0%        97.5%   100.0%
-    gpt-4o            90.0%        87.5%    87.5%
-    gpt-4.1-mini      87.5%        90.0%    85.0%
+    gpt-5.5            95.0%        95.0%  95.0%
+    gpt-4.1            85.0%        90.0%  85.0%
+    gpt-4o             85.0%        70.0%  82.5%
+    gpt-4.1-mini       72.5%        70.0%  70.0%
     ==============  ========  ===========  =====
 
-    The two weaker models land in upstream's own accuracy band (it reports
-    86.1--96.3%), so this is not merely a ceiling effect. But every difference
-    here is exactly one item out of forty -- 2.5pp, against a 10.2pp headline --
-    and the ordering is not stable: two-pass beats naive in three of four models,
-    and loses to *single-pass* in one. Upstream's own matched-model pair
-    (sonnet informalize + sonnet compare, 94.4%, against naive sonnet at 86.1%)
-    is an 8.3pp gap; nothing here gets within a third of it.
+    Two-pass is ahead of naive in two of four models and never behind it; ahead
+    of single-pass in two, tied in one, and 5pp behind in one. The one large
+    effect -- gpt-4o, two-pass over single-pass, +15pp, six items -- is in the
+    predicted direction and bigger than upstream's 10.2pp headline. But it is one
+    model in one run, and the model directly above it in capability goes the
+    other way. Four models is not enough to call this, and n=40 at one run per
+    cell has roughly a 13% chance of detecting an 8pp effect even if real.
 
-    What does reproduce, exactly, is the *shape* of the errors -- see
-    ``Why the ablation does not separate`` below.
+    **An earlier version of this table was wrong, and how it was wrong is worth
+    more than the table.** See ``The leak`` below.
 
   * Coherent verdicts by construction. A ``Comparison`` certifies at decode time
     that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -117,26 +121,48 @@ Demonstrates:
 #   keeps the blindness argument obvious and lets the fan-out be the demo. This
 #   also removes a confound -- see below.
 
-# Why the ablation does not separate
-# ----------------------------------
-# Worth writing down, because the obvious reading of the numbers above -- "the
-# corpus is too easy" -- is not what the evidence says.
+# The leak
+# --------
+# The first version of this example defined the agents in *this* file, beside the
+# corpora and the labelled mapping. The harness assembles a template's system
+# prompt partly from the source of the module the template is defined in (the
+# prompt-assembly table in `effectful.handlers.llm.types.Template` documents this
+# plainly), so every agent -- including the informalizer whose whole job is not to
+# know -- received all 40 `Claim(...)` entries with their expected verdicts and
+# the written reason for each, both Lean corpora with the `Draft`/`Audited`
+# namespaces that `statement_of` exists to strip, and the body of `Wf`, the
+# invariant that is supposed to arrive as an opaque atom. A dump measured 78,909
+# bytes of system prompt, 81% of it this file.
 #
-# - The error *shape* reproduces precisely, even though the accuracy gap does
-#   not. Across the six runs on the two weaker models (30 errors in total),
-#   29 are false disputes of faithful theorems and exactly one is an unfaithful
-#   theorem waved through -- the same asymmetry upstream records across its 446
-#   judgments. Two claims are wrong under every strategy on both models,
-#   `delegation/Audited.other_subject_unaffected` and
-#   `delegation/Audited.delegation_no_escalation`, which is structurally the
-#   finding upstream reports as "GrantSubjectsExist and DelegateNonExistentIsNoop
-#   are irreducibly hard for single-call variants": two items, both from the
-#   authority domain, both faithful, both over-flagged. And the errors land
-#   where the mechanism predicts -- on the invariant projections and on
-#   `unrelated_grant_unaffected`, the deliberately redundant-strengthening claim.
-#   On gpt-4.1-mini the naive strategy disputes two invariant projections that
-#   the two-pass split gets right, which is the predicted direction; on gpt-4o
-#   all three strategies trip on the same one.
+# The models used it. In those runs they returned discrepancy text matching the
+# answer key's `why` strings word for word, including cases where the key for a
+# *sibling* theorem was pasted onto a theorem that had no hypothesis at all. The
+# whole first table -- and the finding drawn from it, that the error shape
+# reproduced upstream's -- was an artifact. Both are withdrawn.
+#
+# Two things make this worth keeping in the file rather than quietly fixing.
+# First, the design claim in the header ("nothing in its lexical scope can fetch
+# one") was false in a way no amount of reading the prompts would reveal: the
+# blindness lived in the signature, and the framework serialises the module. In
+# this framework **the module is the confidentiality boundary**, which is why the
+# agents now live in `auditing_agents.py` and this file is never imported by
+# them. Any scored example that carries its own answer key needs the same split.
+# Second, the corrected numbers are materially different in both directions:
+# accuracies fell across the board (gpt-5.5 from 100% to 95%), and the ablation
+# that showed nothing now shows two-pass ahead in most cells.
+#
+# What did *not* survive the fix is the error-direction finding. With the key
+# visible, every strategy over-flagged; with it gone, the six runs on the two
+# weaker models produce 49 unfaithful theorems waved through against 5 faithful
+# ones disputed. That is the reverse of upstream, which records essentially no
+# false confirms at all. The honest reading is that this Lean corpus and
+# upstream's Dafny one fail in opposite directions: its planted flaws were all
+# caught by every variant and the contest was over false alarms, whereas these
+# planted flaws are genuinely hard for a mid-capability model to catch. That is a
+# difference in corpus, not a difference in architecture, and it means the
+# mechanism upstream's benchmark actually measures is not the one measured here.
+#
+# Notes on upstream's own numbers, which still stand:
 #
 # - The traps were never the discriminator, upstream's included. Reading the
 #   reference implementation's own per-item eval outputs (`eval/results/*.json`):
@@ -178,22 +204,28 @@ Demonstrates:
 #   is not strictly better... The blind informalization step adds an
 #   interpretation layer that can overcomplicate comparisons."
 #
-# So the picture is: the *failure mode* ClaimCheck targets is real and shows up
-# here exactly as described -- these checkers never wave a cheat through, they
-# over-flag honest theorems, and they do it on invariant projections and on specs
-# stronger than their requirement. The *remedy's* measured advantage is what does
-# not survive: at best one item in forty, unstable in direction, against a
-# published ten-point gap. This file reports that rather than tuning the corpus
-# until the preferred ordering appears.
+# So: upstream's effect is small, capability-bound, and rests on four discordant
+# items; this replication, once its own leak was fixed, puts two-pass ahead in
+# most cells but on far too little data to call either way. What this file can
+# honestly claim is the pipeline and the failure mode, not a verdict on the
+# remedy.
 #
-# Two caveats in the other direction, both real. Upstream's two-pass compare is
-# *batched* per domain, so its comparator sees the faithful and unfaithful
-# theorem for the same requirement side by side -- a contrastive signal the
-# per-item modes never get. Every strategy here is per-item, which makes this a
-# cleaner test of prompt structure alone. And these are single runs at
-# temperature 0 on a 40-item corpus, where one item is 2.5pp; upstream averaged
-# its two-pass arm over three runs and its comparators over one. Neither its
-# numbers nor these support a difference this small.
+# Known limits of the numbers above, in the order they would need fixing:
+#
+# - Power. 40 items, one run per cell. Detecting an 8-10pp paired effect needs
+#   roughly 200 items; extra runs buy almost nothing at temperature 0, where
+#   repeats are near-deterministic.
+# - Corpus shape. 4 of the 22 faithful claims here are opaque-invariant
+#   projections, against 26 of 27 upstream. The mechanism their benchmark
+#   actually tests is barely present in this one.
+# - Schema asymmetry. The naive arm returns the same `Comparison` type as the
+#   others, so it gets the five-category weakening taxonomy for free; upstream's
+#   `NAIVE_TOOL` is a bare yes/no with no taxonomy. This example's naive arm is
+#   better equipped than upstream's, which would understate any gap.
+# - Batching. Upstream's two-pass compare is batched per domain, so its
+#   comparator sees the faithful and unfaithful theorem for one requirement side
+#   by side -- a contrastive signal its per-item arms never get. Everything here
+#   is per-item, which is the cleaner test but not the same test.
 #
 # Other simplifications:
 # - No coverage check. Both here and upstream, a requirement that no theorem
@@ -210,9 +242,24 @@ import sys
 import textwrap
 import typing
 
-import pydantic.dataclasses
-
-from effectful.handlers.llm import Agent, Template
+# The agents live next door, and that is load-bearing rather than tidiness: the
+# harness builds a template's system prompt partly from the source of the module
+# the template is defined in, so anything sharing a file with an Agent is shown
+# to it. Everything below -- the corpora, the labelled mapping, the expected
+# verdicts and their rationales -- is exactly what the auditing agents must not
+# see. See the module docstring of `auditing_agents` for what happened when they
+# did share a file.
+from auditing_agents import (
+    Comparator,
+    Comparison,
+    Informalization,
+    Informalizer,
+    NaiveAuditor,
+    SinglePassAuditor,
+    Strength,
+    Verdict,
+    Weakening,
+)
 
 # ---------------------------------------------------------------------------
 # The corpus. A verified election tally: `count` tallies the ballots cast for a
@@ -526,28 +573,13 @@ def statement_of(corpus: str, qualified: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-class Verdict(enum.StrEnum):
-    CONFIRMED = "confirmed"
-    DISPUTED = "disputed"
-
-
-class Weakening(enum.StrEnum):
-    """How a theorem can fail to mean its requirement -- the blog's taxonomy."""
-
-    NONE = "none"
-    TAUTOLOGY = "tautology"
-    WEAKENED_CONCLUSION = "weakened-conclusion"
-    NARROWED_SCOPE = "narrowed-scope"
-    MISSING_CASE = "missing-case"
-    WRONG_PROPERTY = "wrong-property"
-
-
 @dataclasses.dataclass(frozen=True)
 class Claim:
     """A requirement, the theorem said to formalize it, and the labelled truth.
 
-    This is Python-side bookkeeping: ``expected`` and ``why`` are the answer key
-    and never cross the model boundary.
+    ``expected`` and ``why`` are the answer key. They are Python-side bookkeeping
+    and must stay that way: they are never passed to a template, and this module
+    is never imported by the one the agents are defined in.
     """
 
     requirement: str
@@ -871,274 +903,6 @@ DOMAINS: dict[str, Domain] = {
 
 
 # ---------------------------------------------------------------------------
-# Types crossing the model boundary. A field's ``metadata={"description": ...}``
-# is inlined by pydantic into that field's JSON schema and rendered into the
-# system prompt, so per-field guidance reaches the model through the type and no
-# prompt has to restate it.
-# ---------------------------------------------------------------------------
-
-
-class Strength(enum.StrEnum):
-    TRIVIAL = "trivial"
-    WEAK = "weak"
-    MODERATE = "moderate"
-    STRONG = "strong"
-
-
-@pydantic.dataclasses.dataclass(frozen=True)
-class Informalization:
-    """Pass 1's output: what a Lean statement says, read on its own terms.
-
-    Produced without sight of the requirement the theorem was written for, which
-    is the whole mechanism -- a back-translation that agreed with the requirement
-    because it had been shown the requirement would be worth nothing.
-    """
-
-    natural_language: str = dataclasses.field(
-        metadata={
-            "description": "One sentence of plain English for what this theorem "
-            "guarantees. Be literal: describe what the statement says, not what "
-            "you suppose its author was aiming at."
-        }
-    )
-    hypotheses: str = dataclasses.field(
-        metadata={
-            "description": "What must hold for the guarantee to apply, in English; "
-            "'none' if the statement holds unconditionally."
-        }
-    )
-    conclusion: str = dataclasses.field(
-        metadata={"description": "What is guaranteed, in English."}
-    )
-    scope: str = dataclasses.field(
-        metadata={
-            "description": "What the guarantee ranges over: all ballot sequences, "
-            "one particular sequence, sequences satisfying some restriction, etc."
-        }
-    )
-    strength: Strength = dataclasses.field(
-        metadata={
-            "description": "'trivial' if the conclusion restates a hypothesis or "
-            "holds for every value of the types involved regardless (e.g. a "
-            "natural number being non-negative, or both sides of an equation "
-            "being the same term); 'weak' if it says very little; 'moderate' if "
-            "it is a substantive claim; 'strong' if it constrains behaviour "
-            "sharply."
-        }
-    )
-    confidence: float = dataclasses.field(
-        metadata={"description": "0-1, how sure you are this reading is faithful."}
-    )
-
-
-@pydantic.dataclasses.dataclass(frozen=True)
-class Comparison:
-    """Pass 2's verdict on one requirement/theorem pair.
-
-    ``__post_init__`` certifies the verdict is internally coherent before it is
-    ever returned: a match is exactly a `Weakening.NONE`, and a mismatch has to
-    say what is wrong. An incoherent answer raises, and `RetryLLMHandler` hands
-    the message back to the model as the next turn -- so "matches, but it's a
-    tautology" is not a verdict this pipeline can emit.
-    """
-
-    match: bool = dataclasses.field(
-        metadata={
-            "description": "True only if the theorem expresses the whole of the "
-            "requirement. A theorem that is stronger than the requirement still "
-            "matches; one that is weaker, narrower, or about something else "
-            "does not."
-        }
-    )
-    weakening: Weakening = dataclasses.field(
-        metadata={
-            "description": "The category of divergence: 'none' when and only when "
-            "match is true."
-        }
-    )
-    discrepancy: str = dataclasses.field(
-        metadata={
-            "description": "What the requirement asks for that the theorem does "
-            "not deliver. Empty when match is true."
-        }
-    )
-    explanation: str = dataclasses.field(
-        metadata={"description": "Brief reasoning for the verdict."}
-    )
-
-    def __post_init__(self) -> None:
-        if self.match and self.weakening is not Weakening.NONE:
-            raise ValueError(
-                f"incoherent verdict: match is true but weakening is "
-                f"{self.weakening.value!r}. If the theorem really expresses the "
-                "requirement the weakening is 'none'; otherwise match is false."
-            )
-        if not self.match and self.weakening is Weakening.NONE:
-            raise ValueError(
-                "incoherent verdict: match is false but weakening is 'none'. "
-                "Name the category of the divergence."
-            )
-        if not self.match and not self.discrepancy.strip():
-            raise ValueError(
-                "match is false but no discrepancy is given; say what the "
-                "requirement asks for that the theorem does not deliver."
-            )
-
-    @property
-    def verdict(self) -> Verdict:
-        return Verdict.CONFIRMED if self.match else Verdict.DISPUTED
-
-
-# ---------------------------------------------------------------------------
-# Pass 1. `informalize` takes a Lean statement and nothing else: there is no
-# parameter for a requirement, this Agent's history contains no turn in which
-# one appeared, and no Tool in scope can go and find one. That is the entire
-# separation -- not an instruction the model is trusted to obey.
-# ---------------------------------------------------------------------------
-
-
-class Informalizer(Agent):
-    """You read Lean 4 theorem statements and say, in plain English, exactly what
-    they guarantee. You are a translator, not a sympathetic reader: you report
-    what the statement says, never what you imagine it was for. You are not shown
-    why any theorem was written, and you should not speculate about it."""
-
-    @Template.define
-    def informalize(self, statement: str) -> Informalization:
-        """Translate this Lean 4 theorem statement into English, as literally as
-        you can.
-
-        ```lean
-        {statement}
-        ```
-
-        Separate what is assumed (the hypotheses) from what is guaranteed (the
-        conclusion), and say what the guarantee ranges over. Then rate how much
-        the statement actually claims -- be blunt about this. A conclusion that
-        holds for every value of the types involved, or that merely repeats a
-        hypothesis, is trivial no matter how substantial the theorem's name
-        makes it sound.
-
-        Read only the statement in front of you. Do not guess at intent.
-        """
-
-
-# ---------------------------------------------------------------------------
-# Pass 2. This agent does see the requirement -- comparing is its job. What it
-# gets from pass 1 is a reading of the formal statement produced in ignorance of
-# that requirement, so agreement between them is evidence.
-# ---------------------------------------------------------------------------
-
-
-class Comparator(Agent):
-    """You check whether a formal theorem carries the weight a natural-language
-    requirement puts on it. You assume the proof is correct: you are not auditing
-    the proof, you are auditing the claim. You are strict -- a theorem that is
-    true, proved, and beside the point is a finding -- but not pedantic about
-    wording, since only the meaning has to survive."""
-
-    @Template.define
-    def compare(
-        self, requirement: str, statement: str, back_translation: Informalization
-    ) -> Comparison:
-        """Decide whether this theorem expresses this requirement.
-
-        **Requirement, as written by the person who asked for it:**
-        {requirement}
-
-        **The theorem said to formalize it:**
-        ```lean
-        {statement}
-        ```
-
-        **Back-translation** -- what the statement says, according to a reader
-        who was shown the statement alone and never saw the requirement above:
-        {back_translation}
-
-        Watch for the ways a proved theorem can still miss:
-
-        1. **tautology** -- the conclusion restates a hypothesis, or holds for
-           every value of the types involved, so nothing is established.
-        2. **weakened-conclusion** -- the theorem guarantees less than was asked
-           (a looser bound, a weaker relation).
-        3. **narrowed-scope** -- an extra hypothesis, or a less general shape,
-           restricts the guarantee to a subset of the cases the requirement
-           covers.
-        4. **missing-case** -- the requirement asks for several things and the
-           theorem delivers some of them.
-        5. **wrong-property** -- the theorem is about something else, however
-           adjacent.
-
-        A theorem *stronger* than the requirement still matches; do not flag
-        rephrasing. But if the back-translation rates the statement trivial, the
-        requirement had better be trivial too. Judge the statement, not its name:
-        a theorem called after the property it was meant to prove is no evidence
-        that it proves it.
-        """
-
-
-# ---------------------------------------------------------------------------
-# The ablations. Both collapse the two passes into one call -- so the
-# requirement is in scope for the model at the moment it reads the formal
-# statement, and its reading of that statement can be shaped by what it already
-# knows the answer is supposed to be. This is the failure mode the split exists
-# to prevent, and `--strategy` is what makes it measurable rather than assumed --
-# on this corpus it measures no difference at all, which is reported and not
-# hidden.
-# ---------------------------------------------------------------------------
-
-
-class SinglePassAuditor(Agent):
-    """You audit whether a formal theorem expresses a natural-language
-    requirement, informalizing the theorem and then comparing, in one pass. You
-    assume the proof is correct and audit the claim."""
-
-    @Template.define
-    def audit(self, requirement: str, statement: str) -> Comparison:
-        """Check whether this theorem expresses this requirement.
-
-        **The theorem:**
-        ```lean
-        {statement}
-        ```
-
-        First, state to yourself what the theorem guarantees and under what
-        hypotheses, in plain English, before you read any further.
-
-        **Requirement:** {requirement}
-
-        Now compare the two, watching for a conclusion that restates a
-        hypothesis or holds trivially (**tautology**), one that guarantees less
-        than was asked (**weakened-conclusion**), an extra hypothesis or less
-        general shape (**narrowed-scope**), a requirement only partly delivered
-        (**missing-case**), or a theorem about something else entirely
-        (**wrong-property**).
-
-        A theorem stronger than the requirement still matches. Judge the
-        statement, not its name.
-        """
-
-
-class NaiveAuditor(Agent):
-    """You check whether formal theorems match the requirements they are said to
-    formalize."""
-
-    @Template.define
-    def audit(self, requirement: str, statement: str) -> Comparison:
-        """Does this Lean theorem faithfully capture the requirement below?
-
-        **Requirement:** {requirement}
-
-        ```lean
-        {statement}
-        ```
-
-        Answer with a match verdict; if it does not match, categorize how and say
-        what is missing.
-        """
-
-
-# ---------------------------------------------------------------------------
 # Driving one claim through a mode. Each claim gets its own agent instances, so
 # nothing an audit learns can leak into the next one through a shared history.
 # ---------------------------------------------------------------------------
@@ -1152,17 +916,27 @@ class Mode(enum.StrEnum):
 
 @dataclasses.dataclass(frozen=True)
 class Audit:
-    """One claim's result: what the pipeline decided, and what it read on the way."""
+    """One claim's result: what the pipeline decided, and what it read on the way.
+
+    ``comparison`` is None when the pipeline never produced a well-formed verdict
+    -- the model kept emitting an incoherent one and `RetryLLMHandler` ran out of
+    attempts. That is upstream's third status, ``error``: not a confirmation and
+    not a dispute, and it counts against the run rather than being dropped.
+    """
 
     domain: str
     claim: Claim
     statement: str
-    comparison: Comparison
+    comparison: Comparison | None
     back_translation: Informalization | None  # None outside two-pass mode
+    error: str | None = None
 
     @property
     def correct(self) -> bool:
-        return self.comparison.verdict is self.claim.expected
+        return (
+            self.comparison is not None
+            and self.comparison.verdict is self.claim.expected
+        )
 
     @property
     def label(self) -> str:
@@ -1170,24 +944,30 @@ class Audit:
 
 
 def audit_claim(domain: Domain, claim: Claim, mode: Mode) -> Audit:
-    """Audit one requirement/theorem pair under the given mode."""
+    """Audit one requirement/theorem pair under the given mode.
+
+    A claim the model cannot produce a decodable verdict for becomes an ``error``
+    result rather than an exception: one intractable item should cost one item,
+    not the other thirty-nine.
+    """
     statement = statement_of(domain.corpus, claim.theorem)
-
-    if mode is Mode.TWO_PASS:
-        # Pass 1 receives `statement`. There is nowhere in this call for
-        # `claim.requirement` to go.
-        back = Informalizer().informalize(statement)
-        comparison = Comparator().compare(claim.requirement, statement, back)
-        return Audit(domain.name, claim, statement, comparison, back)
-
-    auditor = SinglePassAuditor() if mode is Mode.SINGLE_PASS else NaiveAuditor()
-    return Audit(
-        domain.name,
-        claim,
-        statement,
-        auditor.audit(claim.requirement, statement),
-        None,
-    )
+    back: Informalization | None = None
+    try:
+        if mode is Mode.TWO_PASS:
+            # Pass 1 receives `statement`. There is nowhere in this call for
+            # `claim.requirement` to go.
+            back = Informalizer().informalize(statement)
+            comparison = Comparator().compare(claim.requirement, statement, back)
+        else:
+            auditor = (
+                SinglePassAuditor() if mode is Mode.SINGLE_PASS else NaiveAuditor()
+            )
+            comparison = auditor.audit(claim.requirement, statement)
+    except Exception as exc:
+        return Audit(
+            domain.name, claim, statement, None, back, f"{type(exc).__name__}: {exc}"
+        )
+    return Audit(domain.name, claim, statement, comparison, back)
 
 
 async def audit_all(domains: typing.Sequence[Domain], mode: Mode) -> list[Audit]:
@@ -1248,14 +1028,16 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
     print(f"\n{'=' * 78}\nClaimCheck audit -- strategy: {mode.value}\n{'=' * 78}\n")
 
     for audit in audits:
-        got = audit.comparison.verdict
         mark = "ok " if audit.correct else "MISS"
-        category = (
-            ""
-            if audit.comparison.weakening is Weakening.NONE
-            else f" [{audit.comparison.weakening.value}]"
-        )
-        print(f"[{mark}] {audit.label}: {got.value}{category}")
+        if audit.comparison is None:
+            print(f"[{mark}] {audit.label}: error")
+        else:
+            category = (
+                ""
+                if audit.comparison.weakening is Weakening.NONE
+                else f" [{audit.comparison.weakening.value}]"
+            )
+            print(f"[{mark}] {audit.label}: {audit.comparison.verdict.value}{category}")
         print(f"       requirement: {audit.claim.requirement}")
         print(f"       statement:   {' '.join(audit.statement.split())}")
         if audit.back_translation is not None:
@@ -1264,8 +1046,10 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
                 f"       read as:     {back.natural_language} "
                 f"(strength: {back.strength.value})"
             )
-        if audit.comparison.discrepancy:
+        if audit.comparison is not None and audit.comparison.discrepancy:
             print(f"       discrepancy: {audit.comparison.discrepancy}")
+        if audit.error:
+            print(f"       no verdict:  {audit.error}")
         if not audit.correct:
             print(f"       EXPECTED {audit.claim.expected.value}: {audit.claim.why}")
         print()
@@ -1276,12 +1060,23 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
             print(f"  - {note}")
         print()
 
-    # A "missed dispute" is an unfaithful theorem the audit confirmed.
+    # A "missed dispute" is an unfaithful theorem the audit confirmed. Claims the
+    # pipeline never returned a verdict for are counted apart from both error
+    # directions -- they are a failure of the harness, not of judgment.
+    errored = [a for a in audits if a.comparison is None]
     missed = [
-        a for a in audits if a.claim.expected is Verdict.DISPUTED and not a.correct
+        a
+        for a in audits
+        if a.comparison is not None
+        and a.claim.expected is Verdict.DISPUTED
+        and not a.correct
     ]
     false_alarms = [
-        a for a in audits if a.claim.expected is Verdict.CONFIRMED and not a.correct
+        a
+        for a in audits
+        if a.comparison is not None
+        and a.claim.expected is Verdict.CONFIRMED
+        and not a.correct
     ]
     correct = sum(a.correct for a in audits)
 
@@ -1302,6 +1097,8 @@ def report(audits: typing.Sequence[Audit], mode: Mode) -> None:
         + (f" ({', '.join(a.label for a in missed)})" if missed else "")
         + f"\n  faithful theorems disputed:        {len(false_alarms)}"
         + (f" ({', '.join(a.label for a in false_alarms)})" if false_alarms else "")
+        + f"\n  no verdict (retries exhausted):    {len(errored)}"
+        + (f" ({', '.join(a.label for a in errored)})" if errored else "")
     )
 
 
