@@ -535,7 +535,7 @@ class Reviewer(Agent):
 # ---------------------------------------------------------------------------
 
 
-async def review_paper(paper_text: str, guidelines: str) -> Review:
+async def review(paper_text: str, guidelines: str) -> Review:
     """Acquire context, actively verify it, then synthesize -- the two streams."""
     # Internal compression first: everything downstream reasons over the summary.
     summary = Summarizer().summarize(paper_text)
@@ -616,8 +616,8 @@ def main() -> None:
         global SEARCH_BACKEND
         SEARCH_BACKEND = _semanticscholar_search
 
-    review = asyncio.run(review_paper(args.submission, GUIDELINES[args.venue]))
-    print(f"\n# Review ({args.venue})\n\n{review}")
+    paper_review = asyncio.run(review(args.submission, GUIDELINES[args.venue]))
+    print(f"\n# Review ({args.venue})\n\n{paper_review}")
 
 
 if __name__ == "__main__":

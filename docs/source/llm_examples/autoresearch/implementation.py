@@ -673,7 +673,7 @@ class Search:
 # ---------------------------------------------------------------------------
 
 
-def run_mars(
+def implement(
     task: Task,
     *,
     max_rollouts: int,
@@ -766,7 +766,7 @@ def main() -> None:
     task = make_task(args.num_cities, args.seed)
     print(f"Task: shortest closed tour over {args.num_cities} cities\n")
 
-    search, best = run_mars(
+    search, best = implement(
         task,
         max_rollouts=args.max_rollouts,
         reflect_every=args.reflect_every,

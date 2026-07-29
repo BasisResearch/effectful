@@ -619,7 +619,7 @@ def refine(
     return manuscript, review, trace
 
 
-async def _compose(
+async def _write(
     materials: RawMaterials, venue: Venue, *, max_iters: int
 ) -> tuple[Manuscript, Review, list[Review]]:
     """Outline -> (plot || review) -> write -> refine: the five steps."""
@@ -643,7 +643,7 @@ async def _compose(
     return refine(draft, venue.guidelines, max_iters=max_iters)
 
 
-def compose(
+def write(
     materials: RawMaterials, venue: Venue, *, max_iters: int
 ) -> tuple[Manuscript, Review, list[Review]]:
     """The full pipeline: synthesize the outline, run plotting and literature review
@@ -655,7 +655,7 @@ def compose(
     """
     token = CUTOFF.set(venue.cutoff)
     try:
-        return asyncio.run(_compose(materials, venue, max_iters=max_iters))
+        return asyncio.run(_write(materials, venue, max_iters=max_iters))
     finally:
         CUTOFF.reset(token)
 
@@ -706,7 +706,7 @@ def main() -> None:
     args = parser.parse_args()
 
     venue = VENUES[args.venue]
-    manuscript, review, trace = compose(MATERIALS, venue, max_iters=args.max_iters)
+    manuscript, review, trace = write(MATERIALS, venue, max_iters=args.max_iters)
     print(f"\n[refine] overall-score trace: {[r.overall for r in trace]}")
     print(f"\n{review}   (venue: {venue.name})")
     print(f"\n{manuscript}")

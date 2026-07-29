@@ -701,7 +701,7 @@ async def coe_audit(
 # ---------------------------------------------------------------------------
 
 
-def run_scientist_one(
+def investigate(
     task: Task,
     *,
     rounds: int = 2,
@@ -859,7 +859,7 @@ def main() -> None:
         f"Task: subset of {list(task.numbers)} summing as close as possible to {task.target}\n"
     )
 
-    paper, verdicts = run_scientist_one(
+    paper, verdicts = investigate(
         task,
         rounds=args.rounds,
         branches=args.branches,
