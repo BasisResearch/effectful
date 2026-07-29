@@ -621,7 +621,11 @@ class Term[T](abc.ABC):
 
     def __str__(self) -> str:
         from effectful.internals.runtime import interpreter
-        from effectful.ops.semantics import apply, evaluate
+        from effectful.ops.semantics import apply, as_tuple, evaluate
+        from effectful.ops.syntax import (
+            ConstructorOperation,
+            DataclassConstructorOperation,
+        )
 
         fresh: dict[str, dict[Operation, int]] = collections.defaultdict(dict)
 
@@ -638,24 +642,14 @@ class Term[T](abc.ABC):
                 return name
             return f"{name}!{n}"
 
-        def term_str(term):
-            if isinstance(term, Operation):
-                return op_str(term)
-            elif isinstance(term, list):
-                return "[" + ", ".join(map(term_str, term)) + "]"
-            elif isinstance(term, tuple):
-                return "(" + ", ".join(map(term_str, term)) + ")"
-            elif isinstance(term, dict):
-                return (
-                    "{"
-                    + ", ".join(
-                        f"{term_str(k)}:{term_str(v)}" for (k, v) in term.items()
-                    )
-                    + "}"
-                )
-            return str(term)
+        class _Rendered(str):
+            def __repr__(self):
+                return self
 
-        def _apply(op, *args, **kwargs) -> str:
+        def term_str(term):
+            return op_str(term) if isinstance(term, Operation) else str(term)
+
+        def _format_call(name, args, kwargs) -> str:
             args_str = ", ".join(map(term_str, args)) if args else ""
             kwargs_str = (
                 ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())
@@ -663,14 +657,44 @@ class Term[T](abc.ABC):
                 else ""
             )
 
-            ret = f"{op_str(op)}({args_str}"
+            ret = f"{name}({args_str}"
             if kwargs:
                 ret += f"{', ' if args else ''}"
-            ret += f"{kwargs_str})"
-            return ret
+            return _Rendered(f"{ret}{kwargs_str})")
 
-        with interpreter({apply: _apply}):
-            return typing.cast(str, evaluate(self))
+        def _apply(op, *args, **kwargs) -> str:
+            return _format_call(op_str(op), args, kwargs)
+
+        def _constructor_apply(op, *args, **kwargs):
+            # Dataclass constructors are introduced by evaluate() while traversing
+            # an operation's arguments. They are traversal machinery, not nodes in
+            # the expression being displayed.
+            constructor = op.__signature__.return_annotation
+            name = getattr(constructor, "__name__", str(constructor))
+            return _format_call(name, args, kwargs)
+
+        def _construct_collection(constructor, items):
+            return constructor(
+                _Rendered(op_str(item)) if isinstance(item, Operation) else item
+                for item in items
+            )
+
+        collection_constructors = {
+            ConstructorOperation.define(constructor): functools.partial(
+                _construct_collection, constructor
+            )
+            for constructor in (tuple, list, dict, set, frozenset)
+        }
+        with interpreter(
+            {
+                apply: _apply,
+                ConstructorOperation.__apply__: _constructor_apply,
+                DataclassConstructorOperation.__apply__: _constructor_apply,
+                as_tuple: lambda *args: args,
+                **collection_constructors,
+            }
+        ):
+            return str(typing.cast(str, evaluate(self)))
 
 
 try:
