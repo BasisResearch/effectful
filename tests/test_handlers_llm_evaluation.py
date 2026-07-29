@@ -252,6 +252,58 @@ def test_context_enum_and_dataclass_are_checked(tmp_path):
     assert _raises(bad, anchor)
 
 
+def test_context_pydantic_model_is_checked_issue_576(tmp_path):
+    # Issue #576, the reported type: a Pydantic model. The old quotation mechanism
+    # re-emitted the model's inherited methods as stubs and dropped their
+    # keyword-only markers, so mypy rejected every generated function over a model
+    # with spurious `[override]` errors on `__deepcopy__`, `copy`, `dict`, `json`,
+    # `model_copy`, `model_dump`... Splicing reaches the real `BaseModel` through
+    # its real import instead, so a correct function passes -- including one calling
+    # `model_copy`, whose mangled stub was one of the reported errors -- while a
+    # genuine misuse is still caught.
+    source = (
+        "import pydantic\n"
+        "from collections.abc import Callable\n\n\n"
+        "class M(pydantic.BaseModel):\n"
+        "    x: int\n"
+        "    y: str\n\n\n"
+        "def templ() -> Callable[[M], M]:\n"
+        "    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_pydantic_fixture")
+    good = 'def f(m: M) -> M:\n    return m.model_copy(update={"x": m.x + 1})\n'
+    bad = "def f(m: M) -> M:\n    return m.x\n"  # int, not M
+    assert not _raises(good, anchor)
+    assert _raises(bad, anchor)
+
+
+def test_decode_runtime_only_pydantic_model_issue_576():
+    # Issue #576 verbatim: a model built by a factory exists only at runtime, so it
+    # cannot be imported from any file. Decoding a `Callable` over it used to fail
+    # in the type checker (which synthesized stubs from whatever was in the decode
+    # context); now the model is simply a runtime value passed through the context,
+    # and the decode succeeds and round-trips an instance.
+    def _make_model() -> type[pydantic.BaseModel]:
+        class MyModel(pydantic.BaseModel):
+            x: int
+            y: str
+
+        return MyModel
+
+    MyModel = _make_model()
+
+    with handler(UnsafeEvalProvider()):
+        fn = pydantic.TypeAdapter(
+            Encodable[Callable[[MyModel], MyModel]]
+        ).validate_python(
+            SynthesizedFunction(
+                module_code="def identity(a: MyModel) -> MyModel:\n    return a"
+            ),
+            context={"MyModel": MyModel},
+        )
+        assert fn(MyModel(x=1, y="hi")) == MyModel(x=1, y="hi")
+
+
 def test_generated_reference_to_unsourced_name_raises():
     # A name present only at runtime (injected into the env, absent from the
     # template's source) is unrecoverable -> mypy [name-defined] in-region ->
