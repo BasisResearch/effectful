@@ -35,7 +35,6 @@ from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     FinalTool,
-    LiteLLMProvider,
     ResultDecodingError,
     Tool,
     ToolCallDecodingError,
@@ -46,6 +45,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     completion,
 )
+from effectful.handlers.llm.harness.providing import LiteLLMProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.scoping import LexicalReaders
 from effectful.handlers.llm.types import Encodable

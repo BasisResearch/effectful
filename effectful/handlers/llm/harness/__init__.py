@@ -49,10 +49,10 @@ from effectful.handlers.llm.harness.execution import (
     RestrictedEvalProvider,
     UnsafeEvalProvider,
 )
-from effectful.handlers.llm.harness.hooks import (
+from effectful.handlers.llm.harness.persisting import SQLitePersister
+from effectful.handlers.llm.harness.providing import (
     LiteLLMProvider,
 )
-from effectful.handlers.llm.harness.persisting import SQLitePersister
 from effectful.handlers.llm.harness.rendering import (
     RichTerminalRenderer,
     SystemPromptDumper,

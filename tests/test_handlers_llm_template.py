@@ -18,12 +18,12 @@ from effectful.handlers.llm.harness.coding import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.encoding import _TOOLS_KEY, DecodedToolCall
 from effectful.handlers.llm.harness.execution import UnsafeEvalProvider
 from effectful.handlers.llm.harness.hooks import (
-    LiteLLMProvider,
     _get_history,
     call_system,
     call_user,
     completion,
 )
+from effectful.handlers.llm.harness.providing import LiteLLMProvider
 from effectful.handlers.llm.harness.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.scoping import LexicalReaders
 from effectful.ops.semantics import handler
