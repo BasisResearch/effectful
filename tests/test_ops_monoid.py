@@ -1,5 +1,6 @@
 import functools
 import math
+import numbers
 import operator
 import sys
 import typing
@@ -12,6 +13,7 @@ from hypothesis import strategies as st
 import effectful.handlers.jax.monoid  # noqa: F401
 from effectful.ops.monoid import (
     And,
+    Assignment,
     CartesianProduct,
     CartesianProductPlus,
     EliminateSingletonStreams,
@@ -39,6 +41,7 @@ from effectful.ops.monoid import (
     PlusPartial,
     PlusSingle,
     Product,
+    ProductMonoid,
     ReduceDependentRangeMask,
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
@@ -566,6 +569,36 @@ def test_plus_zero(monoid, backend: Backend):
     rhs = monoid.zero
     backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule={})
     backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
+
+
+def test_assignment_plus_disjoint_merge():
+    with handler(EvaluateIntp):
+        assert Assignment.plus({"x": 1}, {"y": 2}) == {"x": 1, "y": 2}
+        assert Assignment.plus() == {}
+
+
+def test_assignment_plus_rejects_duplicate_keys():
+    with handler(EvaluateIntp), pytest.raises(ValueError, match="Duplicate key"):
+        Assignment.plus({"x": 1}, {"x": 1})
+
+
+def test_product_monoid_plus():
+    scored_assignment = ProductMonoid(Sum, Assignment)
+
+    with handler(EvaluateIntp):
+        result = scored_assignment.plus((2, {"x": 1}), (3, {"y": 2}))
+
+    assert result == (5, {"x": 1, "y": 2})
+    assert scored_assignment.identity == (0, {})
+    assert is_commutative(scored_assignment)
+    assert not is_idempotent(scored_assignment)
+
+
+def test_product_monoid_inherits_idempotence():
+    extrema = ProductMonoid(Min, Max)
+
+    assert is_commutative(extrema)
+    assert is_idempotent(extrema)
 
 
 def test_plus_partial():
@@ -1601,3 +1634,23 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
     )
     rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+def test_reduce_argmin(backend: Backend):
+    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
+    X, Y, Z = backend.define_vars("X", "Y", "Z", ret="stream")
+
+    class ArgValue[T: numbers.Number]:
+        score: T = Sum.identity
+        assignment: Mapping[Operation, Any]
+
+    ArgSum = Monoid(name="ArgSum", identity=ArgValue())
+
+    lhs = Min.reduce(
+        (x() - 1) ** 2,
+        {
+            x: ArgSum.weighted(
+                range(3),
+            )
+        },
+    )

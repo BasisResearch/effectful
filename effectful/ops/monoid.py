@@ -203,6 +203,31 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+class ProductMonoid[L, R](Monoid[tuple[L, R]]):
+    """The componentwise product of two monoids.
+
+    ``ProductMonoid(left, right).plus`` combines the first components with
+    ``left.plus`` and the second components with ``right.plus``.
+    """
+
+    left: Monoid[L]
+    right: Monoid[R]
+
+    def __init__(self, left: Monoid[L], right: Monoid[R], name: str | None = None):
+        self.left = left
+        self.right = right
+        super().__init__(
+            name=name or f"{left.__name__}×{right.__name__}",
+            identity=(left.identity, right.identity),
+        )
+
+        # Product operations inherit these algebraic properties componentwise.
+        if is_commutative(left) and is_commutative(right):
+            is_commutative.register(self)
+        if is_idempotent(left) and is_idempotent(right):
+            is_idempotent.register(self)
+
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
@@ -1613,6 +1638,39 @@ def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
     return merged
 
 
+class AssignmentPlus(ObjectInterpretation):
+    """Disjoint-union implementation of :data:`Assignment`."""
+
+    @implements(Assignment.plus)
+    def plus(self, *args):
+        if not args:
+            return Assignment.identity
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        if not all(isinstance(arg, Mapping) for arg in args):
+            return fwd()
+        return _disjoint_merge(*args)
+
+
+class ProductMonoidPlus(ObjectInterpretation):
+    """Componentwise implementation of :class:`ProductMonoid`."""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not isinstance(monoid, ProductMonoid):
+            return fwd()
+        if not args:
+            return monoid.identity
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        if not all(isinstance(arg, tuple) and len(arg) == 2 for arg in args):
+            return fwd()
+        return (
+            monoid.left.plus(*(arg[0] for arg in args)),
+            monoid.right.plus(*(arg[1] for arg in args)),
+        )
+
+
 class CartesianProductPlus(ObjectInterpretation):
     """Pure-Python implementation of :data:`CartesianProduct`."""
 
@@ -2130,10 +2188,11 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
-    SumInverse(),
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
+    AssignmentPlus(),
+    ProductMonoidPlus(),
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
