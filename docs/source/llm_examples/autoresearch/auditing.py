@@ -104,9 +104,11 @@ requirements``. Here the comment is a file boundary:
     ===================================  ======
 
     Prompt-level separation beats no separation by 0.0 points. At matched model,
-    upstream's batched two-pass on Opus (`opus-opus.json`, 93.5%) *loses* to its
-    per-item naive on Opus (`naive-opus.json`, 94.4%). Against the best
-    legitimate comparator the published effect is +1.9pp -- under one item in 36
+    upstream's batched two-pass on Opus (`opus-opus-literal.json`, 95.4% -- the
+    run whose prompt matches the shipped `INFORMALIZE_PROMPT`, which carries the
+    literal hint unconditionally) beats its per-item naive on Opus
+    (`naive-opus.json`, 94.4%) by 1.0 point. Against the best legitimate
+    comparator the published effect is that 1.0 point -- under half an item in 36
     -- and paired exact McNemar on upstream's own per-item outputs gives p=1.00.
 
     Upstream's repository also contains a per-item Lean replication of its own
@@ -116,13 +118,44 @@ requirements``. Here the comment is a file boundary:
     interpretation layer that can overcomplicate comparisons"). The table above
     is a third observation of that.
 
-  * **So the claim is untested, not refuted.** Nobody has varied blindness with
-    everything else held constant: upstream confounds it with batching, a
-    two-model split, 3x the runs and the transport; this file removes the
-    batching. The decisive experiment is inside upstream's own `roundtrip.js` --
-    keep the batching, the model split, the transport and pass 2 byte-identical,
-    and toggle only whether `INFORMALIZE_PROMPT` has the requirements
-    interpolated into it. Run it on VERINA's 189 items, not on 36.
+  * **Batching, not blindness, is what the published two-pass arm buys.** Pass 2
+    here judges one claim at a time; upstream's judges a whole domain in one
+    call. Restoring only that -- pass 1 left per-item and byte-identical -- moves
+    the arm from 83.3% to 92.6% pooled over the three models it completes on
+    (15-5 discordant, exact McNemar p=0.041), taking gpt-5.5 to 36/36 and halving
+    gpt-4o's false disputes with no new false confirms:
+
+    ==============  ========  =========
+    model           per-item  batched
+    ==============  ========  =========
+    gpt-4o             72.2%      83.3%
+    gpt-4.1            91.7%      94.4%
+    gpt-5.5            86.1%     100.0%
+    ==============  ========  =========
+
+    The items it fixes are the diagnosed ones: `counter_non_negative` and
+    `base_hue_in_range` in all three models. And it is not the obvious mechanism
+    -- 8 of the 9 planted traps share a requirement string with a faithful
+    sibling, but removing every trap from the batch leaves the gain intact
+    (gpt-4o 8 false disputes per-item, 4 batched, 3 batched-without-foils). What
+    seems to matter is that `Inv m` is on *every* statement in a batch, so it
+    stops reading as this item's extra hypothesis, and that "better to flag than
+    to miss" applied to seven items at once becomes rank-ordering rather than a
+    hunt for one finding.
+
+    Upstream calls its batching a throughput optimisation ("Batching is a free
+    lunch... because each lemma is independent") and never tests it as a
+    treatment. Its own per-item Lean run does test it, accidentally:
+    `eval/bench-verina.js` calls `processTask(i)` one task at a time, and that
+    arm loses at N=189 with the same failure mode `reports/VERINA.md` describes
+    as "overly restrictive preconditions".
+
+  * **So the blindness claim is untested, not refuted.** Nobody has varied it
+    with everything else held constant. The decisive experiment is inside
+    upstream's own `roundtrip.js` -- keep the batching, the model split, the
+    transport and pass 2 byte-identical, and toggle only whether
+    `INFORMALIZE_PROMPT` has the requirements interpolated into it. Run it on
+    VERINA's 189 items, not on 36.
 
   * **Coherent verdicts by construction.** A ``Comparison`` certifies at decode
     time that ``match`` and ``weakening`` agree and that a mismatch names its
@@ -202,8 +235,8 @@ Demonstrates:
 #   the split at roughly 2.8pp of its effect.
 #
 # - One call per claim, not one batched call per pass. This is the one place the
-#   port is deliberately unlike upstream, and it is the leading explanation for
-#   the difference in results. `src/roundtrip.js` makes *two* API calls for a
+#   port is deliberately unlike upstream, and it is measured above as the
+#   dominant cause of the difference in results. `src/roundtrip.js` makes *two* API calls for a
 #   whole domain -- one informalize-all, one compare-all -- while
 #   `singlePromptCheck` and `naiveCheck` each put their call inside a
 #   `for (const l of lemmas)` loop. So upstream's winning arm sees a domain's
