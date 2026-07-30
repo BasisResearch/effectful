@@ -19,7 +19,13 @@ from effectful.ops.monoid import (
     _is_monoid_weighted,
 )
 from effectful.ops.semantics import apply, coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import _BaseTerm, defdata, deffn, syntactic_eq
+from effectful.ops.syntax import (
+    ConstructorOperation,
+    _BaseTerm,
+    defdata,
+    deffn,
+    syntactic_eq,
+)
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -61,7 +67,13 @@ def _canonicalize(expr, _canonical_op):
         """Apply a bound-variable renaming using ``evaluate`` for traversal."""
         if not renaming:
             return arg
-        with interpreter({apply: _BaseTerm, **renaming}):
+        with interpreter(
+            {
+                apply: _BaseTerm,
+                ConstructorOperation.__apply__: apply.__default_rule__,
+                **renaming,
+            }
+        ):
             return evaluate(arg)
 
     def _bound_var_order(args, kwargs, bound_set: set[Operation]) -> list[Operation]:
@@ -128,7 +140,12 @@ def _canonicalize(expr, _canonical_op):
         # avoid the renaming from defdata
         return _BaseTerm(op, *new_args, **new_kwargs)
 
-    with interpreter({apply: _apply_canonical}):
+    with interpreter(
+        {
+            apply: _apply_canonical,
+            ConstructorOperation.__apply__: apply.__default_rule__,
+        }
+    ):
         return evaluate(expr)
 
 
