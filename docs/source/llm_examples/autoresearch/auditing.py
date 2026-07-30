@@ -92,6 +92,16 @@ requirements``. Here the comment is a file boundary:
     taxonomy, not prompt architecture, and neither the ordering nor the richer
     return type is needed to explain it.
 
+    Upstream measures this same contrast at zero. `CLAIMCHECK_PROMPT` and
+    `NAIVE_PROMPT` are separate prompts behind separate flags (`roundtrip.js`
+    lines 208 and 285), and they score *identically* on the same 36 items --
+    86.1% and 86.1%. The reason is the error direction: every upstream arm
+    catches all nine traps in every run, so a clause that helps catch an
+    added-hypothesis trap has nothing to fix. Here the naive arm really does miss
+    three of them, so the same clause is worth three items. One sentence, worth
+    nothing upstream and 3 points here, because the two corpora fail in opposite
+    directions.
+
     One item of the gap is a leak, and it is upstream's, reproduced faithfully.
     `CLAIMCHECK_PROMPT`'s worked example -- ``requires Inv(m); ensures m >= 0`` --
     is byte-for-byte its own benchmark item `CounterNonNegative`, so its
