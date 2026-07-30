@@ -1,9 +1,12 @@
 import functools
 import itertools
 import typing
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from types import EllipsisType
 from typing import Annotated
+
+from opt_einsum import get_symbol
+from opt_einsum.parser import parse_einsum_input
 
 try:
     import jax
@@ -11,7 +14,7 @@ try:
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.ops.semantics import apply, evaluate, fvsof, fwd, typeof
 from effectful.ops.syntax import (
     ConstructorOperation,
     PureInterpretation,
@@ -83,11 +86,17 @@ def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
         if not is_eager_array(term_arr):
             return functools.reduce(_merge, arg_sizes, {})
 
-        sizes = (
-            {k.op: term_arr.shape[i]}
-            for i, k in enumerate(term_index)
-            if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0
-        )
+        sizes = []
+        i = 0
+        for k in term_index:
+            if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0:
+                sizes.append({k.op: term_arr.shape[i]})
+
+            # None in the index expression creates a new dimension, which does
+            # not appear in the shape of the indexed tensor
+            if k is not None:
+                i += 1
+
         return functools.reduce(_merge, itertools.chain(arg_sizes, sizes), {})
 
     return (
@@ -140,8 +149,9 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
 
     # if any dimension is zero sized, the result is empty
     if any(size == 0 for size in sized_fvs.values()):
-        key = tuple(sized_fvs.keys())
-        shape = tuple(sized_fvs[k] for k in key)
+        ops = tuple(sized_fvs.keys())
+        key = tuple(k() for k in ops)
+        shape = tuple(sized_fvs[k] for k in ops)
         return jax_getitem(jnp.empty(shape), key)
 
     def _is_eager(t):
@@ -193,7 +203,11 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             and not isinstance(args[0], Term)
             and sized_fvs
             and args[1]
-            and all(isinstance(k, Term) and k.op in sized_fvs for k in args[1])
+            and all(
+                (isinstance(k, Term) and k.op in sized_fvs)
+                or (isinstance(k, slice) and k == slice(None))
+                for k in args[1]
+            )
         ):
             raise NotHandled
         elif sized_fvs and set(sized_fvs.keys()) == fvsof(tm) - {jax_getitem, _jax_op}:
@@ -233,6 +247,93 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
     return _jax_op
 
 
+def _named_dims(term: Expr[jax.Array]) -> tuple[Operation, ...]:
+    if not (isinstance(term, Term) and term.op == jax_getitem):
+        return ()
+    index = term.args[1]
+    assert isinstance(index, Iterable)
+    return tuple(i.op for i in index if isinstance(i, Term) and not i.args)
+
+
+def _reduce_named(array, axis=None, **kwargs) -> jax.Array:
+    if axis is None:
+        return fwd()
+
+    named_dims = _named_dims(array)
+    if not named_dims:
+        return fwd()
+
+    bound_arr = bind_dims(array, *named_dims)
+
+    if isinstance(axis, int):
+        axis = (axis,)
+    shifted_axis = tuple(a + len(named_dims) if a >= 0 else a for a in axis)
+
+    reduced = fwd(bound_arr, axis=shifted_axis, **kwargs)
+    return unbind_dims(reduced, *named_dims)
+
+
+def _einsum_named(subscripts, *operands, **kwargs) -> jax.Array:
+    # only the string-subscripts form is handled; forward the interleaved form
+    if not isinstance(subscripts, str):
+        if any(isinstance(x, Term) for x in (subscripts, *operands)):
+            raise ValueError("Interleaved einsum is not implemented with named tensors")
+        return jax.numpy.einsum(subscripts, *operands, **kwargs)
+
+    # forward if any operand has a symbolic (Term) shape
+    if any(isinstance(arr.shape, Term) for arr in operands):
+        raise NotHandled
+
+    named = [_named_dims(op) for op in operands]
+
+    # normalize: expand ellipses and make the output explicit, using the
+    # positional shapes (shapes=True avoids materializing the operands)
+    shapes = [op.shape for op in operands]
+    in_part, out_part, _ = parse_einsum_input([subscripts, *shapes], shapes=True)
+    in_specs = in_part.split(",")
+    assert len(in_specs) == len(operands)
+
+    # fresh symbols for named dims, avoiding every symbol already in use;
+    # get_symbol gives an effectively unlimited supply (spills into unicode)
+    used = {c for c in (in_part + out_part) if c not in ",->"}
+    counter = itertools.count()
+
+    def next_symbol():
+        while True:
+            s = get_symbol(next(counter))
+            if s not in used:
+                used.add(s)
+                return s
+
+    # assign a letter per unique named dim; shared names reuse the same letter
+    # so einsum aligns them as batch dims rather than contracting
+    letter_of, order = {}, []
+    for dims in named:
+        for d in dims:
+            if d not in letter_of:
+                letter_of[d] = next_symbol()
+                order.append(d)
+
+    # bind named dims to leading positional axes and prepend their letters
+    bound, new_in_specs = [], []
+    for op, dims, spec in zip(operands, named, in_specs):
+        bound.append(bind_dims(op, *dims) if dims else op)
+        new_in_specs.append("".join(letter_of[d] for d in dims) + spec)
+
+    # add every named dim to the front of the output as passthrough
+    out_prefix = "".join(letter_of[d] for d in order)
+    new_subscripts = ",".join(new_in_specs) + "->" + out_prefix + out_part
+
+    result = jax.numpy.einsum(new_subscripts, *bound, **kwargs)
+
+    # unbind: leading axes correspond to `order`, reindex them back to named
+    reindexed = jax_getitem(
+        result,
+        tuple(d() for d in order) + tuple(slice(None) for _ in range(len(out_part))),
+    )
+    return reindexed
+
+
 @_register_jax_op
 def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
     """Operation for indexing an array. Unlike the standard __getitem__ method,
@@ -266,6 +367,8 @@ def bind_dims[T, A, B](
     >>> bind_dims(t, b, a).shape
     (3, 2)
     """
+    if isinstance(value, Term) and value.op == bind_dims:
+        return bind_dims(value.args[0], *(names + tuple(value.args[1:])))
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: bind_dims(v, *names), value)

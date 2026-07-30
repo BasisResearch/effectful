@@ -3,9 +3,17 @@ from typing import TYPE_CHECKING
 
 import jax.numpy
 
-from .._handlers import _register_jax_op, _register_jax_op_no_partial_eval
+from effectful.handlers.jax._handlers import (
+    _einsum_named,
+    _reduce_named,
+    _register_jax_op,
+    _register_jax_op_no_partial_eval,
+)
+from effectful.ops.semantics import handler
+from effectful.ops.types import Operation
 
-_no_overload = ["array", "asarray"]
+_NO_OVERLOAD = ["array", "asarray"]
+_REDUCTION = ["sum", "prod", "min", "max", "any", "all", "mean", "argmax"]
 
 for name, op in jax.numpy.__dict__.items():
     if isinstance(op, types.ModuleType):
@@ -19,18 +27,25 @@ for name, op in jax.numpy.__dict__.items():
         if name == "__getattr__":
             continue
 
-        elif name in _no_overload:
+        elif name in _NO_OVERLOAD:
             globals()[name] = _register_jax_op_no_partial_eval(op)
 
         else:
             globals()[name] = _register_jax_op(op)
         jax_op = (
             _register_jax_op_no_partial_eval(op)
-            if name in _no_overload
+            if name in _NO_OVERLOAD
             else _register_jax_op(op)
         )
         globals()[name] = jax_op
 
+for name in _REDUCTION:
+    op = globals()[name]
+    globals()[name] = handler({op: _reduce_named})(op)
+
+
+einsum = Operation.define(_einsum_named)
+
 # Tell mypy about our wrapped functions.
 if TYPE_CHECKING:
-    from jax.numpy import *  # noqa: F403
+    from jax.numpy import *  # type: ignore[assignment] # noqa: F403
