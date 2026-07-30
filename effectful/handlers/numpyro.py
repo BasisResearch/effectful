@@ -14,8 +14,9 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import evaluate, typeof
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.monoid import LogSumExp, Monoid, Product, Stream, Streams, Sum
+from effectful.ops.semantics import evaluate, fwd, typeof
+from effectful.ops.syntax import ObjectInterpretation, defdata, defop, implements
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -1175,3 +1176,40 @@ class IndependentTerm(_DistributionTerm):
 @evaluate.register(dist.Independent)
 def _embed_independent(d: dist.Independent) -> Term[dist.Independent]:
     return Independent(d.base_dist, d.reinterpreted_batch_ndims)
+
+
+@Operation.define
+def distribution_stream(
+    distribution: numpyro.distributions.Distribution,
+) -> Stream[jax.Array]:
+    raise NotHandled
+
+
+class ReduceEnumerableDistribution(ObjectInterpretation):
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        for stream_id, stream in streams.values():
+            if not (isinstance(stream, Term) and stream.op == distribution_stream):
+                continue
+
+            dist = stream.args[0]
+            assert isinstance(dist, numpyro.distribution.Distribution)
+            if not dist.has_enumerate_support:
+                continue
+
+            support = dist.enumerate_support(expand=False)
+            if monoid == LogSumExp:
+                weighted = Sum.weighted(support, dist.log_prob)
+            elif monoid == Sum:
+                weighted = Product.weighted(
+                    support, lambda x: jnp.exp(dist.log_prob(x))
+                )
+            else:
+                continue
+
+            new_streams = {k: v for k, v in streams.items() if k != stream_id} | {
+                stream_id: weighted
+            }
+            return monoid.reduce(body, new_streams)
+
+        return fwd()
