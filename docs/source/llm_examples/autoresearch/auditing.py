@@ -36,12 +36,20 @@ requirements``. Here the comment is a file boundary:
     module: not the function, not the parameter list, not the return type. Any
     scored example carrying its own answer key needs the same split.
 
-  * **The ablation is a difference in signature, not in wording.** ``--strategy
-    single-pass`` asks one template to informalize-then-compare, so
-    ``requirement`` is a parameter of the call doing the analysis; ``--strategy
-    naive`` just asks "does this match?". What separates the three is what is in
-    scope for the model at the moment it commits to a reading of the formal
-    statement.
+  * **One of the two ablations is structural; the other is not.** Only
+    ``two-pass`` differs in shape -- two agents, two calls, and a pass 1 whose
+    signature has nowhere to put a requirement. Both single-call arms are
+    literally the same call, ``audit(requirement, statement)``, differing in
+    their prompt, their defining module and their return type. That is worth
+    being explicit about, because it means the two-pass comparison tests scope
+    and the single-pass/naive comparison tests instruction and schema.
+
+    The return type is not merely a container in either case. Its JSON schema is
+    rendered into the system message, so ``Weakening``'s five members reach the
+    model *through the type* rather than the prompt; and ``Comparison`` gates at
+    decode time, where ``NaiveJudgement`` cannot fail and so never retries. That
+    asymmetry can only cost the structured arms -- a retry-exhausted claim scores
+    as wrong.
 
     Measured 2026-07 over the full 36-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
