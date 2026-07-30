@@ -11,7 +11,8 @@ import pytest
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.ops.semantics import typeof
+from effectful.ops.monoid import LogSumExp, Product, Sum
+from effectful.ops.semantics import evaluate, handler, typeof
 from effectful.ops.syntax import defop
 from effectful.ops.types import Operation, Term
 
@@ -856,6 +857,35 @@ def test_distribution_support():
 
     d = dist.CategoricalProbs(jnp.array([0.5, 0.5]))
     assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
+
+
+@pytest.mark.parametrize(
+    ("reduction_monoid", "weight_monoid", "expected_weights"),
+    [
+        (Sum, Product, jnp.array([0.25, 0.75])),
+        (LogSumExp, Sum, jnp.log(jnp.array([0.25, 0.75]))),
+    ],
+)
+def test_reduce_enumerable_distribution(
+    reduction_monoid, weight_monoid, expected_weights
+):
+    value = defop(jax.Array, name="value")
+    distribution = dist.CategoricalProbs(jnp.array([0.25, 0.75]))
+    expression = reduction_monoid.reduce(
+        value(), {value: dist.distribution_stream(distribution)}
+    )
+
+    with handler(dist.ReduceEnumerableDistribution()):
+        rewritten = evaluate(expression)
+
+    assert isinstance(rewritten, Term) and rewritten.op is reduction_monoid.reduce
+    rewritten_stream = next(iter(rewritten.args[1].values()))
+    assert isinstance(rewritten_stream, Term)
+    assert rewritten_stream.op is weight_monoid.weighted
+
+    support, weight = rewritten_stream.args
+    assert jnp.array_equal(support, jnp.array([0, 1]))
+    assert jnp.allclose(weight(support), expected_weights)
 
 
 @pytest.mark.parametrize(
