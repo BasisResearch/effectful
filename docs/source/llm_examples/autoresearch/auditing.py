@@ -65,14 +65,26 @@ requirements``. Here the comment is a file boundary:
     against naive's 2. Single-pass, upstream's ``CLAIMCHECK_PROMPT`` run
     per-item, is the best arm.
 
-    The baselines here are far stronger than upstream's, and that is a model
-    effect rather than anything about this port. Upstream's own data isolates it:
-    the same `NAIVE_PROMPT` over the same 36 items scores 86.1% on Sonnet 4.5
-    (`naive-sonnet.json`) and 94.4% on Opus 4.6 (`naive-opus.json`) -- +8.3
-    points from the model alone, which is the whole of the difference. Its
-    published 86.1% baselines are Sonnet-4.5 numbers, and on frontier models this
-    benchmark saturates: two of the four single-pass cells above are 36/36.
-    A technique cannot show a gain over a baseline that is already perfect.
+    The baselines here are far stronger than upstream's -- its single-prompt arm
+    scores 86.1% where every arm above scores 94.4% or better -- and the cause is
+    *not* model capability, though upstream's own data invites that reading (the
+    same `NAIVE_PROMPT` over the same 36 items scores 86.1% on Sonnet 4.5 and
+    94.4% on Opus 4.6). The error sets rule it out. Upstream's single-prompt
+    failures are five faithful lemmas wrongly disputed and no traps missed;
+    gpt-4.1-mini -- a small model -- misses two traps and disputes nothing,
+    getting all five of upstream's failures right. Disjoint sets, opposite
+    directions. A capability gap produces containment, not disjointness, so the
+    items must be behaving differently rather than one model being better.
+
+    Which items, and why, is not settled here. The leading untested candidate is
+    the proof body: `extractLemma` returns the Dafny lemma *through its closing
+    brace*, and in this benchmark almost every body is literally `{ }`. An empty
+    proof is a vacuity cue -- the verifier discharged this with no work, so
+    perhaps it merely restates its own hypothesis -- and all five of upstream's
+    false disputes are in exactly that invariant-projection family. `statement_of`
+    sends no proof at all. There is no honest Lean analogue to test it with,
+    since a Lean proof term such as ``:= h.1`` carries real information where
+    ``{ }`` carries none, so this stays a hypothesis.
 
     Read the cells as +/-3 points. Repeating a cell at temperature 0 is not
     deterministic -- tool-call sampling still varies -- and two cells re-run
