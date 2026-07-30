@@ -1,17 +1,8 @@
-"""The naive audit arm, deliberately alone in its own module.
+"""The naive audit arm: one call, a verdict, and a sentence.
 
-This arm is the ablation's floor: one call, a yes/no, and a sentence. Upstream's
-`NAIVE_TOOL` is exactly that -- no weakening taxonomy, no "a stronger theorem
-still matches" rule.
-
-It lives apart from `auditing_compare` because a template's system prompt
-includes the source of its defining module. Sharing a file with `Comparison` and
-the richer agents would hand this arm the five-category taxonomy and the other
-arms' instructions through the module source, however impoverished its own
-return type and prompt were -- and the ablation would be comparing two spellings
-of the same guidance instead of a structural difference. Measured: with the
-naive agent in the shared module, its prompt still contained every category
-name.
+Alone in a module because a template's system prompt includes the source of its
+defining module, so agents sharing a file are shown each other's prompts and
+types. The arms differ, so they do not share a file.
 """
 
 import dataclasses
@@ -29,16 +20,7 @@ class NaiveVerdict(enum.StrEnum):
 
 @pydantic.dataclasses.dataclass(frozen=True)
 class NaiveJudgement:
-    """The naive arm's entire output: a yes/no and a sentence.
-
-    Deliberately impoverished, mirroring upstream's ``NAIVE_TOOL``. The richer
-    `Comparison` carries the five-category weakening taxonomy and the rule that a
-    stronger theorem still matches -- and a return type is part of the prompt,
-    since its JSON schema is rendered into the system message. Letting the naive
-    arm return a `Comparison` would hand it the very guidance the elaborate arms
-    exist to supply, so the ablation would be comparing two spellings of the same
-    instructions rather than a structural difference.
-    """
+    """A verdict and a sentence of justification."""
 
     verdict: NaiveVerdict = dataclasses.field(
         metadata={

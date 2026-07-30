@@ -54,16 +54,21 @@ requirements``. Here the comment is a file boundary:
     ==============  ========  ===========  ======  ===========
     gpt-4o             72.2%        94.4%  94.4%   1-9 (0.021)
     gpt-4.1-mini       88.9%        94.4%  86.1%   2-1 (1.000)
-    gpt-4.1            91.7%       100.0%  88.9%   4-3 (1.000)
-    gpt-5.5            86.1%       100.0%  97.2%   0-4 (0.125)
+    gpt-4.1            91.7%       100.0%  97.2%   1-3 (0.625)
+    gpt-5.5            86.1%       100.0%  94.4%   1-4 (0.375)
     ==============  ========  ===========  ======  ===========
 
-    Pooled: two-pass 84.7%, single-pass 97.2%, naive 91.7%. **The published
+    Pooled: two-pass 84.7%, single-pass 97.2%, naive 93.1%. **The published
     ordering does not reproduce here; it comes out backwards.** Two-pass is last
     in all four models, one cell reaches significance, and the failure is
     one-sided -- 18 of two-pass's 22 errors are faithful theorems *disputed*,
     against naive's 2. Single-pass, upstream's ``CLAIMCHECK_PROMPT`` run
     per-item, is the best arm.
+
+    Every number here is from prompts captured and inspected in full, not from
+    the module source alone: each arm's assembled system message contains its own
+    template, its own module, and the framework preamble, and nothing from the
+    corpus, the claim tables or the other two arms.
 
     The baselines here are far stronger than upstream's -- its single-prompt arm
     scores 86.1% where every arm above scores 94.4% or better -- and the cause is
