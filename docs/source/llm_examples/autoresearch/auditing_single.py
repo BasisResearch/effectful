@@ -1,12 +1,8 @@
 """The single-pass ablation: informalize and compare in one call.
 
-Alone in a module for the same reason `auditing_naive` is. The harness builds a
-template's system prompt from the source of the module the template is defined
-in, so an agent defined beside this one would be shown this one's prompt --
-including the invariant caveat below, which upstream gives to its single-pass
-and naive prompts and pointedly *not* to its two-pass comparator. Keeping that
-asymmetry is the whole point of running the arms against each other, and a
-shared module silently destroys it, in a way nothing in the prompts would show.
+Alone in a module because the harness builds a template's system prompt from the
+source of the module the template is defined in, so agents sharing a file are
+shown each other's prompts. The arms differ, so they do not share a file.
 """
 
 from auditing_agents import Comparison
@@ -50,5 +46,3 @@ class SinglePassAuditor(Agent):
         guarantee. But do flag a hypothesis that restricts *when* the property
         holds.
         """
-        # The caveat above is upstream's CLAIMCHECK_PROMPT, kept because this arm
-        # is a port of that prompt. `Comparator` gets none, matching upstream.

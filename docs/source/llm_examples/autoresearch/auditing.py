@@ -52,18 +52,27 @@ requirements``. Here the comment is a file boundary:
     ==============  ========  ===========  ======  ===========
     model           two-pass  single-pass  naive   b-c (p)
     ==============  ========  ===========  ======  ===========
-    gpt-4o             72.2%        97.2%  94.4%   1-9 (0.021)
+    gpt-4o             72.2%        94.4%  94.4%   1-9 (0.021)
     gpt-4.1-mini       88.9%        94.4%  86.1%   2-1 (1.000)
     gpt-4.1            91.7%       100.0%  88.9%   4-3 (1.000)
     gpt-5.5            86.1%       100.0%  97.2%   0-4 (0.125)
     ==============  ========  ===========  ======  ===========
 
-    Pooled: two-pass 84.7%, single-pass 97.9%, naive 91.7%. **The published
+    Pooled: two-pass 84.7%, single-pass 97.2%, naive 91.7%. **The published
     ordering does not reproduce here; it comes out backwards.** Two-pass is last
     in all four models, one cell reaches significance, and the failure is
     one-sided -- 18 of two-pass's 22 errors are faithful theorems *disputed*,
     against naive's 2. Single-pass, upstream's ``CLAIMCHECK_PROMPT`` run
     per-item, is the best arm.
+
+    The baselines here are far stronger than upstream's, and that is a model
+    effect rather than anything about this port. Upstream's own data isolates it:
+    the same `NAIVE_PROMPT` over the same 36 items scores 86.1% on Sonnet 4.5
+    (`naive-sonnet.json`) and 94.4% on Opus 4.6 (`naive-opus.json`) -- +8.3
+    points from the model alone, which is the whole of the difference. Its
+    published 86.1% baselines are Sonnet-4.5 numbers, and on frontier models this
+    benchmark saturates: two of the four single-pass cells above are 36/36.
+    A technique cannot show a gain over a baseline that is already perfect.
 
     Read the cells as +/-3 points. Repeating a cell at temperature 0 is not
     deterministic -- tool-call sampling still varies -- and two cells re-run
