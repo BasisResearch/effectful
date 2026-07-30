@@ -20,6 +20,7 @@ from effectful.ops.monoid import (
     And,
     CartesianProduct,
     EvaluateIntp,
+    LogSumExp,
     Max,
     Min,
     Monoid,
@@ -33,7 +34,6 @@ from effectful.ops.monoid import (
     _is_monoid_plus,
     _is_simple_range,
     complement,
-    distributes_over,
     is_equality,
 )
 from effectful.ops.monoid import Union as UnionM
