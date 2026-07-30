@@ -21,15 +21,11 @@ from effectful.handlers.jax.monoid import (
 from effectful.ops.monoid import (
     EliminateSingletonStreams,
     EvaluateIntp,
-    Max,
-    Min,
     NormalizeIntp,
-    Optimum,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from effectful.ops.syntax import deffn
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
