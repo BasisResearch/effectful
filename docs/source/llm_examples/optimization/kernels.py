@@ -73,12 +73,21 @@ separate a real difference from timing jitter. What this domain demonstrates is 
 machinery -- a shared frontier, per-task selection off it, a control to compare against,
 and a transfer statistic reported against its null -- not a result.
 
-An earlier version of this file reported 1.134 -> 1.603 for multi-task and treated 3 of
-5 as evidence of transfer. Both were artifacts: the evaluator's side information then
-contained the sentence "rescanning earlier values for every position is quadratic;
-carry running state", which handed the proposer the exact lesson the run was then
-credited with discovering, and the transfer count was never compared against chance.
-Removing the hint and stating the null is what the numbers above cost.
+Read those numbers as provenance rather than as a current result: they were measured
+before the prompts and the control reached their present form. The worker's prompt said
+it would be tested "including degenerate inputs" and the proposer's said to prefer
+"which degenerate inputs to handle explicitly, what to check before dividing, how to
+treat boundaries" -- between them both of the two lessons this task family is built
+around, named for the proposer in the prompt asking it to find them. And the control
+passed a one-element dataset rather than running the engine's single-task mode, which
+made it differ from the treatment arm in its selection rule as well as its task count
+(see `run_kernel`). Re-running both arms under the present code is outstanding.
+
+One thing any number here includes and cannot be separated from: the harness's
+``TenacityRetryer`` sits above the worker model, so a kernel whose source does not
+decode is fed its own error and asked again. Every speedup is therefore a speedup for
+the instruction *plus that repair loop*, and an instruction that provokes
+borderline-undecodable code is flattered by it.
 """
 
 # Simplifications vs. the source:
@@ -98,6 +107,11 @@ Removing the hint and stating the null is what the numbers above cost.
 #   prints each arm's evaluation count, and ``--control-iterations`` exists to match on
 #   that instead. Multi-task also takes its per-task maximum over a larger pool, which
 #   favours it for reasons unrelated to transfer.
+# - Nor can the two arms be made to differ in exactly one way. Single-task mode has no
+#   per-example objectives to keep a frontier over, so choosing it necessarily changes
+#   both the task count and what the Pareto objectives are. That is why the paper
+#   introduces per-metric objectives for that mode, and it is a property of its own
+#   comparison as much as of this one.
 # - The headline gain is upward-biased on the multi-task side and cannot be negative
 #   there: the result is a per-task maximum over the whole pool while the seed is a
 #   single candidate's mean, so per-task max is >= the seed's score on every task by
@@ -391,11 +405,10 @@ class Programmer(Agent):
         {instruction}
         </instruction>
 
-        Standard library only. It is checked against hidden cases, including
-        degenerate inputs, and then TIMED on a large input: a correct implementation
-        scores the ratio of a straightforward reference implementation's time to
-        yours, and an incorrect one scores zero however fast it is. Write it to be
-        both right and fast.
+        Standard library only. It is checked against hidden cases and then TIMED on a
+        large input: a correct implementation scores the ratio of a straightforward
+        reference implementation's time to yours, and an incorrect one scores zero
+        however fast it is. Write it to be both right and fast.
         """
 
 
@@ -434,8 +447,10 @@ def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
     This is the paper's KernelBench metric in miniature: a kernel that is wrong scores
     nothing, and a kernel that is right scores how many times faster than the baseline
     it runs. It is also what keeps this domain from saturating -- every model writes a
-    correct list transform on the first try, but "correct" is the floor here, not the
-    goal.
+    correct list transform on the first try, so correctness alone would have nothing
+    left to optimize. It is not thereby a *floor* the search stays above: an instruction
+    that pushes hard for speed makes the worker write kernels that fail, and the run
+    logs show the search falling off that cliff repeatedly.
 
     The baseline is re-timed next to every candidate rather than measured once and
     cached. That looks wasteful and is not: a wall-clock *ratio* is only meaningful if
@@ -449,13 +464,12 @@ def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
     try:
         produced, seconds = _time_kernel(kernel, values, ceiling)
     except _Timeout as exc:
-        # Report the ceiling being hit and nothing else. An earlier version appended
+        # Report the ceiling being hit and nothing else. Naming the likely cause here --
         # "rescanning earlier values for every position is quadratic; carry running
-        # state" here, which was a mistake twice over: it handed the proposer the very
-        # lesson this domain then credited the search with discovering, and it was
-        # attached to every exception type, so a ZeroDivisionError was told it had a
-        # complexity problem. Diagnosing the cause is the proposer's job; the
-        # evaluator's job is to say accurately what happened.
+        # state" -- would hand the proposer the lesson the search is then credited with
+        # discovering, and would be wrong besides on every other way of exceeding a
+        # ceiling. Diagnosing is the proposer's job; the evaluator's is to say
+        # accurately what happened.
         return 0.0, Diagnostic("speed", f"on {size} values: {exc}")
     except Exception as exc:
         return 0.0, Diagnostic(
@@ -484,10 +498,14 @@ def evaluate_instruction(
     The score is the measured speedup over the reference implementation, gated on
     correctness: any failing case scores zero, however fast the code is. That is the
     paper's KernelBench setup (correctness against the reference, then wall-clock
-    against the PyTorch baseline), and it is what gives this domain something to climb
-    -- correctness is the floor, not the target. The Side Information is the failing
-    cases with expected and actual values, the measured times and speedup, the
-    traceback if it crashed, and the code itself.
+    against the PyTorch baseline), and it is what gives this domain something to climb.
+    The Side Information is the failing cases with expected and actual values, the
+    measured times and speedup, the traceback if it crashed, and the code itself.
+
+    The metrics are only read in single-task mode, where the engine's Pareto objectives
+    are an evaluation's sub-scores rather than a dataset's examples -- which is what the
+    ``--single-task`` control runs. ``score`` has to be one of them because it is the
+    number the report reads as the headline.
     """
     assert task is not None, "the kernel domain always has a dataset"
     try:
@@ -562,7 +580,10 @@ def evaluate_instruction(
     )
     return Evaluation(
         score=speedup if correct else 0.0,
-        metrics=[Metric("cases_passed", float(passed))],
+        metrics=[
+            Metric("score", speedup if correct else 0.0),
+            Metric("cases_passed", float(passed)),
+        ],
         diagnostics=diagnostics,
     )
 
@@ -593,9 +614,8 @@ class Proposer(Agent):
         </feedback>
 
         Diagnose the failures, then rewrite the instruction so a programmer following
-        it would not make them again. Prefer transferable engineering discipline
-        (which degenerate inputs to handle explicitly, what to check before dividing,
-        how to treat boundaries) over anything specific to one task -- an instruction
+        it would not make them again. Prefer guidance that would still apply to a task
+        you have not been shown over anything specific to one task -- an instruction
         that solves one task by naming its answer is worthless on the others.
 
         Return the improved instruction as plain text, nothing else.
@@ -611,11 +631,24 @@ def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
     """Multi-task by default. ``--single-task`` runs the paper's control instead: each
     task optimized independently, which is the comparison its 5.4 ablation reports.
 
-    The two arms are matched on optimizer iterations, not on evaluator calls, and those
-    are not the same thing -- multi-task pays for a full five-task evaluation whenever a
-    proposal is accepted. ``--control-iterations`` sets the control's per-task budget
-    directly, which is how to match on the evaluation counts ``report`` prints for both
-    arms.
+    The control runs the engine's *single-task* mode, with the task bound in the
+    evaluator's closure and no dataset at all, so its Pareto objectives are the
+    evaluation's own sub-scores. Passing ``dataset=[task]`` would look equivalent and is
+    not: that is multi-task mode with one example, a frontier over a single objective on
+    which every tie is non-dominated and selection collapses to greedy, so the control
+    would differ from the treatment arm in its selection rule as well as its task count.
+
+    It is worth being clear that there is still no configuration in which the two arms
+    differ by exactly one thing. Single-task mode necessarily changes both the number of
+    tasks *and* what the objectives are, since with one task there are no per-example
+    objectives to keep a frontier over -- which is precisely why the paper introduces
+    per-metric objectives for that mode. The paper's comparison has the same property.
+
+    The two arms are also matched on optimizer iterations, not on evaluator calls, and
+    those are not the same thing -- multi-task pays for a full five-task evaluation
+    whenever a proposal is accepted. ``--control-iterations`` sets the control's per-task
+    budget directly, which is how to match on the evaluation counts ``report`` prints
+    for both arms.
     """
     proposer = lambda instruction, feedback: Proposer().propose_instruction(  # noqa: E731
         instruction, feedback
@@ -633,25 +666,32 @@ def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
             rng=rng,
         )
 
-    # The control is five independent runs, and its report has to be an aggregate of
-    # all five. An earlier version kept the last run's Result and overwrote four of its
-    # fields, so the printed frontier, iteration count and "best artifact" were one
-    # task's, presented as the whole control's.
+    def evaluator_for(task: KernelTask) -> collections.abc.Callable[..., Evaluation]:
+        """Bind the task, so the engine sees a single-task problem with no dataset."""
+
+        def evaluate(instruction: str, _: object) -> Evaluation:
+            return evaluate_instruction(instruction, task, args.worker_model)
+
+        return evaluate
+
+    # The control is five independent runs, and its report has to be an aggregate of all
+    # five: reusing one run's ``Result`` and overwriting a few of its fields would print
+    # that run's frontier, iteration count and "best artifact" as though they were the
+    # whole control's.
     runs: list[Result] = []
     per_task: list[tuple[str, Candidate, float]] = []
     per_problem = args.control_iterations or max(1, args.budget // len(KERNEL_TASKS))
     for task in KERNEL_TASKS:
         print(f"\n[single-task control] {task.name} ({per_problem} iterations)")
-        result = optimize_anything(
-            evaluator=lambda i, t: evaluate_instruction(i, t, args.worker_model),
+        result: Result = optimize_anything(
+            evaluator=evaluator_for(task),
             proposer=proposer,
             seed=SEED_INSTRUCTION,
-            dataset=[task],
             budget=per_problem,
-            minibatch_size=1,
             selection=args.selection,
             use_side_info=not args.no_side_info,
             rng=rng,
+            task_name=task.name,
         )
         runs.append(result)
         per_task.append((task.name, result.best, result.best_score))
@@ -696,7 +736,9 @@ def main() -> None:
         "--selection",
         choices=["pareto", "best"],
         default="pareto",
-        help="Candidate selection; 'best' is the paper's greedy ablation",
+        help="Candidate selection; 'best' mutates the best average instead, which is "
+        "the naive alternative the paper's 4.3 argues against rather than an ablation "
+        "it runs",
     )
     parser.add_argument(
         "--no-side-info",

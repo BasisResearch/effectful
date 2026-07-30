@@ -88,11 +88,16 @@ from effectful.ops.semantics import handler
 # handler, so ``worker(...)`` is all the machinery that split needs -- no config
 # system, no per-template model registry.
 #
-# One consequence worth knowing: this provider is installed *inside* the harness's
-# stack, so it takes precedence over the ``TenacityRetryer`` for the calls it covers
-# and their decoding failures are not retried. That is the behaviour we want here --
-# a prompt whose answers do not decode has failed, and the evaluator scores it zero
-# with the traceback as side information rather than quietly repairing it.
+# One consequence worth knowing, because it affects how the numbers those domains
+# report should be read: this provider does *not* shadow the harness's
+# ``TenacityRetryer``. It implements ``completion`` and ``Template.__apply__``, while
+# the retryer intercepts ``call_assistant``, which sits between them -- so a worker
+# answer that fails to decode is fed its own error and asked again, up to the harness's
+# retry limit, exactly as a proposer call would be. Only a failure that exhausts the
+# retries reaches the evaluator's ``except`` branch and scores zero. Every score in
+# `prompting.py` and `kernels.py` is therefore a score for the artifact *plus that
+# repair loop*, not for the artifact alone, and an artifact whose outputs are
+# borderline-undecodable is flattered by it.
 WORKER_MODEL = "openai/gpt-4.1-mini"
 
 
@@ -195,11 +200,11 @@ def source_of(fn: object) -> str | None:
     """The source of a synthesized callable, or ``None`` if it cannot be recovered.
 
     ``inspect.getsource`` tokenizes the block it finds and raises for more reasons than
-    its documented OSError/TypeError -- a synthesized function whose block ends inside
-    a multi-line string raises ``tokenize.TokenError``, and a run once died on exactly
-    that. When block extraction fails the whole synthesized module is still sitting in
-    ``linecache``, and for both of this function's jobs -- keying the cache and showing
-    the user what the search wrote -- the module is as good as the block.
+    its documented OSError/TypeError: a synthesized function whose block ends inside a
+    multi-line string raises ``tokenize.TokenError``, which is reachable often enough to
+    end a run. When block extraction fails the whole synthesized module is still sitting
+    in ``linecache``, and for both of this function's jobs -- keying the cache and
+    showing the user what the search wrote -- the module is as good as the block.
     """
     try:
         return inspect.getsource(fn)  # type: ignore[arg-type]
@@ -215,8 +220,16 @@ def source_of(fn: object) -> str | None:
 
 def artifact_key(artifact: object) -> str:
     """Content address of an artifact: its source if it is synthesized code, else its
-    text. Two candidates with the same key have the same evaluation, which is what
-    makes the cache sound."""
+    text.
+
+    Two candidates with the same key have the same evaluation *provided the evaluator
+    is a function of the artifact and the example and nothing else*. That proviso is
+    the whole of the cache's soundness, and one domain breaks it: `packing.py` hands
+    each artifact the best packing found so far, so its score depends on when it ran.
+    Such a domain must declare a ``state_key`` (see `optimize_anything`), which joins
+    the key; a content address alone would serve a stale score from before the
+    incumbent moved.
+    """
     if callable(artifact):
         return source_of(artifact) or repr(artifact)
     return str(artifact)
@@ -294,7 +307,7 @@ def best_select[A](
 
 @dataclasses.dataclass
 class Step:
-    """One iteration of the loop, kept for the trace and the convergence report."""
+    """One iteration of the loop, kept for the printed trace."""
 
     iteration: int
     parent: int
@@ -578,33 +591,48 @@ def transfer_note(result: "Result") -> str:
     """How many per-task winners were last refined while the proposer was looking at a
     different task -- stated against the count chance alone would produce.
 
-    The raw count is close to meaningless on its own, and reporting it alone was a real
-    mistake in an earlier version of this file. A winner is "transferred" here unless
-    its task was in the minibatch that produced it, so under a null where any candidate
-    is equally likely to win any task, the expected count is already
-    ``tasks * (1 - minibatch/tasks)``. On five tasks with a two-task minibatch that is
-    3.0 -- exactly the figure the first run reported as evidence of transfer. Printing
-    the null next to the observation is the least that makes the number readable; it is
-    still one run, and it still looks only at the last refinement rather than at
+    Two things make the raw count meaningless on its own. A winner counts as
+    "transferred" unless its own task was in the minibatch that produced it, so under a
+    null where any candidate is equally likely to win any task the expected count is
+    already ``tasks * (1 - minibatch/tasks)`` -- 3.0 on five tasks with a two-task
+    minibatch, which is most of the range the statistic can take. And a task whose
+    winner is the *seed* was never refined at all: it has no minibatch, so it cannot
+    have transferred, and counting it as one turns a run with no transfer whatsoever
+    into "4/5, above chance". Both the count and the null are therefore taken over the
+    refined winners only, each contributing its own minibatch size rather than a pooled
+    mean, and seed winners are reported separately.
+
+    It remains one run, and it looks only at the last refinement rather than at full
     ancestry.
     """
     winners = result.per_task
-    transferred = [
-        name for name, candidate, _ in winners if name not in candidate.refined_on
-    ]
-    sizes = [len(c.refined_on) for _, c, _ in winners if c.refined_on]
-    minibatch = statistics.fmean(sizes) if sizes else 0.0
-    expected = len(winners) * (1.0 - minibatch / len(winners)) if winners else 0.0
+    seeds = [name for name, candidate, _ in winners if not candidate.refined_on]
+    refined = [(name, c) for name, c, _ in winners if c.refined_on]
+    transferred = [name for name, c in refined if name not in c.refined_on]
+    # Per candidate, since minibatches can differ in size: the chance of *not* drawing
+    # this task into the minibatch that produced its winner.
+    expected = sum(1.0 - len(c.refined_on) / len(winners) for _, c in refined)
+    if not refined:
+        return (
+            f"\nCross-task transfer: not measurable -- all {len(winners)} winners are "
+            f"the seed, which was never refined on any task"
+        )
     verdict = (
         "above chance"
         if len(transferred) > expected
         else "at or below chance, so this run is no evidence of transfer"
     )
     return (
-        f"\nCross-task transfer: {len(transferred)}/{len(winners)} winning artifacts "
-        f"were last refined while looking at a *different* task"
+        f"\nCross-task transfer: {len(transferred)}/{len(refined)} *refined* winners "
+        f"were last refined while looking at a different task"
         + (f" ({', '.join(transferred)})" if transferred else "")
         + f"; chance alone would give {expected:.1f} -- {verdict}"
+        + (
+            f". The other {len(seeds)} winner(s) ({', '.join(seeds)}) are the "
+            f"unrefined seed and are excluded from both figures"
+            if seeds
+            else ""
+        )
     )
 
 

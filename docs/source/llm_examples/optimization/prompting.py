@@ -17,9 +17,9 @@ letter -- scored by deterministic Python, and that substitution needs stating pl
 rather than defending. AIME itself would have been the faithful choice and has ample
 headroom: the paper measures GPT-4.1-mini at 46.67% on AIME 2025 from a generic prompt.
 What ruled it out is that the problems cannot be embedded here -- the set is large, and
-writing a dozen substitutes is not AIME. Two attempts at such a substitute saturated:
-GPT-4.1-mini scored 12/12 on hand-written counting and number-theory problems from the
-bare seed prompt, leaving the search nothing to climb. Constraint tracking is a task
+writing a dozen substitutes is not AIME. A substitute set also saturates: GPT-4.1-mini
+scores 12/12 on hand-written counting and number-theory problems from the bare seed
+prompt, which leaves the search nothing to climb. Constraint tracking is a task
 these models do fail, the checker is exact, and the lever a better prompt supplies is
 method -- count before answering, verify each constraint separately, revise once.
 Nothing measured here transfers to a claim about AIME.
@@ -63,6 +63,11 @@ this run did not show transfer, and no more than that.
 #   so roughly a third of Appendix J's content is unreachable as a lever here.
 # - One run, one sample per instance, frozen thereafter by the evaluation cache: no
 #   repeats, no seed sweep, no variance estimate.
+# - Every score is for the prompt *plus the harness's retry loop*, not for the prompt
+#   alone. ``worker(...)`` scopes the model but does not shadow the ``TenacityRetryer``
+#   above it, so an answer that fails to decode is fed its own error and asked again;
+#   only exhausting the retries reaches the ``except`` here and scores zero. A prompt
+#   whose answers are borderline-undecodable is flattered by that.
 # - The winner is a maximum over the frontier's validation scores while the seed is a
 #   single validation measurement, so the reported delta is biased upward. Only
 #   frontier candidates are validated at all, so a candidate that the training set
@@ -335,7 +340,9 @@ def main() -> None:
         "--selection",
         choices=["pareto", "best"],
         default="pareto",
-        help="Candidate selection; 'best' is the paper's greedy ablation",
+        help="Candidate selection; 'best' mutates the best average instead, which is "
+        "the naive alternative the paper's 4.3 argues against rather than an ablation "
+        "it runs",
     )
     parser.add_argument(
         "--no-side-info",

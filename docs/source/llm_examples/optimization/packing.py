@@ -18,10 +18,11 @@ illustration of the loop, so it follows 5.3 and Appendix G closely:
     winner is an LP over radii whose dual variables give gradients for a local
     optimizer over centres -- unreachable in the standard library. The prompt reports
     what ``importlib`` finds rather than a fixed list, so the example still runs where
-    scipy is absent.
-  * The Pareto objectives are Mechanism 3's run-distribution metrics -- max score, mean
-    score, stability, improvement rate over repeated runs -- rather than a single
-    number, which is what keeps structurally different packers alive on the frontier.
+    scipy is absent. It reports *only* that; see `numeric_toolbox`.
+  * The Pareto objectives are Mechanism 3's run-distribution metrics rather than a
+    single number, which is what keeps structurally different packers alive on the
+    frontier -- three of them here rather than the paper's four, for the reason
+    `trajectory_metrics` gives.
   * The search evolves *two* modules on one shared frontier, the packer and a refiner
     instruction, which is Mechanism 2's leapfrogging. This needs nothing from the
     engine: a candidate is a `PackSystem`, and "which module to mutate" is a branch in
@@ -43,36 +44,90 @@ Demonstrates:
 - Search over state the evaluator depends on, declared through ``state_key``
 - Scoring that cannot be gamed by a tolerance: the sum of radii is measured *after*
   shrinking the packing to exact feasibility
+- A control that says what the search is worth: ``--baseline`` runs the same problem
+  for the same wall-clock with no model anywhere in it
+
+What the numbers are
+--------------------
 
 Measured on 2026-07-29 with gpt-5.5 proposing, on the paper's own instance
 (``--num-circles 26 --time-budget 20``). Three runs from the 6x6 grid seed at 2.1667
-reached 2.6083 (4 iterations), 2.6147 (6 iterations) and 2.6359831 (stopped after 10).
-The paper reports 2.63598 for optimize_anything, 2.635 for AlphaEvolve and 2.6307 for
-OpenEvolve at 200 evaluations, so the best of those runs matches the paper's figure at
-the precision it is quoted, in about ten evaluations. Read that best-of-three
-carefully: the spread across runs (2.608 to 2.636) is wider than the gap between the
-published systems, so one run of this script is not a ranking of anything.
+reached 2.6083 (4 iterations), 2.6147 (6 iterations) and 2.6359831 (stopped after 10),
+against 2.63598 for the paper, 2.635 for AlphaEvolve and 2.6307 for OpenEvolve at 200
+evaluations. Three things have to be said about that before it is read as a
+reproduction.
 
-The winning artifact is an algorithm, not a remembered answer, which matters because
-the optimum for n=26 is published and a model could simply recite it. It builds the 4n
-wall constraints and n(n-1)/2 separation constraints programmatically over 3n
-variables, hands them to SLSQP warm-started from the incumbent packing, repairs every
-iterate to exact feasibility before scoring it, and keeps the best -- the same shape as
-the paper's evolved artifact, reached in two accepted proposals. It contains no
-coordinate table and no special case for 26.
+*It is the run's number, not the artifact's.* Every candidate is handed the best packing
+found so far and told never to return worse, so a score accumulates the work of
+everything that ran before it -- a candidate returning its input unchanged would be
+recorded at the full incumbent value. This is the paper's setup, not a deviation from
+it: its evolved packer takes ``current_best_solution`` too, so its 2.63598 is a
+trajectory number in the same way. But it means "the winning artifact reached 2.636" is
+not a claim this domain supports. `cold_start_note` runs the winner once with no
+incumbent and prints both numbers, and the gap between them is the part inherited
+rather than earned.
+
+*Most of the distance is scipy's, not the search's.* ``--baseline`` runs warm-started
+random-restart SLSQP with no LLM in the loop for the same packer wall-clock the search
+spends (10 iterations x 3 repeats x 20s = 600s), and it reaches **2.6342924** in 13116
+restarts. That is already past OpenEvolve at 200 evaluations and within 0.0007 of
+AlphaEvolve. So the honest statement of this domain's result is: a reflective search
+whose artifacts call a constrained optimizer beat a plain call to the same optimizer by
+about 0.0017 at matched wall-clock, from a seed at 2.1667. The paper reports no such
+control, which is why its own margin over specialized systems is not attributable
+either.
+
+*Those three runs saw a prompt that named the paper's answer.* They were measured with
+`numeric_toolbox` spelling out the LP-over-radii-with-dual-gradients recipe and
+`propose_packer` listing four further strategies, all of them findings of the paper the
+search is meant to be reproducing. The prompts now state the environment and the scoring
+rules and nothing else, so those numbers are provenance rather than a current result. A
+run on 2026-07-30 under the present prompts went 2.1667 -> 2.6208 -> 2.6308 -> 2.6359831
+in three accepted proposals; it was stopped at iteration 5 (see the wall-clock note
+below), and that four-iteration trajectory is all that is claimed for it.
+
+Two things in that trace are worth reading rather than skipping. Runs under both prompts
+land on exactly 2.6359831, from different proposals, which is what a real local optimum
+looks like and is the strongest evidence here that the artifact solves the problem
+rather than reciting the published answer for 26. And iteration 4 reads
+``2.6359831 -> 2.6359831 ACCEPTED``: the accept gate is a bare ``after > before``, so a
+child that clamped to the incumbent and improved it in the eighth decimal was admitted
+and its parent pruned. That is the accept rule as Algorithm 1 states it, and it is the
+mechanism by which a candidate contributing nothing inherits the run's whole score.
+
+The winning artifact is at least an algorithm rather than a remembered answer. It builds
+the 4n wall constraints and n(n-1)/2 separation
+constraints programmatically over 3n variables, hands them to SLSQP warm-started from
+the incumbent packing, repairs every iterate to exact feasibility before scoring it, and
+keeps the best. It contains no coordinate table and no special case for 26 -- and it is
+recognisably the same program as `baseline_packing`, which is the point above.
 """
 
 # Simplifications vs. the source:
 # - Budget is counted in optimizer iterations rather than metric calls or dollars; the
 #   paper spends 63 evaluations and $3.18 on this domain.
-# - The four Mechanism-3 objectives are named but not defined in the paper; "stability"
-#   and "improvement rate" here are this script's reading of those names.
+# - Three Mechanism-3 objectives, not the paper's four: it names them without defining
+#   them, and two of the four readings attempted here measured noise or rewarded doing
+#   nothing (see `trajectory_metrics`).
 # - The two modules alternate by a coin flip (``--code-share``); the paper does not say
-#   how it splits attention between them.
+#   how it splits attention between them. There is no per-module score to plot, so
+#   Mechanism 2's leapfrogging curve is not reproduced -- only which module produced
+#   each accepted gain (see `PackSystem` and `module_note`).
 # - ``--no-side-info`` and ``--selection best`` were last measured at n=10 on an earlier
 #   version of this script, before the incumbent, the numeric libraries and the second
 #   module -- and at an instance whose ceiling every arm hits within a few iterations.
 #   Testing the paper's 93.96% score-only figure means re-running them at n=26 here.
+# - One run per configuration and no variance estimate, on a domain whose spread across
+#   three runs (2.608 to 2.636) is an order of magnitude wider than the gaps between the
+#   published systems it is being compared to.
+# - The wall-clock backstop in `_run_packer` is best-effort, not a guarantee. It is a
+#   Python-level ``SIGALRM``, and the handler only runs when the interpreter next gets
+#   control, so a synthesized packer sitting in a long C call or one that has moved work
+#   into a subprocess can hang a run indefinitely -- which does happen. A real bound
+#   needs process isolation, which this example does not do.
+# - The accept gate is ``after > before`` with no minimum improvement, so a proposal
+#   worth a billionth of the score is accepted and prunes its parent. Adding a threshold
+#   would depart from Algorithm 1 as written, so it is documented rather than changed.
 # - No island model / MAP-Elites, which the paper also drops.
 
 import argparse
@@ -127,10 +182,6 @@ class Circle:
 # ``optimize_anything`` needs a ``state_key``: with the incumbent threaded through, an
 # artifact's score depends on when it ran.
 type Packer = collections.abc.Callable[[int, float, list[Circle] | None], list[Circle]]
-
-# A kernel is one list-to-list transform; every task in the multi-task domain shares
-# this signature so a single instruction can drive all of them.
-type Kernel = collections.abc.Callable[[list[float]], list[float]]
 
 
 def feasible(circles: collections.abc.Sequence[Circle], tol: float = 1e-9) -> bool:
@@ -190,20 +241,23 @@ NUMERIC_LIBRARIES = [
 
 
 def numeric_toolbox() -> str:
-    """What the synthesized packer may import, as a sentence for the prompt."""
+    """What the synthesized packer may import, as a sentence for the prompt.
+
+    Only that, and the restraint is the point. The paper's *result* on this domain is a
+    particular algorithm -- an exact LP over the radii for fixed centres, its duals as
+    gradients on the centres, the two alternated (Appendix K.6) -- and naming it in the
+    prompt that asks the search to find it turns a search into a transcription. What
+    belongs here is the part the proposer cannot discover for itself, because it cannot
+    import anything to find out: which libraries exist.
+    """
     if not NUMERIC_LIBRARIES:
         return (
             "Only the Python standard library is available -- no numpy, no scipy -- so "
             "write the numerics yourself."
         )
     return (
-        f"These numeric libraries are installed and you should use them: "
-        f"{', '.join(NUMERIC_LIBRARIES)}. A linear program over the radii for fixed "
-        f"centres is exact (maximize the sum subject to r_i + r_j <= |c_i - c_j| and "
-        f"r_i <= the distance to each wall), its dual variables give you the gradient "
-        f"of the objective with respect to the centres, and that gradient drives a "
-        f"local optimizer over the centres. Alternating those two is far stronger "
-        f"than any hand-rolled heuristic."
+        f"These numeric libraries are installed and you may import them: "
+        f"{', '.join(NUMERIC_LIBRARIES)}."
     )
 
 
@@ -213,13 +267,13 @@ def feasible_scale(circles: collections.abc.Sequence[Circle]) -> float:
     cannot be rescued.
 
     The score is ``s * total_radius``, and that is deliberate. Scoring the *reported*
-    radii against a tolerance invites the artifact to overshoot by just under it: the
-    first version of this example was gamed exactly that way, by a packer that added
-    4e-10 to every radius and noted in a comment that this stayed inside the
-    evaluator's 1e-9 feasibility check. Shrinking to exact feasibility instead of
-    thresholding removes the incentive -- an inflated radius is scaled straight back
-    out, and it drags every other circle down with it -- and it replaces the
-    feasible/infeasible cliff with a gradient the proposer can actually climb.
+    radii against a tolerance invites the artifact to overshoot by just under it: a
+    packer that adds 4e-10 to every radius sits inside a 1e-9 feasibility check and
+    collects the difference, and a search will find that before it finds a better
+    packing. Shrinking to exact feasibility instead of thresholding removes the
+    incentive -- an inflated radius is scaled straight back out, and it drags every
+    other circle down with it -- and it replaces the feasible/infeasible cliff with a
+    gradient the proposer can actually climb.
 
     >>> feasible_scale([Circle(0.25, 0.25, 0.25), Circle(0.75, 0.75, 0.25)])
     1.0
@@ -247,16 +301,30 @@ class PackSystem:
     credits that coordination for the circle-packing result: the refiner discovers an
     LP-based approach while the code module is still a weak heuristic, the code module
     absorbs it and catches up, the refiner pushes further with sequential LP, the code
-    absorbs that too. Each module's advance is the foundation for the other's next one,
-    and a code mutation that scores zero is recovered rather than lost, because the
-    refiner can rewrite it.
+    absorbs that too. Each module's advance is the foundation for the other's next one.
 
     Modelling that needs nothing from the engine: a candidate is a ``PackSystem``, and
     the domain's proposer decides on each iteration which module to mutate -- rewrite
     the packer directly, or rewrite the refiner instruction and apply it to the packer.
     Both paths produce a new ``PackSystem`` that lands on the same frontier. ``origin``
-    records which module produced it, so the leapfrogging is countable afterwards; it
-    is deliberately left out of ``__str__`` so it does not perturb the cache key.
+    records which module produced it, so the leapfrogging is countable afterwards
+    (`module_note`); it is deliberately left out of ``__str__`` so it does not perturb
+    the cache key.
+
+    Two things the paper credits to this mechanism are *not* reachable here:
+
+      * The paper's "a failed code mutation is recovered rather than lost, because the
+        refiner can rewrite it" cannot happen in this implementation. The refiner is
+        applied to a parent drawn from the pool, and the accept gate never admits a
+        candidate that scored zero, so the packer handed to the refiner has always
+        already passed. Only a broken *seed* could be repaired this way.
+      * The leapfrogging the paper measures is a per-module score curve -- code at 0.98
+        while the refiner is at 1.93, then the reverse. There is no per-module score to
+        plot here: the refiner only ever affects the world through the packer it
+        rewrites, so a ``PackSystem`` has one score and the two modules share it. What
+        `module_note` can honestly report is which module produced each accepted gain
+        and whether the two alternate, which is the observable shadow of leapfrogging
+        rather than the measurement itself.
     """
 
     packer: Packer
@@ -317,16 +385,6 @@ class Proposer(Agent):
           something worse than what you were handed.
 
         {toolbox}
-
-        What actually wins here, in rough order of value: alternate between solving for
-        the radii given the centres (exact, and cheap) and moving the centres to make
-        room (local optimization from the radii problem's sensitivities); keep several
-        structurally different starting configurations -- hexagonal, edge-biased,
-        corner-anchored, farthest-point -- because the good packings for different
-        ``n`` look nothing alike; give up on equal radii entirely, since a few large
-        circles with small fillers in the gaps beats any uniform arrangement; and when
-        progress stalls, relocate the smallest circles into corners and re-solve rather
-        than nudging everything.
 
         Other constraints:
         - You are scored on the sum of radii AFTER the whole packing is shrunk to exact
@@ -575,38 +633,45 @@ def trajectory_metrics(scores: list[float]) -> list[Metric]:
     distribution*, not of one packing, so the evaluator runs each packer several times
     and reports the shape of the result:
 
-      * ``max_score``    -- the best packing it found, the headline number
-      * ``mean_score``   -- what it achieves typically, not at its luckiest
-      * ``stability``    -- negated mean absolute change between consecutive runs, so
-                            a method that lands in the same place every time scores 0
-                            and an erratic one scores negative
-      * ``improvement``  -- how much the best improves from the first run to the last,
-                            per extra run: the value of giving this artifact more time
+      * ``max_score``   -- the best packing it found, the headline number
+      * ``mean_score``  -- what it achieves typically, not at its luckiest
+      * ``worst_score`` -- the floor it is guaranteed not to fall below
 
-    The paper names these four but does not define them, so the last two are this
-    example's reading of the names. All four are higher-is-better, which the Pareto
-    machinery requires.
+    Three, not the paper's four. It names its four without defining them, and the two
+    obvious readings of the missing pair do not survive contact with this evaluator:
+
+      * "Improvement rate" as best-minus-first over the repeats measures which draw came
+        out best, because the repeats are *independent* runs of the same artifact on the
+        same input rather than a sequence of refinements. It is a property of the random
+        seed, and no arrangement of it can say what it wants to say -- how much the
+        artifact would gain from more time -- without actually giving it more time.
+      * "Stability" as any scale-free measure of run-to-run agreement is maximized by an
+        artifact that reliably does nothing. A deterministic packer takes the best
+        attainable value whatever it scores, so it is non-dominated on that axis
+        permanently and can never be pruned. An objective a do-nothing candidate wins
+        outright does not keep algorithmic families alive on the frontier; it keeps junk
+        alive on it.
+
+    ``worst_score`` is the consistency objective that is not gameable that way: it
+    rewards an artifact for being reliable *at a good level*, and a candidate that
+    reliably scores nothing is last on it rather than first. All three are
+    higher-is-better, which the Pareto machinery requires.
 
     >>> [str(m) for m in trajectory_metrics([1.0, 1.0, 1.0])]
-    ['max_score=1', 'mean_score=1', 'stability=0', 'improvement=0']
+    ['max_score=1', 'mean_score=1', 'worst_score=1']
+    >>> [str(m) for m in trajectory_metrics([0.4, 1.0])]
+    ['max_score=1', 'mean_score=0.7', 'worst_score=0.4']
     """
     if not scores:
         return [
             Metric("max_score", 0.0),
             Metric("mean_score", 0.0),
-            Metric("stability", 0.0),
-            Metric("improvement", 0.0),
+            Metric("worst_score", 0.0),
         ]
-    deltas = [abs(b - a) for a, b in zip(scores, scores[1:])]
-    drift = statistics.fmean(deltas) if deltas else 0.0
     return [
         Metric("max_score", max(scores)),
         Metric("mean_score", statistics.fmean(scores)),
-        Metric("stability", -drift if drift else 0.0),  # not -0.0
-        Metric(
-            "improvement",
-            (max(scores) - scores[0]) / len(scores) if len(scores) > 1 else 0.0,
-        ),
+        Metric("worst_score", min(scores)),
     ]
 
 
@@ -614,7 +679,12 @@ PACKING_REPEATS = 3
 
 
 def evaluate_packing(
-    packer: Packer, n: int, time_budget: float, current_best: list[Circle] | None
+    packer: Packer,
+    n: int,
+    time_budget: float,
+    current_best: list[Circle] | None,
+    *,
+    diagnose: bool = True,
 ) -> tuple[Evaluation, list[Circle]]:
     """Score a packer and explain the score.
 
@@ -633,6 +703,11 @@ def evaluate_packing(
     how it fares on a size it was not asked about, and the traceback if it crashed --
     goes back as Side Information. The best packing found is returned alongside the
     evaluation so the caller can make it the incumbent without paying for another run.
+
+    ``diagnose=False`` skips the generality check, which is the one diagnostic that
+    costs a whole extra run of the packer. The SI ablation passes it: on a domain whose
+    budget is wall-clock, an arm whose diagnostics are discarded unread must not be
+    charged for producing them, or the ablation measures the bill as well as the effect.
     """
     scores: list[float] = []
     best: list[Circle] = []
@@ -696,7 +771,8 @@ def evaluate_packing(
     total = total_radius(best)
     scale = feasible_scale(best)
     smallest = min(c.r for c in best)
-    diagnostics.append(generality_check(packer, n))
+    if diagnose:
+        diagnostics.append(generality_check(packer, n))
 
     if violation > 1e-9:
         offenders = sorted(best, key=lambda c: -c.r)[:3]
@@ -800,11 +876,138 @@ def render_packing(circles: collections.abc.Sequence[Circle], n: int) -> Image.I
 
 
 # ---------------------------------------------------------------------------
+# The control the paper does not run.
+# ---------------------------------------------------------------------------
+
+
+def baseline_packing(
+    n: int, seconds: float, rng: random.Random
+) -> tuple[list[Circle], int]:
+    """Warm-started random-restart SLSQP with no model anywhere in the loop.
+
+    This is the comparison 5.3 is missing, and it is the one that decides what the
+    headline number means. The paper's only comparators on this instance are other
+    LLM-driven program-search systems -- AlphaEvolve at 2.635, OpenEvolve at 2.6307 --
+    so nothing in it separates "reflective search found a good algorithm" from
+    "reflective search wrote a competent call to a constrained optimizer". Those are
+    very different claims, and on an instance whose published values sit within a few
+    thousandths of each other the difference is the whole result.
+
+    So this function is a fair opponent rather than a straw man: it builds the same
+    ``4n`` wall constraints and ``n(n-1)/2`` separation constraints over the same ``3n``
+    variables that the search's winning artifacts converge on, supplies the analytic
+    constraint Jacobian, and spends its budget on restarts -- half from random centres,
+    half warm-started with jitter from its own incumbent, which is the same advantage
+    `run_pack` gives the artifacts through ``current_best``. What it does not have is a
+    model choosing what to try next. Whatever margin the search shows over this is the
+    part attributable to reflection.
+
+    Returns the best packing found and how many restarts fitted in the budget.
+    """
+    import numpy as np
+    from scipy.optimize import minimize
+
+    upper, lower = np.triu_indices(n, k=1)
+    rows = np.arange(len(upper))
+    eye, zero = np.eye(n), np.zeros((n, n))
+    # d(wall constraints)/d(x, y, r): constant, so it is built once.
+    walls_jac = np.vstack(
+        [
+            np.hstack([eye, zero, -eye]),  # x - r >= 0
+            np.hstack([zero, eye, -eye]),  # y - r >= 0
+            np.hstack([-eye, zero, -eye]),  # 1 - x - r >= 0
+            np.hstack([zero, -eye, -eye]),  # 1 - y - r >= 0
+        ]
+    )
+
+    def constraints(v: typing.Any) -> typing.Any:
+        x, y, r = v[:n], v[n : 2 * n], v[2 * n :]
+        walls = np.concatenate([x - r, y - r, 1.0 - x - r, 1.0 - y - r])
+        gap = np.hypot(x[upper] - x[lower], y[upper] - y[lower]) - r[upper] - r[lower]
+        return np.concatenate([walls, gap])
+
+    def constraints_jac(v: typing.Any) -> typing.Any:
+        x, y = v[:n], v[n : 2 * n]  # the separation gradient does not involve r
+        dx, dy = x[upper] - x[lower], y[upper] - y[lower]
+        distance = np.maximum(np.hypot(dx, dy), 1e-12)
+        pairs = np.zeros((len(upper), 3 * n))
+        pairs[rows, upper], pairs[rows, lower] = dx / distance, -dx / distance
+        pairs[rows, n + upper], pairs[rows, n + lower] = dy / distance, -dy / distance
+        pairs[rows, 2 * n + upper] = pairs[rows, 2 * n + lower] = -1.0
+        return np.vstack([walls_jac, pairs])
+
+    gradient = np.concatenate([np.zeros(2 * n), -np.ones(n)])
+    bounds = [(0.0, 1.0)] * (2 * n) + [(0.0, 0.5)] * n
+    deadline = time.monotonic() + seconds
+    best: list[Circle] = []
+    restarts = 0
+    while time.monotonic() < deadline:
+        restarts += 1
+        if best and restarts % 2 == 0:  # polish the incumbent
+            start = np.array(
+                [c.x for c in best] + [c.y for c in best] + [c.r for c in best]
+            )
+            start[: 2 * n] += np.array([rng.gauss(0.0, 0.02) for _ in range(2 * n)])
+        else:  # a fresh configuration
+            start = np.array(
+                [rng.random() for _ in range(2 * n)]
+                + [0.5 / math.ceil(math.sqrt(n))] * n
+            )
+        np.clip(start, 0.0, 1.0, out=start)
+        try:
+            solved = minimize(
+                lambda v: -v[2 * n :].sum(),
+                start,
+                jac=lambda _: gradient,
+                method="SLSQP",
+                bounds=bounds,
+                constraints=[
+                    {"type": "ineq", "fun": constraints, "jac": constraints_jac}
+                ],
+                options={"maxiter": 200, "ftol": 1e-10},
+            )
+        except Exception:  # a restart that fails to converge is simply skipped
+            continue
+        found = [
+            Circle(
+                x=float(solved.x[i]),
+                y=float(solved.x[n + i]),
+                r=float(solved.x[2 * n + i]),
+            )
+            for i in range(n)
+        ]
+        if packing_score(found, n) > packing_score(best, n):
+            best = found
+    scale = feasible_scale(best)
+    return [Circle(x=c.x, y=c.y, r=c.r * scale) for c in best], restarts
+
+
+def baseline_note(n: int, seconds: float, rng: random.Random) -> str:
+    """Run the no-LLM control and say what it means, or say why it could not run."""
+    if importlib.util.find_spec("scipy.optimize") is None:
+        return (
+            "No-LLM baseline: not available, because scipy is not installed here. The "
+            "search's numbers are therefore unattributed -- there is nothing to say how "
+            "much of the distance from the seed is the reflection and how much is the "
+            "optimizer the artifacts call."
+        )
+    started = time.monotonic()
+    circles, restarts = baseline_packing(n, seconds, rng)
+    return (
+        f"No-LLM baseline (warm-started random-restart SLSQP, no model in the loop): "
+        f"{packing_score(circles, n):.7f} for n={n} in "
+        f"{time.monotonic() - started:.0f}s over {restarts} restarts. This is the "
+        f"comparison the paper's 5.3 does not report, and the number the search has to "
+        f"beat for its margin to be about reflection rather than about scipy."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Wiring the domain to the engine.
 # ---------------------------------------------------------------------------
 
 
-def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
+def run_pack(args: argparse.Namespace, rng: random.Random) -> tuple[Result, list[str]]:
     """Single-task search over a two-module system, with the incumbent threaded through.
 
     Three things here are the paper's setup rather than a simplification of it: the
@@ -813,17 +1016,26 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
     modules on one shared frontier (Mechanism 2). The incumbent is ordinary mutable
     state in this closure -- and because it makes an evaluation depend on more than the
     artifact, it is declared to the engine as a ``state_key``.
+
+    Returns the result and the per-iteration module choices, which the engine has no
+    reason to know about and `module_note` needs in order to say which module each
+    accepted gain came from.
     """
     n, budget = args.num_circles, args.time_budget
     toolbox = numeric_toolbox()
     incumbent: list[list[Circle]] = [[]]  # a one-slot cell: the best packing so far
+    origins: list[str] = []
 
     def state_key() -> str:
         return f"{packing_score(incumbent[0], n):.12f}"
 
     def evaluator(system: PackSystem, _: None) -> Evaluation:
         evaluation, best = evaluate_packing(
-            system.packer, n, budget, incumbent[0] or None
+            system.packer,
+            n,
+            budget,
+            incumbent[0] or None,
+            diagnose=not args.no_side_info,
         )
         # Whatever the candidate managed becomes the incumbent for everything after it,
         # so later artifacts start where this one stopped -- the paper's
@@ -859,8 +1071,11 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
         return PackSystem(packer=packer, refiner=instruction, origin="refiner")
 
     def proposer(system: PackSystem, feedback: list[Rollout]) -> PackSystem:
-        mutate = mutate_code if rng.random() < args.code_share else mutate_refiner
-        return mutate(system, feedback)
+        code = rng.random() < args.code_share
+        # Recorded before the call, so the list stays aligned with the trace even when
+        # the proposal dies at decode: the engine appends a Step either way.
+        origins.append("code" if code else "refiner")
+        return (mutate_code if code else mutate_refiner)(system, feedback)
 
     def bootstrap(objective: str) -> PackSystem:
         return PackSystem(
@@ -869,7 +1084,9 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
             origin="bootstrap",
         )
 
-    return optimize_anything(
+    # Annotated rather than inferred: this domain has no dataset, so the element type
+    # would infer as ``None`` and fail the engine's ``E: Example`` bound.
+    result: Result = optimize_anything(
         evaluator=evaluator,
         proposer=proposer,
         seed=(
@@ -889,6 +1106,7 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
         task_name=f"pack-{n}",
         state_key=state_key,
     )
+    return result, origins
 
 
 # ---------------------------------------------------------------------------
@@ -896,18 +1114,84 @@ def run_pack(args: argparse.Namespace, rng: random.Random) -> Result:
 # ---------------------------------------------------------------------------
 
 
-def module_note(result: Result) -> str:
-    """Which module each surviving candidate came from. Multi-module search is only
-    visible if you count it: this is the paper's leapfrogging, made checkable."""
-    origins = collections.Counter(
+def module_note(result: Result, origins: list[str]) -> str:
+    """Which module did the work, as far as it can honestly be attributed.
+
+    Multi-module search is only visible if you count it, and counting the survivors on
+    the frontier is not enough: it says which module's proposals lasted, not which one
+    moved the score. So this also reports, per module, how many proposals it made, how
+    many were accepted, and the mean minibatch gain when they were -- and the order the
+    accepted gains arrived in, which is where the paper's leapfrogging would show up as
+    the two modules handing off to each other.
+
+    What it deliberately does not report is a per-module score, because there isn't one
+    (see `PackSystem`). A handover in the sequence below means the other module produced
+    the next accepted gain; it does not mean that module was ahead of its partner.
+    """
+    surviving = collections.Counter(
         c.artifact.origin for c in result.pool if isinstance(c.artifact, PackSystem)
     )
+    proposed: collections.Counter[str] = collections.Counter()
+    accepted: collections.Counter[str] = collections.Counter()
+    gains: dict[str, list[float]] = {"code": [], "refiner": []}
+    sequence: list[str] = []
+    for step, origin in zip(result.history, origins):
+        proposed[origin] += 1
+        if step.accepted:
+            accepted[origin] += 1
+            gains[origin].append(step.after - step.before)
+            sequence.append(origin)
+
     winner = result.best.artifact
+    handovers = sum(a != b for a, b in zip(sequence, sequence[1:]))
+    return "\n".join(
+        [
+            "Modules: "
+            + "; ".join(
+                f"{name} proposed {proposed[name]}, accepted {accepted[name]}"
+                + (
+                    f", mean minibatch gain {statistics.fmean(gains[name]):+.6f}"
+                    if gains[name]
+                    else ""
+                )
+                for name in ("code", "refiner")
+                if proposed[name]
+            ),
+            "Surviving frontier by module: "
+            + (", ".join(f"{k} {v}" for k, v in sorted(surviving.items())) or "none"),
+            "The best candidate came from the "
+            + f"{winner.origin if isinstance(winner, PackSystem) else 'unknown'} module",
+            f"Accepted gains in order: {' -> '.join(sequence) or 'none'}"
+            + (f" ({handovers} handover(s))" if len(sequence) > 1 else ""),
+        ]
+    )
+
+
+def cold_start_note(result: Result, n: int, time_budget: float) -> str:
+    """What the winning artifact scores on its own, with no incumbent to polish.
+
+    The headline of a run with the incumbent threaded through belongs to the *run*, not
+    to the artifact credited with it. Every candidate is handed the best packing found so
+    far and told never to return something worse, so its score accumulates the work of
+    everything that ran before it: a candidate that returned its input unchanged would be
+    recorded at the full incumbent value. That is the paper's own setup, not a deviation
+    from it -- its evolved packer takes ``current_best_solution`` too, so its 2.63598 is
+    a trajectory number in exactly the same way -- but it means "the winning artifact
+    reached X" is not a statement this search is entitled to make. Running the winner
+    once from nothing is, and it costs one evaluation.
+    """
+    system = result.best.artifact
+    if not isinstance(system, PackSystem):
+        return ""
+    evaluation, _ = evaluate_packing(
+        system.packer, n, time_budget, None, diagnose=False
+    )
     return (
-        "Modules on the shared frontier: "
-        + ", ".join(f"{k} {v}" for k, v in sorted(origins.items()))
-        + "; the best candidate came from the "
-        + f"{winner.origin if isinstance(winner, PackSystem) else 'unknown'} module"
+        f"Cold start: the winning artifact alone, handed no incumbent, scores "
+        f"{evaluation.score:.7f} against the run's {result.best_score:.7f}. The "
+        f"difference is what it inherited from the candidates before it rather than "
+        f"earned -- the run's number is the search's, the cold-start number is the "
+        f"artifact's."
     )
 
 
@@ -951,7 +1235,9 @@ def main() -> None:
         "--selection",
         choices=["pareto", "best"],
         default="pareto",
-        help="Candidate selection; 'best' is the paper's greedy ablation",
+        help="Candidate selection; 'best' mutates the best average instead, which is "
+        "the naive alternative the paper's 4.3 argues against rather than an ablation "
+        "it runs",
     )
     parser.add_argument(
         "--no-side-info",
@@ -968,19 +1254,57 @@ def main() -> None:
         action="store_true",
         help="Bootstrap candidate zero from a natural-language objective",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="Run the no-LLM control instead of the search: random-restart SLSQP for "
+        "the wall-clock the search would have spent on packers",
+    )
+    parser.add_argument(
+        "--baseline-seconds",
+        type=float,
+        default=0.0,
+        help="Seconds for --baseline; 0 matches the search's packer time, which is "
+        "--budget x --time-budget x the evaluator's repeats",
+    )
     args = parser.parse_args()
 
-    result = run_pack(args, random.Random(args.seed))
+    if args.baseline:
+        seconds = (
+            args.baseline_seconds or args.budget * PACKING_REPEATS * args.time_budget
+        )
+        print(
+            f"[baseline] no LLM, n={args.num_circles}, {seconds:.0f}s "
+            + (
+                "(as given)"
+                if args.baseline_seconds
+                else f"(= {args.budget} iterations x {PACKING_REPEATS} repeats x "
+                f"{args.time_budget:.0f}s, the packer time the search would spend)"
+            )
+        )
+        print(baseline_note(args.num_circles, seconds, random.Random(args.seed)))
+        return
+
+    result, origins = run_pack(args, random.Random(args.seed))
     report(
         result,
         selection=args.selection,
         side_info=not args.no_side_info,
-        notes=[module_note(result)],
+        notes=[
+            note
+            for note in (
+                module_note(result, origins),
+                cold_start_note(result, args.num_circles, args.time_budget),
+            )
+            if note
+        ],
         render_artifact=render_system,
     )
-    assert result.best_score >= result.seed_score, (
-        f"optimization went backwards: {result.seed_score} -> {result.best_score}"
-    )
+    # No assertion that the score improved: one would look reassuring and could not
+    # fail. The headline is a maximum over the surviving pool, the seed is a candidate
+    # in it, and a pruned seed was by definition dominated by a survivor. The numbers
+    # worth checking are the two the notes above print -- the winner's cold-start score,
+    # and what --baseline reaches with no model at all.
 
 
 if __name__ == "__main__":
