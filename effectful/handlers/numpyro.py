@@ -1221,9 +1221,7 @@ class ReduceEnumerableDistribution(ObjectInterpretation):
             support = dist.enumerate_support(expand=False)
             value = Operation.define(jax.Array)
             if monoid == LogSumExp:
-                weighted = Sum.weighted(
-                    support, deffn(dist.log_prob(value()), value)
-                )
+                weighted = Sum.weighted(support, deffn(dist.log_prob(value()), value))
             elif monoid == Sum:
                 weighted = Product.weighted(
                     support, deffn(jnp.exp(dist.log_prob(value())), value)
