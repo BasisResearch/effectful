@@ -171,6 +171,26 @@ requirements``. Here the comment is a file boundary:
     arm loses at N=189 with the same failure mode `reports/VERINA.md` describes
     as "overly restrictive preconditions".
 
+  * **The two-pass deficit is fully accounted for; the baseline surplus is not.**
+    Upstream's published 96.3% is the wrong comparator for this file. Its default
+    informalizer is Haiku (`src/main.js`), and its own runs show two-pass getting
+    *worse* as the informalizer gets stronger -- Haiku->Opus 97.2%, Haiku->Sonnet
+    96.3%, Haiku->Haiku 96.3%, but Sonnet->Sonnet 93.5% and Opus->Opus 93.5%. A
+    stronger informalizer writes a richer back-translation, and richness is what
+    the comparator mines for spurious discrepancies. This file runs one strong
+    model for both passes, so 93.5% is the like-for-like figure. Batched, it
+    scores 92.6% over the three models that complete -- 0.9 points off. The two
+    documented divergences (per-item, measured at ~9 points; one model instead of
+    a Haiku/Sonnet split, ~2.8 points by upstream's data) account for the whole
+    of it.
+
+    So capability cuts both ways here, which is why no single explanation covers
+    the table above. A capable model helps the one-call arms, which read lemma
+    and requirement together; it hurts the blind arm, for the reason upstream
+    gives. What remains genuinely unexplained is the surplus in the *other*
+    direction -- the one-call arms here beat upstream's by 5 to 11 points -- and
+    the proof-body hypothesis above is the best untested candidate for it.
+
   * **So the blindness claim is untested, not refuted.** Nobody has varied it
     with everything else held constant. The decisive experiment is inside
     upstream's own `roundtrip.js` -- keep the batching, the model split, the
