@@ -4,58 +4,63 @@ Implements the core of ClaimCheck ("Narrowing the Gap Between Proof and Intent",
 https://midspiral.com/blog/claimcheck-narrowing-the-gap-between-proof-and-intent/,
 reference implementation at https://github.com/metareflection/claimcheck, MIT).
 Its diagnosis is that a verifier proves code matches its *specification* and says
-nothing about whether the specification matches your *intent*. The motivating case
-is a Dafny election tally whose ``TallyMonotonic`` lemma was supposed to say
+nothing about whether the specification matches your *intent*. The motivating
+case is a Dafny election tally whose ``TallyMonotonic`` lemma was supposed to say
 "adding a ballot can't decrease a tally" and in fact said ``Count(...) >= 0`` --
 trivially true, since counts are naturals. Dafny reported 14 verified, 0 errors.
-The proof was correct and the guarantee was not the one anybody wanted.
 
 Its fix is *round-trip informalization*. Pass 1 translates the formal statement,
-**and nothing else**, back into English; pass 2 compares that back-translation
-against the requirement it was meant to formalize and classifies any divergence.
-The load-bearing part is what pass 1 does not get: having never seen the
-requirement, it cannot parrot it back, so agreement in pass 2 is evidence and not
-an echo. Published over 5 domains and 36 requirement/lemma pairs: the two-pass
-split at 96.3%, a single combined prompt at 86.1%, a generic agent prompt 69.4%.
+and nothing else, back into English; pass 2 compares that back-translation
+against the requirement it was meant to formalize. The load-bearing part is what
+pass 1 does not get: having never seen the requirement, it cannot parrot it back,
+so agreement in pass 2 is evidence rather than an echo.
 
 That is a claim about *scope*, which is what makes it an effectful example. The
 reference implementation enforces it by hand-assembling prompt strings, under a
 comment reading ``CRITICAL: This prompt must NOT include the original
-requirements``. Here the comment is a file boundary:
+requirements``. Here it is enforced by the code's shape:
 
-  * **Blindness is enforced by the module, not the signature.**
-    ``Informalizer.informalize`` takes one argument, a Lean statement, and its
-    ``Agent`` history holds no turn in which a requirement appeared. That is
-    necessary and not sufficient: the harness puts the source of a template's
-    *defining module* into its system prompt (see the prompt-assembly table in
-    `effectful.handlers.llm.types.Template`), so anything sharing a file with an
-    ``Agent`` is shown to it verbatim. Hence four modules rather than one --
-    the corpora, the mapping and the expected verdicts live here, in a file none
-    of the agent modules imports, and each strategy owns its module so no arm
-    inherits another's prompt. In this framework the unit of exposure is the
-    module: not the function, not the parameter list, not the return type. Any
-    scored example carrying its own answer key needs the same split.
+  * ``Informalizer.informalize(statement)`` has no parameter through which a
+    requirement could arrive, its ``Agent`` history holds no turn in which one
+    appeared, and no ``Tool`` in scope can fetch one.
 
-  * **The ablation is structural.** ``two-pass`` is two agents and two calls,
-    with a pass 1 whose signature has nowhere to put a requirement; ``naive`` is
-    one call, ``audit(requirement, statement)``, a yes/no and a sentence. The
-    contrast is what is in scope for the model at the moment it commits to a
-    reading of the formal statement, and it is enforced by the parameter list and
-    the module rather than by an instruction.
+  * That is necessary and not sufficient. The harness puts the source of a
+    template's *defining module* into its system prompt (see the prompt-assembly
+    table in `effectful.handlers.llm.types.Template`), so anything sharing a file
+    with an ``Agent`` is shown to it verbatim. The corpora, the mapping and the
+    expected verdicts therefore live here, in a module the agents never import,
+    and each strategy owns its own module. **In this framework the unit of
+    exposure is the module** -- not the function, the parameter list or the
+    return type. Any scored example carrying its own answer key needs the split.
 
-    ``Comparison`` also gates at decode time: an incoherent verdict raises and
-    `RetryLLMHandler` re-asks, where ``NaiveJudgement`` has no validator and can
-    never fail. That cuts both ways -- an exhausted retry scores as wrong, but a
-    *successful* one is a free extra turn the naive arm cannot get, and successful
-    retries are not recorded in the reports. Unmeasured. Note also that a return
-    type reaches the model as ``response_format`` rather than in the system
-    message, so its field descriptions do not appear in a captured prompt.
+  * ``Comparison`` certifies at decode time that a verdict is coherent: a match
+    is exactly a `Weakening.NONE`, and a mismatch must name its discrepancy. An
+    incoherent answer raises and `RetryLLMHandler` hands it back as the next
+    turn. Upstream's schema admits ``match: true`` alongside
+    ``weakeningType: "tautology"`` with nothing to catch it.
 
-    Measured 2026-07 over the full 36-claim corpus, the first three rows at
-    temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
-    rejects temperature 0, so it runs at the provider default). ``b-c`` is the
-    discordant split -- items two-pass alone got right, then items naive alone got
-    right -- with an exact McNemar p:
+  * The premise is checked by a real prover. Under ``--verify`` all five corpora
+    are compiled by the Lean 4 + Mathlib toolchain `formalization.py` already
+    shells out to: 36 theorems, 0 errors, no ``sorry``. Then the audit finds nine
+    claims that do not mean what they were written to mean.
+
+**The corpus** transliterates upstream's benchmark item for item from
+`test/integration/claims/*.dfy` and `test/integration/mappings/*.json`: five
+domains, 36 requirement/theorem pairs, the same 27 faithful / 9 planted split,
+upstream's requirement sentences verbatim and its lemma names in snake_case.
+
+**The ablation** is ``--strategy``: the two-pass pipeline above, against
+``naive`` -- one call, requirement and statement together, a yes/no and a
+sentence, ported from upstream's `NAIVE_PROMPT`. That is the right comparator
+for upstream's published middle rung rather than a soft target, since
+`CLAIMCHECK_PROMPT` and `NAIVE_PROMPT` score identically on the same 36 items
+(86.1% each).
+
+**Results**, 2026-07, at temperature 0 to match upstream's benchmark (gpt-5.5
+rejects temperature 0 and runs at the provider default). ``b-c`` is the
+discordant split -- items two-pass alone got right, then items naive alone got
+right -- with an exact McNemar p. Read cells as +/-3: repeats at temperature 0
+are not deterministic.
 
     ==============  ========  ======  ===========
     model           two-pass  naive   b-c (p)
@@ -66,175 +71,48 @@ requirements``. Here the comment is a file boundary:
     gpt-5.5            86.1%  94.4%   1-4 (0.375)
     ==============  ========  ======  ===========
 
-    Pooled: two-pass 84.7%, naive 93.1%. **The published ordering does not
-    reproduce here; it comes out backwards.** Two-pass is behind in three of four
-    models, one cell reaches significance, and the failure is one-sided -- 18 of
-    two-pass's 22 errors are faithful theorems *disputed*, against naive's 2.
+Pooled: two-pass 84.7%, naive 93.1%. **The published ordering does not reproduce
+here; it comes out backwards.** The failure is one-sided -- 18 of two-pass's 22
+errors are faithful theorems *disputed*, against naive's 2:
 
-    Naive is the right comparator for upstream's published middle rung, not a
-    weaker one. `CLAIMCHECK_PROMPT` and `NAIVE_PROMPT` are separate prompts behind
-    separate flags (`roundtrip.js` lines 208 and 285) and score *identically* on
-    the same 36 items -- 86.1% and 86.1%. Upstream's structured single prompt buys
-    nothing over its own naive baseline, so the ~10-point published gap is
-    two-pass against this floor.
+    [MISS] counter/counter_non_negative: disputed [narrowed-scope]
+      statement:   theorem counter_non_negative (m : Model) (h : Inv m) : 0 ≤ m
+      read as:     For every Model m, if m satisfies the invariant Inv, then m
+                   is non-negative. (strength: moderate)
+      discrepancy: ...the theorem only guarantees non-negativity for models
+                   satisfying the extra hypothesis Inv m.
 
-    Every number here is from prompts captured and inspected in full, not from
-    the module source alone: each arm's assembled system message contains its own
-    template, its own module, and the framework preamble, and nothing from the
-    corpus, the claim tables or the other arm.
+The blind pass does its job -- that reading is correct and rated moderate -- and
+the comparator then disputes the *hypothesis*. All 36 statements carry ``Inv``,
+so an arm that reads an invariant hypothesis as a narrowing loses most of the
+faithful items. Upstream's `NAIVE_PROMPT` carries a caveat against exactly this
+and its `ROUNDTRIP_COMPARE_PROMPT` carries none; that asymmetry is reproduced
+here and is load-bearing.
 
-    The naive floor here is far stronger than upstream's -- 93.1% pooled, and
-    94.4% or better on three of four models, against upstream's 86.1% for the
-    same `NAIVE_PROMPT` on the same 36 items -- and the cause is
-    *not* model capability, though upstream's own data invites that reading (the
-    same `NAIVE_PROMPT` over the same 36 items scores 86.1% on Sonnet 4.5 and
-    94.4% on Opus 4.6). The error sets rule it out. Upstream's single-prompt
-    failures are five faithful lemmas wrongly disputed and no traps missed;
-    gpt-4.1-mini -- a small model -- misses two traps and disputes nothing,
-    getting all five of upstream's failures right. Disjoint sets, opposite
-    directions. A capability gap produces containment, not disjointness, so the
-    items must be behaving differently rather than one model being better.
+**Batching, not blindness, is what the published two-pass arm buys.** Pass 2 here
+judges one claim at a time; upstream's judges a whole domain per call. Restoring
+only that, with pass 1 left per-item and byte-identical, moves the arm from 83.3%
+to 92.6% pooled over the three models it completes on (15-5, p=0.041): gpt-4o
+72.2 -> 83.3, gpt-4.1 91.7 -> 94.4, gpt-5.5 86.1 -> 100.0, with no new false
+confirms. Upstream calls its batching a throughput optimisation and never tests
+it as a treatment. The mechanism is not contrast against degraded siblings --
+removing all nine traps from the batch leaves the gain intact -- but seems to be
+that ``Inv`` is on *every* statement in a batch, so it stops reading as this
+item's suspicious extra hypothesis.
 
-    Which items, and why, is not settled here. The leading untested candidate is
-    the proof body: `extractLemma` returns the Dafny lemma *through its closing
-    brace*, and in this benchmark almost every body is literally `{ }`. An empty
-    proof is a vacuity cue -- the verifier discharged this with no work, so
-    perhaps it merely restates its own hypothesis -- and all five of upstream's
-    false disputes are in exactly that invariant-projection family. `statement_of`
-    sends no proof at all. There is no honest Lean analogue to test it with,
-    since a Lean proof term such as ``:= h.1`` carries real information where
-    ``{ }`` carries none, so this stays a hypothesis.
+That accounts for the deficit. Upstream's 96.3% is Haiku->Sonnet, and its own
+runs show two-pass degrading as the informalizer strengthens (Haiku->Haiku 96.3%,
+Sonnet->Sonnet 93.5%, Opus->Opus 93.5%) -- a stronger informalizer writes a
+richer back-translation, and richness is what the comparator mines for spurious
+discrepancies. One strong model for both passes puts the like-for-like figure at
+93.5%, against 92.6% batched here.
 
-    Read the cells as +/-3 points. Repeating a cell at temperature 0 is not
-    deterministic -- tool-call sampling still varies -- and two cells re-run
-    against identical code moved 2.8 points each. The ordering is stable across
-    repeats; individual percentages are not.
-
-    The mechanism is visible in the report:
-
-        [MISS] counter/counter_non_negative: disputed [narrowed-scope]
-          statement:   theorem counter_non_negative (m : Model) (h : Inv m) : 0 ≤ m
-          read as:     For every Model m, if m satisfies the invariant Inv, then
-                       m is non-negative. (strength: moderate)
-          discrepancy: ...the theorem only guarantees non-negativity for models
-                       satisfying the extra hypothesis Inv m.
-
-    The blind pass does its job -- that back-translation is correct and rated
-    moderate -- and the comparator then disputes the *hypothesis*. All 36
-    statements carry ``Inv``, so an arm that reads an invariant hypothesis as a
-    narrowing loses most of the faithful items. Upstream protects its naive and
-    single-prompt arms from this with an explicit caveat and gives its two-pass
-    comparator none; that asymmetry is reproduced here exactly, and it is
-    load-bearing.
-
-  * **What the published ladder is made of.** Upstream's 69.4 -> 86.1 -> 96.3 is
-    not three prompts. `eval/bench-cc.js` sets
-    ``useSinglePrompt = !useTwoPass && !useNaive`` and `cc.json` records
-    ``mode: "claude-code"``, so the 69.4% arm runs the *byte-identical*
-    single-prompt text through `claude -p --max-turns 3` with an agent system
-    prompt and no temperature control. It is a transport change reported as an
-    architecture change. Upstream did run a real no-separation prompt and did not
-    put it in the headline; at matched transport and run count:
-
-    ===================================  ======
-    arm (Anthropic API, per-item, n=36)  acc
-    ===================================  ======
-    naive (`naive-sonnet.json`)          86.1%
-    single-prompt (`single-prompt.json`) 86.1%
-    ===================================  ======
-
-    Prompt-level separation beats no separation by 0.0 points. At matched model,
-    upstream's batched two-pass on Opus (`opus-opus-literal.json`, 95.4% -- the
-    run whose prompt matches the shipped `INFORMALIZE_PROMPT`, which carries the
-    literal hint unconditionally) beats its per-item naive on Opus
-    (`naive-opus.json`, 94.4%) by 1.0 point. Against the best legitimate
-    comparator the published effect is that 1.0 point -- under half an item in 36
-    -- and paired exact McNemar on upstream's own per-item outputs gives p=1.00.
-
-    Upstream's repository also contains a per-item Lean replication of its own
-    claim that fails at five times the sample size: `bench-verina.js` over 189
-    VERINA specs, two-pass 54.0% against a 57.1% baseline (`reports/VERINA.md`:
-    "Two-pass is not strictly better... The blind informalization step adds an
-    interpretation layer that can overcomplicate comparisons"). The table above
-    is a third observation of that.
-
-  * **Batching, not blindness, is what the published two-pass arm buys.** Pass 2
-    here judges one claim at a time; upstream's judges a whole domain in one
-    call. Restoring only that -- pass 1 left per-item and byte-identical -- moves
-    the arm from 83.3% to 92.6% pooled over the three models it completes on
-    (15-5 discordant, exact McNemar p=0.041), taking gpt-5.5 to 36/36 and halving
-    gpt-4o's false disputes with no new false confirms:
-
-    ==============  ========  =========
-    model           per-item  batched
-    ==============  ========  =========
-    gpt-4o             72.2%      83.3%
-    gpt-4.1            91.7%      94.4%
-    gpt-5.5            86.1%     100.0%
-    ==============  ========  =========
-
-    The items it fixes are the diagnosed ones: `counter_non_negative` and
-    `base_hue_in_range` in all three models. And it is not the obvious mechanism
-    -- 8 of the 9 planted traps share a requirement string with a faithful
-    sibling, but removing every trap from the batch leaves the gain intact
-    (gpt-4o 8 false disputes per-item, 4 batched, 3 batched-without-foils). What
-    seems to matter is that `Inv m` is on *every* statement in a batch, so it
-    stops reading as this item's extra hypothesis, and that "better to flag than
-    to miss" applied to seven items at once becomes rank-ordering rather than a
-    hunt for one finding.
-
-    Upstream calls its batching a throughput optimisation ("Batching is a free
-    lunch... because each lemma is independent") and never tests it as a
-    treatment. Its own per-item Lean run does test it, accidentally:
-    `eval/bench-verina.js` calls `processTask(i)` one task at a time, and that
-    arm loses at N=189 with the same failure mode `reports/VERINA.md` describes
-    as "overly restrictive preconditions".
-
-  * **The two-pass deficit is fully accounted for; the baseline surplus is not.**
-    Upstream's published 96.3% is the wrong comparator for this file. Its default
-    informalizer is Haiku (`src/main.js`), and its own runs show two-pass getting
-    *worse* as the informalizer gets stronger -- Haiku->Opus 97.2%, Haiku->Sonnet
-    96.3%, Haiku->Haiku 96.3%, but Sonnet->Sonnet 93.5% and Opus->Opus 93.5%. A
-    stronger informalizer writes a richer back-translation, and richness is what
-    the comparator mines for spurious discrepancies. This file runs one strong
-    model for both passes, so 93.5% is the like-for-like figure. Batched, it
-    scores 92.6% over the three models that complete -- 0.9 points off. The two
-    documented divergences (per-item, measured at ~9 points; one model instead of
-    a Haiku/Sonnet split, ~2.8 points by upstream's data) account for the whole
-    of it.
-
-    So capability cuts both ways here, which is why no single explanation covers
-    the table above. A capable model helps the one-call arms, which read lemma
-    and requirement together; it hurts the blind arm, for the reason upstream
-    gives. What remains genuinely unexplained is the surplus in the *other*
-    direction -- the one-call arms here beat upstream's by 5 to 11 points -- and
-    the proof-body hypothesis above is the best untested candidate for it.
-
-  * **So the blindness claim is untested, not refuted.** Nobody has varied it
-    with everything else held constant. The decisive experiment is inside
-    upstream's own `roundtrip.js` -- keep the batching, the model split, the
-    transport and pass 2 byte-identical, and toggle only whether
-    `INFORMALIZE_PROMPT` has the requirements interpolated into it. Run it on
-    VERINA's 189 items, not on 36.
-
-  * **Coherent verdicts by construction.** A ``Comparison`` certifies at decode
-    time that ``match`` and ``weakening`` agree and that a mismatch names its
-    discrepancy; an incoherent verdict raises and ``RetryLLMHandler`` feeds it
-    back. Upstream's JSON schema admits ``match: true`` alongside
-    ``weakeningType: "tautology"``, and nothing catches it. Note this is a
-    scoring difference and not only a coherence one: a retry-exhausted claim
-    counts against the run, and only the two structured arms can incur it.
-
-  * **The deterministic half stays in Python.** The blog's between-pass checks --
-    flag a back-translation rated ``trivial``, flag two requirements whose
-    theorems have the same conclusion -- are a loop over typed
-    ``Informalization`` values, not a model call.
-
-  * **The premise is checked by a real prover.** Under ``--verify`` all five
-    corpora are compiled by the Lean 4 + Mathlib toolchain `formalization.py`
-    already shells out to. It reports 36 theorems, 0 errors, no ``sorry`` -- and
-    then the audit finds nine claims that do not mean what they were written to
-    mean. The verifier's clean bill of health is the setup, not the punchline.
+**So the blindness claim is untested rather than refuted.** Nobody has varied it
+with everything else held constant: upstream confounds it with batching, a
+two-model split and 3x the runs; this file removes the batching. The decisive
+experiment is inside upstream's `roundtrip.js` -- hold batching, model split and
+pass 2 byte-identical, toggle only whether `INFORMALIZE_PROMPT` has the
+requirements interpolated in, and run it on VERINA's 189 items rather than 36.
 
 Demonstrates:
 - Structural separation as *lexical scope*, with the module rather than the
@@ -243,143 +121,67 @@ Demonstrates:
   a self-contradictory answer into a `RetryLLMHandler` retry
 - Reuse of a sibling example's real external verifier (`formalization.py`'s
   `LeanKernel`) to establish a premise, rather than asserting it
-- Five labelled corpora and an accuracy report that separates the two error
-  directions, which is what makes the comparison against upstream's per-item
-  results possible at all
+- Labelled corpora and an accuracy report separating the two error directions
 - Fan-out over independent audits with ``asyncio.gather`` + ``asyncio.to_thread``
 - Per-field guidance carried on the types as ``field(metadata={"description": ...})``
 """
 
-# Differences from the source, and what each costs:
-#
-# - Lean 4 + Mathlib, not Dafny. All five domains are transliterated item for
-#   item from `test/integration/claims/*.dfy`: same 36 pairs, same 27/9 split,
-#   same requirement sentences, same lemma names in snake_case. Lean was chosen
-#   because a real, already-built toolchain is reachable from this repo, so
-#   "every one of these theorems is proved" is a compile and not a claim.
-#   Dafny's `requires`/`ensures` split becomes hypotheses and conclusion. Two
-#   traps need the signed integers Dafny's `int` gives and Lean's `ℕ` does not,
-#   so `counter`'s `Model` is `ℤ`; that keeps `-1 ≤ m` a real weakening.
-#   Three concessions to the language, none visible in an extracted statement:
-#   Dafny's `to` and `from` are reserved tokens (the delegation edge's fields are
-#   `dst` and `frm`), Dafny's maps become association lists, and each domain sits
-#   in a namespace because `Inv`, `Action` and `Init` collide with Mathlib.
-#
-# - Opacity is redistributed, not preserved item for item. Dafny's
-#   `NoDupSeq(m.cols)` and `ValidColor(m.colors[i])` are opaque names and so are
-#   the Lean versions, but `LaneLen`/`WipOf`/`Keys` are inventions of this port,
-#   because Dafny's `m.lanes[m.cols[i]]` map indexing has no direct Lean form
-#   over association lists. So `wip_limits_respected` and
-#   `lanes_and_wip_match_columns` are *more* opaque here than in Dafny, while
-#   `all_colors_valid` lost Dafny's odd hard-coded `forall i | 0 <= i < 5` and is
-#   less.
-#
-# - One trap transliterates badly. `grant_non_existent_is_noop_init` is
-#   upstream's vacuous `requires m == Init()`, caught by every upstream arm and
-#   waved through in 8 of 12 runs here. In Dafny the extra precondition gets its
-#   own line under its own keyword; in Lean `(hinit : m = Init)` is one binder
-#   among five and reads as ordinary.
-#
-# - Statements are sent, proofs are not. Upstream sends the Dafny lemma body
-#   along with its contract; here only the statement crosses the boundary, as
-#   upstream's own `lemmascript` preset does ("only the signature + requires +
-#   ensures is sent, never a body"). In Lean the meaning is entirely in the
-#   statement, and ClaimCheck explicitly does not audit the proof. This removes
-#   one signal: upstream's bodies are almost all literally `{ }`, itself a hint
-#   that a lemma may be a restatement of its own hypothesis.
-#
-# - One model, not two. The blog splits the passes across two models (Haiku
-#   informalizes, Sonnet compares), reporting that the weaker informalizer is
-#   sufficient. Both passes here run on whatever model the harness was given, so
-#   that model-asymmetry result is *not* reproduced. Upstream's own numbers put
-#   the split at roughly 2.8pp of its effect.
-#
-# - One call per claim, not one batched call per pass. This is the one place the
-#   port is deliberately unlike upstream, and it is measured above as the
-#   dominant cause of the difference in results. `src/roundtrip.js` makes *two* API calls for a
-#   whole domain -- one informalize-all, one compare-all -- while
-#   `singlePromptCheck` and `naiveCheck` each put their call inside a
-#   `for (const l of lemmas)` loop. So upstream's winning arm sees a domain's
-#   lemmas side by side, including the four `counter` lemmas that share one
-#   requirement string, one faithful and three weakened; its losing arms judge
-#   each in isolation. Upstream advertises this as "Batching is a free lunch"
-#   without treating it as a confound. Per-item for all three strategies is the
-#   cleaner test and not the same test.
+# Differences from the source:
+# - Lean 4 + Mathlib, not Dafny, so "every one of these theorems is proved" is a
+#   compile and not a claim. `counter`'s `Model` is `ℤ`, since two traps need the
+#   signed integers Dafny's `int` gives; `to`/`from` are reserved tokens (the
+#   delegation edge's fields are `dst`/`frm`); maps become association lists; and
+#   each domain sits in a namespace, because `Inv`, `Action` and `Init` collide
+#   with Mathlib. None of that is visible in an extracted statement.
+# - Opacity is redistributed, not preserved item for item: `LaneLen`, `WipOf` and
+#   `Keys` are inventions of this port, so two kanban items are *more* opaque
+#   here, while `all_colors_valid` lost Dafny's hard-coded `forall i | 0 <= i < 5`
+#   and is less.
+# - `grant_non_existent_is_noop_init` transliterates badly -- upstream's vacuous
+#   `requires m == Init()` is caught by every upstream arm and waved through in 8
+#   of 12 runs here, because in Lean `(hinit : m = Init)` is one binder among
+#   five rather than its own line under its own keyword.
+# - Statements are sent, proofs are not, as upstream's `lemmascript` preset does.
+#   This drops one signal: upstream's bodies are almost all literally `{ }`,
+#   itself a hint that a lemma may restate its own hypothesis.
+# - One model, not two, so the blog's model-asymmetry result is not reproduced;
+#   and one call per claim, not one batched call per pass.
 
-# Why this corpus is a port and not an invention
-# ----------------------------------------------
-# Reading upstream's own per-item eval outputs (`eval/results/*.json`) and
-# recomputing the error direction, arm by arm (`n` is items x runs):
-#
-#   ======================  ===  ======  ==============  ==============
-#   file                      n     acc  false confirms  false disputes
-#   ======================  ===  ======  ==============  ==============
-#   two-pass.json           108   96.3%               0               4
-#   single-prompt.json       36   86.1%               0               5
-#   cc.json                  36   69.4%               0              11
-#   naive-inv-sonnet.json   108   88.9%               0              12
-#   naive-inv-opus.json     108   94.4%               0               6
-#   haiku-haiku.json        108   96.3%               3               1
-#   ======================  ===  ======  ==============  ==============
-#
-# Nearly every error in nearly every arm is an over-flag of a *correct* lemma.
-# The exception is the last row -- a two-pass run with a Haiku comparator, which
-# waves `CardPartitionNoDups` through in all three runs -- and those are the only
-# false confirms anywhere in upstream's recorded judgments. Upstream states the
-# pattern in `reports/STRUCTURAL-SEPARATION.md`: "All three variants catch all 8
-# deliberately bogus lemmas (100%). The accuracy difference comes entirely from
-# false disputes of valid lemmas." (Its "8" is a miscount; the mapping files hold
-# nine disputed items. And the claim holds for the three variants it tabulates,
-# not for every run it recorded.)
-#
-# So this benchmark measures a false-positive rate over roughly eleven
-# discriminating items, and a corpus has to be built for that to test anything.
-# The properties that make it so are upstream's, not choices made here:
-#
-# - The discriminating items are faithful lemmas whose formal statement is an
-#   odd-looking rendering of the requirement -- a projection
-#   (`ensures forall sc :: sc in m.grants ==> sc.0 in m.subjects` against "All
-#   granted capabilities reference existing subjects"), a hypothesis *stronger*
-#   than the requirement (`DelegateNonExistentIsNoop`), or a decomposition into
-#   conjuncts (`CardInExactlyOneColumn`). Read with the requirement in hand the
-#   honest answer is "I cannot confirm that covers all of it" and the model
-#   disputes; read blind it is face value and the model confirms. Those two
-#   delegation items are the only ones every single-call arm gets wrong on every
-#   model upstream tried.
-#
-# - Nine of upstream's 36 conclusions are a bare named predicate whose definition
-#   is not in the prompt -- and in upstream's case not even in its repository,
-#   since the domain modules its claims files `include` are absent from the
-#   clone. `AllEdgesValid`, `NoDupSeq (AllIds m)`, `ValidColor` and
-#   `HuesMatchHarmony` are reproduced here for that reason.
-#
-# - Requirements are vague and un-operationalized: "Hues follow the selected
-#   harmony pattern", not "every hue equals the base plus a fixed offset mod
-#   360". Three of the 36 contain a numeral. They are used here verbatim.
-#
-# - 27 of 36 items are faithful. A confirm-biased strategy gets a free lift from
-#   that majority class, and two-pass is confirm-biased by construction.
-#
-# Known limits of the numbers above, in the order they would need fixing:
-#
-# - Batching, described in the last bullet of the previous block.
-# - Power. 36 items, one run per cell. Against the correct comparator the target
-#   effect is 2-7pp, which needs roughly 200 paired items; extra runs buy almost
-#   nothing at temperature 0, where repeats are near-deterministic.
-# - The harness's own preamble. Every system message here opens with ~14k
-#   characters of framework documentation -- `Agent`, `Template`, `Tool`,
-#   `Encodable`, the prompt-assembly table, a code-synthesis section and a Python
-#   REPL section -- which is roughly 80% of the message and has no counterpart in
-#   upstream's prompts. It is identical across both arms, so it cannot explain
-#   the ordering between them, but it is an untested candidate for why the naive
-#   floor here outscores upstream's.
-# - No per-item results are committed here, only the aggregate table, so the
-#   claim about which items discriminate cannot be checked from this repository
-#   the way upstream's can from `eval/results/*.json`. Upstream's practice is the
-#   better one.
-# - No coverage check. Both here and upstream, a requirement that no theorem
-#   addresses at all goes undetected: the audit only judges pairs it is handed.
-#   Upstream lists this as a known limitation.
+# Why the corpus is a port rather than an invention
+# -------------------------------------------------
+# Upstream's per-item outputs (`eval/results/*.json`) show that essentially every
+# error in every arm is an over-flag of a *correct* lemma -- across its six
+# full-corpus runs there are three false confirms in total. So the benchmark
+# measures a false-positive rate over roughly eleven discriminating items, and a
+# corpus has to carry the properties that make it so. They are upstream's:
+# faithful lemmas whose formal statement is an odd-looking rendering of the
+# requirement (a projection, a hypothesis *stronger* than what was asked, a
+# decomposition into conjuncts); nine of 36 conclusions a bare named predicate
+# whose definition never reaches the prompt; requirements left vague ("Hues
+# follow the selected harmony pattern"); and a 27/9 split whose majority class
+# rewards a confirm-biased strategy.
+
+# Reading the numbers
+# -------------------
+# - Batching is the largest divergence, quantified above.
+# - Power: 36 items, one run per cell, against a target effect of a few points
+#   that would need roughly 200 paired items. Extra runs buy little at
+#   temperature 0.
+# - Upstream's ladder is not three prompts. `eval/bench-cc.js` sets
+#   `useSinglePrompt = !useTwoPass && !useNaive` and `cc.json` records
+#   `mode: "claude-code"`, so its 69.4% rung runs the byte-identical
+#   single-prompt text through `claude -p` with an agent system prompt and no
+#   temperature control -- a transport change, not an architecture one.
+# - The naive floor here scores 93.1% against upstream's 86.1% for the same
+#   prompt on the same items, and not because of model capability: upstream's
+#   failures are five faithful lemmas disputed with no traps missed, while
+#   gpt-4.1-mini misses two traps and disputes nothing. Disjoint sets, opposite
+#   directions. Two untested candidates -- upstream sends the `{ }` proof body,
+#   a vacuity cue on exactly the lemmas it false-disputes, and every system
+#   message here opens with ~14k characters of framework documentation.
+# - No per-item results are committed here, only the tables above.
+# - No coverage check: a requirement no theorem addresses goes undetected, here
+#   and upstream.
 
 import argparse
 import asyncio
