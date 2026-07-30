@@ -36,87 +36,56 @@ requirements``. Here the comment is a file boundary:
     module: not the function, not the parameter list, not the return type. Any
     scored example carrying its own answer key needs the same split.
 
-  * **One of the two ablations is structural; the other is not.** Only
-    ``two-pass`` differs in shape -- two agents, two calls, and a pass 1 whose
-    signature has nowhere to put a requirement. Both single-call arms are
-    literally the same call, ``audit(requirement, statement)``, differing in
-    their prompt, their defining module and their return type. That is worth
-    being explicit about, because it means the two-pass comparison tests scope
-    and the single-pass/naive comparison tests instruction and schema.
+  * **The ablation is structural.** ``two-pass`` is two agents and two calls,
+    with a pass 1 whose signature has nowhere to put a requirement; ``naive`` is
+    one call, ``audit(requirement, statement)``, a yes/no and a sentence. The
+    contrast is what is in scope for the model at the moment it commits to a
+    reading of the formal statement, and it is enforced by the parameter list and
+    the module rather than by an instruction.
 
-    The return type reaches the model as ``response_format``, not in the system
-    message, so its field descriptions are invisible in a captured prompt --
-    ``Comparison``'s do not appear in the single-pass system message at all,
-    while ``NaiveJudgement``'s do appear in naive's, because that module *defines*
-    the dataclass rather than importing it. ``Comparison`` also gates at decode
-    time: an incoherent verdict raises and `RetryLLMHandler` re-asks, where
-    ``NaiveJudgement`` has no validator and can never fail. That cuts both ways --
-    an exhausted retry scores as wrong, but a *successful* one is a free extra
-    turn the naive arm cannot get, and successful retries are not recorded in the
-    reports. Unmeasured.
+    ``Comparison`` also gates at decode time: an incoherent verdict raises and
+    `RetryLLMHandler` re-asks, where ``NaiveJudgement`` has no validator and can
+    never fail. That cuts both ways -- an exhausted retry scores as wrong, but a
+    *successful* one is a free extra turn the naive arm cannot get, and successful
+    retries are not recorded in the reports. Unmeasured. Note also that a return
+    type reaches the model as ``response_format`` rather than in the system
+    message, so its field descriptions do not appear in a captured prompt.
 
     Measured 2026-07 over the full 36-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
     rejects temperature 0, so it runs at the provider default). ``b-c`` is the
-    discordant split for two-pass against naive -- items two-pass alone got right,
-    then items naive alone got right -- with an exact McNemar p:
+    discordant split -- items two-pass alone got right, then items naive alone got
+    right -- with an exact McNemar p:
 
-    ==============  ========  ===========  ======  ===========
-    model           two-pass  single-pass  naive   b-c (p)
-    ==============  ========  ===========  ======  ===========
-    gpt-4o             72.2%        94.4%  94.4%   1-9 (0.021)
-    gpt-4.1-mini       88.9%        94.4%  86.1%   2-1 (1.000)
-    gpt-4.1            91.7%       100.0%  97.2%   1-3 (0.625)
-    gpt-5.5            86.1%       100.0%  94.4%   1-4 (0.375)
-    ==============  ========  ===========  ======  ===========
+    ==============  ========  ======  ===========
+    model           two-pass  naive   b-c (p)
+    ==============  ========  ======  ===========
+    gpt-4o             72.2%  94.4%   1-9 (0.021)
+    gpt-4.1-mini       88.9%  86.1%   2-1 (1.000)
+    gpt-4.1            91.7%  97.2%   1-3 (0.625)
+    gpt-5.5            86.1%  94.4%   1-4 (0.375)
+    ==============  ========  ======  ===========
 
-    Pooled: two-pass 84.7%, single-pass 97.2%, naive 93.1%. **The published
-    ordering does not reproduce here; it comes out backwards.** Two-pass is last
-    in all four models, one cell reaches significance, and the failure is
-    one-sided -- 18 of two-pass's 22 errors are faithful theorems *disputed*,
-    against naive's 2. Single-pass is the best arm, but it is not a clean port of
-    `CLAIMCHECK_PROMPT` and should not be read as one: it keeps that prompt's
-    framing, ordering and two caveats, grafts on the *two-pass* arm's five-category
-    taxonomy, and drops six of `CLAIMCHECK_TOOL`'s nine required fields --
-    including `informalization`, which forces upstream's single-prompt arm to
-    write the back-translation into its output, and `surprisingRestrictions`,
-    which forces an explicit restriction scan on every item.
+    Pooled: two-pass 84.7%, naive 93.1%. **The published ordering does not
+    reproduce here; it comes out backwards.** Two-pass is behind in three of four
+    models, one cell reaches significance, and the failure is one-sided -- 18 of
+    two-pass's 22 errors are faithful theorems *disputed*, against naive's 2.
 
-    Nor is the single-pass/naive gap an architectural result. Appending one
-    sentence to the naive prompt -- ``But do flag a hypothesis that restricts
-    *when* the property holds`` -- and changing nothing else (same ordering, same
-    two-field return type, same module) closes it: gpt-4.1-mini 31/36 to 34/36
-    and gpt-5.5 34/36 to 36/36, both landing exactly on single-pass. Three of the
-    nine planted flaws in this corpus are an added hypothesis, and that sentence
-    describes them. So this rung measures caveat coverage against a known defect
-    taxonomy, not prompt architecture, and neither the ordering nor the richer
-    return type is needed to explain it.
-
-    Upstream measures this same contrast at zero. `CLAIMCHECK_PROMPT` and
-    `NAIVE_PROMPT` are separate prompts behind separate flags (`roundtrip.js`
-    lines 208 and 285), and they score *identically* on the same 36 items --
-    86.1% and 86.1%. The reason is the error direction: every upstream arm
-    catches all nine traps in every run, so a clause that helps catch an
-    added-hypothesis trap has nothing to fix. Here the naive arm really does miss
-    three of them, so the same clause is worth three items. One sentence, worth
-    nothing upstream and 3 points here, because the two corpora fail in opposite
-    directions.
-
-    One item of the gap is a leak, and it is upstream's, reproduced faithfully.
-    `CLAIMCHECK_PROMPT`'s worked example -- ``requires Inv(m); ensures m >= 0`` --
-    is byte-for-byte its own benchmark item `CounterNonNegative`, so its
-    single-prompt arm is shown the answer to one of its 36 claims. The Lean
-    example ``(h : Inv m) : 0 ≤ m`` is likewise `counter_non_negative` verbatim.
-    That is why single-pass never false-disputes the item both other arms trip
-    over.
+    Naive is the right comparator for upstream's published middle rung, not a
+    weaker one. `CLAIMCHECK_PROMPT` and `NAIVE_PROMPT` are separate prompts behind
+    separate flags (`roundtrip.js` lines 208 and 285) and score *identically* on
+    the same 36 items -- 86.1% and 86.1%. Upstream's structured single prompt buys
+    nothing over its own naive baseline, so the ~10-point published gap is
+    two-pass against this floor.
 
     Every number here is from prompts captured and inspected in full, not from
     the module source alone: each arm's assembled system message contains its own
     template, its own module, and the framework preamble, and nothing from the
-    corpus, the claim tables or the other two arms.
+    corpus, the claim tables or the other arm.
 
-    The baselines here are far stronger than upstream's -- its single-prompt arm
-    scores 86.1% where every arm above scores 94.4% or better -- and the cause is
+    The naive floor here is far stronger than upstream's -- 93.1% pooled, and
+    94.4% or better on three of four models, against upstream's 86.1% for the
+    same `NAIVE_PROMPT` on the same 36 items -- and the cause is
     *not* model capability, though upstream's own data invites that reading (the
     same `NAIVE_PROMPT` over the same 36 items scores 86.1% on Sonnet 4.5 and
     94.4% on Opus 4.6). The error sets rule it out. Upstream's single-prompt
@@ -401,9 +370,9 @@ Demonstrates:
 #   characters of framework documentation -- `Agent`, `Template`, `Tool`,
 #   `Encodable`, the prompt-assembly table, a code-synthesis section and a Python
 #   REPL section -- which is roughly 80% of the message and has no counterpart in
-#   upstream's prompts. It is identical across the three arms, so it cannot
-#   explain the ordering between them, but it is an untested candidate for why
-#   every arm here outscores upstream's.
+#   upstream's prompts. It is identical across both arms, so it cannot explain
+#   the ordering between them, but it is an untested candidate for why the naive
+#   floor here outscores upstream's.
 # - No per-item results are committed here, only the aggregate table, so the
 #   claim about which items discriminate cannot be checked from this repository
 #   the way upstream's can from `eval/results/*.json`. Upstream's practice is the
@@ -439,7 +408,6 @@ from auditing_agents import (
     Weakening,
 )
 from auditing_naive import NaiveAuditor
-from auditing_single import SinglePassAuditor
 
 # ---------------------------------------------------------------------------
 # The corpora. Five domains, ported item for item from upstream's benchmark
@@ -1208,7 +1176,6 @@ DOMAINS: dict[str, Domain] = {
 
 class Mode(enum.StrEnum):
     TWO_PASS = "two-pass"
-    SINGLE_PASS = "single-pass"
     NAIVE = "naive"
 
 
@@ -1252,17 +1219,14 @@ def audit_claim(domain: Domain, claim: Claim, mode: Mode) -> Audit:
     comparison: Comparison | None = None
     try:
         if mode is Mode.NAIVE:
-            # The impoverished arm: a yes/no and a sentence, no taxonomy.
+            # The floor: a yes/no and a sentence, no taxonomy.
             judgement = NaiveAuditor().audit(claim.requirement, statement)
             match, explanation = judgement.match, judgement.explanation
         else:
-            if mode is Mode.TWO_PASS:
-                # Pass 1 receives `statement`. There is nowhere in this call for
-                # `claim.requirement` to go.
-                back = Informalizer().informalize(statement)
-                comparison = Comparator().compare(claim.requirement, statement, back)
-            else:
-                comparison = SinglePassAuditor().audit(claim.requirement, statement)
+            # Pass 1 receives `statement`. There is nowhere in this call for
+            # `claim.requirement` to go.
+            back = Informalizer().informalize(statement)
+            comparison = Comparator().compare(claim.requirement, statement, back)
             match, explanation = comparison.match, comparison.explanation
     except Exception as exc:
         return Audit(
@@ -1482,8 +1446,9 @@ def main() -> None:
         type=Mode,
         choices=list(Mode),
         default=Mode.TWO_PASS,
-        help="Audit strategy: the two-pass split (informalizer never sees the "
-        "requirement), one combined call, or a bare 'does this match?'",
+        help="Audit strategy: the two-pass split, in which the informalizer "
+        "never sees the requirement, or the naive floor -- one call, "
+        "'does this match?'",
     )
     parser.add_argument(
         "--verify",
