@@ -8,13 +8,15 @@ import jax
 import numpyro.distributions
 import pytest
 
+import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.ops.monoid import LogSumExp, Product, Sum
-from effectful.ops.semantics import evaluate, handler, typeof
-from effectful.ops.syntax import defop
+from effectful.ops.semantics import typeof
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation, Term
+from tests._monoid_helpers import JaxBackend
 
 ##################################################
 # Test cases
@@ -859,33 +861,39 @@ def test_distribution_support():
     assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
 
 
+@pytest.fixture
+def monoid_backend() -> JaxBackend:
+    return JaxBackend()
+
+
 @pytest.mark.parametrize(
-    ("reduction_monoid", "weight_monoid", "expected_weights"),
-    [
-        (Sum, Product, jnp.array([0.25, 0.75])),
-        (LogSumExp, Sum, jnp.log(jnp.array([0.25, 0.75]))),
-    ],
+    ("reduction_monoid", "weight_monoid", "log_weights"),
+    [(Sum, Product, False), (LogSumExp, Sum, True)],
 )
 def test_reduce_enumerable_distribution(
-    reduction_monoid, weight_monoid, expected_weights
+    reduction_monoid, weight_monoid, log_weights, monoid_backend: JaxBackend
 ):
-    value = defop(jax.Array, name="value")
-    distribution = dist.CategoricalProbs(jnp.array([0.25, 0.75]))
-    expression = reduction_monoid.reduce(
-        value(), {value: dist.distribution_stream(distribution)}
+    value = monoid_backend.define_vars("value", ret="scalar")
+    body = monoid_backend.define_vars(
+        "body", arg_types=(monoid_backend.scalar_typ,), ret="scalar"
     )
+    distribution = dist.CategoricalProbs(jnp.array([0.25, 0.75]))
+    support = distribution.enumerate_support(expand=False)
+    weight_value = defop(jax.Array, name="weight_value")
+    weight_body = distribution.log_prob(weight_value())
+    if not log_weights:
+        weight_body = jnp.exp(weight_body)
+    weight = deffn(weight_body, weight_value)
 
-    with handler(dist.ReduceEnumerableDistribution()):
-        rewritten = evaluate(expression)
-
-    assert isinstance(rewritten, Term) and rewritten.op is reduction_monoid.reduce
-    rewritten_stream = next(iter(rewritten.args[1].values()))
-    assert isinstance(rewritten_stream, Term)
-    assert rewritten_stream.op is weight_monoid.weighted
-
-    support, weight = rewritten_stream.args
-    assert jnp.array_equal(support, jnp.array([0, 1]))
-    assert jnp.allclose(weight(support), expected_weights)
+    lhs = reduction_monoid.reduce(
+        body(value()), {value: dist.distribution_stream(distribution)}
+    )
+    rhs = reduction_monoid.reduce(
+        body(value()), {value: weight_monoid.weighted(support, weight)}
+    )
+    monoid_backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=dist.ReduceEnumerableDistribution()
+    )
 
 
 @pytest.mark.parametrize(

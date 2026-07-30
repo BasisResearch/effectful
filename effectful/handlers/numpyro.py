@@ -24,7 +24,7 @@ from effectful.ops.monoid import (
     Sum,
 )
 from effectful.ops.semantics import evaluate, fwd, typeof
-from effectful.ops.syntax import ObjectInterpretation, defdata, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, defop, implements
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -1219,11 +1219,14 @@ class ReduceEnumerableDistribution(ObjectInterpretation):
                 continue
 
             support = dist.enumerate_support(expand=False)
+            value = Operation.define(jax.Array)
             if monoid == LogSumExp:
-                weighted = Sum.weighted(support, dist.log_prob)
+                weighted = Sum.weighted(
+                    support, deffn(dist.log_prob(value()), value)
+                )
             elif monoid == Sum:
                 weighted = Product.weighted(
-                    support, lambda x: jnp.exp(dist.log_prob(x))
+                    support, deffn(jnp.exp(dist.log_prob(value())), value)
                 )
             else:
                 continue
