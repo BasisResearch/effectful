@@ -44,12 +44,16 @@ requirements``. Here the comment is a file boundary:
     being explicit about, because it means the two-pass comparison tests scope
     and the single-pass/naive comparison tests instruction and schema.
 
-    The return type is not merely a container in either case. Its JSON schema is
-    rendered into the system message, so ``Weakening``'s five members reach the
-    model *through the type* rather than the prompt; and ``Comparison`` gates at
-    decode time, where ``NaiveJudgement`` cannot fail and so never retries. That
-    asymmetry can only cost the structured arms -- a retry-exhausted claim scores
-    as wrong.
+    The return type reaches the model as ``response_format``, not in the system
+    message, so its field descriptions are invisible in a captured prompt --
+    ``Comparison``'s do not appear in the single-pass system message at all,
+    while ``NaiveJudgement``'s do appear in naive's, because that module *defines*
+    the dataclass rather than importing it. ``Comparison`` also gates at decode
+    time: an incoherent verdict raises and `RetryLLMHandler` re-asks, where
+    ``NaiveJudgement`` has no validator and can never fail. That cuts both ways --
+    an exhausted retry scores as wrong, but a *successful* one is a free extra
+    turn the naive arm cannot get, and successful retries are not recorded in the
+    reports. Unmeasured.
 
     Measured 2026-07 over the full 36-claim corpus, the first three rows at
     temperature 0 to match upstream's benchmark (gpt-5.5 is a reasoning model and
@@ -70,8 +74,31 @@ requirements``. Here the comment is a file boundary:
     ordering does not reproduce here; it comes out backwards.** Two-pass is last
     in all four models, one cell reaches significance, and the failure is
     one-sided -- 18 of two-pass's 22 errors are faithful theorems *disputed*,
-    against naive's 2. Single-pass, upstream's ``CLAIMCHECK_PROMPT`` run
-    per-item, is the best arm.
+    against naive's 2. Single-pass is the best arm, but it is not a clean port of
+    `CLAIMCHECK_PROMPT` and should not be read as one: it keeps that prompt's
+    framing, ordering and two caveats, grafts on the *two-pass* arm's five-category
+    taxonomy, and drops six of `CLAIMCHECK_TOOL`'s nine required fields --
+    including `informalization`, which forces upstream's single-prompt arm to
+    write the back-translation into its output, and `surprisingRestrictions`,
+    which forces an explicit restriction scan on every item.
+
+    Nor is the single-pass/naive gap an architectural result. Appending one
+    sentence to the naive prompt -- ``But do flag a hypothesis that restricts
+    *when* the property holds`` -- and changing nothing else (same ordering, same
+    two-field return type, same module) closes it: gpt-4.1-mini 31/36 to 34/36
+    and gpt-5.5 34/36 to 36/36, both landing exactly on single-pass. Three of the
+    nine planted flaws in this corpus are an added hypothesis, and that sentence
+    describes them. So this rung measures caveat coverage against a known defect
+    taxonomy, not prompt architecture, and neither the ordering nor the richer
+    return type is needed to explain it.
+
+    One item of the gap is a leak, and it is upstream's, reproduced faithfully.
+    `CLAIMCHECK_PROMPT`'s worked example -- ``requires Inv(m); ensures m >= 0`` --
+    is byte-for-byte its own benchmark item `CounterNonNegative`, so its
+    single-prompt arm is shown the answer to one of its 36 claims. The Lean
+    example ``(h : Inv m) : 0 ≤ m`` is likewise `counter_non_negative` verbatim.
+    That is why single-pass never false-disputes the item both other arms trip
+    over.
 
     Every number here is from prompts captured and inspected in full, not from
     the module source alone: each arm's assembled system message contains its own
@@ -360,6 +387,13 @@ Demonstrates:
 # - Power. 36 items, one run per cell. Against the correct comparator the target
 #   effect is 2-7pp, which needs roughly 200 paired items; extra runs buy almost
 #   nothing at temperature 0, where repeats are near-deterministic.
+# - The harness's own preamble. Every system message here opens with ~14k
+#   characters of framework documentation -- `Agent`, `Template`, `Tool`,
+#   `Encodable`, the prompt-assembly table, a code-synthesis section and a Python
+#   REPL section -- which is roughly 80% of the message and has no counterpart in
+#   upstream's prompts. It is identical across the three arms, so it cannot
+#   explain the ordering between them, but it is an untested candidate for why
+#   every arm here outscores upstream's.
 # - No per-item results are committed here, only the aggregate table, so the
 #   claim about which items discriminate cannot be checked from this repository
 #   the way upstream's can from `eval/results/*.json`. Upstream's practice is the
