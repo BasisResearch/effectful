@@ -50,57 +50,110 @@ Demonstrates:
 What the numbers are
 --------------------
 
-Measured on 2026-07-29 with gpt-5.5 proposing, on the paper's own instance
-(``--num-circles 26 --time-budget 20``). Three runs from the 6x6 grid seed at 2.1667
-reached 2.6083 (4 iterations), 2.6147 (6 iterations) and 2.6359831 (stopped after 10),
-against 2.63598 for the paper, 2.635 for AlphaEvolve and 2.6307 for OpenEvolve at 200
-evaluations. Three things have to be said about that before it is read as a
-reproduction.
+Measured on 2026-07-30 with gpt-5.5 proposing, on the paper's own instance
+(``--num-circles 26 --time-budget 20 --budget 10``), one run per configuration, each
+from the 6x6 grid seed at 2.1666667:
 
-*It is the run's number, not the artifact's.* Every candidate is handed the best packing
-found so far and told never to return worse, so a score accumulates the work of
-everything that ran before it -- a candidate returning its input unchanged would be
-recorded at the full incumbent value. This is the paper's setup, not a deviation from
-it: its evolved packer takes ``current_best_solution`` too, so its 2.63598 is a
-trajectory number in the same way. But it means "the winning artifact reached 2.636" is
-not a claim this domain supports. `cold_start_note` runs the winner once with no
-incumbent and prints both numbers, and the gap between them is the part inherited
-rather than earned.
+  * default -- Pareto selection, side information on: **2.6359831**, 3 of 10 proposals
+    accepted, 15 evaluations
+  * ``--no-side-info``: 2.6319369, 2 of 10 accepted, 19 evaluations
+  * ``--selection best``: 2.6317302, 5 of 10 accepted, 17 evaluations
+
+The paper reports 2.63598 on this instance, against 2.635 for AlphaEvolve and 2.6307
+for OpenEvolve at 200 evaluations, so the default arm matches its value to every digit
+it gives. A
+repeat of that arm reached the same 2.6359831 after four iterations before the
+wall-clock hazard below wedged it at iteration 5; two runs landing on exactly that value
+from different proposals is what a real local optimum looks like, and it is the
+strongest evidence here that the artifact solves the problem rather than reciting a
+published answer for 26. Four things have to be said before any of this is read as a
+reproduction.
 
 *Most of the distance is scipy's, not the search's.* ``--baseline`` runs warm-started
 random-restart SLSQP with no LLM in the loop for the same packer wall-clock the search
 spends (10 iterations x 3 repeats x 20s = 600s), and it reaches **2.6342924** in 13116
-restarts. That is already past OpenEvolve at 200 evaluations and within 0.0007 of
-AlphaEvolve. So the honest statement of this domain's result is: a reflective search
-whose artifacts call a constrained optimizer beat a plain call to the same optimizer by
-about 0.0017 at matched wall-clock, from a seed at 2.1667. The paper reports no such
-control, which is why its own margin over specialized systems is not attributable
-either.
+restarts -- past OpenEvolve at 200 evaluations, within 0.0007 of AlphaEvolve, and above
+both ablation arms. The default arm's first accepted proposal scores
+2.6342924 exactly: the first competent artifact the search writes is doing what the
+control does, digit for digit, and the whole remaining margin of the run is 0.0017. So
+the honest statement of this domain's result is that a reflective search whose artifacts
+call a constrained optimizer beat a plain call to the same optimizer by about 0.0017 at
+matched wall-clock. The paper reports no such control, which is why its own margin over
+specialized systems is not attributable either.
 
-*Those three runs saw a prompt that named the paper's answer.* They were measured with
-`numeric_toolbox` spelling out the LP-over-radii-with-dual-gradients recipe and
-`propose_packer` listing four further strategies, all of them findings of the paper the
-search is meant to be reproducing. The prompts now state the environment and the scoring
-rules and nothing else, so those numbers are provenance rather than a current result. A
-run on 2026-07-30 under the present prompts went 2.1667 -> 2.6208 -> 2.6308 -> 2.6359831
-in three accepted proposals; it was stopped at iteration 5 (see the wall-clock note
-below), and that four-iteration trajectory is all that is claimed for it.
+*The run's number and the artifact's are different numbers, and the gap varies by arm.*
+Every candidate is handed the best packing found so far and told never to return worse,
+so a score accumulates the work of everything before it -- a candidate returning its
+input unchanged is recorded at the full incumbent value. This is the paper's setup, not
+a deviation from it: its evolved packer takes ``current_best_solution`` too, so its
+2.63598 is a trajectory number in the same way. `cold_start_note` re-runs the winner
+with no incumbent and prints both. The default arm's winner scores 2.6359831 cold
+against the run's 2.6359831 -- it inherited nothing and reaches the headline from the
+grid on its own. ``--selection best``'s winner scores 2.6319369 cold against a run
+number of 2.6317302, marginally *better* alone than in the run. ``--no-side-info``'s
+winner scores 2.5416318 cold against 2.6319369, so 0.09 of its score is other
+candidates' work rather than its own, and that arm's headline is the least attributable
+of the three.
 
-Two things in that trace are worth reading rather than skipping. Runs under both prompts
-land on exactly 2.6359831, from different proposals, which is what a real local optimum
-looks like and is the strongest evidence here that the artifact solves the problem
-rather than reciting the published answer for 26. And iteration 4 reads
-``2.6359831 -> 2.6359831 ACCEPTED``: the accept gate is a bare ``after > before``, so a
-child that clamped to the incumbent and improved it in the eighth decimal was admitted
-and its parent pruned. That is the accept rule as Algorithm 1 states it, and it is the
-mechanism by which a candidate contributing nothing inherits the run's whole score.
+*Score-only feedback costs almost nothing here, and the paper's ablation figure does not
+reproduce.* ``--no-side-info`` reaches 2.6319369, which is 99.85% of the side-information
+arm (99.1% of the distance from the seed), against the 93.96% the paper's Table 4
+reports. The direction is the paper's and the magnitude is not, and the trace says why:
+the first accepted proposal in every arm jumps from the grid to a warm-started SLSQP
+restart loop and lands within 0.005 of the best number any arm reaches, after which all
+of them grind in the fourth decimal. Diagnostics naming which circles are jammed cannot
+be worth much when the remaining headroom is 0.004 and the artifact's own optimizer is
+already searching it. That is a fact about this domain rather than a refutation of the
+paper's: on a task whose ceiling is one competent artifact away from the seed, the SI
+ablation has almost nothing to measure.
 
-The winning artifact is at least an algorithm rather than a remembered answer. It builds
-the 4n wall constraints and n(n-1)/2 separation
+*Greedy selection is not distinguishable from Pareto here, because the frontier never
+holds more than one candidate.* ``--selection best`` reached 2.6317302 against the
+default arm's 2.6359831. That looks like support for 4.3's argument against collapsing
+the frontier to an average, and it is not: every one of these runs ends "Pareto frontier
+(1 candidate(s) survive)", and every accepted proposal prunes exactly one candidate. The
+three objectives (max, mean and worst over the repeats) move together for packers this
+close to deterministic, so dominance is total, and Pareto selection spends the run
+choosing from a pool of one. With a single run per arm and no variance estimate, a 0.004
+difference between two configurations that both reduce to "mutate the only candidate
+there is" measures nothing about the selection rule, and the mechanism the difference
+would have to come from -- structurally different packers kept alive by complementary
+strengths -- never appears in the trace. 4.3 is untested here, not confirmed.
+
+`module_note` gives Mechanism 2 the same treatment. Across the three runs the refiner
+module's accepted proposals carry mean minibatch gains of +0.4676, +0.2313 and +0.2320;
+the code module's carry +0.000845 and +0.000353, and in the score-only arm it had
+nothing accepted at all. The refiner wins the one move that matters, off the grid seed,
+and the code module grinds out everything after it in the fourth decimal and beyond,
+which makes the two modules' gain figures a statement about when each ran rather than
+about how good either is. The modules
+do alternate -- accepted gains arrive as ``refiner -> code -> code`` in the default arm
+and ``refiner -> code -> code -> refiner -> code`` in ``--selection best``, three
+handovers -- but a handover means only that the other module produced the next accepted
+gain, not that it was ahead of its partner. What the counts do establish is that the
+second module is not decoration: it produced the first accepted gain in all three runs
+and the winning artifact in the score-only arm.
+
+Iterations 7 and 9 of the ``--selection best`` run both read ``2.6317302 -> 2.6317302
+ACCEPTED``, as does iteration 3 of the default arm at 2.6342924. The accept gate is a
+bare ``after > before``, so a child that clamped to the incumbent and improved it in the
+eighth decimal is admitted and its parent pruned. That is Algorithm 1's accept rule as
+written, and it is the mechanism by which a candidate contributing nothing carries the
+run's whole score forward.
+
+The winning artifact is an algorithm rather than a remembered answer, with one
+qualification worth stating. It builds the 4n wall constraints and n(n-1)/2 separation
 constraints programmatically over 3n variables, hands them to SLSQP warm-started from
 the incumbent packing, repairs every iterate to exact feasibility before scoring it, and
-keeps the best. It contains no coordinate table and no special case for 26 -- and it is
-recognisably the same program as `baseline_packing`, which is the point above.
+keeps the best; it is recognisably the same program as `baseline_packing`, which is the
+point above, and it contains no coordinate table. It does contain
+``random.Random(15 if n == 26 else 1000003 + 7919 * n)`` -- a restart seed picked for the
+instance it was asked about. So its zero cold-start gap says it reliably reproduces its
+own lucky restart sequence at n=26, which is a weaker claim than reliably finding
+2.6359831. Run directly at a size nobody asked it about, and given the same 20s the
+search gave it, it scores 2.7827752 for n=29 against 2.4166667 for the grid, so it is an
+algorithm on the evidence rather than on its author's word -- but see the note on
+`generality_check` below, which does not give it that budget and concludes the opposite.
 """
 
 # Simplifications vs. the source:
@@ -113,13 +166,17 @@ recognisably the same program as `baseline_packing`, which is the point above.
 #   how it splits attention between them. There is no per-module score to plot, so
 #   Mechanism 2's leapfrogging curve is not reproduced -- only which module produced
 #   each accepted gain (see `PackSystem` and `module_note`).
-# - ``--no-side-info`` and ``--selection best`` were last measured at n=10 on an earlier
-#   version of this script, before the incumbent, the numeric libraries and the second
-#   module -- and at an instance whose ceiling every arm hits within a few iterations.
-#   Testing the paper's 93.96% score-only figure means re-running them at n=26 here.
-# - One run per configuration and no variance estimate, on a domain whose spread across
-#   three runs (2.608 to 2.636) is an order of magnitude wider than the gaps between the
-#   published systems it is being compared to.
+# - `generality_check` gives the packer 0.5s, and an artifact that honours a short budget
+#   by returning its safe fallback is reported as "a table rather than an algorithm" on
+#   that basis. It says exactly that about the winning artifact above, which scores
+#   2.7827752 at n=29 against the grid's 2.4166667 when given the run's own 20s. So this
+#   diagnostic currently distinguishes "bails out when rushed" from "hardcodes an
+#   answer" not at all, and the proposer is shown the wrong conclusion every iteration.
+#   Raising its budget would cost a full extra packer run per evaluation, which is why
+#   the cheap version is here; the trade is not free either way.
+# - One run per configuration and no variance estimate, on a domain where the three
+#   configurations measured span 2.6317 to 2.6360 -- a range as wide as the whole gap
+#   between the published systems the headline is compared against.
 # - The wall-clock backstop in `_run_packer` is best-effort, not a guarantee. It is a
 #   Python-level ``SIGALRM``, and the handler only runs when the interpreter next gets
 #   control, so a synthesized packer sitting in a long C call or one that has moved work
@@ -597,7 +654,15 @@ def generality_check(packer: Packer, n: int) -> Diagnostic:
     """Side information only, never scored: how the packer does on an instance size it
     was not asked about. A genuine algorithm keeps its edge here; a table of
     coordinates for one ``n`` falls back to whatever it does by default, and the
-    proposer gets to see that it did."""
+    proposer gets to see that it did.
+
+    Read the verdict with the 0.5s budget in mind. It is short because this is the one
+    diagnostic that costs an extra run of the packer, and it is short enough that an
+    artifact which returns a safe fallback rather than a half-finished optimization when
+    rushed is indistinguishable here from one that memorised an answer -- so a "table"
+    verdict is evidence about the packer's behaviour under a tight budget, not proof
+    that it fails to generalize.
+    """
     other = n + 3
     baseline = total_radius(seed_packer(other, 0.1, None))
     try:

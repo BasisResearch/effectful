@@ -15,11 +15,12 @@ which writes the function, and scores what comes back.
 
 Scoring borrows KernelBench's *shape* -- correctness against a reference
 implementation, then wall-clock speedup against it -- and that shape is what makes the
-domain optimizable at all: the worker writes a correct list transform from the bare
-seed instruction on all five tasks, so correctness alone would saturate immediately.
-Correctness is not, however, a floor the search stays above. An instruction that pushes
-hard for speed makes the worker write kernels that fail, and those score zero; the gate
-is a cliff the search repeatedly falls off, which the measured numbers below show.
+domain optimizable at all: the worker nearly always writes a correct list transform from
+the bare seed instruction -- 14 of the 15 seed evaluations across the runs below -- so
+correctness alone would saturate immediately. Correctness is not, however, a floor the
+search stays above. An instruction that pushes hard for speed makes the worker write
+kernels that fail, and those score zero; the gate is a cliff the search repeatedly falls
+off, as the traces below record.
 
 Read the speedups with the baseline in mind, because it is not the paper's. KernelBench
 compares against PyTorch, which is cuDNN and cuBLAS -- vendor-tuned code, and the reason
@@ -41,8 +42,8 @@ Demonstrates:
 - Multi-task mode: per-task Pareto objectives on one shared frontier, per-task winners
   at output time, and a count of how many of those winners were last refined while the
   proposer was looking at a *different* task -- reported against the count chance alone
-  would produce, because on five tasks with a two-task minibatch that null is 3.0 and
-  the raw count says nothing on its own
+  would produce, because with five tasks and a two-task minibatch that null covers most
+  of the statistic's range and the raw count says nothing on its own
 - A single-task control (``--single-task``) that re-optimizes each task independently,
   which is the comparison the paper's 5.4 reports -- though see the simplifications on
   what "equivalent budget" does and does not mean here
@@ -50,38 +51,53 @@ Demonstrates:
   values, measured times and speedup, the traceback, and the code itself
 - A correctness gate that a search for speed can and does fall foul of
 
-Measured on 2026-07-29 with gpt-5.5 proposing and gpt-4.1-mini writing kernels, 10
-iterations per arm. Mean speedup over the reference implementation:
+Measured on 2026-07-30 with gpt-5.5 proposing and gpt-4.1-mini writing kernels. The
+score is the mean over the five per-task winners of their speedup against the reference
+implementation:
 
-    multi-task            1.336 -> 1.399   (31 evaluator calls)
-      best single artifact       1.349     (the matched comparison; see below)
-    single-task control   1.194 -> 1.407   (15 evaluator calls, 2 iterations per task)
+    multi-task, 10 iterations               1.385 -> 1.569   (40 evaluator calls)
+      best single artifact                           1.385   (the matched comparison)
+    single-task control, 2 iterations/task  1.328 -> 1.396   (15 evaluator calls)
+    single-task control, 7 iterations/task  0.999 -> 1.638   (40 evaluator calls)
 
 The paper's 5.4 finding -- multi-task ahead of single-task at equivalent per-problem
-budget -- does not reproduce here, and on this evidence nothing else does either. The
-control ends slightly ahead on the headline number and well ahead on the gain (+17.9%
-against +4.7%), while spending half the evaluator calls. Cross-task transfer came out
-at 3 of 5 winners refined on another task against a chance expectation of exactly 3.0,
-which is no signal at all.
+budget -- comes out whichever way the budget is counted. Matched on optimizer
+iterations, the multi-task arm leads, 1.569 against 1.396, and spends 2.7x the evaluator
+calls doing it. Matched on evaluator calls instead, the control leads, 1.638 against
+1.569, and is now the profligate arm on the other currency: 35 proposer calls against
+10. No setting of the two knobs matches both, because one multi-task iteration buys a
+five-task evaluation and one single-task iteration buys one, while both buy exactly one
+proposer call.
 
-None of that is a refutation of the paper, and it should not be read as one. The two
-arms' seed measurements differ by 12% (1.336 against 1.194) for the *same* instruction
-on the *same* five tasks, so the noise floor here is wider than either effect; the
-multi-task headline is a maximum over a pool while the control's is a maximum over five
-smaller pools; and one run of each, with 5 tasks against the paper's 31, cannot
-separate a real difference from timing jitter. What this domain demonstrates is the
-machinery -- a shared frontier, per-task selection off it, a control to compare against,
-and a transfer statistic reported against its null -- not a result.
+Nothing here separates those arms from noise. The seed is the same string in all three
+runs and scored 1.385, 1.328 and 0.999 on the same five tasks -- a 39% spread, wider
+than any gap between the arms -- because the worker rewrites the kernel from scratch
+every time, and on one of the three draws never produced a usable ``zscore`` kernel at
+all. Per task the spread is worse: ``window_sum_101``'s seed scored 0.762 and 0.988,
+``zscore``'s 2.114, 1.642 and 0.000.
 
-Read those numbers as provenance rather than as a current result: they were measured
-before the prompts and the control reached their present form. The worker's prompt said
-it would be tested "including degenerate inputs" and the proposer's said to prefer
-"which degenerate inputs to handle explicitly, what to check before dividing, how to
-treat boundaries" -- between them both of the two lessons this task family is built
-around, named for the proposer in the prompt asking it to find them. And the control
-passed a one-element dataset rather than running the engine's single-task mode, which
-made it differ from the treatment arm in its selection rule as well as its task count
-(see `run_kernel`). Re-running both arms under the present code is outstanding.
+The multi-task headline is also a per-task maximum over a six-candidate pool, and the
+matched one-artifact-against-one-artifact number the report prints next to it says what
+that is worth here: the best single artifact scored 1.385, which is the seed's own mean.
+No instruction the search wrote beat the instruction it started from, averaged over the
+five tasks. The whole of that arm's gain is composition -- four different candidates,
+each best at one or two tasks.
+
+The correctness cliff is visible in the traces rather than in the summary numbers. The
+multi-task arm proposed an instruction that turned a 2.02 minibatch into a 0, and the
+evaluation-matched control's ``l2_normalize`` run scored exactly zero on four of its
+seven proposals: an instruction pushing hard enough for speed makes the worker write
+kernels that are wrong, and wrong scores nothing however fast it is.
+
+Cross-task transfer came out at 3 of the 4 refined winners last refined while the
+proposer was looking at a different task, against the 2.4 chance alone would give. Being
+0.6 of a winner above chance on a statistic that can take five values is not evidence of
+anything. The fifth winner was the unrefined seed, and is excluded from both figures.
+
+What this domain demonstrates is the machinery -- a shared frontier, per-task selection
+off it, a control to compare against, and a transfer statistic reported against its null
+-- not a result. One run of each arm on five tasks, against the paper's 31, through a
+noise floor that swallows the effect, decides nothing in either direction.
 
 One thing any number here includes and cannot be separated from: the harness's
 ``TenacityRetryer`` sits above the worker model, so a kernel whose source does not
@@ -100,13 +116,15 @@ borderline-undecodable code is flattered by it.
 #   be reported in 20% increments from the same per-task scores; it is not.
 # - Budget is counted in optimizer iterations, not metric calls or dollars; the paper
 #   spends ~3000 metric calls and $140 on this domain.
-# - The two arms are NOT budget-matched in the paper's currency. Matching iterations,
-#   as ``--single-task`` does by default, leaves multi-task with roughly three times the
-#   evaluator calls -- it spends a full evaluation across all five tasks whenever a
-#   proposal is accepted, while the control spends two calls on one task. ``report``
-#   prints each arm's evaluation count, and ``--control-iterations`` exists to match on
-#   that instead. Multi-task also takes its per-task maximum over a larger pool, which
-#   favours it for reasons unrelated to transfer.
+# - There is no budget in which the two arms are matched. Matching iterations, as
+#   ``--single-task`` does by default, leaves multi-task with 2.7x the evaluator calls
+#   (40 against 15) -- it pays for an evaluation across all five tasks whenever a
+#   proposal is accepted, while the control pays for one. Matching evaluator calls with
+#   ``--control-iterations 7`` inverts it: the control then gets 35 proposals to
+#   multi-task's 10, and reflection is the expensive call. ``report`` prints both counts
+#   for both arms so which currency a comparison is stated in stays visible. Multi-task
+#   also takes its per-task maximum over a larger pool, which favours it for reasons
+#   unrelated to transfer.
 # - Nor can the two arms be made to differ in exactly one way. Single-task mode has no
 #   per-example objectives to keep a frontier over, so choosing it necessarily changes
 #   both the task count and what the Pareto objectives are. That is why the paper
@@ -117,9 +135,12 @@ borderline-undecodable code is flattered by it.
 #   single candidate's mean, so per-task max is >= the seed's score on every task by
 #   construction. The report prints the best *single* artifact's mean alongside it,
 #   which is the matched one-artifact-to-one-artifact comparison.
-# - No repeats on either arm, and no variance estimate. The two seed measurements in
-#   the numbers above differ by several percent for the same instruction on the same
-#   tasks, which bounds the noise floor and is not far below the effects being compared.
+# - One run per arm, and no variance estimate beyond the seed. That seed is measured
+#   afresh in every run, which is the only repeated measurement here and is enough to
+#   settle the question: the same instruction on the same five tasks spans 0.999 to
+#   1.385, so the noise floor is several times the effects being compared. Most of that
+#   is not timing jitter -- the worker resamples the kernel each run, so a task's seed
+#   score can move by 30% or drop to zero on a synthesis that never decodes.
 # - Cross-task transfer is a lineage count over one run against one control, not the
 #   paper's MT10/MT20 scaling study. It inspects only the last refinement rather than
 #   full ancestry, so it is reported against its null expectation rather than alone.
@@ -648,7 +669,10 @@ def run_kernel(args: argparse.Namespace, rng: random.Random) -> Result:
     those are not the same thing -- multi-task pays for a full five-task evaluation
     whenever a proposal is accepted. ``--control-iterations`` sets the control's per-task
     budget directly, which is how to match on the evaluation counts ``report`` prints
-    for both arms.
+    for both arms. It buys that match with a mismatch elsewhere: raising the control's
+    per-task iterations raises its proposer calls in step, so an evaluation-matched
+    control makes several times as many reflection calls as the treatment arm. Both
+    counts are printed because neither currency can be held fixed alone.
     """
     proposer = lambda instruction, feedback: Proposer().propose_instruction(  # noqa: E731
         instruction, feedback
