@@ -49,7 +49,7 @@ einsum = Operation.define(_einsum_named)
 
 
 @Operation.define
-def asarray(a, **kwargs) -> jax.Array:
+def asarray(a, *args, **kwargs) -> jax.Array:
     import jax.core
 
     from effectful.ops.semantics import typeof
@@ -60,7 +60,7 @@ def asarray(a, **kwargs) -> jax.Array:
             return typing.cast(jax.Array, a)
         else:
             raise NotHandled
-    return jax.numpy.asarray(a, **kwargs)
+    return jax.numpy.asarray(a, *args, **kwargs)
 
 
 # Tell mypy about our wrapped functions.
