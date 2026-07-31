@@ -41,8 +41,8 @@ requirements``. Here it is enforced by the code's shape:
 
   * The premise is checked by a real prover. Under ``--verify`` all five corpora
     are compiled by the Lean 4 + Mathlib toolchain `formalization.py` already
-    shells out to: 36 theorems, 0 errors, no ``sorry``. Then the audit finds nine
-    claims that do not mean what they were written to mean.
+    shells out to: 36 theorems, 0 errors, no ``sorry``. Then the audit
+    finds nine claims that do not mean what they were written to mean.
 
 **The corpus** transliterates upstream's benchmark item for item from
 `test/integration/claims/*.dfy` and `test/integration/mappings/*.json`: five
@@ -1194,7 +1194,7 @@ def verify_corpus(domains: typing.Sequence[Domain]) -> bool:
     # repository root, which is on ``sys.path`` under the harness but not when
     # this file is run directly; add it so both invocations work.
     sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
-    from docs.source.llm_examples.autoresearch.formalization import (
+    from docs.source.llm_examples.autoformalization.formalization import (
         _SORRY,
         LeanKernel,
     )
@@ -1203,7 +1203,7 @@ def verify_corpus(domains: typing.Sequence[Domain]) -> bool:
     if not kernel.available():
         print(
             f"Lean project not built at {kernel.project!r}; skipping verification.\n"
-            "Build it once (see autoresearch/formalization.py --check-toolchain):\n"
+            "Build it once (see formalization.py --check-toolchain):\n"
             "  elan default stable\n"
             f"  cd {kernel.project} && lake exe cache get && lake build"
         )
