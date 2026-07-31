@@ -1,5 +1,4 @@
 import abc
-import builtins
 import collections
 import collections.abc
 import contextlib
@@ -7,9 +6,7 @@ import dataclasses
 import functools
 import inspect
 import json
-import re
 import traceback
-import types
 import typing
 import uuid
 
@@ -25,7 +22,6 @@ from effectful.handlers.llm.harness.encoding import (
     to_content_blocks,
 )
 from effectful.handlers.llm.types import (
-    Agent,
     Encodable,
     FinalTool,
     Template,
@@ -372,224 +368,19 @@ def call_user(
     return message
 
 
-def _get_qualname(cls) -> str:
-    """Module-qualified name of a type, dropping the ``builtins`` prefix."""
-    if not isinstance(cls, type):
-        return str(cls)
-    module = getattr(cls, "__module__", None)
-    name = (
-        getattr(cls, "__qualname__", None) or getattr(cls, "__name__", None) or str(cls)
-    )
-    return name if module in (None, "builtins") else f"{module}.{name}"
-
-
-# Matches an ATX heading's leading ``#``s (1-6, followed by whitespace) at the
-# start of a line, e.g. ``## Foo``. The lookahead avoids matching ``#!`` or a
-# ``#tag`` that is not a heading.
-_ATX_HEADING = re.compile(r"^(#{1,6})(?=\s)")
-
-
-def _shift_headings(md: str, by: int) -> str:
-    """Shift every ATX heading in `md` by `by` levels (clamped to 1..6).
-
-    Fenced code blocks (``` ``` ``` / ``` ~~~ ```) are skipped so ``#`` inside code --
-    Python comments, shell shebangs -- is left untouched.
-    """
-    if by == 0 or not md:
-        return md
-    out: list[str] = []
-    fence: str | None = None
-    for line in md.splitlines():
-        stripped = line.lstrip()
-        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
-            fence = stripped[:3]
-        elif fence is not None and stripped.startswith(fence):
-            fence = None
-        elif fence is None:
-            m = _ATX_HEADING.match(line)
-            if m:
-                level = max(1, min(6, len(m.group(1)) + by))
-                line = "#" * level + line[m.end(1) :]
-        out.append(line)
-    return "\n".join(out)
-
-
-def _rebase_headings(md: str, top: int) -> str:
-    """Renumber the headings in `md` so its shallowest one sits at level `top`,
-    preserving relative nesting; text with no headings is returned unchanged.
-
-    Used to nest a docstring that was authored with its own ``##``-rooted
-    heading hierarchy beneath a deeper section heading when the system prompt is
-    assembled, so the composed document has a single coherent outline.
-    """
-    if not md:
-        return md
-    fence: str | None = None
-    levels: list[int] = []
-    for line in md.splitlines():
-        stripped = line.lstrip()
-        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
-            fence = stripped[:3]
-        elif fence is not None and stripped.startswith(fence):
-            fence = None
-        elif fence is None:
-            m = _ATX_HEADING.match(line)
-            if m:
-                levels.append(len(m.group(1)))
-    if not levels:
-        return md
-    return _shift_headings(md, top - min(levels))
-
-
-def _section(title: str, body: str) -> str:
-    """Wrap `body` as a top-level ``# title`` section, or ``""`` if body is empty.
-
-    Callers pass a `body` whose own headings already start at ``##`` (rebasing
-    incorporated docstrings with `_rebase_headings` as needed), so every section
-    is a self-contained subtree rooted at its ``#`` heading.
-    """
-    body = body.strip()
-    return f"# {title}\n\n{body}" if body else ""
-
-
-def _system_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
-    """Markdown table of the non-module bindings in scope (name -> type).
-
-    Excludes dunder names (``__main__`` etc.) and names already bound to their
-    standard builtin (which the model knows).
-    """
-    rows = {
-        name: _get_qualname(type(value))
-        for name, value in env.items()
-        if not (name.startswith("__") and name.endswith("__"))
-        and value not in vars(builtins).values()
-        and not isinstance(value, types.ModuleType)
-    }
-    if not rows:
-        return ""
-    body = "\n".join(f"| `{n}` | `{t}` |" for n, t in sorted(rows.items()))
-    return _section("Lexical scope", f"| name | type |\n| --- | --- |\n{body}")
-
-
-def _system_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
-    """Markdown table of the imported modules in scope (name -> module name).
-
-    Excludes dunder names and names already bound to their standard builtin.
-    """
-    rows = {
-        name: value.__name__
-        for name, value in env.items()
-        if not (name.startswith("__") and name.endswith("__"))
-        and value not in vars(builtins).values()
-        and isinstance(value, types.ModuleType)
-    }
-    if not rows:
-        return ""
-    body = "\n".join(f"| `{n}` | `{m}` |" for n, m in sorted(rows.items()))
-    return _section("Imported modules", f"| name | module |\n| --- | --- |\n{body}")
-
-
-def _system_template_block(template: Template) -> str:
-    """Markdown spec for a single `Template`: header, prompt, arg schemas.
-
-    Emitted at ``##`` so each template reads as a subsection of the enclosing
-    agent/template ``#`` section (see `_system_agent_block`).
-    """
-    parts = [f"## `{template.__name__}{template.__signature__}`"]
-    prompt = inspect.getdoc(template.__default__) or ""
-    if prompt:
-        parts.append(prompt)
-    args = [
-        f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
-        f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"  # type: ignore[name-defined]
-        for name, p in template.__signature__.parameters.items()
-    ]
-    if args:
-        parts.append("**Arguments**\n\n" + "\n".join(args))
-    return "\n\n".join(parts)
-
-
-def _system_agent_block(template: Template) -> str:
-    """The ``#`` section for the task: the Agent's docstring (if any) followed by
-    a ``##`` spec for every Template sharing the current history (an Agent's
-    methods, or just ``template`` for a free-function template)."""
-    inst = (
-        template.__default__.__self__
-        if isinstance(template.__default__, types.MethodType)
-        else None
-    )
-    if isinstance(inst, Agent):
-        agent_doc = inspect.getdoc(type(inst)) or ""
-        title = f"Agent `{_get_qualname(type(inst))}`"
-        templates = set()
-        for cls in type(inst).__mro__:
-            for attr in vars(cls):
-                try:
-                    value = getattr(inst, attr)
-                except Exception:
-                    continue
-                if isinstance(value, Template):
-                    templates.add(value)
-    else:
-        agent_doc = ""
-        title = "Template"
-        templates = {template}
-
-    # Order by name so the prompt is stable across method reordering in source.
-    specs = "\n\n".join(
-        _system_template_block(t) for t in sorted(templates, key=lambda t: t.__name__)
-    )
-    # The agent docstring is intro prose for the section; rebase its own headings
-    # to sit at ``##`` alongside the per-template specs.
-    body = "\n\n".join(p for p in [_rebase_headings(agent_doc, 2), specs] if p)
-    return _section(title, body)
-
-
-def _system_module_block(mod: types.ModuleType | None) -> str:
-    """The ``#`` section carrying the source (or docstring fallback) of a module."""
-    if mod is None:
-        return ""
-    try:
-        src = inspect.getsource(mod)
-        body = f"```python\n{src}\n```"
-    except (OSError, TypeError):
-        doc = inspect.getdoc(mod)
-        if not doc:
-            return ""
-        body = _rebase_headings(doc, 2)
-    return _section(f"Module `{mod.__name__}`", body)
-
-
-def _system_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
-    """The constant ``#`` framework-concept section, sourced from real docstrings.
-
-    The module overview and each concept nest as ``##`` subsections. Core
-    concept classes carry a synthesized ``## `Name``` heading and their own
-    docstring subsections are demoted to ``###``; the synthetic tool docstrings
-    already open with a descriptive ``##`` heading, so they are used verbatim
-    (rebased if needed) rather than labelled with their private class names.
-    """
-    import effectful.handlers.llm as _llm
-
-    assert all(issubclass(t, Tool) and t not in {Tool, Template} for t in tool_types)
-    parts = [_rebase_headings(inspect.getdoc(_llm) or "", 2)]
-    for typ in sorted(
-        map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname
-    ):
-        parts += [
-            f"## `{_get_qualname(typ)}`\n\n{_rebase_headings(inspect.getdoc(typ) or '', 3)}"
-        ]
-    for t in sorted(tool_types, key=_get_qualname):
-        parts += [_rebase_headings(inspect.getdoc(t) or "", 2)]
-    body = "\n\n".join(p for p in parts if p.strip())
-    return _section("The effectful LLM framework", body)
-
-
 @Operation.define
 def call_system(
     template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
 ) -> Message:
     """Assemble and install the system message (a Markdown document)."""
+    from effectful.handlers.llm.harness.scoping import (
+        _system_agent_block,
+        _system_global_block,
+        _system_imports_block,
+        _system_module_block,
+        _system_vars_block,
+    )
+
     sections = [
         _system_global_block(tool_types),
         _system_module_block(inspect.getmodule(template)),
