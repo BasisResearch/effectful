@@ -1,4 +1,5 @@
-"""Tests for `effectful.handlers.llm.choreographies` -- choreographic endpoint projection.
+"""Tests for ``docs/source/llm_examples/choreographies/library.py`` -- choreographic
+endpoint projection.
 
 No real LLM is involved: `MockLLM` and friends implement `Template.__apply__`
 directly, so what is under test is the choreography -- step allocation, result
@@ -18,8 +19,7 @@ from typing import Any
 
 import pytest
 
-from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.harness.choreographing import (
+from docs.source.llm_examples.choreographies.library import (
     Choreography,
     ChoreographyError,
     EndpointProjection,
@@ -27,6 +27,7 @@ from effectful.handlers.llm.harness.choreographing import (
     scatter,
     step,
 )
+from effectful.handlers.llm import Agent, Template
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

@@ -22,14 +22,14 @@ executes code the model wrote. Everything under
 but it is worth knowing before pointing this at an untrusted project spec.
 
 Only in-flight LLM calls occupy threads: an agent waiting on a peer's step is a
-suspended coroutine. See `effectful.handlers.llm.choreographies` for why steps
-are spelled ``await step(...)`` rather than as plain method calls.
+suspended coroutine. See ``library.py`` alongside this example for why steps are
+spelled ``await step(...)`` rather than as plain method calls.
 
 Run it, interrupt it with Ctrl-C, and run it again to watch it pick up where it
 left off::
 
     python -m effectful.handlers.llm.harness \\
-        docs/source/llm_examples/basics/multi_agent_choreography.py --model gpt-4o-mini
+        docs/source/llm_examples/choreographies/multi_agent_choreography.py --model gpt-4o-mini
 
 Use ``--restart`` to forget the recorded steps and build from scratch, and pass
 ``--persist-db PATH`` to the harness to checkpoint each agent's own
@@ -44,13 +44,13 @@ import sys
 from collections.abc import Sequence
 from typing import Literal, TypedDict
 
-from effectful.handlers.llm import Agent, Template, Tool
-from effectful.handlers.llm.harness.choreographing import (
+from docs.source.llm_examples.choreographies.library import (
     Choreography,
     ChoreographyError,
     scatter,
     step,
 )
+from effectful.handlers.llm import Agent, Template, Tool
 
 DEFAULT_TEST_TIMEOUT = 60
 """Seconds a generated test file gets before the reviewer gives up on it."""
