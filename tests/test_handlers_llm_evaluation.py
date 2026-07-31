@@ -15,24 +15,24 @@ import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.harness.coding import ReplSession
-from effectful.handlers.llm.harness.encoding import (
-    REPL_ANCHOR_KEY,
-    TYPE_CHECK_ANCHOR_KEY,
-    SynthesizedFunction,
-)
-from effectful.handlers.llm.harness.executing import compile as compile_op
-from effectful.handlers.llm.harness.executing import exec as exec_op
-from effectful.handlers.llm.harness.executing import parse as parse_op
-from effectful.handlers.llm.harness.executing import (
+from effectful.handlers.llm.harness.execution import compile as compile_op
+from effectful.handlers.llm.harness.execution import exec as exec_op
+from effectful.handlers.llm.harness.execution import parse as parse_op
+from effectful.handlers.llm.harness.execution import (
     run_doctests,
     scan_non_nestable,
     splice_into_source,
     splice_repl_code_into_body,
     type_check,
 )
-from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.executing.restricted import RestrictedPythonExecutor
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
+from effectful.handlers.llm.harness.serialization import (
+    REPL_ANCHOR_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
+    SynthesizedFunction,
+)
+from effectful.handlers.llm.harness.synthesis import ReplSession
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 

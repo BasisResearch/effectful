@@ -27,11 +27,12 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.harness.coding import (
-    FinalBodySynthesizer,
-    StatefulReplSynthesizer,
+from effectful.handlers.llm.harness.contextualization import (
+    LexicalReaders,
+    _tools_in_scope,
 )
-from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.durability import TenacityRetryer
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     FinalTool,
@@ -44,9 +45,11 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     completion,
 )
-from effectful.handlers.llm.harness.providing import LiteLLMProvider
-from effectful.handlers.llm.harness.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.scoping import LexicalReaders, _tools_in_scope
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.synthesis import (
+    FinalBodySynthesizer,
+    StatefulReplSynthesizer,
+)
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements

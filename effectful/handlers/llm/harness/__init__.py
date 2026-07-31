@@ -41,24 +41,24 @@ import typing
 import litellm
 import tenacity
 
-from effectful.handlers.llm.harness.coding import (
-    FinalBodySynthesizer,
-    StatefulReplSynthesizer,
-)
-from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.executing.restricted import (
-    RestrictedPythonExecutor,
-)
-from effectful.handlers.llm.harness.persisting import SQLitePersister
-from effectful.handlers.llm.harness.providing import (
-    LiteLLMProvider,
-)
-from effectful.handlers.llm.harness.rendering import (
+from effectful.handlers.llm.harness.display import (
     RichTerminalRenderer,
     SystemPromptDumper,
 )
-from effectful.handlers.llm.harness.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.tracing import LangfuseTracer
+from effectful.handlers.llm.harness.durability import TenacityRetryer
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.restricted import (
+    RestrictedPythonExecutor,
+)
+from effectful.handlers.llm.harness.observability import LangfuseTracer
+from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.provision import (
+    LiteLLMProvider,
+)
+from effectful.handlers.llm.harness.synthesis import (
+    FinalBodySynthesizer,
+    StatefulReplSynthesizer,
+)
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them

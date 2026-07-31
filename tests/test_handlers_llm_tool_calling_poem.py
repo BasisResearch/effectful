@@ -13,7 +13,7 @@ from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.harness.hooks import (
     call_assistant,
 )
-from effectful.handlers.llm.harness.providing import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

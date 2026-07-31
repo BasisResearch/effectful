@@ -13,7 +13,7 @@ import uuid
 import litellm
 import pydantic
 
-from effectful.handlers.llm.harness.encoding import (
+from effectful.handlers.llm.harness.serialization import (
     _TOOLS_KEY,
     REPL_ANCHOR_KEY,
     TYPE_CHECK_ANCHOR_KEY,
@@ -373,7 +373,7 @@ def call_system(
     template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
 ) -> Message:
     """Assemble and install the system message (a Markdown document)."""
-    from effectful.handlers.llm.harness.scoping import (
+    from effectful.handlers.llm.harness.contextualization import (
         _system_agent_block,
         _system_global_block,
         _system_imports_block,

@@ -14,18 +14,18 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
-from effectful.handlers.llm.harness.coding import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.encoding import _TOOLS_KEY, DecodedToolCall
-from effectful.handlers.llm.harness.executing.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.contextualization import LexicalReaders
+from effectful.handlers.llm.harness.durability import TenacityRetryer
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     _get_history,
     call_system,
     call_user,
     completion,
 )
-from effectful.handlers.llm.harness.providing import LiteLLMProvider
-from effectful.handlers.llm.harness.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.scoping import LexicalReaders
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
+from effectful.handlers.llm.harness.synthesis import StatefulReplSynthesizer
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

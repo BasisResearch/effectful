@@ -5,6 +5,7 @@ import typing
 
 import litellm
 
+from effectful.handlers.llm.harness.contextualization import _tools_in_scope
 from effectful.handlers.llm.harness.hooks import (
     Message,
     _get_history,
@@ -15,7 +16,6 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
     new_agent_call_scope,
 )
-from effectful.handlers.llm.harness.scoping import _tools_in_scope
 from effectful.handlers.llm.types import Template
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements

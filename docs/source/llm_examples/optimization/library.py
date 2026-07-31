@@ -75,7 +75,7 @@ import typing
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm.harness.providing import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.ops.semantics import handler
 
 # The one piece of handler boilerplate in this file, and it is load-bearing wherever a
