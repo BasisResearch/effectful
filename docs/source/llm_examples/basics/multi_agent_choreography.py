@@ -29,7 +29,7 @@ Run it, interrupt it with Ctrl-C, and run it again to watch it pick up where it
 left off::
 
     python -m effectful.handlers.llm.harness \\
-        docs/source/llm_examples/basics/multi_agent.py --model gpt-4o-mini
+        docs/source/llm_examples/basics/multi_agent_choreography.py --model gpt-4o-mini
 
 Use ``--restart`` to forget the recorded steps and build from scratch, and pass
 ``--persist-db PATH`` to the harness to checkpoint each agent's own

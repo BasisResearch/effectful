@@ -111,7 +111,7 @@ is what gives `scatter` a pool to hand work to::
             reviewer=reviewer,
         )
 
-``docs/source/llm_examples/basics/multi_agent.py`` is a complete, runnable
+``docs/source/llm_examples/basics/multi_agent_choreography.py`` is a complete, runnable
 version: agents with tools, a review-and-fix loop, and resumption.
 
 """
