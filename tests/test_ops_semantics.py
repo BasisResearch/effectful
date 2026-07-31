@@ -754,6 +754,21 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_typeof_dataclass_does_not_run_constructor_with_inferred_types():
+    @dataclasses.dataclass
+    class AbsoluteValue:
+        value: int
+
+        def __init__(self, value: Any):
+            # This works for both concrete numbers and numeric Terms, but not for
+            # the internal boxes used by typeof to represent inferred types.
+            self.value = abs(value)
+
+    value = defop(int, name="value")
+
+    assert typeof(AbsoluteValue(value())) is AbsoluteValue
+
+
 def test_defdata_large(benchmark):
     """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random

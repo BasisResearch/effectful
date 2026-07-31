@@ -322,14 +322,20 @@ def _simple_type(tp: type) -> type:
 
 class _TypeofIntp(ObjectInterpretation):
     @implements(apply)
-    def _(self, op, *args, **kwargs):
+    def _apply(self, op, *args, **kwargs):
         from effectful.internals.unification import Box
 
         return Box(op.__type_rule__(*args, **kwargs))
 
     @implements(ConstructorOperation.__apply__)
-    def _constructor(self, op, *args, **kwargs):
+    def _constructor_apply(self, op, *args, **kwargs):
         return op.__default_rule__(*args, **kwargs)
+
+    @implements(DataclassConstructorOperation.__apply__)
+    def _dataclass_constructor_apply(self, op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
+        return Box(op.__type_rule__(*args, **kwargs))
 
 
 _TYPEOF_INTP = PureInterpretation(_TypeofIntp())
