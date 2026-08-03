@@ -5,7 +5,14 @@ import math
 import operator
 import typing
 from collections import UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Sized
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Mapping,
+    Sequence,
+    Sized,
+)
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
@@ -188,12 +195,6 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
-@Operation.define
-def as_relation(value: Any) -> Iterable[Any]:
-    """Cast a domain representation to the common relation carrier type."""
-    raise NotHandled
-
-
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
@@ -204,14 +205,25 @@ LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
 CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
     name="CartesianProduct", identity=[{}], zero=[]
 )
-Union: Monoid[Sequence[Mapping]] = Monoid(name="Union", identity=[])
-Intersection: MonoidWithZero[Iterable[Any]] = MonoidWithZero(
+Union: Monoid[Iterable] = Monoid(name="Union", identity=[])
+Intersection: MonoidWithZero[Iterable] = MonoidWithZero(
     name="Intersection",
-    identity=Operation.define(Iterable[Any], name="universal")(),
+    identity=Operation.define(Iterable, name="universal")(),
     zero=[],
 )
 And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
+
+
+@Operation.define
+def as_iterable[T](value: Iterable[T]) -> Iterable[T]:
+    raise NotHandled
+
+
+def _unwrap_as_iterable[T](arg: Iterable[T]) -> Iterable[T]:
+    if isinstance(arg, Term) and arg.op is as_iterable:
+        return arg.args[0]  # type: ignore
+    return arg
 
 
 def _conjuncts(mask) -> Sequence[Term]:
@@ -460,18 +472,15 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             if matched is None:
                 continue
             stream_op, expr = matched
-            return monoid.reduce(
-                monoid.mask(
-                    value,
-                    And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
-                ),
-                {
-                    stream_op: Intersection.plus(
-                        as_relation(streams[stream_op]), as_relation([expr])
-                    ),
-                }
-                | {k: v for (k, v) in streams.items() if k is not stream_op},
+
+            new_mask = monoid.mask(
+                value,
+                And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
             )
+            new_streams = {
+                stream_op: Intersection.plus(streams[stream_op], [expr]),
+            } | {k: v for (k, v) in streams.items() if k is not stream_op}
+            return monoid.reduce(new_mask, new_streams)
         return None
 
     def _summand_eliminable(self, monoid, summand, streams):
@@ -520,12 +529,7 @@ class ReduceIntersectionSingletonRange(ObjectInterpretation):
             case _:
                 return None
 
-        def uncast(arg):
-            if isinstance(arg, Term) and arg.op is as_relation:
-                return arg.args[0]
-            return arg
-
-        lhs, rhs = uncast(lhs), uncast(rhs)
+        lhs, rhs = _unwrap_as_iterable(lhs), _unwrap_as_iterable(rhs)
         if _is_simple_range(lhs) and isinstance(rhs, list) and len(rhs) == 1:
             return lhs, rhs[0]
         if _is_simple_range(rhs) and isinstance(lhs, list) and len(lhs) == 1:
@@ -1447,30 +1451,21 @@ class CartesianProductPlus(ObjectInterpretation):
         return [_disjoint_merge(*vals) for vals in itertools.product(*args)]
 
 
-class UnionPlus(ObjectInterpretation):
-    @implements(Union.plus)
-    def plus(self, *args):
-        if not args:
+class PlusCastIterable(ObjectInterpretation):
+    """Cast heterogeneous iterable arguments to a common iterable type."""
+
+    @implements(Monoid.plus)
+    def _plus(self, monoid, *args):
+        if monoid not in (Intersection, Union):
             return fwd()
-        if any(isinstance(x, Term) for x in args):
+
+        if not args or all(isinstance(a, Term) and a.op == as_iterable for a in args):
             return fwd()
-        if not all(isinstance(x, Iterable) for x in args):
-            return fwd()
-        return list(itertools.chain(*args))
+
+        return monoid.plus(*(as_iterable(arg) for arg in args))
 
 
-class PlusCastIntersection(ObjectInterpretation):
-    """Cast heterogeneous intersection arguments to a common relation type."""
-
-    @implements(Intersection.plus)
-    def plus(self, *args):
-        typs = [typeof(arg) for arg in args]
-        if not args or all(typ == typs[0] for typ in typs[1:]):
-            return fwd()
-        return Intersection.plus(*(defdata(as_relation, arg) for arg in args))
-
-
-class IntersectionPlus(ObjectInterpretation):
+class IterablePlus(ObjectInterpretation):
     """Pure-Python filtering implementation of :data:`Intersection`.
 
     This preserves occurrences from the leftmost stream. Array-valued elements
@@ -1478,24 +1473,10 @@ class IntersectionPlus(ObjectInterpretation):
     handle them.
     """
 
-    @staticmethod
-    def _unwrap(arg):
-        if isinstance(arg, Term) and arg.op is as_relation:
-            return arg.args[0]
-        return arg
-
-    @staticmethod
-    def _concrete_value(value):
-        if isinstance(value, tuple):
-            return all(IntersectionPlus._concrete_value(v) for v in value)
-        return isinstance(value, bool | int | float | complex | str | bytes)
-
     @implements(Intersection.plus)
-    def plus(self, *args):
-        args = tuple(self._unwrap(arg) for arg in args)
-        if not args or any(isinstance(arg, Term) for arg in args):
-            return fwd()
-        if not all(isinstance(arg, Iterable) for arg in args):
+    def _intersection_plus(self, *args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if not args or any(isinstance(x, Term) for x in args):
             return fwd()
 
         values = list(args[0])
@@ -1504,11 +1485,8 @@ class IntersectionPlus(ObjectInterpretation):
             self._concrete_value(value) for value in itertools.chain(values, *tails)
         ):
             return fwd()
-        return [
-            value
-            for value in values
-            if all(any(syntactic_eq(value, other) for other in tail) for tail in tails)
-        ]
+
+        return list(itertools.chain(*args))
 
 
 is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product, And, Or})
@@ -1979,9 +1957,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
-    UnionPlus(),
-    PlusCastIntersection(),
-    IntersectionPlus(),
+    IterablePlus(),
     ReduceEqualityMaskRange(),
     ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
@@ -2031,6 +2007,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusConsecutiveDups(),
     PlusOrder(),
     PlusCastFloat(),
+    PlusCastIterable(),
     MaskFusion(),
     MaskBool(),
     WhereHoist(),
