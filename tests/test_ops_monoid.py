@@ -1,5 +1,6 @@
 import functools
 import math
+import random
 import sys
 import typing
 from collections.abc import Iterable, Mapping
@@ -36,6 +37,7 @@ from effectful.ops.monoid import (
     ReduceEmpty,
     ReduceEqualityMaskRange,
     ReduceFusion,
+    ReduceGroundCartesianProduct,
     ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
@@ -1359,3 +1361,195 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
     )
     rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+def test_ground_cartesian_product_substitutes_dependent_plate_domain(
+    backend: Backend,
+):
+    """Each grounded row value retains the domain of its plate assignment."""
+    row_value, plate, t = backend.define_vars("row_value", "plate", "t", ret="scalar")
+    domain = backend.define_vars(
+        "domain", arg_types=(backend.scalar_typ,), ret="stream"
+    )
+    factor = backend.define_vars(
+        "factor",
+        arg_types=(
+            backend.scalar_typ,
+            backend.scalar_typ,
+            backend.scalar_typ,
+        ),
+        ret="scalar",
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(
+            factor(t(), row()[(t(),)], row()[(t() + 1,)]),
+            {t: range(2)},
+        ),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((plate(),), row_value()))],
+                    {row_value: domain(plate())},
+                ),
+                {plate: range(3)},
+            )
+        },
+    )
+
+    grounded = [Operation.define(row_value, name=f"row_value_{i}") for i in range(3)]
+    rhs = Sum.reduce(
+        Product.plus(
+            factor(0, grounded[0](), grounded[1]()),
+            factor(1, grounded[1](), grounded[2]()),
+        ),
+        {grounded[i]: domain(i) for i in range(3)},
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
+
+
+def test_ground_cartesian_product_declines_diagonal_chain(backend: Backend):
+    """A diagonal does not consume the off-diagonal cells of a two-dimensional row."""
+    row_value, p, q, t = backend.define_vars("row_value", "p", "q", "t", ret="scalar")
+    factor = backend.define_vars(
+        "factor",
+        arg_types=(backend.scalar_typ, backend.scalar_typ),
+        ret="scalar",
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(
+            factor(
+                row()[(t(), t())],
+                row()[(t() + 1, t() + 1)],
+            ),
+            {t: range(1)},
+        ),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((p(), q()), row_value()))], {row_value: range(2)}
+                ),
+                {p: range(2), q: range(2)},
+            )
+        },
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=lhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
+
+
+def test_ground_cartesian_product_extra_value_streams(backend: Backend):
+    """Extra row value streams are retained."""
+    row_value, row_value1, row_value2, p, q, t = backend.define_vars(
+        "row_value", "row_value1", "row_value2", "p", "q", "t", ret="scalar"
+    )
+    row = Operation.define(Mapping[tuple, backend.scalar_typ], name="row")  # type: ignore[name-defined]
+
+    lhs = Sum.reduce(
+        Product.reduce(row()[(t(),)], {t: range(2)}),
+        {
+            row: CartesianProduct.reduce(
+                Union.reduce(
+                    [as_dict(((p(),), row_value()))], {row_value: range(2), q: range(3)}
+                ),
+                {p: range(2)},
+            )
+        },
+    )
+
+    rhs = Sum.reduce(
+        Product.plus(row_value1(), row_value2()),
+        {
+            row_value1: Union.reduce([row_value()], {q: range(3), row_value: range(2)}),
+            row_value2: Union.reduce([row_value()], {q: range(3), row_value: range(2)}),
+        },
+    )
+
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=ReduceGroundCartesianProduct(),
+    )
+
+
+@pytest.mark.parametrize("T,K", [(10, 3)])
+def test_ground_cartesian_product_chain(T, K):
+    """A chain over a cartesian product grounds into a forward pass.
+
+    ``ReduceDistributeCartesianProduct`` cannot invert this reduction: the body
+    subscripts the row at ``t`` and at ``t + 1``, so no single plate index
+    factors out. ``ReduceGroundCartesianProduct`` instead mints one variable
+    per plate assignment the body actually asks for, leaving an ordinary
+    variable-elimination problem whose elimination order is the forward
+    algorithm.
+
+    Written out longhand; the generator-comprehension spelling
+
+    .. code-block:: python
+
+        Sum(
+            Product(phi()[t][ixs[t]][ixs[t + 1]] for t in range(T - 1))
+            for ixs in CartesianProduct(range(K) for _ in range(T))
+        )
+
+    desugars to exactly the reduction below, but the desugaring itself lands
+    separately.
+
+    ``T`` is 10 rather than the 20 this scales to because normalization is
+    superlinear in the chain length until the ``evaluate`` fast path lands; at
+    10 the whole test takes a few seconds, at 20 it takes over an hour.
+    """
+    fs = [
+        [[random.uniform(0, 1) for _ in range(K)] for _ in range(K)] for _ in range(T)
+    ]
+
+    @Operation.define
+    def phi() -> list[list[list[float]]]:
+        raise NotHandled
+
+    t = Operation.define(int, name="t")
+    plate = Operation.define(int, name="plate")
+    row_value = Operation.define(int, name="row_value")
+    ixs = Operation.define(Mapping[tuple, int], name="ixs")
+
+    with handler(NormalizeIntp):
+        zf_normal = Sum.reduce(
+            Product.reduce(
+                phi()[t()][ixs()[(t(),)]][ixs()[(t() + 1,)]],
+                {t: range(T - 1)},
+            ),
+            {
+                ixs: CartesianProduct.reduce(
+                    Union.reduce(
+                        [as_dict(((plate(),), row_value()))], {row_value: range(K)}
+                    ),
+                    {plate: range(T)},
+                )
+            },
+        )
+
+    # Grounding is what does the work here: no other rule applies to this
+    # reduction, so without it normalization is the identity and the answer is
+    # only recovered by enumerating all ``K ** T`` rows during evaluation.
+    assert isinstance(zf_normal, Term) and zf_normal.op is Sum.reduce
+    assert list(zf_normal.args[1].values()) == [range(K)]
+
+    with handler(EvaluateIntp), handler({phi: lambda: fs}):
+        zf_actual = evaluate(zf_normal)
+
+    alpha = [1.0] * K
+    for t_ in range(T - 1):
+        alpha = [sum(alpha[i] * fs[t_][i][j] for i in range(K)) for j in range(K)]
+    zf_expected = sum(alpha)
+    assert isinstance(zf_actual, float) and math.isclose(zf_actual, zf_expected)
