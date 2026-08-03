@@ -21,8 +21,7 @@ INTERPRETATION: contextvars.ContextVar[Interpretation] = contextvars.ContextVar(
 )
 
 
-def get_interpretation():
-    return INTERPRETATION.get()
+get_interpretation = INTERPRETATION.get
 
 
 @contextlib.contextmanager
@@ -157,7 +156,7 @@ def _set_prompt[**P, T](
 
     @functools.wraps(body)
     def bound_body(*a: P.args, **k: P.kwargs) -> T:
-        next_cont = get_interpretation().get(prompt, prompt.__default_rule__)
+        next_cont = INTERPRETATION.get().get(prompt, prompt.__default_rule__)
         with handler({prompt: handler({prompt: next_cont})(cont)}):
             return body(*a, **k)
 
