@@ -504,8 +504,14 @@ class Operation[**Q, V]:
         else:
             return self
 
+    @functools.cached_property
+    def _default_rule_with_args(self):
+        from effectful.internals.runtime import _restore_args
+
+        return _restore_args(self.__default_rule__)
+
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import _restore_args, get_interpretation
+        from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import fwd, handler
 
         intp = get_interpretation()
@@ -514,9 +520,7 @@ class Operation[**Q, V]:
         if self_handler is not None:
             # ensure that fwd is bound to the default rule. if this handler has
             # a bound fwd, it will override this binding
-            fwd_intp = typing.cast(
-                Interpretation, {fwd: _restore_args(self.__default_rule__)}
-            )
+            fwd_intp = typing.cast(Interpretation, {fwd: self._default_rule_with_args})
             with handler(fwd_intp):
                 return self_handler(*args, **kwargs)
         elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
