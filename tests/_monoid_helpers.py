@@ -168,6 +168,14 @@ class Backend(ABC):
     def eq(self, a: Any, b: Any) -> bool:
         raise NotImplementedError
 
+    @staticmethod
+    @abstractmethod
+    def strategy(
+        arg_types: tuple[type, ...] = (),
+        ret: Literal["scalar", "stream"] | type = "scalar",
+    ) -> SearchStrategy:
+        raise NotImplementedError
+
     def _fresh_op(
         self,
         name: str,
