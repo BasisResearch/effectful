@@ -1,6 +1,7 @@
 import collections.abc
 import functools
 import itertools
+import math
 import operator
 import typing
 from collections import UserDict, defaultdict
@@ -183,6 +184,7 @@ ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Monoid(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
+LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
 CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
     name="CartesianProduct", identity=[{}], zero=[]
 )
@@ -257,6 +259,7 @@ distributes_over: _ExtensibleBinaryRelation[Monoid, Monoid] = _ExtensibleBinaryR
     (Min, Max),
     (Sum, Min),
     (Sum, Max),
+    (Sum, LogSumExp),
     (Product, Sum),
     (CartesianProduct, Union),
     (And, Or),
@@ -1182,6 +1185,20 @@ class ProductPlus(ObjectInterpretation):
         if not _scalar_args(args):
             return fwd()
         return functools.reduce(operator.mul, args)
+
+
+class LogSumExpPlus(ObjectInterpretation):
+    """Scalar implementation of :data:`LogSumExp`."""
+
+    @implements(LogSumExp.plus)
+    def plus(self, *args):
+        if not _scalar_args(args):
+            return fwd()
+
+        m = max(args)
+        return m + math.log(
+            functools.reduce(operator.add, (math.exp(x - m) for x in args))
+        )
 
 
 class ArgMinPlus(ObjectInterpretation):
