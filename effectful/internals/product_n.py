@@ -79,8 +79,8 @@ def map_structure(func, expr, _cache=None):
         else:
             result = type(expr)(recurse(tuple(expr.items())))
     elif isinstance(expr, collections.abc.Sequence):
-        if isinstance(expr, str | bytes):
-            result = expr
+        if isinstance(expr, str | bytes | range):
+            return expr
         elif (
             isinstance(expr, tuple)
             and hasattr(expr, "_fields")

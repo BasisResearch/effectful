@@ -279,11 +279,17 @@ class Operation[**Q, V]:
         cls, t: Callable[P, T], *, name: str | None = None
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
+            sig = inspect.signature(t)
 
             @functools.wraps(t)
             def func(*args, **kwargs):
                 raise NotHandled
 
+            # functools.wraps does not copy the signature. Instead it points to
+            # the wrapped function. inspect.signature will traverse this chain
+            # unless it is removed.
+            del func.__wrapped__
+            func.__signature__ = sig  # type: ignore[attr-defined]
             op = cls.define(func, name=name)
         else:
             op = cls(t, name=name)  # type: ignore[arg-type]
@@ -318,6 +324,15 @@ class Operation[**Q, V]:
                 raise NotHandled
 
         return typing.cast(Operation[P, T], cls.define(func, **kwargs))
+
+    @define.register(types.MethodType)
+    @classmethod
+    def _define_methodtype[**P, T](
+        cls, t: Callable[P, T], *, name: str | None = None
+    ) -> "Operation[P, T]":
+        op = cls._define_callable(t, name=name)
+        op.__self__ = t.__self__  # type: ignore[attr-defined]
+        return typing.cast("Operation[P, T]", op)
 
     @define.register(staticmethod)
     @classmethod
@@ -496,7 +511,17 @@ class Operation[**Q, V]:
                     else:
                         return default_result
 
-                instance_op = self.define(types.MethodType(_instance_op, instance))
+                name: str = ""
+                if instance is not None and hasattr(instance, "__name__"):
+                    assert isinstance(instance.__name__, str)
+                    name = instance.__name__
+                elif owner is not None:
+                    name = owner.__name__
+                name += f"_{self.__name__}"
+
+                instance_op = self.define(
+                    types.MethodType(_instance_op, instance), name=name
+                )
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:
