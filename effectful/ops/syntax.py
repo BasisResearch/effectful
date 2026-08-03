@@ -445,12 +445,16 @@ def _build_term[T](
     type from the types of its arguments and dispatches on that type to pick a
     constructor.
     """
-    from effectful.ops.semantics import _simple_type, _typeof
+    from effectful.ops.semantics import _simple_type, _typeof, _term_cache, typeof
 
-    typed_args = tuple(_typeof(arg) for arg in args)
-    typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
-    dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
-    return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    # typed_args = tuple(_typeof(arg) for arg in args)
+    # typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
+    # dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
+    raw_term = _BaseTerm(op, *args, **kwargs)
+    dispatch_type = typeof(raw_term)
+    result = __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    _term_cache(result).update(_term_cache(raw_term))
+    return result
 
 
 @_CustomSingleDispatchCallable

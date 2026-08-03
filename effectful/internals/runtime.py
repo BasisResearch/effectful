@@ -2,17 +2,17 @@ import contextlib
 import dataclasses
 import functools
 import inspect
-import typing
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping
 from threading import local
 
+from effectful.internals.weak import AutoIdKeyDictionary
 from effectful.ops.types import Interpretation, Operation
 
 
 @dataclasses.dataclass
 class Runtime[S, T](local):
     interpretation: "Interpretation[S, T]"
-    cache: MutableMapping[int, typing.Any] | None
+    cache: AutoIdKeyDictionary | None
 
 
 @functools.lru_cache(maxsize=1)
@@ -32,7 +32,9 @@ def interpreter(intp: "Interpretation"):
         old_intp, r.interpretation = r.interpretation, intp
         old_cache, r.cache = (
             r.cache,
-            old_cache if old_intp is intp and old_cache is not None else {},
+            old_cache
+            if old_intp is intp and old_cache is not None
+            else AutoIdKeyDictionary(),
         )
         yield intp
     finally:

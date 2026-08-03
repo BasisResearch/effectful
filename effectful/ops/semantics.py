@@ -5,10 +5,10 @@ import functools
 import operator
 import types
 import typing
-import weakref
 from collections.abc import Callable
 from typing import Any
 
+from effectful.internals.weak import WeakIdKeyDictionary
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
@@ -130,6 +130,9 @@ def as_tuple(*args) -> tuple:
     return tuple(args)
 
 
+_MISSING: Any = object()
+
+
 @_CustomSingleDispatchCallable
 def evaluate[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
@@ -160,13 +163,11 @@ def evaluate[T](
     with interpreter(intp if intp is not None else get_runtime().interpretation):
         cache = get_runtime().cache
         assert cache is not None, "Cache should be initialized by interpreter"
-        key = id(expr)
-        if key in cache:
-            ref, result = cache[key]
-            if ref is expr:
-                return result
+        result = cache.get(expr, _MISSING)
+        if result is not _MISSING:
+            return result
         result = __dispatch(type(expr))(expr)
-        cache[key] = (expr, result)
+        cache[expr] = result
         return result
 
 
@@ -195,14 +196,12 @@ _EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
 
 def _term_cache(
     expr: Term,
-) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
+) -> WeakIdKeyDictionary | None:
     """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
     try:
         return getattr(expr, _EVALUATION_CACHE_ATTR)
     except AttributeError:
-        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
-            weakref.WeakKeyDictionary()
-        )
+        cache: WeakIdKeyDictionary = WeakIdKeyDictionary()
         try:
             setattr(expr, _EVALUATION_CACHE_ATTR, cache)
         except (AttributeError, TypeError):
