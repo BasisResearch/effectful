@@ -8,12 +8,15 @@ import jax
 import numpyro.distributions
 import pytest
 
+import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
+from effectful.ops.monoid import LogSumExp, Product, Sum
 from effectful.ops.semantics import typeof
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation, Term
+from tests._monoid_helpers import JaxBackend
 
 ##################################################
 # Test cases
@@ -856,6 +859,41 @@ def test_distribution_support():
 
     d = dist.CategoricalProbs(jnp.array([0.5, 0.5]))
     assert isinstance(d.support, numpyro.distributions.constraints.Constraint)
+
+
+@pytest.fixture
+def monoid_backend() -> JaxBackend:
+    return JaxBackend()
+
+
+@pytest.mark.parametrize(
+    ("reduction_monoid", "weight_monoid", "log_weights"),
+    [(Sum, Product, False), (LogSumExp, Sum, True)],
+)
+def test_reduce_enumerable_distribution(
+    reduction_monoid, weight_monoid, log_weights, monoid_backend: JaxBackend
+):
+    value = monoid_backend.define_vars("value", ret="scalar")
+    body = monoid_backend.define_vars(
+        "body", arg_types=(monoid_backend.scalar_typ,), ret="scalar"
+    )
+    distribution = dist.CategoricalProbs(jnp.array([0.25, 0.75]))
+    support = distribution.enumerate_support(expand=False)
+    weight_value = defop(jax.Array, name="weight_value")
+    weight_body = distribution.log_prob(weight_value())
+    if not log_weights:
+        weight_body = jnp.exp(weight_body)
+    weight = deffn(weight_body, weight_value)
+
+    lhs = reduction_monoid.reduce(
+        body(value()), {value: dist.distribution_stream(distribution)}
+    )
+    rhs = reduction_monoid.reduce(
+        body(value()), {value: weight_monoid.weighted(support, weight)}
+    )
+    monoid_backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=dist.ReduceEnumerableDistribution()
+    )
 
 
 @pytest.mark.parametrize(

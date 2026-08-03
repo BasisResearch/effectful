@@ -20,6 +20,7 @@ from effectful.ops.monoid import (
     And,
     CartesianProduct,
     EvaluateIntp,
+    LogSumExp,
     Max,
     Min,
     Monoid,
@@ -33,7 +34,6 @@ from effectful.ops.monoid import (
     _is_monoid_plus,
     _is_simple_range,
     complement,
-    distributes_over,
     is_equality,
 )
 from effectful.ops.monoid import Union as UnionM
@@ -49,12 +49,6 @@ from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
 
-
-LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
-
-# ``Sum`` in log space is multiplication, which distributes over ``LogSumExp``:
-#   a + logsumexp(b, c) = logsumexp(a + b, a + c)
-distributes_over.register(Sum, LogSumExp)
 
 is_equality.register(jnp.equal)
 for a, b in {
