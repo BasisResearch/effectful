@@ -91,8 +91,8 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """
     from effectful.internals.runtime import (
         _get_args,
-        _restore_args,
         _save_args,
+        _save_then_restore_args,
         _set_prompt,
     )
 
@@ -104,7 +104,7 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
             # calling fwd in the right handler should dispatch to the left handler
             i1 = intp.get(op)
             res[op] = (
-                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+                _set_prompt(fwd, _save_then_restore_args(i1), _save_args(i2))
                 if i1 is not None
                 else _save_args(i2)
             )

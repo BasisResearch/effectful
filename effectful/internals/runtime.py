@@ -132,6 +132,24 @@ def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
+@weak_memoize
+def _save_then_restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
+    # should be equivalent to _restore_args(_save_args(fn)), just fused
+    from effectful.ops.semantics import handler
+
+    sig = inspect.signature(fn)
+    if not sig.parameters:
+        return fn
+
+    @functools.wraps(fn)
+    def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
+        a, k = (a, k) if a or k else _get_args()
+        with handler({_get_args: lambda: (a, k)}):
+            return fn(*a, **k)
+
+    return _cont_wrapper
+
+
 def _set_prompt[**P, T](
     prompt: Operation[P, T], cont: Callable[P, T], body: Callable[P, T]
 ) -> Callable[P, T]:
