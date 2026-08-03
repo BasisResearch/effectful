@@ -57,10 +57,12 @@ class _IterationGuard:
 # NB: Prefer using this when working with weakrefs of Tensors; e.g., do
 # WeakIdRef(tensor) rather than weakref.ref(tensor); it handles a number of
 # easy to get wrong cases transparently for you.
-class WeakIdRef(weakref.ref):
+class WeakIdRef[T](weakref.ref[T]):
     __slots__ = ["_id"]
 
-    def __init__(self, key, callback=None) -> None:
+    def __init__(
+        self, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
+    ) -> None:
         # Unlike stock weakref, which preserves hash semantics of the
         # original object but lazily defers hash calls until the first
         # time the user attempts to hash the weakref, we can eagerly
@@ -69,17 +71,17 @@ class WeakIdRef(weakref.ref):
         self._id = id(key)
         super().__init__(key, callback)  # type: ignore[call-arg]
 
-    def __call__(self):
+    def __call__(self) -> T | None:
         r = super().__call__()
         # Special logic for Tensor PyObject resurrection
-        if hasattr(r, "_fix_weakref"):
-            r._fix_weakref()  # type: ignore[union-attr]
+        if r is not None and hasattr(r, "_fix_weakref"):
+            r._fix_weakref()
         return r
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return self._id
 
-    def __eq__(self, other):
+    def __eq__(self, other: typing.Any) -> bool:
         # An attractive but wrong alternate implementation is to only test if
         # the stored _ids match.  This can lead to an ABA problem if you have:
         #
@@ -105,22 +107,26 @@ class WeakIdRef(weakref.ref):
 # keys that cannot be weakly referenced at all, such as int, str, tuple, list
 # and dict. Used by IdKeyDictionary, and by AutoIdRef for the keys WeakIdRef
 # cannot take.
-class IdRef:
+class IdRef[T]:
     __slots__ = ["_id", "_obj"]
 
-    def __init__(self, key, callback=None) -> None:
+    def __init__(
+        self, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
+    ) -> None:
         # Accepts and ignores WeakIdKeyDictionary's removal callback: a strong
         # reference never dies while it is in the dictionary, so it never fires.
         self._id = id(key)
         self._obj = key
 
-    def __call__(self):
+    def __call__(self) -> T | None:
+        # Never actually None, but typed to match WeakIdRef so the two are
+        # interchangeable as a dictionary's ref_type and inside AutoIdRef.
         return self._obj
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return self._id
 
-    def __eq__(self, other):
+    def __eq__(self, other: typing.Any) -> bool:
         # AutoIdRef puts both reference types in one dictionary, so this has to
         # stay symmetric with WeakIdRef.__eq__, which treats a dead referent as
         # equal only to itself.
@@ -139,6 +145,26 @@ class IdRef:
 _WEAKREFABLE: dict[type, bool] = {}
 
 
+def is_weakrefable(obj: object) -> bool:
+    """Report whether ``obj`` can be the target of a weak reference.
+
+    Answers without raising, so callers can branch on it rather than catching
+    ``TypeError`` -- worth doing where the answer is usually "no", as it is for
+    the ``int``, ``str`` and ``tuple`` leaves of an expression.
+    """
+    # Weak-referenceability is a property of the type, so caching by type turns
+    # this into one dict lookup on the hot path.
+    ok = _WEAKREFABLE.get(t := type(obj))
+    if ok is None:
+        try:
+            weakref.ref(obj)
+            ok = True
+        except TypeError:
+            ok = False
+        _WEAKREFABLE[t] = ok
+    return ok
+
+
 # Picks a reference type per key rather than per dictionary: weak where the key
 # supports it, strong otherwise. This lets one dictionary accept any key at all,
 # at the cost of making entries for weak-referenceable keys evictable, so the
@@ -148,27 +174,21 @@ _WEAKREFABLE: dict[type, bool] = {}
 # This is a class rather than a factory function so that it can be assigned to
 # WeakIdKeyDictionary.ref_type: a plain function there would be bound as a
 # method and receive the dictionary as its first argument.
-class AutoIdRef:
-    def __new__(cls, key, callback=None):
-        # Weak-referenceability is a property of the type, so it is worth
-        # caching: this runs on every lookup as well as every insertion.
-        ok = _WEAKREFABLE.get(t := type(key))
-        if ok is None:
-            try:
-                weakref.ref(key)
-                ok = True
-            except TypeError:
-                ok = False
-            _WEAKREFABLE[t] = ok
-        return WeakIdRef(key, callback) if ok else IdRef(key, callback)
+class AutoIdRef[T]:
+    def __new__(  # type: ignore[misc]  # deliberately returns another class
+        cls, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
+    ) -> "WeakIdRef[T] | IdRef[T]":
+        return WeakIdRef(key, callback) if is_weakrefable(key) else IdRef(key, callback)
 
 
 # This is the same as WeakIdRef but equality is checked using hash() rather than id.
 # This will be equivalent to the one above except for classes where hash is not their id.
-class _WeakHashRef(weakref.ref):
+class _WeakHashRef[T](weakref.ref[T]):
     __slots__ = ["_id"]
 
-    def __init__(self, key, callback=None) -> None:
+    def __init__(
+        self, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
+    ) -> None:
         # Unlike stock weakref, which preserves hash semantics of the
         # original object but lazily defers hash calls until the first
         # time the user attempts to hash the weakref, we can eagerly
@@ -177,17 +197,17 @@ class _WeakHashRef(weakref.ref):
         self._id = hash(key)
         super().__init__(key, callback)  # type: ignore[call-arg]
 
-    def __call__(self):
+    def __call__(self) -> T | None:
         r = super().__call__()
         # Special logic for Tensor PyObject resurrection
-        if hasattr(r, "_fix_weakref"):
-            r._fix_weakref()  # type: ignore[union-attr]
+        if r is not None and hasattr(r, "_fix_weakref"):
+            r._fix_weakref()
         return r
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         return self._id
 
-    def __eq__(self, other):
+    def __eq__(self, other: typing.Any) -> bool:
         # Use hash equality to determine ref equality.
         # ScriptObject implements __hash__ to return the wrapped IValue's id, so
         # this is equivalent to doing an identity comparison.
@@ -199,12 +219,21 @@ class _WeakHashRef(weakref.ref):
 
 
 # This is directly adapted from cpython/Lib/weakref.py
-class WeakIdKeyDictionary(collections.abc.MutableMapping):
+class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     # CHANGED: reference strength is a property of the dictionary, so subclasses
     # select it by overriding this rather than callers passing it per instance.
+    # Not parameterised by K: a ClassVar cannot refer to the class's type
+    # variables, so the reference type it builds is only known as a callable.
     ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = WeakIdRef
 
-    def __init__(self, dict=None) -> None:
+    # Declared here rather than annotated in ``__init__``, where the ``dict``
+    # parameter below shadows the builtin the annotations would need.
+    data: dict[typing.Any, V]
+    _pending_removals: list[typing.Any]
+    _iterating: set[_IterationGuard]
+    _dirty_len: bool
+
+    def __init__(self, dict: collections.abc.Mapping[K, V] | None = None) -> None:
         self.data = {}
 
         def remove(k, selfref=weakref.ref(self)) -> None:
@@ -249,11 +278,11 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
         self._pending_removals = [k for k in self._pending_removals if k in d]
         self._dirty_len = False
 
-    def __delitem__(self, key) -> None:
+    def __delitem__(self, key: K) -> None:
         self._dirty_len = True
         del self.data[self.ref_type(key)]  # CHANGED
 
-    def __getitem__(self, key):
+    def __getitem__(self, key: K) -> V:
         return self.data[self.ref_type(key)]  # CHANGED
 
     def __len__(self) -> int:
@@ -266,10 +295,10 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
     def __repr__(self) -> str:
         return f"<{self.__class__.__name__} at {id(self):#x}>"
 
-    def __setitem__(self, key, value) -> None:
+    def __setitem__(self, key: K, value: V) -> None:
         self.data[self.ref_type(key, self._remove)] = value  # CHANGED
 
-    def copy(self):
+    def copy(self) -> typing.Self:
         new = self.__class__()  # CHANGED: preserve the subclass's ref_type
         with _IterationGuard(self):
             for key, value in self.data.items():
@@ -280,7 +309,7 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
 
     __copy__ = copy
 
-    def __deepcopy__(self, memo):
+    def __deepcopy__(self, memo) -> typing.Self:
         new = self.__class__()
         with _IterationGuard(self):
             for key, value in self.data.items():
@@ -289,24 +318,26 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
                     new[o] = copy.deepcopy(value, memo)
         return new
 
-    def get(self, key, default=None):
+    def get(self, key: K, default: V | None = None) -> V | None:  # type: ignore[override]
         return self.data.get(self.ref_type(key), default)  # CHANGED
 
-    def __contains__(self, key) -> bool:
+    def __contains__(self, key: object) -> bool:
         try:
             wr = self.ref_type(key)  # CHANGED
         except TypeError:
             return False
         return wr in self.data
 
-    def items(self):
+    # Generators rather than the views MutableMapping specifies: a view would
+    # have to hold the dictionary, and these have to skip keys that died mid-walk.
+    def items(self) -> collections.abc.Iterator[tuple[K, V]]:  # type: ignore[override]
         with _IterationGuard(self):
             for wr, value in self.data.items():
                 key = wr()
                 if key is not None:
                     yield key, value
 
-    def keys(self):
+    def keys(self) -> collections.abc.Iterator[K]:  # type: ignore[override]
         with _IterationGuard(self):
             for wr in self.data:
                 obj = wr()
@@ -315,13 +346,13 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
 
     __iter__ = keys
 
-    def values(self):
+    def values(self) -> collections.abc.Iterator[V]:  # type: ignore[override]
         with _IterationGuard(self):
             for wr, value in self.data.items():
                 if wr() is not None:
                     yield value
 
-    def keyrefs(self):
+    def keyrefs(self) -> list[typing.Any]:
         """Return a list of weak references to the keys.
 
         The references are not guaranteed to be 'live' at the time
@@ -333,7 +364,7 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
         """
         return list(self.data)
 
-    def popitem(self):
+    def popitem(self) -> tuple[K, V]:
         self._dirty_len = True
         while True:
             key, value = self.data.popitem()
@@ -342,17 +373,17 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
                 return o, value
 
     # pyrefly: ignore [bad-override]
-    def pop(self, key, *args):
+    def pop(self, key: K, *args: typing.Any) -> typing.Any:
         self._dirty_len = True
 
         return self.data.pop(self.ref_type(key), *args)  # CHANGED
 
-    def setdefault(self, key, default=None):
+    def setdefault(self, key: K, default: typing.Any = None) -> typing.Any:
         return self.data.setdefault(
             self.ref_type(key, self._remove), default
         )  # CHANGED
 
-    def update(self, dict=None, **kwargs) -> None:  # type: ignore[override]
+    def update(self, dict=None, **kwargs) -> None:
         d = self.data
         if dict is not None:
             if not hasattr(dict, "items"):
@@ -395,12 +426,12 @@ class WeakIdKeyDictionary(collections.abc.MutableMapping):
 # identity and kept alive, so this accepts keys that cannot be weakly referenced
 # and its entries never disappear on their own. Use it for a cache whose own
 # lifetime already bounds the entries', such as one scoped to a block.
-class IdKeyDictionary(WeakIdKeyDictionary):
+class IdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
     ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = IdRef
 
 
 # CHANGED: accepts any key, holding it weakly where that is possible. This is
 # the one to reach for when a single cache has to serve keys of both kinds; see
 # AutoIdRef for what it gives up relative to the two dictionaries above.
-class AutoIdKeyDictionary(WeakIdKeyDictionary):
+class AutoIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
     ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = AutoIdRef

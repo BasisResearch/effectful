@@ -445,15 +445,16 @@ def _build_term[T](
     type from the types of its arguments and dispatches on that type to pick a
     constructor.
     """
-    from effectful.ops.semantics import _simple_type, _typeof, _term_cache, typeof
+    from effectful.internals.runtime import copy_cache_entries
+    from effectful.ops.semantics import typeof
 
-    # typed_args = tuple(_typeof(arg) for arg in args)
-    # typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
-    # dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
-    raw_term = _BaseTerm(op, *args, **kwargs)
-    dispatch_type = typeof(raw_term)
+    # Compute the type on a throwaway node so that the analysis is cached against
+    # something, then move that cache onto the node actually returned: a parent's
+    # later typeof on this child is then a hit rather than a fresh traversal.
+    raw_term: Expr[T] = _BaseTerm(op, *args, **kwargs)
+    dispatch_type: type = typeof(raw_term)
     result = __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
-    _term_cache(result).update(_term_cache(raw_term))
+    copy_cache_entries(raw_term, result)
     return result
 
 
