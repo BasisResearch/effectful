@@ -80,19 +80,17 @@ class Operation[**Q, V]:
 
     def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
-        # update_wrapper copies the wrapped callable's __dict__. Do not retain a
-        # signature cached by another Operation, since `default` may now be a
-        # bound version of that operation.
-        self.__dict__.pop("_signature", None)
+        # update_wrapper copies the wrapped callable's __dict__,
+        #   clear any cached_property values that may have been copied
+        for var, val in vars(self.__class__).items():
+            if isinstance(val, functools.cached_property) and var in self.__dict__:
+                self.__dict__.pop(var, None)
+
         self.__default__ = default
         self.__name__ = name or default.__name__
 
-    @property
-    def __signature__(self):
-        return self._signature
-
     @functools.cached_property
-    def _signature(self):
+    def __signature__(self):
         # Resolve forward references (e.g. -> "MyClass") using the
         # default function's __globals__.  This handles module-level
         # forward refs; local forward refs will raise NameError.
@@ -411,6 +409,12 @@ class Operation[**Q, V]:
         subst_type = substitute(return_anno, unify(self.__signature__, bound_sig))
         return typing.cast(type[V], subst_type)
 
+    @functools.cached_property
+    def _signature_with_scopes(self):
+        from effectful.ops.syntax import Scoped
+
+        return Scoped.infer_annotations(self.__signature__)
+
     @typing.final
     def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
         """Returns the sets of variables that appear free in each argument and
@@ -425,7 +429,7 @@ class Operation[**Q, V]:
         """
         from effectful.ops.syntax import Scoped
 
-        sig = Scoped.infer_annotations(self.__signature__)
+        sig = self._signature_with_scopes
         bound_sig = sig.bind(*args, **kwargs)
         bound_sig.apply_defaults()
 
