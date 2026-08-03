@@ -435,3 +435,23 @@ class IdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
 # AutoIdRef for what it gives up relative to the two dictionaries above.
 class AutoIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
     ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = AutoIdRef
+
+
+def weak_memoize[S, T](
+    fn: collections.abc.Callable[[S], T],
+) -> collections.abc.Callable[[S], T]:
+    """Memoize ``fn`` using weak references to its argument and result.
+
+    The memoization is scoped to the lifetime of the argument, so that when the
+    argument is garbage collected, the memoized result is also discarded.
+    """
+    cache: WeakIdKeyDictionary[S, T] = WeakIdKeyDictionary()
+
+    def _memoized(arg: S) -> T:
+        if arg in cache:
+            return cache[arg]
+        result = fn(arg)
+        cache[arg] = result
+        return result
+
+    return _memoized

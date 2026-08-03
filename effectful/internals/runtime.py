@@ -5,7 +5,7 @@ import inspect
 import typing
 from collections.abc import Callable, Mapping
 
-from effectful.internals.weak import AutoIdKeyDictionary
+from effectful.internals.weak import AutoIdKeyDictionary, weak_memoize
 from effectful.ops.types import Interpretation, Operation
 
 type CacheEntry = AutoIdKeyDictionary[Interpretation, typing.Any]
@@ -102,6 +102,7 @@ def _get_args() -> tuple[tuple, Mapping]:
     return ((), {})
 
 
+@weak_memoize
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     sig = inspect.signature(fn)
     if not sig.parameters:
@@ -115,6 +116,7 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
+@weak_memoize
 def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
