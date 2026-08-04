@@ -82,9 +82,10 @@ class Operation[**Q, V]:
         functools.update_wrapper(self, default)
         # update_wrapper copies the wrapped callable's __dict__,
         #   clear any cached_property values that may have been copied
-        for var, val in vars(self.__class__).items():
-            if isinstance(val, functools.cached_property) and var in self.__dict__:
-                self.__dict__.pop(var, None)
+        for klass in type(self).__mro__:
+            for var, val in vars(klass).items():
+                if isinstance(val, functools.cached_property):
+                    self.__dict__.pop(var, None)
 
         self.__default__ = default
         self.__name__ = name or default.__name__
