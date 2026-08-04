@@ -73,6 +73,7 @@ test = [
     "pytest-cov",
     "pytest-xdist",
     "pytest-benchmark",
+    "pytest-timeout",
     "mypy",
     "ruff",
     "nbval",
