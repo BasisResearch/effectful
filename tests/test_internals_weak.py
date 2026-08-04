@@ -1339,7 +1339,7 @@ def test_memoize_decorator_forms_agree() -> None:
     assert bare(k) == with_kwarg(k) == positional(k) == 7
     assert bare(k) == with_kwarg(k) == positional(k) == 7
     for memoized in (bare, with_kwarg, positional):
-        assert len(memoized.__wrapped__.calls) == 1  # type: ignore[attr-defined]
+        assert len(memoized.__wrapped__.calls) == 1
 
 
 def test_memoize_uses_the_supplied_cache() -> None:

@@ -568,25 +568,41 @@ class AutoIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
 
 type WeakKeyCache[S, T] = weakref.WeakKeyDictionary[S, T] | WeakIdKeyDictionary[S, T]
 
+# The one-argument functions weak_memoize accepts. Bounding the type variable
+# rather than spelling the signature out as Callable[[S], T] is what lets the
+# decorated function keep its own type parameters instead of having them solved,
+# to Never, at the point the decorator is applied.
+type Memoizable = collections.abc.Callable[[typing.Any], typing.Any]
+
+
+class MemoizeDecorator(typing.Protocol):
+    """What ``weak_memoize(cache=...)`` returns.
+
+    A protocol whose ``__call__`` is generic, rather than a plain
+    ``Callable[[F], F]``: the latter would solve ``F`` at the ``weak_memoize``
+    call, which has nothing to solve it from, instead of where the decorator is
+    applied to a function.
+    """
+
+    def __call__[F: Memoizable](self, fn: F, /) -> F: ...
+
 
 @typing.overload
-def weak_memoize[S, T](
-    fn: collections.abc.Callable[[S], T], *, cache: WeakKeyCache[S, T] | None = None
-) -> collections.abc.Callable[[S], T]: ...
+def weak_memoize[F: Memoizable](
+    fn: F, *, cache: WeakKeyCache[typing.Any, typing.Any] | None = None
+) -> F: ...
 
 
 @typing.overload
-def weak_memoize[S, T](
-    *, cache: WeakKeyCache[S, T] | None = None
-) -> collections.abc.Callable[
-    [collections.abc.Callable[[S], T]], collections.abc.Callable[[S], T]
-]: ...
+def weak_memoize(
+    *, cache: WeakKeyCache[typing.Any, typing.Any] | None = None
+) -> MemoizeDecorator: ...
 
 
-def weak_memoize[S, T](
-    fn: collections.abc.Callable[[S], T] | None = None,
+def weak_memoize(
+    fn: Memoizable | None = None,
     *,
-    cache: WeakKeyCache[S, T] | None = None,
+    cache: WeakKeyCache[typing.Any, typing.Any] | None = None,
 ) -> typing.Any:
     """Memoize ``fn`` on its single argument.
 
@@ -613,7 +629,7 @@ def weak_memoize[S, T](
         cache = AutoIdKeyDictionary()
 
     @functools.wraps(fn)
-    def _memoized(arg: S) -> T:
+    def _memoized(arg: typing.Any) -> typing.Any:
         if arg in cache:
             return cache[arg]
         result = fn(arg)

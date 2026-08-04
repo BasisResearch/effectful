@@ -5,7 +5,11 @@ import inspect
 import typing
 from collections.abc import Callable, Mapping
 
-from effectful.internals.weak import AutoIdKeyDictionary, weak_memoize
+from effectful.internals.weak import (
+    AutoIdKeyDictionary,
+    WeakIdKeyDictionary,
+    weak_memoize,
+)
 from effectful.ops.types import Interpretation, Operation
 
 type CacheEntry = AutoIdKeyDictionary[Interpretation, typing.Any]
@@ -101,7 +105,7 @@ def _get_args() -> tuple[tuple, Mapping]:
     return ((), {})
 
 
-@weak_memoize
+@weak_memoize(cache=WeakIdKeyDictionary())
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     sig = inspect.signature(fn)
     if not sig.parameters:
@@ -115,7 +119,7 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-@weak_memoize
+@weak_memoize(cache=WeakIdKeyDictionary())
 def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
@@ -131,7 +135,7 @@ def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-@weak_memoize
+@weak_memoize(cache=WeakIdKeyDictionary())
 def _save_then_restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     # should be equivalent to _restore_args(_save_args(fn)), just fused
     from effectful.ops.semantics import handler
