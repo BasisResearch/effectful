@@ -1,6 +1,7 @@
 # note: adapted from https://github.com/pytorch/pytorch/blob/708f706e7ac19247a4d6f26e81c9c706ac14d50d/torch/utils/weak.py
 import collections.abc
 import copy
+import functools
 import typing
 import weakref
 
@@ -437,15 +438,42 @@ class AutoIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
     ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = AutoIdRef
 
 
+type WeakKeyCache[S, T] = weakref.WeakKeyDictionary[S, T] | WeakIdKeyDictionary[S, T]
+
+
+@typing.overload
 def weak_memoize[S, T](
-    fn: collections.abc.Callable[[S], T],
-) -> collections.abc.Callable[[S], T]:
+    fn: collections.abc.Callable[[S], T], *, cache: WeakKeyCache[S, T] | None = None
+) -> collections.abc.Callable[[S], T]: ...
+
+
+@typing.overload
+def weak_memoize[S, T](
+    *, cache: WeakKeyCache[S, T] | None = None
+) -> collections.abc.Callable[
+    [collections.abc.Callable[[S], T]], collections.abc.Callable[[S], T]
+]: ...
+
+
+def weak_memoize[S, T](
+    fn: collections.abc.Callable[[S], T] | None = None,
+    *,
+    cache: WeakKeyCache[S, T] | None = None,
+) -> typing.Any:
     """Memoize ``fn`` using weak references to its argument and result.
 
     The memoization is scoped to the lifetime of the argument, so that when the
     argument is garbage collected, the memoized result is also discarded.
+
+    Usable bare or with arguments: ``@weak_memoize`` and
+    ``@weak_memoize(cache=...)`` are both decorators, which is what the two
+    overloads above distinguish.
     """
-    cache: WeakIdKeyDictionary[S, T] = WeakIdKeyDictionary()
+    if fn is None:
+        return functools.partial(weak_memoize, cache=cache)
+
+    if cache is None:
+        cache = AutoIdKeyDictionary()
 
     def _memoized(arg: S) -> T:
         if arg in cache:
