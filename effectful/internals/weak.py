@@ -2,29 +2,39 @@
 import collections.abc
 import copy
 import functools
+import types
 import typing
 import weakref
 
 
 # TODO: make weakref properly thread safe following
 # https://github.com/python/cpython/pull/125325
-class _IterationGuard:
+class _IterationGuard[K, V]:
     # This context manager registers itself in the current iterators of the
     # weak container, such as to delay all removals until the context manager
     # exits.
     # This technique should be relatively thread-safe (since sets are).
 
-    def __init__(self, weakcontainer) -> None:
+    # CHANGED: parameterised by the container's key and value types, so that the
+    # attribute below names the container rather than being an opaque weakref.
+    weakcontainer: weakref.ref["WeakIdKeyDictionary[K, V]"]
+
+    def __init__(self, weakcontainer: "WeakIdKeyDictionary[K, V]") -> None:
         # Don't create cycles
         self.weakcontainer = weakref.ref(weakcontainer)
 
-    def __enter__(self):
+    def __enter__(self) -> typing.Self:
         w = self.weakcontainer()
         if w is not None:
             w._iterating.add(self)
         return self
 
-    def __exit__(self, e, t, b):
+    def __exit__(
+        self,
+        e: type[BaseException] | None,
+        t: BaseException | None,
+        b: types.TracebackType | None,
+    ) -> None:
         w = self.weakcontainer()
         if w is not None:
             s = w._iterating
@@ -95,11 +105,26 @@ class WeakIdRef[T](weakref.ref[T]):
         #
         # This should be False, as a1 and a2 are unrelated (and a1 is
         # dead anyway)
+        #
+        # CHANGED: defer to the other operand for anything that is not a
+        # reference, as stock weakref.ref does. Dereferencing it below would
+        # raise TypeError instead of answering the comparison.
+        if not isinstance(other, (weakref.ref, IdRef)):
+            return NotImplemented
         a = self()
         b = other()
         if a is not None and b is not None:
             return a is b
         return self is other
+
+    def __ne__(self, other: typing.Any) -> bool:
+        # CHANGED: weakref.ref implements == and != together in C, and its !=
+        # compares the referents with the equality operator. Overriding __eq__
+        # alone leaves != inherited from there, disagreeing with == and calling
+        # the very __eq__ this class exists to route around -- for a Tensor key
+        # that returns another Tensor rather than a bool.
+        eq = self.__eq__(other)
+        return eq if eq is NotImplemented else not eq
 
 
 # This is a strong counterpart to WeakIdRef, for identity keying without weak
@@ -140,6 +165,8 @@ class IdRef[T]:
         # replaced at that address -- the ABA case its own __eq__ guards.
         if isinstance(other, IdRef):
             return self._id == other._id
+        if not isinstance(other, weakref.ref):
+            return NotImplemented
         return (b := other()) is not None and b is self._obj
 
 
@@ -182,43 +209,6 @@ class AutoIdRef[T]:
         return WeakIdRef(key, callback) if is_weakrefable(key) else IdRef(key, callback)
 
 
-# This is the same as WeakIdRef but equality is checked using hash() rather than id.
-# This will be equivalent to the one above except for classes where hash is not their id.
-class _WeakHashRef[T](weakref.ref[T]):
-    __slots__ = ["_id"]
-
-    def __init__(
-        self, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
-    ) -> None:
-        # Unlike stock weakref, which preserves hash semantics of the
-        # original object but lazily defers hash calls until the first
-        # time the user attempts to hash the weakref, we can eagerly
-        # cache the id of the key as we know this is definitely the hash
-        # method
-        self._id = hash(key)
-        super().__init__(key, callback)  # type: ignore[call-arg]
-
-    def __call__(self) -> T | None:
-        r = super().__call__()
-        # Special logic for Tensor PyObject resurrection
-        if r is not None and hasattr(r, "_fix_weakref"):
-            r._fix_weakref()
-        return r
-
-    def __hash__(self) -> int:
-        return self._id
-
-    def __eq__(self, other: typing.Any) -> bool:
-        # Use hash equality to determine ref equality.
-        # ScriptObject implements __hash__ to return the wrapped IValue's id, so
-        # this is equivalent to doing an identity comparison.
-        a = self()
-        b = other()
-        if a is not None and b is not None:
-            return hash(a) == hash(b)
-        return self is other
-
-
 # This is directly adapted from cpython/Lib/weakref.py
 class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     # CHANGED: reference strength is a property of the dictionary, so subclasses
@@ -231,7 +221,7 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     # parameter below shadows the builtin the annotations would need.
     data: dict[typing.Any, V]
     _pending_removals: list[typing.Any]
-    _iterating: set[_IterationGuard]
+    _iterating: set[_IterationGuard[K, V]]
     _dirty_len: bool
 
     def __init__(self, dict: collections.abc.Mapping[K, V] | None = None) -> None:
@@ -475,6 +465,7 @@ def weak_memoize[S, T](
     if cache is None:
         cache = AutoIdKeyDictionary()
 
+    @functools.wraps(fn)
     def _memoized(arg: S) -> T:
         if arg in cache:
             return cache[arg]
