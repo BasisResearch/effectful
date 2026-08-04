@@ -41,7 +41,6 @@ from effectful.internals.weak import (
     StrongIdRef,
     WeakIdKeyDictionary,
     WeakIdRef,
-    is_weakrefable,
     weak_memoize,
 )
 
@@ -52,6 +51,19 @@ def gc_collect() -> None:
     """Force collection, twice, so cycles found in the first pass are freed."""
     gc.collect()
     gc.collect()
+
+
+def weakrefable_ground_truth(value: typing.Any) -> bool:
+    """Whether ``value`` can be weakly referenced, decided the expensive way.
+
+    The reference for what ``AutoIdRef`` must agree with. Computed rather than
+    tabulated, so the test cases cannot drift away from the truth.
+    """
+    try:
+        weakref.ref(value)
+    except TypeError:
+        return False
+    return True
 
 
 class Obj:
@@ -259,13 +271,17 @@ def test_weak_ref_death() -> None:
 
 
 def test_weak_ref_aba() -> None:
-    """R8: a dead ref is not equal to a fresh ref that reused its address."""
-    for _ in range(1000):
+    """R8: a dead ref is not equal to a fresh ref that reused its address.
+
+    Deliberately no collection between the two allocations: ``Plain`` has no
+    cycles, so refcounting frees it at the ``del``, and a ``gc.collect()`` in
+    between only disturbs the free list that makes the address reuse happen.
+    """
+    for _ in range(100):
         first = Plain(1)
         recycled = id(first)
         dead_ref = WeakIdRef(first)
         del first
-        gc_collect()
         second = Plain(2)
         if id(second) != recycled:
             del second
@@ -326,36 +342,12 @@ NON_WEAKREFABLE = [
     "key", [v for _, v in NON_WEAKREFABLE], ids=[n for n, _ in NON_WEAKREFABLE]
 )
 def test_id_ref_accepts_non_weakrefable_keys(key: typing.Any) -> None:
-    """R10: IdRef takes keys weakref cannot."""
-    assert not is_weakrefable(key)
+    """R10: StrongIdRef takes keys weakref cannot."""
+    assert not weakrefable_ground_truth(key)
     r = StrongIdRef(key)
     assert r() is key
     assert hash(r) == id(key)
     assert r == StrongIdRef(key)
-
-
-AUTO_CASES = [
-    ("obj", Obj(1)),
-    ("set", set()),
-    ("class", Obj),
-    ("int", 1),
-    ("str", "s"),
-    ("tuple", (1,)),
-    ("list", [1]),
-    ("object", object()),
-]
-
-
-@pytest.mark.parametrize(
-    "key", [v for _, v in AUTO_CASES], ids=[n for n, _ in AUTO_CASES]
-)
-def test_auto_id_ref_picks_by_weakrefability(key: typing.Any) -> None:
-    """R11: AutoIdRef is a WeakIdRef exactly when the key supports it."""
-    r = AutoIdRef(key)
-    assert isinstance(r, WeakIdRef if is_weakrefable(key) else StrongIdRef)
-    assert not isinstance(r, AutoIdRef)
-    assert r() is key
-    assert hash(r) == id(key)
 
 
 def test_weak_id_ref_callback_fires() -> None:
@@ -395,16 +387,11 @@ def test_ref_compared_to_a_non_ref(ref_type: typing.Any, other: typing.Any) -> N
 
 
 ###############################################################################
-# is_weakrefable
+# Choosing a reference strength per key
+#
+# AutoIdRef._is_weakrefable is private, so it is tested through the only thing it
+# decides: which reference AutoIdRef builds.
 ###############################################################################
-
-
-def weakrefable_ground_truth(value: typing.Any) -> bool:
-    try:
-        weakref.ref(value)
-    except TypeError:
-        return False
-    return True
 
 
 WEAKREF_CASES = [
@@ -430,30 +417,40 @@ WEAKREF_CASES = [
 
 
 @pytest.mark.parametrize(
-    "value", [v for _, v in WEAKREF_CASES], ids=[n for n, _ in WEAKREF_CASES]
+    "key", [v for _, v in WEAKREF_CASES], ids=[n for n, _ in WEAKREF_CASES]
 )
-def test_is_weakrefable_matches_weakref_ref(value: typing.Any) -> None:
-    """W1, W2: agrees with ``weakref.ref``, and never raises."""
-    assert is_weakrefable(value) is weakrefable_ground_truth(value)
+def test_auto_id_ref_picks_by_weakrefability(key: typing.Any) -> None:
+    """R11, W1, W2: weak exactly when ``weakref.ref`` would have worked.
+
+    Covers every kind of key the check can be asked about, including the ones it
+    has to answer "no" for without raising.
+    """
+    r = AutoIdRef(key)
+    assert isinstance(r, WeakIdRef) is weakrefable_ground_truth(key)
+    assert isinstance(r, (WeakIdRef, StrongIdRef))
+    assert not isinstance(r, AutoIdRef)
+    assert r() is key
+    assert hash(r) == id(key)
 
 
-def test_is_weakrefable_cache_is_invisible() -> None:
-    """W3: repeated calls and sibling instances of a cold type all agree."""
+def test_auto_id_ref_type_cache_is_invisible() -> None:
+    """W3: repeated keys and sibling instances of a cold type all get the same answer.
 
-    class Fresh:  # a type the cache has certainly not seen
+    Fresh classes, so the per-type cache starts empty for them and both the miss
+    and the hit path are exercised.
+    """
+
+    class Fresh:
         pass
-
-    a, b = Fresh(), Fresh()
-    assert is_weakrefable(a) is True
-    assert is_weakrefable(b) is True
-    assert is_weakrefable(a) is True
 
     class FreshSlotted:
         __slots__ = ()
 
-    c, d = FreshSlotted(), FreshSlotted()
-    assert is_weakrefable(c) is False
-    assert is_weakrefable(d) is False
+    for _ in range(2):
+        assert isinstance(AutoIdRef(Fresh()), WeakIdRef)
+        assert isinstance(AutoIdRef(Fresh()), WeakIdRef)
+        assert isinstance(AutoIdRef(FreshSlotted()), StrongIdRef)
+        assert isinstance(AutoIdRef(FreshSlotted()), StrongIdRef)
 
 
 ###############################################################################
@@ -652,10 +649,11 @@ def test_union_operators(flavor: Flavor) -> None:
 def test_union_with_a_non_mapping(flavor: Flavor) -> None:
     """M12."""
     d, _, _ = build(flavor)
+    # The annotations now reject these statically too, which is the point.
     with pytest.raises(TypeError):
-        d | 5
+        d | 5  # type: ignore[operator]
     with pytest.raises(TypeError):
-        5 | d
+        5 | d  # type: ignore[operator]
 
 
 @flavors()
@@ -783,14 +781,18 @@ def test_death_removes_the_entry(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_dict_level_aba(flavor: Flavor) -> None:
-    """K4: a new object reusing a dead key's address is not in the dictionary."""
-    for _ in range(1000):
+    """K4: a new object reusing a dead key's address is not in the dictionary.
+
+    As in ``test_weak_ref_aba``, no collection between the two allocations: the
+    key dies by refcount at the ``del``, and collecting in between makes the
+    address reuse this depends on far less likely.
+    """
+    for _ in range(100):
         d = flavor.cls()
         first = flavor.key(0)
         recycled = id(first)
         d[first] = "gone"
         del first
-        gc_collect()
         second = flavor.key(1)
         if id(second) != recycled:
             del second

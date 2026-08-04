@@ -170,68 +170,112 @@ class StrongIdRef[T]:
         return (b := other()) is not None and b is self._obj
 
 
-_WEAKREFABLE: weakref.WeakKeyDictionary[type, bool] = weakref.WeakKeyDictionary()
-
-
-def is_weakrefable(obj: object) -> bool:
-    """Report whether ``obj`` can be the target of a weak reference.
-
-    Answers without raising, so callers can branch on it rather than catching
-    ``TypeError`` -- worth doing where the answer is usually "no", as it is for
-    the ``int``, ``str`` and ``tuple`` leaves of an expression.
-    """
-    # Weak-referenceability is a property of the type, so caching by type turns
-    # this into one dict lookup on the hot path.
-    ok = _WEAKREFABLE.get(t := type(obj))
-    if ok is None:
-        try:
-            weakref.ref(obj)
-            ok = True
-        except TypeError:
-            ok = False
-        _WEAKREFABLE[t] = ok
-    return ok
-
-
 # Picks a reference type per key rather than per dictionary: weak where the key
 # supports it, strong otherwise. This lets one dictionary accept any key at all,
 # at the cost of making entries for weak-referenceable keys evictable, so the
 # caller sees hit rates that depend on when the collector runs. Prefer
-# WeakIdKeyDictionary or IdKeyDictionary when the keys allow a single choice.
+# WeakIdKeyDictionary or StrongIdKeyDictionary when the keys allow a single
+# choice.
 #
 # This is a class rather than a factory function so that it can be assigned to
-# WeakIdKeyDictionary.ref_type: a plain function there would be bound as a
-# method and receive the dictionary as its first argument.
+# WeakIdKeyDictionary.ref_type: a plain function there would be bound as a method
+# and receive the dictionary as its first argument. Being a class also gives the
+# weak-referenceability check somewhere to live other than the module's public
+# surface, which is right: choosing between the two reference types is the only
+# thing that check is for.
 class AutoIdRef[T]:
+    # CHANGED: weak-referenceability is a property of the type, so caching by
+    # type turns the check into one lookup on the hot path. Weakly keyed, so that
+    # having been asked about a dynamically created class does not pin it.
+    _WEAKREFABLE: typing.ClassVar[weakref.WeakKeyDictionary[type, bool]] = (
+        weakref.WeakKeyDictionary()
+    )
+
+    @classmethod
+    def _is_weakrefable(cls, obj: object) -> bool:
+        """Report whether ``obj`` can be the target of a weak reference.
+
+        Answers without raising, so the caller can branch on it rather than
+        catching ``TypeError`` -- worth doing where the answer is usually "no",
+        as it is for the ``int``, ``str`` and ``tuple`` leaves of an expression.
+        """
+        ok = cls._WEAKREFABLE.get(t := type(obj))
+        if ok is None:
+            try:
+                weakref.ref(obj)
+                ok = True
+            except TypeError:
+                ok = False
+            cls._WEAKREFABLE[t] = ok
+        return ok
+
     def __new__(  # type: ignore[misc]  # deliberately returns another class
         cls, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
     ) -> "WeakIdRef[T] | StrongIdRef[T]":
         return (
             WeakIdRef(key, callback)
-            if is_weakrefable(key)
+            if cls._is_weakrefable(key)
             else StrongIdRef(key, callback)
         )
+
+
+# CHANGED: the handle a ``ref_type`` builds for a key -- hashable by the key's
+# identity, and callable to get the key back, or None where the reference was
+# weak and the key has since died. Naming it lets ``data``, ``_pending_removals``
+# and ``keyrefs`` say what they hold instead of falling back to Any, and puts the
+# "check the result before using it" of keyrefs' docstring into the type.
+class KeyRef[T](typing.Protocol):
+    def __call__(self) -> T | None: ...
+
+
+# CHANGED: what may be assigned to ``ref_type``. Both call shapes are here: bare
+# to look a key up, and with the dictionary's removal callback to build an entry.
+# Not parameterised by the key type: this is used as a ClassVar, which cannot
+# refer to the class's type variables.
+class RefType(typing.Protocol):
+    def __call__(
+        self,
+        key: typing.Any,
+        callback: collections.abc.Callable[..., typing.Any] | None = None,
+        /,
+    ) -> KeyRef[typing.Any]: ...
+
+
+# CHANGED: the part of a mapping that ``update`` needs from its argument, which
+# is what ``dict(...)`` accepts too. This is ``_typeshed.SupportsKeysAndGetItem``,
+# spelled out here because that module does not exist at runtime; taking anything
+# narrower, such as a Mapping, would be a signature that MutableMapping.update
+# does not permit.
+class KeysAndGetItem[K, V](typing.Protocol):
+    def keys(self) -> collections.abc.Iterable[K]: ...
+    def __getitem__(self, key: K, /) -> V: ...
+
+
+# Distinguishes "no default given" from a default of None, in pop below.
+_MISSING: typing.Final = object()
 
 
 # This is directly adapted from cpython/Lib/weakref.py
 class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     # CHANGED: reference strength is a property of the dictionary, so subclasses
     # select it by overriding this rather than callers passing it per instance.
-    # Not parameterised by K: a ClassVar cannot refer to the class's type
-    # variables, so the reference type it builds is only known as a callable.
-    ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = WeakIdRef
+    ref_type: typing.ClassVar[RefType] = WeakIdRef
 
     # Declared here rather than annotated in ``__init__``, where the ``dict``
     # parameter below shadows the builtin the annotations would need.
-    data: dict[typing.Any, V]
-    _pending_removals: list[typing.Any]
+    data: dict[KeyRef[K], V]
+    _remove: collections.abc.Callable[[KeyRef[K]], None]
+    _pending_removals: list[KeyRef[K]]
     _iterating: set[_IterationGuard[K, V]]
     _dirty_len: bool
 
     def __init__(self, dict: collections.abc.Mapping[K, V] | None = None) -> None:
         self.data = {}
 
-        def remove(k, selfref=weakref.ref(self)) -> None:
+        def remove(
+            k: KeyRef[K],
+            selfref: weakref.ref["WeakIdKeyDictionary[K, V]"] = weakref.ref(self),
+        ) -> None:
             self = selfref()
             if self is not None:
                 if self._iterating:
@@ -304,7 +348,7 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
 
     __copy__ = copy
 
-    def __deepcopy__(self, memo) -> typing.Self:
+    def __deepcopy__(self, memo: dict[int, typing.Any]) -> typing.Self:
         new = self.__class__()
         with _IterationGuard(self):
             for key, value in self.data.items():
@@ -313,7 +357,18 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
                     new[o] = copy.deepcopy(value, memo)
         return new
 
-    def get(self, key: K, default: V | None = None) -> V | None:  # type: ignore[override]
+    # CHANGED: the overloads Mapping.get declares, rather than one signature that
+    # forced the default to be a V and had to be excused from the override check.
+    @typing.overload
+    def get(self, key: K) -> V | None: ...
+
+    @typing.overload
+    def get(self, key: K, default: V) -> V: ...
+
+    @typing.overload
+    def get[D](self, key: K, default: D) -> V | D: ...
+
+    def get(self, key: K, default: typing.Any = None) -> typing.Any:
         return self.data.get(self.ref_type(key), default)  # CHANGED
 
     def __contains__(self, key: object) -> bool:
@@ -347,7 +402,7 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
                 if wr() is not None:
                     yield value
 
-    def keyrefs(self) -> list[typing.Any]:
+    def keyrefs(self) -> list[KeyRef[K]]:
         """Return a list of weak references to the keys.
 
         The references are not guaranteed to be 'live' at the time
@@ -367,39 +422,80 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
             if o is not None:
                 return o, value
 
-    # pyrefly: ignore [bad-override]
-    def pop(self, key: K, *args: typing.Any) -> typing.Any:
+    # CHANGED: the overloads MutableMapping.pop declares, which is also what makes
+    # the implementation's *args legible: the second argument is the default.
+    @typing.overload
+    def pop(self, key: K) -> V: ...
+
+    @typing.overload
+    def pop(self, key: K, default: V) -> V: ...
+
+    @typing.overload
+    def pop[D](self, key: K, default: D) -> V | D: ...
+
+    def pop(self, key: K, default: typing.Any = _MISSING) -> typing.Any:
         self._dirty_len = True
 
-        return self.data.pop(self.ref_type(key), *args)  # CHANGED
+        # CHANGED: a sentinel rather than *args, so that the signature says which
+        # argument the overloads above are talking about.
+        if default is _MISSING:
+            return self.data.pop(self.ref_type(key))
+        return self.data.pop(self.ref_type(key), default)
+
+    # CHANGED: as MutableMapping.setdefault declares it. Omitting the default is
+    # only meaningful when None is a value this dictionary can hold, which is what
+    # the first overload's annotated self says.
+    @typing.overload
+    def setdefault(
+        self: "WeakIdKeyDictionary[K, V | None]", key: K, default: None = None
+    ) -> V | None: ...
+
+    @typing.overload
+    def setdefault(self, key: K, default: V) -> V: ...
 
     def setdefault(self, key: K, default: typing.Any = None) -> typing.Any:
         return self.data.setdefault(
             self.ref_type(key, self._remove), default
         )  # CHANGED
 
-    def update(self, dict=None, **kwargs) -> None:
+    def update(  # CHANGED: annotated
+        self,
+        dict: KeysAndGetItem[K, V]
+        | collections.abc.Iterable[tuple[K, V]]
+        | None = None,
+        **kwargs: V,
+    ) -> None:
         d = self.data
         if dict is not None:
-            if not hasattr(dict, "items"):
-                dict = type({})(dict)
-            for key, value in dict.items():
+            # Any because the fallback is whatever the builtin dict() accepts,
+            # which covers both forms above and is not expressible as a type.
+            source: typing.Any = dict
+            if not hasattr(source, "items"):
+                source = type({})(source)
+            for key, value in source.items():
                 d[self.ref_type(key, self._remove)] = value  # CHANGED
         if kwargs:
-            self.update(kwargs)
+            # Only well typed when K is str, which no annotation here can say.
+            self.update(typing.cast(KeysAndGetItem[K, V], kwargs))
 
-    def __ior__(self, other):
+    def __ior__(
+        self, other: KeysAndGetItem[K, V] | collections.abc.Iterable[tuple[K, V]]
+    ) -> typing.Self:
         self.update(other)
         return self
 
-    def __or__(self, other):
+    def __or__(
+        self, other: collections.abc.Mapping[K, V]
+    ) -> "typing.Self | types.NotImplementedType":
         if isinstance(other, collections.abc.Mapping):
             c = self.copy()
             c.update(other)
             return c
         return NotImplemented
 
-    def __ror__(self, other):
+    def __ror__(
+        self, other: collections.abc.Mapping[K, V]
+    ) -> "typing.Self | types.NotImplementedType":
         if isinstance(other, collections.abc.Mapping):
             c = self.__class__()
             c.update(other)
@@ -409,7 +505,7 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
 
     # Default Mapping equality will tests keys for equality, but
     # we want to test ids for equality
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, collections.abc.Mapping):
             return NotImplemented
         return {id(k): v for k, v in self.items()} == {
