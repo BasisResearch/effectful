@@ -1410,6 +1410,34 @@ def test_memoize_is_scoped_to_the_arguments_lifetime() -> None:
     assert len(fn.calls) == 1
 
 
+def test_memoize_keying_and_lifetime_follow_the_cache() -> None:
+    """F8, F10: what ``weak_memoize``'s docstring promises about each cache type.
+
+    Neither the identity keying nor the scoping to the argument's lifetime is a
+    property of ``weak_memoize`` itself; both come from the cache, and the two
+    non-default cache types in the signature give up one each.
+    """
+    # A stock WeakKeyDictionary keys on == , so equal-but-distinct arguments
+    # share one entry.
+    by_equality = counted(lambda x: x.arg)
+    memoized = weak_memoize(by_equality, cache=weakref.WeakKeyDictionary())
+    a, b = Obj(1), Obj(1)
+    memoized(a)
+    memoized(b)
+    assert by_equality.calls == [id(a)]
+
+    # A StrongIdKeyDictionary keeps the entry, and the key, alive.
+    cache: StrongIdKeyDictionary = StrongIdKeyDictionary()
+    kept = weak_memoize(lambda x: x.arg, cache=cache)
+    k = Obj(2)
+    probe = weakref.ref(k)
+    kept(k)
+    del k
+    gc_collect()
+    assert len(cache) == 1
+    assert probe() is not None
+
+
 def test_memoize_entry_survives_when_the_result_holds_the_argument() -> None:
     """F11: the documented hazard of caching values that reference their key.
 

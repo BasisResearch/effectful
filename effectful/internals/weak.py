@@ -1,4 +1,36 @@
-# note: adapted from https://github.com/pytorch/pytorch/blob/708f706e7ac19247a4d6f26e81c9c706ac14d50d/torch/utils/weak.py
+"""Dictionaries that key on object identity rather than ``__eq__`` and ``__hash__``.
+
+Adapted from pytorch's ``torch/utils/weak.py`` at 708f706, which is itself
+adapted from cpython's ``Lib/weakref.py``:
+https://github.com/pytorch/pytorch/blob/708f706e7ac19247a4d6f26e81c9c706ac14d50d/torch/utils/weak.py
+
+A stock :class:`weakref.WeakKeyDictionary` compares its keys with ``==`` and
+hashes them, which rules out most of what this package wants to cache on. A
+term's ``__eq__`` is itself an operation, so comparing two of them builds
+another term rather than answering the question; an interpretation is a plain
+``dict``, so it cannot be hashed at all. Upstream the same problem arises for
+Tensor keys, whose ``__eq__`` returns a Tensor of elementwise results. Keying on
+``id`` sidesteps all of it, because the key's own protocols are never invoked.
+
+The strategy is to wrap each key in a small object that hashes as ``id(key)``
+and compares by identity, and to use that wrapper as the key of an ordinary
+``dict``. Three wrappers are on offer, with a dictionary for each:
+
+* :class:`WeakIdRef` and :class:`WeakIdKeyDictionary` hold the key weakly, so
+  an entry disappears when its key is collected. Only some objects can be
+  weakly referenced: ``int``, ``str``, ``tuple`` and the other leaves of an
+  expression cannot.
+* :class:`StrongIdRef` and :class:`StrongIdKeyDictionary` hold the key
+  strongly, so they take any key at all, at the cost of bounding an entry's
+  lifetime by the dictionary's rather than by the key's.
+* :class:`AutoIdRef` and :class:`AutoIdKeyDictionary` decide per key, holding
+  it weakly where that is possible.
+
+Because the wrappers are stored in an ordinary ``dict``, nothing else refers to
+them, and keeping only live ones in the map is the job of finalizers installed
+on the original keys.
+"""
+
 import collections.abc
 import copy
 import functools
@@ -10,13 +42,14 @@ import weakref
 # TODO: make weakref properly thread safe following
 # https://github.com/python/cpython/pull/125325
 class _IterationGuard[K, V]:
-    # This context manager registers itself in the current iterators of the
-    # weak container, such as to delay all removals until the context manager
-    # exits.
-    # This technique should be relatively thread-safe (since sets are).
+    """Delays a weak container's removals until an iteration over it finishes.
 
-    # CHANGED: parameterised by the container's key and value types, so that the
-    # attribute below names the container rather than being an opaque weakref.
+    Registers itself in the container's set of current iterators on entry and
+    commits the removals that piled up on exit, so that a key dying mid-walk
+    does not mutate the dictionary out from under the walk. Relatively
+    thread-safe, since sets are.
+    """
+
     weakcontainer: weakref.ref["WeakIdKeyDictionary[K, V]"]
 
     def __init__(self, weakcontainer: "WeakIdKeyDictionary[K, V]") -> None:
@@ -43,32 +76,18 @@ class _IterationGuard[K, V]:
                 w._commit_removals()
 
 
-# This file defines a variant of WeakKeyDictionary that overrides the hashing
-# behavior of the key to use object identity, rather than the builtin
-# __eq__/__hash__ functions.  This is useful for Tensor weak keys, as their
-# __eq__ implementation return a Tensor (elementwise equality), which means
-# you can't use them directly with the WeakKeyDictionary in standard library.
-#
-# Our implementation strategy is to create a wrapper weak key object, which we
-# use as a key in a stock Python dictionary.  This is similar to how weakref
-# implements WeakKeyDictionary, but instead of using weakref.ref as the
-# wrapper, we use a custom wrapper that has different __eq__ and __hash__
-# behavior.  Note that we subsequently store this weak key directly in an
-# ORDINARY dictionary, since the newly constructed WeakIdKey's only use would
-# be a dictionary so it would have no strong references.  Ensuring that
-# only live WeakIdKeys are in the map is handled by putting finalizers on the
-# original key object.
-
-
-# It is simpler to implement this with composition, but if we want to
-# directly reuse the callback mechanism on weakref, we need the weakref
-# and the key to be exactly the same object.  Reusing the callback mechanism
-# minimizes the divergence between our implementation and Lib/weakref.py
-#
-# NB: Prefer using this when working with weakrefs of Tensors; e.g., do
-# WeakIdRef(tensor) rather than weakref.ref(tensor); it handles a number of
-# easy to get wrong cases transparently for you.
 class WeakIdRef[T](weakref.ref[T]):
+    """A weak reference that hashes and compares by its referent's identity.
+
+    Subclasses :class:`weakref.ref` rather than wrapping one. Composition would
+    be simpler, but reusing weakref's callback mechanism requires the reference
+    and the key to be exactly the same object, and reusing it keeps the
+    divergence from ``Lib/weakref.py`` small.
+
+    Prefer this over a bare ``weakref.ref`` whenever the reference will be used
+    as a key; it handles a number of easy to get wrong cases transparently.
+    """
+
     __slots__ = ["_id"]
 
     def __init__(
@@ -92,7 +111,13 @@ class WeakIdRef[T](weakref.ref[T]):
     def __hash__(self) -> int:
         return self._id
 
-    def __eq__(self, other: typing.Any) -> bool:
+    def __eq__(self, other: object) -> bool:
+        # Anything that is not a reference is the other operand's business:
+        # dereferencing it below would raise TypeError rather than answer the
+        # comparison. Stock weakref.ref defers here too.
+        if not isinstance(other, (weakref.ref, StrongIdRef)):
+            return NotImplemented
+
         # An attractive but wrong alternate implementation is to only test if
         # the stored _ids match.  This can lead to an ABA problem if you have:
         #
@@ -105,35 +130,33 @@ class WeakIdRef[T](weakref.ref[T]):
         #
         # This should be False, as a1 and a2 are unrelated (and a1 is
         # dead anyway)
-        #
-        # CHANGED: defer to the other operand for anything that is not a
-        # reference, as stock weakref.ref does. Dereferencing it below would
-        # raise TypeError instead of answering the comparison.
-        if not isinstance(other, (weakref.ref, StrongIdRef)):
-            return NotImplemented
         a = self()
         b = other()
         if a is not None and b is not None:
             return a is b
         return self is other
 
-    def __ne__(self, other: typing.Any) -> bool:
-        # CHANGED: weakref.ref implements == and != together in C, and its !=
-        # compares the referents with the equality operator. Overriding __eq__
-        # alone leaves != inherited from there, disagreeing with == and calling
-        # the very __eq__ this class exists to route around -- for a Tensor key
-        # that returns another Tensor rather than a bool.
+    def __ne__(self, other: object) -> bool:
+        # Not redundant with __eq__: weakref.ref implements == and != together
+        # in C, and its != compares the referents with the equality operator.
+        # Overriding __eq__ alone leaves != inherited from there, disagreeing
+        # with == and calling the very __eq__ this class exists to route around.
         eq = self.__eq__(other)
         return eq if eq is NotImplemented else not eq
 
 
-# This is a strong counterpart to WeakIdRef, for identity keying without weak
-# references. That is what a cache scoped to a block wants: nothing can leak,
-# because the whole dictionary is dropped when the block exits. It also accepts
-# keys that cannot be weakly referenced at all, such as int, str, tuple, list
-# and dict. Used by IdKeyDictionary, and by AutoIdRef for the keys WeakIdRef
-# cannot take.
 class StrongIdRef[T]:
+    """A strong reference with the same interface as :class:`WeakIdRef`.
+
+    Identity keying without weak references is what a cache scoped to a block
+    wants: nothing can leak, because the whole dictionary is dropped when the
+    block exits. It also accepts keys that cannot be weakly referenced at all,
+    such as ``int``, ``str``, ``tuple``, ``list`` and ``dict``.
+
+    Used by :class:`StrongIdKeyDictionary`, and by :class:`AutoIdRef` for the
+    keys :class:`WeakIdRef` cannot take.
+    """
+
     __slots__ = ["_id", "_obj"]
 
     def __init__(
@@ -152,7 +175,7 @@ class StrongIdRef[T]:
     def __hash__(self) -> int:
         return self._id
 
-    def __eq__(self, other: typing.Any) -> bool:
+    def __eq__(self, other: object) -> bool:
         # AutoIdRef puts both reference types in one dictionary, so this has to
         # stay symmetric with WeakIdRef.__eq__, which treats a dead referent as
         # equal only to itself.
@@ -170,23 +193,27 @@ class StrongIdRef[T]:
         return (b := other()) is not None and b is self._obj
 
 
-# Picks a reference type per key rather than per dictionary: weak where the key
-# supports it, strong otherwise. This lets one dictionary accept any key at all,
-# at the cost of making entries for weak-referenceable keys evictable, so the
-# caller sees hit rates that depend on when the collector runs. Prefer
-# WeakIdKeyDictionary or StrongIdKeyDictionary when the keys allow a single
-# choice.
-#
-# This is a class rather than a factory function so that it can be assigned to
-# WeakIdKeyDictionary.ref_type: a plain function there would be bound as a method
-# and receive the dictionary as its first argument. Being a class also gives the
-# weak-referenceability check somewhere to live other than the module's public
-# surface, which is right: choosing between the two reference types is the only
-# thing that check is for.
 class AutoIdRef[T]:
-    # CHANGED: weak-referenceability is a property of the type, so caching by
-    # type turns the check into one lookup on the hot path. Weakly keyed, so that
-    # having been asked about a dynamically created class does not pin it.
+    """Builds a :class:`WeakIdRef`, or a :class:`StrongIdRef` where it must.
+
+    Picking the reference type per key rather than per dictionary lets one
+    dictionary accept any key at all. The cost is that entries for weakly
+    referenceable keys are evictable while the rest are not, so the caller sees
+    hit rates that depend on when the collector runs. Prefer
+    :class:`WeakIdKeyDictionary` or :class:`StrongIdKeyDictionary` where the
+    keys allow a single choice.
+
+    A class rather than a factory function so that it can be assigned to
+    :attr:`WeakIdKeyDictionary.ref_type`, where a plain function would be bound
+    as a method and receive the dictionary as its first argument. Being a class
+    also gives the weak-referenceability check below somewhere to live other
+    than the module's public surface, which is where it belongs: choosing
+    between the two reference types is the only thing that check is for.
+    """
+
+    # Weak-referenceability is a property of the type, so caching by type turns
+    # the check into one lookup on the hot path. Weakly keyed, so that having
+    # been asked about a dynamically created class does not pin it.
     _WEAKREFABLE: typing.ClassVar[weakref.WeakKeyDictionary[type, bool]] = (
         weakref.WeakKeyDictionary()
     )
@@ -219,20 +246,25 @@ class AutoIdRef[T]:
         )
 
 
-# CHANGED: the handle a ``ref_type`` builds for a key -- hashable by the key's
-# identity, and callable to get the key back, or None where the reference was
-# weak and the key has since died. Naming it lets ``data``, ``_pending_removals``
-# and ``keyrefs`` say what they hold instead of falling back to Any, and puts the
-# "check the result before using it" of keyrefs' docstring into the type.
 class KeyRef[T](typing.Protocol):
+    """The handle a :attr:`WeakIdKeyDictionary.ref_type` builds for a key.
+
+    Hashable by the key's identity, and callable to get the key back -- or
+    ``None`` where the reference was weak and the key has since died, which is
+    why the result has to be checked before it is used.
+    """
+
     def __call__(self) -> T | None: ...
 
 
-# CHANGED: what may be assigned to ``ref_type``. Both call shapes are here: bare
-# to look a key up, and with the dictionary's removal callback to build an entry.
-# Not parameterised by the key type: this is used as a ClassVar, which cannot
-# refer to the class's type variables.
 class RefType(typing.Protocol):
+    """What may be assigned to :attr:`WeakIdKeyDictionary.ref_type`.
+
+    Both call shapes are here: bare, to look a key up, and with the
+    dictionary's removal callback, to build an entry. Not parameterised by the
+    key type, because a ``ClassVar`` cannot refer to its class's type variables.
+    """
+
     def __call__(
         self,
         key: typing.Any,
@@ -241,12 +273,15 @@ class RefType(typing.Protocol):
     ) -> KeyRef[typing.Any]: ...
 
 
-# CHANGED: the part of a mapping that ``update`` needs from its argument, which
-# is what ``dict(...)`` accepts too. This is ``_typeshed.SupportsKeysAndGetItem``,
-# spelled out here because that module does not exist at runtime; taking anything
-# narrower, such as a Mapping, would be a signature that MutableMapping.update
-# does not permit.
 class KeysAndGetItem[K, V](typing.Protocol):
+    """The part of a mapping that :meth:`WeakIdKeyDictionary.update` needs.
+
+    This is ``_typeshed.SupportsKeysAndGetItem``, spelled out because that
+    module does not exist at runtime. Anything narrower, a ``Mapping`` say,
+    would be a signature that ``MutableMapping.update`` does not permit an
+    override to have.
+    """
+
     def keys(self) -> collections.abc.Iterable[K]: ...
     def __getitem__(self, key: K, /) -> V: ...
 
@@ -255,10 +290,17 @@ class KeysAndGetItem[K, V](typing.Protocol):
 _MISSING: typing.Final = object()
 
 
-# This is directly adapted from cpython/Lib/weakref.py
 class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
-    # CHANGED: reference strength is a property of the dictionary, so subclasses
-    # select it by overriding this rather than callers passing it per instance.
+    """A :class:`weakref.WeakKeyDictionary` keyed on ``id`` rather than ``==``.
+
+    Directly adapted from cpython's ``Lib/weakref.py``. Keys are held weakly and
+    their entries disappear once they are collected, which is also why ``keys``,
+    ``values`` and ``items`` are generators rather than the views a ``Mapping``
+    would normally return: they have to skip keys that died mid-walk.
+    """
+
+    # Reference strength is a property of the dictionary, so subclasses select
+    # it by overriding this rather than callers passing it per instance.
     ref_type: typing.ClassVar[RefType] = WeakIdRef
 
     # Declared here rather than annotated in ``__init__``, where the ``dict``
@@ -287,7 +329,6 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
                         pass
 
         self._remove = remove
-        # A list of dead weakrefs (keys to be removed)
         self._pending_removals = []
         self._iterating = set()
         self._dirty_len = False
@@ -319,10 +360,10 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
 
     def __delitem__(self, key: K) -> None:
         self._dirty_len = True
-        del self.data[self.ref_type(key)]  # CHANGED
+        del self.data[self.ref_type(key)]
 
     def __getitem__(self, key: K) -> V:
-        return self.data[self.ref_type(key)]  # CHANGED
+        return self.data[self.ref_type(key)]
 
     def __len__(self) -> int:
         if self._dirty_len and self._pending_removals:
@@ -335,10 +376,10 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
         return f"<{self.__class__.__name__} at {id(self):#x}>"
 
     def __setitem__(self, key: K, value: V) -> None:
-        self.data[self.ref_type(key, self._remove)] = value  # CHANGED
+        self.data[self.ref_type(key, self._remove)] = value
 
     def copy(self) -> typing.Self:
-        new = self.__class__()  # CHANGED: preserve the subclass's ref_type
+        new = self.__class__()  # not WeakIdKeyDictionary: keep the subclass's ref_type
         with _IterationGuard(self):
             for key, value in self.data.items():
                 o = key()
@@ -357,8 +398,6 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
                     new[o] = copy.deepcopy(value, memo)
         return new
 
-    # CHANGED: the overloads Mapping.get declares, rather than one signature that
-    # forced the default to be a V and had to be excused from the override check.
     @typing.overload
     def get(self, key: K) -> V | None: ...
 
@@ -369,17 +408,16 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     def get[D](self, key: K, default: D) -> V | D: ...
 
     def get(self, key: K, default: typing.Any = None) -> typing.Any:
-        return self.data.get(self.ref_type(key), default)  # CHANGED
+        return self.data.get(self.ref_type(key), default)
 
     def __contains__(self, key: object) -> bool:
         try:
-            wr = self.ref_type(key)  # CHANGED
+            wr = self.ref_type(key)
         except TypeError:
+            # A key the ref_type cannot take is simply not in the dictionary.
             return False
         return wr in self.data
 
-    # Generators rather than the views MutableMapping specifies: a view would
-    # have to hold the dictionary, and these have to skip keys that died mid-walk.
     def items(self) -> collections.abc.Iterator[tuple[K, V]]:  # type: ignore[override]
         with _IterationGuard(self):
             for wr, value in self.data.items():
@@ -403,14 +441,12 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
                     yield value
 
     def keyrefs(self) -> list[KeyRef[K]]:
-        """Return a list of weak references to the keys.
+        """Return a list of references to the keys.
 
-        The references are not guaranteed to be 'live' at the time
-        they are used, so the result of calling the references needs
-        to be checked before being used.  This can be used to avoid
-        creating references that will cause the garbage collector to
-        keep the keys around longer than needed.
-
+        The references are not guaranteed to be 'live' at the time they are
+        used, so the result of calling one needs to be checked before being
+        used. This can be used to avoid creating references that will cause the
+        garbage collector to keep the keys around longer than needed.
         """
         return list(self.data)
 
@@ -422,8 +458,6 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
             if o is not None:
                 return o, value
 
-    # CHANGED: the overloads MutableMapping.pop declares, which is also what makes
-    # the implementation's *args legible: the second argument is the default.
     @typing.overload
     def pop(self, key: K) -> V: ...
 
@@ -436,15 +470,13 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     def pop(self, key: K, default: typing.Any = _MISSING) -> typing.Any:
         self._dirty_len = True
 
-        # CHANGED: a sentinel rather than *args, so that the signature says which
-        # argument the overloads above are talking about.
         if default is _MISSING:
             return self.data.pop(self.ref_type(key))
         return self.data.pop(self.ref_type(key), default)
 
-    # CHANGED: as MutableMapping.setdefault declares it. Omitting the default is
-    # only meaningful when None is a value this dictionary can hold, which is what
-    # the first overload's annotated self says.
+    # Omitting the default is only meaningful when None is a value this
+    # dictionary can hold, which is what the first overload's annotated self
+    # says. Both are as MutableMapping.setdefault declares them.
     @typing.overload
     def setdefault(
         self: "WeakIdKeyDictionary[K, V | None]", key: K, default: None = None
@@ -454,11 +486,9 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     def setdefault(self, key: K, default: V) -> V: ...
 
     def setdefault(self, key: K, default: typing.Any = None) -> typing.Any:
-        return self.data.setdefault(
-            self.ref_type(key, self._remove), default
-        )  # CHANGED
+        return self.data.setdefault(self.ref_type(key, self._remove), default)
 
-    def update(  # CHANGED: annotated
+    def update(
         self,
         dict: KeysAndGetItem[K, V]
         | collections.abc.Iterable[tuple[K, V]]
@@ -473,7 +503,7 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
             if not hasattr(source, "items"):
                 source = type({})(source)
             for key, value in source.items():
-                d[self.ref_type(key, self._remove)] = value  # CHANGED
+                d[self.ref_type(key, self._remove)] = value
         if kwargs:
             # Only well typed when K is str, which no annotation here can say.
             self.update(typing.cast(KeysAndGetItem[K, V], kwargs))
@@ -503,9 +533,9 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
             return c
         return NotImplemented
 
-    # Default Mapping equality will tests keys for equality, but
-    # we want to test ids for equality
     def __eq__(self, other: object) -> bool:
+        # Mapping's default equality tests the keys for equality, and this
+        # dictionary's whole point is that its keys are compared by identity.
         if not isinstance(other, collections.abc.Mapping):
             return NotImplemented
         return {id(k): v for k, v in self.items()} == {
@@ -513,19 +543,27 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
         }
 
 
-# CHANGED: the strong counterpart of WeakIdKeyDictionary. Keys are compared by
-# identity and kept alive, so this accepts keys that cannot be weakly referenced
-# and its entries never disappear on their own. Use it for a cache whose own
-# lifetime already bounds the entries', such as one scoped to a block.
 class StrongIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
-    ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = StrongIdRef
+    """The strong counterpart of :class:`WeakIdKeyDictionary`.
+
+    Keys are compared by identity and kept alive, so this accepts keys that
+    cannot be weakly referenced and its entries never disappear on their own.
+    Use it for a cache whose own lifetime already bounds its entries', such as
+    one scoped to a block.
+    """
+
+    ref_type: typing.ClassVar[RefType] = StrongIdRef
 
 
-# CHANGED: accepts any key, holding it weakly where that is possible. This is
-# the one to reach for when a single cache has to serve keys of both kinds; see
-# AutoIdRef for what it gives up relative to the two dictionaries above.
 class AutoIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
-    ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = AutoIdRef
+    """Accepts any key, holding it weakly where that is possible.
+
+    The one to reach for when a single cache has to serve keys of both kinds;
+    see :class:`AutoIdRef` for what it gives up relative to the two dictionaries
+    above.
+    """
+
+    ref_type: typing.ClassVar[RefType] = AutoIdRef
 
 
 type WeakKeyCache[S, T] = weakref.WeakKeyDictionary[S, T] | WeakIdKeyDictionary[S, T]
@@ -550,14 +588,23 @@ def weak_memoize[S, T](
     *,
     cache: WeakKeyCache[S, T] | None = None,
 ) -> typing.Any:
-    """Memoize ``fn`` using weak references to its argument and result.
+    """Memoize ``fn`` on its single argument.
 
-    The memoization is scoped to the lifetime of the argument, so that when the
-    argument is garbage collected, the memoized result is also discarded.
+    How the argument is keyed, and how long an entry lives, are both properties
+    of ``cache`` rather than of this function. The default is an
+    :class:`AutoIdKeyDictionary`, which keys on the argument's identity and
+    scopes the entry to the argument's lifetime wherever the argument can be
+    weakly referenced. A :class:`weakref.WeakKeyDictionary` keys on ``==``
+    instead; a :class:`StrongIdKeyDictionary` keeps every entry, and every key,
+    for as long as the cache itself lives.
 
-    Usable bare or with arguments: ``@weak_memoize`` and
-    ``@weak_memoize(cache=...)`` are both decorators, which is what the two
-    overloads above distinguish.
+    An entry outlives its key even in the weak cases if the result refers back
+    to the argument, as a wrapper built by :func:`functools.wraps` does: the
+    value keeps its own key alive.
+
+    Usable bare, with arguments, or as a plain call: ``@weak_memoize``,
+    ``@weak_memoize(cache=...)`` and ``weak_memoize(fn, cache=...)`` are all
+    supported, and the first two are what the overloads above distinguish.
     """
     if fn is None:
         return functools.partial(weak_memoize, cache=cache)
