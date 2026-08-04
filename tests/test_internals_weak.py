@@ -37,8 +37,8 @@ import pytest
 from effectful.internals.weak import (
     AutoIdKeyDictionary,
     AutoIdRef,
-    IdKeyDictionary,
-    IdRef,
+    StrongIdKeyDictionary,
+    StrongIdRef,
     WeakIdKeyDictionary,
     WeakIdRef,
     is_weakrefable,
@@ -135,14 +135,14 @@ class Flavor:
 
 FLAVORS = [
     Flavor(WeakIdKeyDictionary, Obj, weak=True, label="weak/obj"),
-    Flavor(IdKeyDictionary, Obj, weak=False, label="strong/obj"),
-    Flavor(IdKeyDictionary, big_int, weak=False, label="strong/int"),
+    Flavor(StrongIdKeyDictionary, Obj, weak=False, label="strong/obj"),
+    Flavor(StrongIdKeyDictionary, big_int, weak=False, label="strong/int"),
     Flavor(AutoIdKeyDictionary, Obj, weak=True, label="auto/obj"),
     Flavor(AutoIdKeyDictionary, tup, weak=False, label="auto/tuple"),
 ]
 WEAK_FLAVORS = [f for f in FLAVORS if f.weak]
 
-DICT_CLASSES = [WeakIdKeyDictionary, IdKeyDictionary, AutoIdKeyDictionary]
+DICT_CLASSES = [WeakIdKeyDictionary, StrongIdKeyDictionary, AutoIdKeyDictionary]
 
 
 def flavors(cases: list[Flavor] = FLAVORS) -> typing.Any:
@@ -196,7 +196,7 @@ def assert_model(
 # Reference types: WeakIdRef, IdRef, AutoIdRef
 ###############################################################################
 
-REF_TYPES = [WeakIdRef, IdRef, AutoIdRef]
+REF_TYPES = [WeakIdRef, StrongIdRef, AutoIdRef]
 ref_types = pytest.mark.parametrize(
     "ref_type", REF_TYPES, ids=[t.__name__ for t in REF_TYPES]
 )
@@ -282,7 +282,7 @@ def test_weak_ref_aba() -> None:
 def test_ref_cross_type_symmetry() -> None:
     """R9: weak and strong refs to one object are interchangeable in one dict."""
     o = Obj(1)
-    w, s = WeakIdRef(o), IdRef(o)
+    w, s = WeakIdRef(o), StrongIdRef(o)
     assert w == s and s == w
     assert hash(w) == hash(s) == id(o)
 
@@ -290,7 +290,7 @@ def test_ref_cross_type_symmetry() -> None:
 def test_ref_cross_type_death() -> None:
     """R9: a dead weak ref is not equal to a strong ref, in either direction."""
     live = Obj(1)
-    strong = IdRef(live)
+    strong = StrongIdRef(live)
     dying = Obj(2)
     dead = WeakIdRef(dying)
     del dying
@@ -302,7 +302,7 @@ def test_ref_cross_type_death() -> None:
 def test_id_ref_is_strong() -> None:
     """R10: an IdRef keeps its referent alive."""
     o = Obj(1)
-    r = IdRef(o)
+    r = StrongIdRef(o)
     probe = weakref.ref(o)
     del o
     gc_collect()
@@ -328,10 +328,10 @@ NON_WEAKREFABLE = [
 def test_id_ref_accepts_non_weakrefable_keys(key: typing.Any) -> None:
     """R10: IdRef takes keys weakref cannot."""
     assert not is_weakrefable(key)
-    r = IdRef(key)
+    r = StrongIdRef(key)
     assert r() is key
     assert hash(r) == id(key)
-    assert r == IdRef(key)
+    assert r == StrongIdRef(key)
 
 
 AUTO_CASES = [
@@ -352,7 +352,7 @@ AUTO_CASES = [
 def test_auto_id_ref_picks_by_weakrefability(key: typing.Any) -> None:
     """R11: AutoIdRef is a WeakIdRef exactly when the key supports it."""
     r = AutoIdRef(key)
-    assert isinstance(r, WeakIdRef if is_weakrefable(key) else IdRef)
+    assert isinstance(r, WeakIdRef if is_weakrefable(key) else StrongIdRef)
     assert not isinstance(r, AutoIdRef)
     assert r() is key
     assert hash(r) == id(key)
@@ -372,7 +372,7 @@ def test_id_ref_callback_never_fires() -> None:
     """R12: IdRef accepts the removal callback and ignores it."""
     fired: list = []
     o = Obj(1)
-    r = IdRef(o, fired.append)
+    r = StrongIdRef(o, fired.append)
     del o
     gc_collect()
     assert fired == []
@@ -1012,7 +1012,7 @@ def test_clear_with_only_dead_keys(flavor: Flavor) -> None:
 
 def test_id_key_dictionary_keeps_keys_alive() -> None:
     """S1, S3."""
-    d: IdKeyDictionary = IdKeyDictionary()
+    d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     k = Obj(1)
     probe = weakref.ref(k)
     d[k] = "v"
@@ -1031,7 +1031,7 @@ def test_id_key_dictionary_keeps_keys_alive() -> None:
 )
 def test_id_key_dictionary_accepts_non_weakrefable_keys(key: typing.Any) -> None:
     """S2: including unhashable ones such as list and dict."""
-    d: IdKeyDictionary = IdKeyDictionary()
+    d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     d[key] = "v"
     assert d[key] == "v"
     assert key in d
@@ -1042,7 +1042,9 @@ def test_id_key_dictionary_accepts_non_weakrefable_keys(key: typing.Any) -> None
 
 def test_id_key_dictionary_is_stable_across_collection() -> None:
     """S3, S4: nothing ever disappears on its own."""
-    d, objs = make_dict(Flavor(IdKeyDictionary, Obj, weak=False, label="strong/obj"))
+    d, objs = make_dict(
+        Flavor(StrongIdKeyDictionary, Obj, weak=False, label="strong/obj")
+    )
     del objs[:]
     for _ in range(3):
         gc_collect()
@@ -1052,7 +1054,7 @@ def test_id_key_dictionary_is_stable_across_collection() -> None:
 
 def test_id_key_dictionary_accepts_string_kwargs() -> None:
     """S2: ``update(**kwargs)``, which the weak dictionary cannot take."""
-    d: IdKeyDictionary = IdKeyDictionary()
+    d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     d.update(a=1, b=2)
     assert sorted((k, v) for k, v in d.items()) == [("a", 1), ("b", 2)]
 
@@ -1357,7 +1359,7 @@ def test_memoize_uses_the_supplied_cache() -> None:
 CACHE_FACTORIES = [
     ("WeakKeyDictionary", weakref.WeakKeyDictionary),
     ("WeakIdKeyDictionary", WeakIdKeyDictionary),
-    ("IdKeyDictionary", IdKeyDictionary),
+    ("IdKeyDictionary", StrongIdKeyDictionary),
     ("AutoIdKeyDictionary", AutoIdKeyDictionary),
 ]
 

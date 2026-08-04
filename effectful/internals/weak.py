@@ -109,7 +109,7 @@ class WeakIdRef[T](weakref.ref[T]):
         # CHANGED: defer to the other operand for anything that is not a
         # reference, as stock weakref.ref does. Dereferencing it below would
         # raise TypeError instead of answering the comparison.
-        if not isinstance(other, (weakref.ref, IdRef)):
+        if not isinstance(other, (weakref.ref, StrongIdRef)):
             return NotImplemented
         a = self()
         b = other()
@@ -133,7 +133,7 @@ class WeakIdRef[T](weakref.ref[T]):
 # keys that cannot be weakly referenced at all, such as int, str, tuple, list
 # and dict. Used by IdKeyDictionary, and by AutoIdRef for the keys WeakIdRef
 # cannot take.
-class IdRef[T]:
+class StrongIdRef[T]:
     __slots__ = ["_id", "_obj"]
 
     def __init__(
@@ -163,14 +163,14 @@ class IdRef[T]:
         # as dead. Against a weak reference we have to dereference, because a
         # dead WeakIdRef keeps the id of an object that may since have been
         # replaced at that address -- the ABA case its own __eq__ guards.
-        if isinstance(other, IdRef):
+        if isinstance(other, StrongIdRef):
             return self._id == other._id
         if not isinstance(other, weakref.ref):
             return NotImplemented
         return (b := other()) is not None and b is self._obj
 
 
-_WEAKREFABLE: dict[type, bool] = {}
+_WEAKREFABLE: weakref.WeakKeyDictionary[type, bool] = weakref.WeakKeyDictionary()
 
 
 def is_weakrefable(obj: object) -> bool:
@@ -205,8 +205,12 @@ def is_weakrefable(obj: object) -> bool:
 class AutoIdRef[T]:
     def __new__(  # type: ignore[misc]  # deliberately returns another class
         cls, key: T, callback: collections.abc.Callable[..., typing.Any] | None = None
-    ) -> "WeakIdRef[T] | IdRef[T]":
-        return WeakIdRef(key, callback) if is_weakrefable(key) else IdRef(key, callback)
+    ) -> "WeakIdRef[T] | StrongIdRef[T]":
+        return (
+            WeakIdRef(key, callback)
+            if is_weakrefable(key)
+            else StrongIdRef(key, callback)
+        )
 
 
 # This is directly adapted from cpython/Lib/weakref.py
@@ -417,8 +421,8 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
 # identity and kept alive, so this accepts keys that cannot be weakly referenced
 # and its entries never disappear on their own. Use it for a cache whose own
 # lifetime already bounds the entries', such as one scoped to a block.
-class IdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
-    ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = IdRef
+class StrongIdKeyDictionary[K, V](WeakIdKeyDictionary[K, V]):
+    ref_type: typing.ClassVar[collections.abc.Callable[..., typing.Any]] = StrongIdRef
 
 
 # CHANGED: accepts any key, holding it weakly where that is possible. This is
