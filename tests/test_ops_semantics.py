@@ -18,7 +18,6 @@ from effectful.ops.semantics import (
 )
 from effectful.ops.syntax import (
     ObjectInterpretation,
-    PureInterpretation,
     Scoped,
     deffn,
     defop,
@@ -489,8 +488,7 @@ def test_memoized_interpretation():
             self.calls += 1
             return (op.__name__, args, kwargs)
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
+    intp = Intp()
     expected = ("node", (("node", (1,), {}),), {})
 
     # ``evaluate`` installs a cache for the duration of a call when none is
@@ -498,29 +496,28 @@ def test_memoized_interpretation():
     # holds one open.
     with cache():
         assert interpreter(intp)(evaluate)(term) == expected
-        assert intp_impl.calls == 2
+        assert intp.calls == 2
 
         # The root cache is checked before its children are traversed, including
         # when evaluation is expressed directly through a handler.
         with interpreter(intp):
             assert evaluate(term) == expected
-        assert intp_impl.calls == 2
+        assert intp.calls == 2
 
         # Child results are cached independently and can be reused directly.
         assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
-        assert intp_impl.calls == 2
+        assert intp.calls == 2
 
         # A composition has a distinct identity even when its added handler is not
         # used while evaluating this term.
         combined_intp = coproduct(intp, {plus_1: lambda x: x})
         assert interpreter(combined_intp)(evaluate)(term) == expected
-        assert intp_impl.calls == 4
+        assert intp.calls == 4
 
-        # A separate pure interpretation has its own cache namespace.
-        other_intp_impl = Intp()
-        other_intp = PureInterpretation(other_intp_impl)
+        # A separate interpretation has its own cache namespace.
+        other_intp = Intp()
         assert interpreter(other_intp)(evaluate)(term) == expected
-        assert other_intp_impl.calls == 2
+        assert other_intp.calls == 2
 
 
 def test_memoized_interpretation_does_not_cache_failures():
@@ -543,8 +540,7 @@ def test_memoized_interpretation_does_not_cache_failures():
                 raise ValueError("failed analysis")
             return "success"
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
+    intp = Intp()
     with cache():
         with pytest.raises(ValueError, match="failed analysis"):
             interpreter(intp)(evaluate)(term)
@@ -552,9 +548,9 @@ def test_memoized_interpretation_does_not_cache_failures():
         # The failure left nothing behind, so the retry recomputes; the result of
         # that retry is what gets cached and reused.
         assert interpreter(intp)(evaluate)(term) == "success"
-        assert intp_impl.calls == 2
+        assert intp.calls == 2
         assert interpreter(intp)(evaluate)(term) == "success"
-        assert intp_impl.calls == 2
+        assert intp.calls == 2
 
 
 @pytest.mark.parametrize(

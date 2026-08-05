@@ -14,7 +14,6 @@ except ImportError:
 from effectful.ops.semantics import apply, evaluate, fvsof, typeof
 from effectful.ops.syntax import (
     ConstructorOperation,
-    PureInterpretation,
     Scoped,
     _BaseTerm,
     _CustomSingleDispatchCallable,
@@ -23,7 +22,7 @@ from effectful.ops.syntax import (
     defop,
     syntactic_eq,
 )
-from effectful.ops.types import Expr, NotHandled, Operation, Term
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
@@ -43,7 +42,7 @@ def is_eager_array(x):
 
 
 @functools.cache
-def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
+def _sizesof_intp() -> tuple[Interpretation, Operation]:
     """Construct the singleton interpretation used by ``sizesof``."""
     from effectful.internals.product_n import argsof, productN
 
@@ -90,17 +89,15 @@ def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
         return functools.reduce(_merge, itertools.chain(arg_sizes, sizes), {})
 
     return (
-        PureInterpretation(
-            productN(
-                {
-                    _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
-                    _getitem_term: {
-                        apply: _retain,
-                        jax_getitem: _retain_getitem,
-                        ConstructorOperation.__apply__: apply.__default_rule__,
-                    },
-                }
-            )
+        productN(
+            {
+                _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
+                _getitem_term: {
+                    apply: _retain,
+                    jax_getitem: _retain_getitem,
+                    ConstructorOperation.__apply__: apply.__default_rule__,
+                },
+            }
         ),
         _sizes,
     )

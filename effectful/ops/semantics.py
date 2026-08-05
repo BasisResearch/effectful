@@ -12,7 +12,6 @@ from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
-    PureInterpretation,
     _BaseTerm,
     _CustomSingleDispatchCallable,
     defop,
@@ -320,7 +319,7 @@ class _TypeofIntp(ObjectInterpretation):
         return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTP = PureInterpretation(_TypeofIntp())
+_TYPEOF_INTP = _TypeofIntp()
 
 
 def _typeof(term: Expr):
@@ -359,7 +358,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
 
 @functools.cache
-def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
+def _fvsof_intp() -> tuple[Interpretation, Operation]:
     """Construct the singleton interpretation used by ``fvsof``."""
     from effectful.internals.product_n import argsof, productN
 
@@ -414,19 +413,17 @@ def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
     _fvsof_binders = defop(object, name="fvsof_binders")
 
     return (
-        PureInterpretation(
-            productN(
-                {
-                    _fvsof_fvs: {
-                        apply: _apply_fvs,
-                        ConstructorOperation.__apply__: _apply_passthrough_fvs,
-                    },
-                    _fvsof_binders: {
-                        apply: _apply_binders,
-                        ConstructorOperation.__apply__: _apply_collection_binders,
-                    },
-                }
-            )
+        productN(
+            {
+                _fvsof_fvs: {
+                    apply: _apply_fvs,
+                    ConstructorOperation.__apply__: _apply_passthrough_fvs,
+                },
+                _fvsof_binders: {
+                    apply: _apply_binders,
+                    ConstructorOperation.__apply__: _apply_collection_binders,
+                },
+            }
         ),
         _fvsof_fvs,
     )
