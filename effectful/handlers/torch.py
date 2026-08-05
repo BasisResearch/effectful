@@ -1,5 +1,4 @@
 import functools
-import itertools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
@@ -16,13 +15,15 @@ from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     ConstructorOperation,
+    ObjectInterpretation,
     Scoped,
     _BaseTerm,
     defdata,
     defop,
+    implements,
     syntactic_eq,
 )
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
@@ -39,96 +40,6 @@ def _getitem_ellipsis_and_none(
 
     new_shape, new_key = _desugar_tensor_index(x.shape, key)
     return torch.reshape(x, new_shape), new_key
-
-
-@functools.cache
-def _sizesof_intp() -> tuple[Interpretation, Operation]:
-    """Construct the singleton interpretation used by ``sizesof``."""
-    from effectful.internals.product_n import argsof, productN
-
-    sizes = defop(object, name="sizes")
-    getitem_term = defop(object, name="getitem_args")
-
-    def _retain(op, *args, **kwargs):
-        # Non-getitem subterms are opaque to this analysis. Keeping their
-        # arguments would retain the entire input term unnecessarily.
-        return _BaseTerm(op)
-
-    def _retain_getitem(*args, **kwargs):
-        return defdata(torch_getitem, *args, **kwargs)
-
-    def _merge(s1, s2):
-        result = s1.copy()
-        for k, v in s2.items():
-            if k in result and result[k] != v:
-                raise ValueError(
-                    f"Named index {k} used in incompatible dimensions of size {result[k]} and {v}"
-                )
-            result[k] = v
-        return result
-
-    def _apply_sizes(op, *args, **kwargs):
-        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
-        return functools.reduce(_merge, analyses, {})
-
-    def _getitem(x, key):
-        # Inspect this getitem's arguments in the term projection without
-        # forcing that projection to retain the getitem result.
-        term_args, _ = argsof(getitem_term)
-        term_x, term_key = term_args
-
-        arg_sizes = (value for value in (x, key) if isinstance(value, dict))
-        if not isinstance(term_x, torch.Tensor):
-            return functools.reduce(_merge, arg_sizes, {})
-
-        shape, desugared_key = _desugar_tensor_index(term_x.shape, term_key)
-        index_sizes = (
-            {k.op: shape[i]}
-            for i, k in enumerate(desugared_key)
-            if isinstance(k, Term)
-            and not k.args
-            and not k.kwargs
-            and issubclass(typeof(k), torch.Tensor)
-        )
-        return functools.reduce(_merge, itertools.chain(arg_sizes, index_sizes), {})
-
-    return (
-        productN(
-            {
-                sizes: {apply: _apply_sizes, torch_getitem: _getitem},
-                getitem_term: {
-                    apply: _retain,
-                    torch_getitem: _retain_getitem,
-                    ConstructorOperation.__apply__: apply.__default_rule__,
-                },
-            }
-        ),
-        sizes,
-    )
-
-
-def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
-    """Return the sizes of named dimensions in a tensor expression.
-
-    Sizes are inferred from the tensor shape.
-
-    :param value: A tensor expression.
-    :return: A mapping from named dimensions to their sizes.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
-    >>> assert sizes[a] == 2 and sizes[b] == 3
-    """
-    from effectful.internals.product_n import _unpack
-
-    intp, prompt = _sizesof_intp()
-    result = evaluate(value, intp=intp)
-    sizes = _unpack(result, prompt)
-    if not isinstance(sizes, dict):
-        return {}
-    return sizes
 
 
 def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
@@ -369,6 +280,137 @@ def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tenso
     return torch.ops.aten.index(x, tuple(key_l))
 
 
+class _Name:
+    """An index entry that names a dimension: a bare call to ``op``.
+
+    Deliberately not a tuple, so that a key can be told apart from an entry.
+    """
+
+    __slots__ = ("op",)
+
+    def __init__(self, op: Operation[[], torch.Tensor]):
+        self.op = op
+
+
+#: An index entry that is a term but not a bare name, so it neither names a
+#: dimension nor leaves the indexed result with a shape this analysis can
+#: predict. Distinct from a concrete entry, which does neither but is harmless.
+_OPAQUE: Any = object()
+
+
+class _SizeAnalysis(typing.NamedTuple):
+    """What the analysis of a single node carries.
+
+    ``sizes`` is the result. The rest is what a parent :func:`torch_getitem`
+    needs to finish its own analysis, which the sizes alone cannot supply:
+    ``shape`` when the node denotes a tensor whose shape is known, ``concrete``
+    when that tensor is an actual one rather than the result of indexing (only
+    the former indexes eagerly), and ``index`` for what the node looks like in a
+    key -- the dimension it names, or the value it already is.
+    """
+
+    sizes: dict[Operation[[], torch.Tensor], int]
+    index: Any
+    shape: torch.Size | None = None
+
+
+class _SizesofIntp(ObjectInterpretation):
+    @staticmethod
+    def _analysis(value) -> _SizeAnalysis:
+        """View a rule argument as an analysis. Leaves contribute no sizes.
+
+        A leaf stands for itself in a key, so that keys rebuild into real tuples
+        holding real slices and ``None`` and ``Ellipsis`` literals.
+        """
+        if isinstance(value, _SizeAnalysis):
+            return value
+        elif isinstance(value, torch.Tensor) and not isinstance(value, Term):
+            return _SizeAnalysis({}, value, value.shape)
+        else:
+            return _SizeAnalysis({}, value)
+
+    @staticmethod
+    def _merge(
+        s1: dict[Operation[[], torch.Tensor], int],
+        s2: dict[Operation[[], torch.Tensor], int],
+    ) -> dict[Operation[[], torch.Tensor], int]:
+        result = s1.copy()
+        for k, v in s2.items():
+            if k in result and result[k] != v:
+                raise ValueError(
+                    f"Named index {k} used in incompatible dimensions of size {result[k]} and {v}"
+                )
+            result[k] = v
+        return result
+
+    @implements(apply)
+    def _apply(self, op, *args, **kwargs):
+        analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
+        return _SizeAnalysis(
+            functools.reduce(self._merge, (a.sizes for a in analyses), {}),
+            _Name(op)
+            if not (args or kwargs) and issubclass(typeof(_BaseTerm(op)), torch.Tensor)
+            else _OPAQUE,
+        )
+
+    @implements(ConstructorOperation.__apply__)
+    def _apply_constructor(self, op, *args, **kwargs):
+        arg_analyses = tuple(self._analysis(x) for x in args)
+        kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
+        analyses = (*arg_analyses, *kwarg_analyses.values())
+        return _SizeAnalysis(
+            functools.reduce(self._merge, (a.sizes for a in analyses), {}),
+            op.__default_rule__(
+                *(a.index for a in arg_analyses),
+                **{k: a.index for k, a in kwarg_analyses.items()},
+            ),
+        )
+
+    @implements(torch_getitem)
+    def _getitem(self, x, key):
+        is_concrete = isinstance(x, torch.Tensor)
+        x, key = self._analysis(x), self._analysis(key)
+        sizes = self._merge(x.sizes, key.sizes)
+
+        if x.shape is None or not isinstance(key.index, tuple | list):
+            return _SizeAnalysis(sizes, _OPAQUE)
+
+        shape, entries = _desugar_tensor_index(x.shape, key.index)
+        for i, entry in enumerate(entries):
+            if isinstance(entry, _Name):
+                sizes = self._merge(sizes, {entry.op: shape[i]})
+
+        eager = is_concrete and key.index and not any(e is _OPAQUE for e in entries)
+        return _SizeAnalysis(
+            sizes,
+            _OPAQUE,
+            torch.Size(s for s, e in zip(shape, entries) if not isinstance(e, _Name))
+            if eager
+            else None,
+        )
+
+
+_SIZESOF_INTP = _SizesofIntp()
+
+
+def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
+    """Return the sizes of named dimensions in a tensor expression.
+
+    Sizes are inferred from the tensor shape.
+
+    :param value: A tensor expression.
+    :return: A mapping from named dimensions to their sizes.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
+    >>> assert sizes[a] == 2 and sizes[b] == 3
+    """
+    result = evaluate(value, intp=_SIZESOF_INTP)
+    return result.sizes if isinstance(result, _SizeAnalysis) else {}
+
+
 @defdata.register(torch.Tensor)
 def _embed_tensor(ty, op, *args, **kwargs):
     if (
@@ -376,7 +418,7 @@ def _embed_tensor(ty, op, *args, **kwargs):
         and not isinstance(args[0], Term)
         and len(args[1]) > 0
         and all(
-            typeof(k) is torch.Tensor and not k.args and not k.kwargs
+            issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
             for k in args[1]
             if isinstance(k, Term)
         )
@@ -556,7 +598,9 @@ class _EagerTensorTerm(torch.Tensor):
 
         for k in key:
             if isinstance(k, Term):
-                assert typeof(k) is torch.Tensor and not k.args and not k.kwargs
+                assert (
+                    issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
+                )
 
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)

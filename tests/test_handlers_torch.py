@@ -226,6 +226,76 @@ INDEXING_CASES = [
 ]
 
 
+def test_sizesof_compound_index():
+    """A compound index is not a named dimension.
+
+    Only a bare call names a dimension. An index built out of one, like
+    ``a() + 1``, names nothing -- neither the operation applied nor the
+    variable underneath it.
+    """
+    a, b = defop(torch.Tensor, name="a"), defop(torch.Tensor, name="b")
+
+    assert sizesof(torch_getitem(torch.ones(4, 5), (a() + 1, b()))) == {b: 5}
+    assert sizesof(torch_getitem(torch.ones(4, 5), (a() + 1, a() * 2))) == {}
+    assert sizesof(torch_getitem(torch.ones(4, 5), ((a() + 1) * 2, b()))) == {b: 5}
+
+    # A bare named dimension is still reported, alongside a compound sibling.
+    assert sizesof(torch.ones(4, 5)[a(), b()]) == {a: 4, b: 5}
+
+
+def test_sizesof_nested_getitem():
+    """Sizes are found through an inner getitem, using its residual shape.
+
+    ``sizesof`` computes that shape itself rather than reading it off a rebuilt
+    term, so these pin it against the conditions ``_embed_tensor`` builds an
+    eager term under: a concrete tensor indexed by a non-empty key whose every
+    term entry is a bare, tensor-typed name.
+    """
+    a, b = defop(torch.Tensor, name="a"), defop(torch.Tensor, name="b")
+
+    # A named dimension is consumed by the indexing; the rest stays.
+    assert sizesof(torch.ones(2, 3, 4)[a(), :, :][b(), :]) == {a: 2, b: 3}
+    assert sizesof(torch.ones(2, 3)[:, a()][b()]) == {a: 3, b: 2}
+
+    # A concrete index keeps its dimension.
+    inner = torch_getitem(torch.ones(4, 5), (torch.arange(4), a()))
+    assert sizesof(torch_getitem(inner, (b(),))) == {a: 5, b: 4}
+
+    # A subclass of torch.Tensor names a dimension just as torch.Tensor does,
+    # down to consuming it: with every dimension named there is nothing left to
+    # index into, and both fail alike.
+    class _SubTensor(torch.Tensor):
+        pass
+
+    sub = defop(_SubTensor, name="sub")
+    assert sizesof(torch_getitem(torch.ones(4, 5), (sub(), a()))) == {sub: 4, a: 5}
+    for name in (sub, defop(torch.Tensor, name="t")):
+        with pytest.raises(IndexError):
+            torch_getitem(torch_getitem(torch.ones(4, 5), (name(), a())), (b(),))
+
+    # An index that is not tensor-typed at all names nothing.
+    n = defop(int, name="n")
+    assert sizesof(torch_getitem(torch.ones(4, 5), (n(), a()))) == {a: 5}
+
+
+def test_sizesof_symbolic_key():
+    """A key can be a term rather than a sequence of index entries.
+
+    Indexing a concrete tensor this way fails outright, but indexing the
+    *result* of an earlier indexing does not: the inner term has a shape to
+    read while being a term, which is what stops ``_embed_tensor`` from
+    inspecting the key at all. ``sizesof`` still reports what the inner
+    indexing named.
+    """
+    a = defop(torch.Tensor, name="a")
+    key = defop(tuple, name="key")
+
+    inner = torch.ones(2, 3, 4)[a(), :, :]
+    assert inner.shape == (3, 4)
+
+    assert sizesof(torch_getitem(inner, key())) == {a: 2}
+
+
 @pytest.mark.parametrize("tensor, idx", INDEXING_CASES)
 def test_getitem_ellipsis_and_none(tensor, idx):
     from effectful.handlers.torch import _getitem_ellipsis_and_none
