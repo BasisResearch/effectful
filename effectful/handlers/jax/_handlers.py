@@ -1,5 +1,4 @@
 import functools
-import itertools
 import typing
 from collections.abc import Callable, Mapping, Sequence
 from types import EllipsisType
@@ -11,18 +10,18 @@ try:
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
-from effectful.ops.semantics import apply, evaluate, fvsof, typeof
+from effectful.internals.tensor_utils import _BaseSizesofIntp, _sizesof
+from effectful.ops.semantics import fvsof, typeof
 from effectful.ops.syntax import (
-    ConstructorOperation,
     Scoped,
-    _BaseTerm,
     _CustomSingleDispatchCallable,
     defdata,
     deffn,
     defop,
+    implements,
     syntactic_eq,
 )
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
@@ -39,92 +38,6 @@ def is_eager_array(x):
         )
         and not x.kwargs
     )
-
-
-@functools.cache
-def _sizesof_intp() -> tuple[Interpretation, Operation]:
-    """Construct the singleton interpretation used by ``sizesof``."""
-    from effectful.internals.product_n import argsof, productN
-
-    _sizes = defop(object, name="sizes")
-    _getitem_term = defop(object, name="getitem_args")
-
-    def _retain(op, *args, **kwargs):
-        # Non-getitem subterms are opaque to this analysis. Keeping their
-        # arguments would retain the entire input term unnecessarily.
-        return _BaseTerm(op)
-
-    def _retain_getitem(*args, **kwargs):
-        return defdata(jax_getitem, *args, **kwargs)
-
-    def _merge(s1, s2):
-        s3 = s1.copy()
-        for k, v in s2.items():
-            if k in s3 and s3[k] != v:
-                raise ValueError(
-                    f"Named index {k} used in incompatible dimensions of size {s3[k]} and {v}"
-                )
-            s3[k] = v
-        return s3
-
-    def _apply_sizes(op, *args, **kwargs):
-        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
-        return functools.reduce(_merge, analyses, {})
-
-    def _getitem(arr, index):
-        # Inspect this getitem's arguments in the term projection without
-        # forcing that projection to retain the getitem result.
-        term_args, _ = argsof(_getitem_term)
-        term_arr, term_index = term_args
-
-        arg_sizes = (x for x in (arr, index) if isinstance(x, dict))
-        if not is_eager_array(term_arr):
-            return functools.reduce(_merge, arg_sizes, {})
-
-        sizes = (
-            {k.op: term_arr.shape[i]}
-            for i, k in enumerate(term_index)
-            if isinstance(k, Term) and len(k.args) == 0 and len(k.kwargs) == 0
-        )
-        return functools.reduce(_merge, itertools.chain(arg_sizes, sizes), {})
-
-    return (
-        productN(
-            {
-                _sizes: {apply: _apply_sizes, jax_getitem: _getitem},
-                _getitem_term: {
-                    apply: _retain,
-                    jax_getitem: _retain_getitem,
-                    ConstructorOperation.__apply__: apply.__default_rule__,
-                },
-            }
-        ),
-        _sizes,
-    )
-
-
-def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
-    """Return the sizes of named dimensions in an array expression.
-
-    Sizes are inferred from the array shape.
-
-    :param value: An array expression.
-    :return: A mapping from named dimensions to their sizes.
-
-    **Example usage**:
-
-    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
-    >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
-    >>> assert sizes[a] == 2 and sizes[b] == 3
-    """
-    from effectful.internals.product_n import _unpack
-
-    intp, prompt = _sizesof_intp()
-    result = evaluate(term, intp=intp)
-    fvs = _unpack(result, prompt)
-    if not isinstance(fvs, dict):
-        return {}
-    return fvs
 
 
 def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
@@ -230,6 +143,38 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
 
     """
     return x[tuple(key)]
+
+
+class _SizesofIntp(_BaseSizesofIntp[jax.Array]):
+    arr_type: typing.ClassVar[type] = jax.Array
+
+    @classmethod
+    def _names_dim(cls, op: Operation[[], jax.Array]) -> bool:
+        return True
+
+    @implements(jax_getitem)
+    def _jax_getitem(self, arr, key):
+        return self._getitem(arr, key)
+
+
+_SIZESOF_INTP = _SizesofIntp()
+
+
+def sizesof(term: Expr) -> Mapping[Operation[[], jax.Array], int]:
+    """Return the sizes of named dimensions in an array expression.
+
+    Sizes are inferred from the array shape.
+
+    :param value: An array expression.
+    :return: A mapping from named dimensions to their sizes.
+
+    **Example usage**:
+
+    >>> a, b = defop(jax.Array, name='a'), defop(jax.Array, name='b')
+    >>> sizes = sizesof(jax_getitem(jnp.ones((2, 3)), [a(), b()]))
+    >>> assert sizes[a] == 2 and sizes[b] == 3
+    """
+    return _sizesof(term, analysis=_SIZESOF_INTP)
 
 
 @defop
