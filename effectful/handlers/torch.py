@@ -1,7 +1,6 @@
 import functools
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from types import EllipsisType
 from typing import Annotated, Any
 
 try:
@@ -12,6 +11,7 @@ except ImportError:
 import torch.utils._pytree as pytree
 
 from effectful.internals.tensor_utils import (
+    IndexElement,
     _BaseSizesofIntp,
     _desugar_tensor_index,
     _sizesof,
@@ -27,13 +27,10 @@ from effectful.ops.syntax import (
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
-# + An element of a tensor index expression.
-IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
-
 
 def _getitem_ellipsis_and_none(
-    x: torch.Tensor, key: tuple[IndexElement, ...]
-) -> tuple[torch.Tensor, tuple[IndexElement, ...]]:
+    x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]
+) -> tuple[torch.Tensor, tuple[IndexElement[torch.Tensor], ...]]:
     """Eliminate ellipses and None in an index expression x[key].
 
     Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
@@ -229,7 +226,9 @@ def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
 
 
 @_register_torch_op
-def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tensor:
+def torch_getitem(
+    x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]
+) -> torch.Tensor:
     """Operation for indexing a tensor.
 
     .. note::
@@ -369,7 +368,9 @@ class _TensorTerm(Term[torch.Tensor]):
         return self._kwargs
 
     def __getitem__(
-        self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
+        self,
+        key: Expr[IndexElement[torch.Tensor]]
+        | tuple[Expr[IndexElement[torch.Tensor]], ...],
     ) -> Expr[torch.Tensor]:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
@@ -493,12 +494,12 @@ class _TensorTerm(Term[torch.Tensor]):
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
-    args: tuple[torch.Tensor, tuple[IndexElement, ...]]
+    args: tuple[torch.Tensor, tuple[IndexElement[torch.Tensor], ...]]
     kwargs: Mapping[str, object] = {}
 
     __match_args__ = ("op", "args", "kwargs")
 
-    def __new__(cls, x: torch.Tensor, key: tuple[IndexElement, ...]):
+    def __new__(cls, x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]):
         assert not isinstance(x, Term)
 
         for k in key:

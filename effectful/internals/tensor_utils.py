@@ -1,18 +1,25 @@
 import abc
 import collections.abc
 import functools
+import types
 import typing
 
 from effectful.ops.semantics import ConstructorOperation, apply, evaluate
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
+type IndexElement[T] = (
+    None | int | slice | collections.abc.Sequence[int] | types.EllipsisType | T
+)
 
-def _desugar_tensor_index(shape, key):
-    new_shape = []
-    new_key = []
 
-    def extra_dims(key):
+def _desugar_tensor_index[T](
+    shape: tuple[int, ...], key: collections.abc.Sequence[IndexElement[T]]
+) -> tuple[tuple[int, ...], tuple[IndexElement[T], ...]]:
+    new_shape: list[int] = []
+    new_key: list[IndexElement[T]] = []
+
+    def extra_dims(key: collections.abc.Sequence[IndexElement[T]]) -> int:
         return sum(1 for k in key if k is None)
 
     # handle any missing dimensions by adding a trailing Ellipsis
@@ -39,7 +46,7 @@ def _desugar_tensor_index(shape, key):
             new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
             new_key.append(k)
 
-    return new_shape, new_key
+    return tuple(new_shape), tuple(new_key)
 
 
 class _Name[T]:

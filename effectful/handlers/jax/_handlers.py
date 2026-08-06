@@ -1,7 +1,6 @@
 import functools
 import typing
-from collections.abc import Callable, Mapping, Sequence
-from types import EllipsisType
+from collections.abc import Callable, Mapping
 from typing import Annotated
 
 try:
@@ -10,7 +9,7 @@ try:
 except ImportError:
     raise ImportError("JAX is required to use effectful.handlers.jax")
 
-from effectful.internals.tensor_utils import _BaseSizesofIntp, _sizesof
+from effectful.internals.tensor_utils import IndexElement, _BaseSizesofIntp, _sizesof
 from effectful.ops.semantics import fvsof, typeof
 from effectful.ops.syntax import (
     Scoped,
@@ -22,9 +21,6 @@ from effectful.ops.syntax import (
     syntactic_eq,
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
-
-# + An element of an array index expression.
-IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
 
 
 def is_eager_array(x):
@@ -137,7 +133,7 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
 
 
 @_register_jax_op
-def jax_getitem(x: jax.Array, key: tuple[IndexElement, ...]) -> jax.Array:
+def jax_getitem(x: jax.Array, key: tuple[IndexElement[jax.Array], ...]) -> jax.Array:
     """Operation for indexing an array. Unlike the standard __getitem__ method,
     this operation correctly handles indexing with terms.
 

@@ -7,14 +7,13 @@ import jax
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
-    IndexElement,
     _partial_eval,
     _register_jax_op,
     bind_dims,
     jax_getitem,
     unbind_dims,
 )
-from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.internals.tensor_utils import IndexElement, _desugar_tensor_index
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
@@ -87,7 +86,8 @@ class _ArrayTerm(Term[jax.Array]):
         return self._kwargs
 
     def __getitem__(
-        self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
+        self,
+        key: Expr[IndexElement[jax.Array]] | tuple[Expr[IndexElement[jax.Array]], ...],
     ) -> Expr[jax.Array]:
         return jax_getitem(self, key if isinstance(key, tuple) else (key,))
 
