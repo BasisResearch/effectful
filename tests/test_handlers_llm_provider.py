@@ -33,7 +33,12 @@ from effectful.handlers.llm.harness.contextualization import (
 )
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.hooks import (
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.synthesis import (
+    FinalBodySynthesizer,
+    StatefulReplSynthesizer,
+)
+from effectful.handlers.llm.hooks import (
     DecodedToolCall,
     FinalTool,
     ResultDecodingError,
@@ -44,11 +49,6 @@ from effectful.handlers.llm.harness.hooks import (
     call_assistant,
     call_tool,
     completion,
-)
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.harness.synthesis import (
-    FinalBodySynthesizer,
-    StatefulReplSynthesizer,
 )
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler

@@ -68,7 +68,7 @@ def offered_tools(env, *handlers):
     """
     import contextlib
 
-    from effectful.handlers.llm.harness.hooks import (
+    from effectful.handlers.llm.hooks import (
         call_assistant,
     )
     from effectful.ops.semantics import handler
