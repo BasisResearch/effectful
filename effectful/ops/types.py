@@ -80,11 +80,19 @@ class Operation[**Q, V]:
 
     def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
+        # update_wrapper copies the wrapped callable's __dict__. Do not retain a
+        # signature cached by another Operation, since `default` may now be a
+        # bound version of that operation.
+        self.__dict__.pop("_signature", None)
         self.__default__ = default
         self.__name__ = name or default.__name__
 
     @property
     def __signature__(self):
+        return self._signature
+
+    @functools.cached_property
+    def _signature(self):
         # Resolve forward references (e.g. -> "MyClass") using the
         # default function's __globals__.  This handles module-level
         # forward refs; local forward refs will raise NameError.
@@ -478,13 +486,20 @@ class Operation[**Q, V]:
             return self
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
-        from effectful.internals.runtime import get_interpretation
+        from effectful.internals.runtime import _restore_args, get_interpretation
+        from effectful.ops.semantics import fwd, handler
 
         intp = get_interpretation()
 
         self_handler = intp.get(self)
         if self_handler is not None:
-            return self_handler(*args, **kwargs)
+            # ensure that fwd is bound to the default rule. if this handler has
+            # a bound fwd, it will override this binding
+            fwd_intp = typing.cast(
+                Interpretation, {fwd: _restore_args(self.__default_rule__)}
+            )
+            with handler(fwd_intp):
+                return self_handler(*args, **kwargs)
         elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
             # Prevent infinite recursion when calling self.apply directly
             return self.__default__(*args, **kwargs)
@@ -587,7 +602,11 @@ class Term[T](abc.ABC):
 
     def __str__(self) -> str:
         from effectful.internals.runtime import interpreter
-        from effectful.ops.semantics import apply, evaluate
+        from effectful.ops.semantics import apply, as_tuple, evaluate
+        from effectful.ops.syntax import (
+            ConstructorOperation,
+            DataclassConstructorOperation,
+        )
 
         fresh: dict[str, dict[Operation, int]] = collections.defaultdict(dict)
 
@@ -604,24 +623,14 @@ class Term[T](abc.ABC):
                 return name
             return f"{name}!{n}"
 
-        def term_str(term):
-            if isinstance(term, Operation):
-                return op_str(term)
-            elif isinstance(term, list):
-                return "[" + ", ".join(map(term_str, term)) + "]"
-            elif isinstance(term, tuple):
-                return "(" + ", ".join(map(term_str, term)) + ")"
-            elif isinstance(term, dict):
-                return (
-                    "{"
-                    + ", ".join(
-                        f"{term_str(k)}:{term_str(v)}" for (k, v) in term.items()
-                    )
-                    + "}"
-                )
-            return str(term)
+        class _Rendered(str):
+            def __repr__(self):
+                return self
 
-        def _apply(op, *args, **kwargs) -> str:
+        def term_str(term):
+            return op_str(term) if isinstance(term, Operation) else str(term)
+
+        def _format_call(name, args, kwargs) -> str:
             args_str = ", ".join(map(term_str, args)) if args else ""
             kwargs_str = (
                 ", ".join(f"{k}={term_str(v)}" for k, v in kwargs.items())
@@ -629,36 +638,171 @@ class Term[T](abc.ABC):
                 else ""
             )
 
-            ret = f"{op_str(op)}({args_str}"
+            ret = f"{name}({args_str}"
             if kwargs:
                 ret += f"{', ' if args else ''}"
-            ret += f"{kwargs_str})"
-            return ret
+            return _Rendered(f"{ret}{kwargs_str})")
 
-        with interpreter({apply: _apply}):
-            return typing.cast(str, evaluate(self))
+        def _apply(op, *args, **kwargs) -> str:
+            return _format_call(op_str(op), args, kwargs)
+
+        def _constructor_apply(op, *args, **kwargs):
+            # Dataclass constructors are introduced by evaluate() while traversing
+            # an operation's arguments. They are traversal machinery, not nodes in
+            # the expression being displayed.
+            constructor = op.__signature__.return_annotation
+            name = getattr(constructor, "__name__", str(constructor))
+            return _format_call(name, args, kwargs)
+
+        def _construct_collection(constructor, items):
+            return constructor(
+                _Rendered(op_str(item)) if isinstance(item, Operation) else item
+                for item in items
+            )
+
+        collection_constructors = {
+            ConstructorOperation.define(constructor): functools.partial(
+                _construct_collection, constructor
+            )
+            for constructor in (tuple, list, dict, set, frozenset)
+        }
+        with interpreter(
+            {
+                apply: _apply,
+                ConstructorOperation.__apply__: _constructor_apply,
+                DataclassConstructorOperation.__apply__: _constructor_apply,
+                as_tuple: lambda *args: args,
+                **collection_constructors,
+            }
+        ):
+            return str(typing.cast(str, evaluate(self)))
 
 
 try:
     from prettyprinter import install_extras, pretty_call, register_pretty
+    from prettyprinter.doc import LINE, concat, group, nest
+    from prettyprinter.prettyprinter import general_identifier, pretty_python_value
 
     install_extras({"dataclasses"})
 
+    def _pretty_operation_name(value: Operation, ctx, expr=None):
+        """Give an operation a short name that is unique within the output."""
+        default_name = str(value)
+        fresh_by_name = ctx.get("fresh_by_name")
+        if fresh_by_name is None:
+            fresh_by_name = {}
+            ctx = ctx.assoc("fresh_by_name", fresh_by_name)
+
+            # Seed the shared name table from the entire expression.  Besides
+            # terms, fvsof traverses mappings, sequences, and dataclasses via
+            # collection constructor operations, so raw Operation values get
+            # the same name when prettyprinter reaches them later.
+            if expr is not None:
+                from effectful.ops.semantics import fvsof
+
+                operations = (value, *(op for op in fvsof(expr) if op is not value))
+                for op in operations:
+                    same_name = fresh_by_name.setdefault(str(op), {})
+                    same_name.setdefault(op, len(same_name))
+
+        fresh = fresh_by_name.setdefault(default_name, {})
+        fresh_ctr = fresh.setdefault(value, len(fresh))
+        name = default_name + (f"!{fresh_ctr}" if fresh_ctr > 0 else "")
+        return name, ctx
+
+    @register_pretty(Operation)
+    def pretty_operation(value: Operation, ctx):
+        """Pretty print raw operations, including those nested in collections."""
+        name, _ = _pretty_operation_name(value, ctx)
+        return general_identifier(name)
+
+    # Larger values bind more tightly. Associativity indicates which nested
+    # operand may omit parentheses when it has the same precedence.
+    _BINARY_DUNDER_OPERATORS = {
+        "__or__": ("|", 40, "left"),
+        "__xor__": ("^", 50, "left"),
+        "__and__": ("&", 60, "left"),
+        "__lshift__": ("<<", 70, "left"),
+        "__rshift__": (">>", 70, "left"),
+        "__add__": ("+", 80, "left"),
+        "__sub__": ("-", 80, "left"),
+        "__mul__": ("*", 90, "left"),
+        "__matmul__": ("@", 90, "left"),
+        "__truediv__": ("/", 90, "left"),
+        "__floordiv__": ("//", 90, "left"),
+        "__mod__": ("%", 90, "left"),
+        "__pow__": ("**", 110, "right"),
+        "__eq__": ("==", 30, "none"),
+        "__ne__": ("!=", 30, "none"),
+        "__lt__": ("<", 30, "none"),
+        "__le__": ("<=", 30, "none"),
+        "__gt__": (">", 30, "none"),
+        "__ge__": (">=", 30, "none"),
+    }
+    _UNARY_DUNDER_OPERATORS = {
+        "__pos__": ("+", 100),
+        "__neg__": ("-", 100),
+        "__invert__": ("~", 100),
+    }
+
+    def _parenthesize(doc):
+        return concat(["(", doc, ")"])
+
+    def _pretty_dunder_operand(value, ctx, precedence, associativity, side):
+        doc = pretty_python_value(value, ctx)
+        if not isinstance(value, Term):
+            return doc
+
+        child_name = value.op.__name__
+        if child_name in _BINARY_DUNDER_OPERATORS:
+            child_precedence = _BINARY_DUNDER_OPERATORS[child_name][1]
+        elif child_name in _UNARY_DUNDER_OPERATORS:
+            child_precedence = _UNARY_DUNDER_OPERATORS[child_name][1]
+        else:
+            return doc
+
+        needs_parens = child_precedence < precedence or (
+            child_precedence == precedence
+            and (associativity == "none" or associativity != side)
+        )
+        return _parenthesize(doc) if needs_parens else doc
+
+    def _pretty_dunder(value: Term, ctx):
+        name = value.op.__name__
+        if (
+            not value.kwargs
+            and len(value.args) == 1
+            and name in _UNARY_DUNDER_OPERATORS
+        ):
+            symbol, precedence = _UNARY_DUNDER_OPERATORS[name]
+            operand = _pretty_dunder_operand(
+                value.args[0], ctx, precedence, "right", "right"
+            )
+            return concat([symbol, operand])
+
+        if (
+            not value.kwargs
+            and len(value.args) == 2
+            and name in _BINARY_DUNDER_OPERATORS
+        ):
+            symbol, precedence, associativity = _BINARY_DUNDER_OPERATORS[name]
+            left = _pretty_dunder_operand(
+                value.args[0], ctx, precedence, associativity, "left"
+            )
+            right = _pretty_dunder_operand(
+                value.args[1], ctx, precedence, associativity, "right"
+            )
+            return group(concat([left, f" {symbol}", nest(4, concat([LINE, right]))]))
+
+        return None
+
     @register_pretty(Term)
     def pretty_term(value: Term, ctx):
-        default_op_name = str(value.op)
-
-        fresh_by_name = ctx.get("fresh_by_name") or {}
-        new_ctx = ctx.assoc("fresh_by_name", fresh_by_name)
-
-        fresh = fresh_by_name.get(default_op_name, {})
-        fresh_by_name[default_op_name] = fresh
-
-        fresh_ctr = fresh.get(value.op, len(fresh))
-        fresh[value.op] = fresh_ctr
-
-        op_name = str(value.op) + (f"!{fresh_ctr}" if fresh_ctr > 0 else "")
-        return pretty_call(new_ctx, op_name, *value.args, **value.kwargs)
+        op_name, ctx = _pretty_operation_name(value.op, ctx, value)
+        dunder_doc = _pretty_dunder(value, ctx)
+        if dunder_doc is not None:
+            return dunder_doc
+        return pretty_call(ctx, op_name, *value.args, **value.kwargs)
 
 except ImportError:
     pass

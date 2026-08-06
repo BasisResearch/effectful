@@ -26,10 +26,13 @@ from litellm import (
 )
 
 from effectful.handlers.llm.encoding import (
+    REPL_ANCHOR_KEY,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     to_content_blocks,
 )
+from effectful.handlers.llm.evaluation import ReplSession, _repl_session
 from effectful.handlers.llm.template import (
     Agent,
     Template,
@@ -177,36 +180,202 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 
 type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
 
+CACHE_CONTROL_EPHEMERAL = {"type": "ephemeral"}
 
-def _collect_tools(
+
+def _add_cache_control_to_history(
+    history: collections.OrderedDict[str, "Message"],
+) -> None:
+    """Add cache_control to the last user/tool message in an agent's history.
+
+    This enables prompt caching on providers that support it (e.g. Anthropic).
+    Providers that don't support it (e.g. OpenAI) have cache_control stripped
+    by litellm's request transformation, so this is always safe to apply.
+
+    Mutates the history OrderedDict in place.
+    """
+    if not history:
+        return
+    for key in history:
+        msg = history[key]
+        if msg["role"] not in ("user", "tool", "assistant"):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list) and content:
+            last_block = content[-1]
+            if isinstance(last_block, dict) and "cache_control" not in last_block:
+                new_content = list(content)
+                new_content[-1] = {
+                    **last_block,
+                    "cache_control": CACHE_CONTROL_EPHEMERAL,
+                }
+                history[key] = typing.cast(Message, {**msg, "content": new_content})
+
+
+class _LexicalVariableTool[T](Tool[[], T]):
+    """A zero-arg `Tool` that returns the captured value of a variable
+    from a `Template`'s lexical context.
+
+    Tools are constructed fresh each `call_assistant` invocation, so
+    the reader closes over the snapshot `value` rather than the
+    surrounding `env` — in-place mutation of a mutable value is still
+    visible (same object reference), but rebinding the source name is
+    not.
+    """
+
+    @classmethod
+    def define(cls, value: typing.Any, *, name: str) -> "Tool[[], typing.Any]":
+        """Construct a synthetic reader Tool that returns `value`.
+
+        Raises if `Encodable[nested_type(value)]` cannot be generated.
+        The caller is responsible for catching the failure and deciding
+        whether to skip the symbol.
+        """
+        assert not isinstance(value, Tool), (
+            "Tools are real tools and must not be re-wrapped as lexical readers."
+        )
+        typ: typing.Any = nested_type(value).value
+        # Probe schema generation; raises if `Encodable[typ]` is not implemented.
+        pydantic.TypeAdapter(Encodable[typ]).json_schema()
+
+        def tool_fn():
+            return value
+
+        tool_fn.__name__ = name
+        tool_fn.__qualname__ = name
+        tool_fn.__module__ = type(value).__module__
+        tool_fn.__doc__ = (
+            f"Reads the value of lexical variable `{name}` from the "
+            f"enclosing scope where this Template was defined.  Takes "
+            f"no arguments; returns the current value."
+        )
+        tool_fn.__annotations__ = {"return": typ}
+        return super().define(tool_fn)
+
+
+@Operation.define
+def collect_tools(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> collections.abc.Mapping[str, Tool]:
-    """Operations and Templates available as tools. Auto-capture from lexical context."""
-    result = {}
+    """Return the tools available to a Template given its lexical context.
+
+    Default rule: real `Tool` and `Template` values bound directly in
+    `env`, plus `Tool` methods discovered through the MRO of any
+    `Agent` instance in `env`.  Same-Tool-under-different-names is
+    deduped so each Tool appears exactly once.
+
+    Handlers (see :class:`LexicalReaders`) may override this to add
+    synthetic readers, hide tools, etc.
+    """
+    result: dict[str, Tool] = {}
 
     for name, obj in env.items():
-        # Collect tools directly in context
         if isinstance(obj, Tool | Template):
             result[name] = obj
-
-        # Collect tools as methods on Agent instances in context
         elif isinstance(obj, Agent):
             for cls in type(obj).__mro__:
                 for attr_name in vars(cls):
                     if isinstance(getattr(obj, attr_name), Tool):
                         result[f"{name}__{attr_name}"] = getattr(obj, attr_name)
 
-    # The same Tool can appear under multiple names when it is both
-    # visible in the enclosing scope *and* discovered via an Agent
-    # instance's MRO.  Since Tools are hashable Operations and
-    # instance-method Tools are cached per instance, we keep only
-    # the last name for each unique tool object.
+    # Same Tool can appear under multiple names when visible both in the
+    # enclosing scope and via an Agent instance's MRO.  Keep only the
+    # last name for each unique tool object.
     tool2name = {tool: name for name, tool in sorted(result.items())}
     for name, tool in tuple(result.items()):
         if tool2name[tool] != name:
             del result[name]
 
     return result
+
+
+class LexicalReaders(ObjectInterpretation):
+    """Override `collect_tools` to also expose plain values from the
+    lexical context as zero-argument read-only Tools.  Each non-Tool,
+    non-Template, non-Agent value bound to a valid identifier is
+    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
+    schema-generation failures cause the symbol to be skipped.
+    """
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        result = dict(fwd())
+        for name, obj in env.items():
+            if name in result or not name.isidentifier():
+                continue
+            try:
+                result[name] = _LexicalVariableTool.define(obj, name=name)
+            # `TypeError` joins the three Pydantic errors because the
+            # `Encodable[T]` registry raises `TypeError` to signal
+            # "no schema possible" — e.g. `_pydantic_type_operation`,
+            # `_pydantic_type_term`, and `_pydantic_callable`'s
+            # incomplete-signature path. Same intent as the Pydantic
+            # cases, different exception class.
+            except (
+                pydantic.errors.PydanticSchemaGenerationError,
+                pydantic.errors.PydanticInvalidForJsonSchema,
+                pydantic.errors.PydanticUserError,
+                TypeError,
+            ):
+                continue
+        return result
+
+
+class PythonRepl(ObjectInterpretation):
+    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
+
+    Off by default; install it where the LLM should be able to run code whose
+    state (variables, imports, definitions) survives across tool calls within a
+    single Template invocation.
+
+    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
+    handles `Template.__apply__` to introduce a fresh `_repl_session` handler for
+    the duration of the call, and handles `collect_tools` to inject an `exec_code`
+    Tool routed to that session.  The session is therefore introduced and
+    eliminated by its own handler, bounded to the Template call by construction --
+    there is no global registry of sessions, and nested Template calls get their
+    own isolated sessions.
+
+    The session is seeded from the Template's lexical context and routes execution
+    through the `parse`/`compile`/`exec` effect operations, so it works under any
+    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
+    """
+
+    @implements(Template.__apply__)
+    def _apply[**P, T](
+        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        # One session per Template call, created lazily on first use (the call's
+        # `env`, supplied by `collect_tools`/`exec_code`, seeds it).  The
+        # enclosing `handler(...)` bounds the session's lifetime to this call, so
+        # nested Template calls introduce their own fresh session.
+        session: ReplSession | None = None
+
+        def session_for(
+            env: collections.abc.MutableMapping[str, typing.Any],
+        ) -> ReplSession:
+            nonlocal session
+            if session is None:
+                session = ReplSession(env)
+            return session
+
+        with handler({_repl_session: session_for}):
+            return fwd()
+
+    @implements(collect_tools)
+    def _collect(
+        self, env: collections.abc.Mapping[str, typing.Any]
+    ) -> collections.abc.Mapping[str, Tool]:
+        tools = dict(fwd())
+        # `collect_tools` only promises a `Mapping`, but the per-call `env` is the
+        # writable `ChainMap` the session splices its shared scope layer into, so
+        # narrow it for `_repl_session`/`ReplSession`.
+        tools["exec_code"] = _repl_session(
+            typing.cast(collections.abc.MutableMapping[str, typing.Any], env)
+        ).exec_code
+        return tools
 
 
 @Operation.define
@@ -243,7 +412,8 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    tools = _collect_tools(env)
+    anchor = kwargs.pop("anchor", None)  # ride in kwargs; pop before the LLM call
+    tools = dict(collect_tools(env))
     tool_specs = {
         k: typing.cast(
             pydantic.TypeAdapter[typing.Any],
@@ -281,9 +451,15 @@ def call_assistant[T](
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
+    # Thread the type-check anchor into the tool-argument context under REPL_ANCHOR_KEY, so
+    # the `Encodable[CodeType]` decoder type-checks a `code` argument (the REPL `exec_code`
+    # tool) against the Template body at decode, splicing in the accumulated REPL session.
+    tool_context = {**tools, REPL_ANCHOR_KEY: anchor} if anchor is not None else tools
     for raw_tool_call in message.get("tool_calls") or []:
         try:
-            tool_calls += [encoding.validate_python(raw_tool_call, context=tools)]
+            tool_calls += [
+                encoding.validate_python(raw_tool_call, context=tool_context)
+            ]
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -302,8 +478,12 @@ def call_assistant[T](
             result = typing.cast(T, serialized_result)
         else:
             try:
+                # Add the type-check anchor to the decode context only (not `env`,
+                # which is exposed as tools), so a synthesized result is checked
+                # against the Template's source.
                 result = response_format.model_validate(
-                    json.loads(serialized_result), context=env
+                    json.loads(serialized_result),
+                    context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
                 ).value
             except Exception as e:
                 raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -396,7 +576,18 @@ def call_user(
 def call_system(template: Template) -> Message:
     """Get system instruction message(s) to prepend to all LLM prompts."""
     system_prompt = template.__system_prompt__ or DEFAULT_SYSTEM_PROMPT
-    message = _make_message(dict(role="system", content=system_prompt))
+    message = _make_message(
+        dict(
+            role="system",
+            content=[
+                {
+                    "type": "text",
+                    "text": system_prompt,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        )
+    )
     append_message(message, last=False)
     return message
 
@@ -521,6 +712,7 @@ class LiteLLMProvider(ObjectInterpretation):
         history: collections.OrderedDict[str, Message] = getattr(
             template, "__history__", collections.OrderedDict()
         )  # type: ignore
+        is_agent = hasattr(template, "__history__")
         history_copy = history.copy()
 
         with handler({_get_history: lambda: history_copy}):
@@ -532,12 +724,21 @@ class LiteLLMProvider(ObjectInterpretation):
 
             message: Message = call_user(template.__prompt_template__, env)
 
+            # For agents with persistent history, add cache_control to the
+            # last user message so the growing prefix gets cached on providers
+            # that support it (Anthropic). litellm strips it for OpenAI.
+            if is_agent:
+                _add_cache_control_to_history(history_copy)
+
             # loop based on: https://cookbook.openai.com/examples/reasoning_function_calls
             tool_calls: list[DecodedToolCall] = []
             result: T | None = None
             while message["role"] != "assistant" or tool_calls:
                 message, tool_calls, result = call_assistant(
-                    env, template.__signature__.return_annotation, **self.config
+                    env,
+                    template.__signature__.return_annotation,
+                    anchor=template.__default__,
+                    **self.config,
                 )
                 for tool_call in tool_calls:
                     message = call_tool(tool_call)

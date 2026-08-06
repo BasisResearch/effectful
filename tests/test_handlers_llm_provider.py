@@ -13,6 +13,7 @@ import re
 from collections.abc import Callable
 from enum import StrEnum
 from pathlib import Path
+from types import CodeType
 
 import litellm
 import pydantic
@@ -28,7 +29,9 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.completions import (
     DecodedToolCall,
+    LexicalReaders,
     LiteLLMProvider,
+    PythonRepl,
     ResultDecodingError,
     RetryLLMHandler,
     Tool,
@@ -37,6 +40,7 @@ from effectful.handlers.llm.completions import (
     _get_history,
     call_assistant,
     call_tool,
+    collect_tools,
     completion,
 )
 from effectful.handlers.llm.encoding import Encodable
@@ -44,7 +48,13 @@ from effectful.handlers.llm.evaluation import UnsafeEvalProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests.conftest import EFFECTFUL_LLM_MODEL, requires_llm, requires_vision
+from tests.conftest import (
+    EFFECTFUL_LLM_MODEL,
+    requires_anthropic,
+    requires_llm,
+    requires_openai,
+    requires_vision,
+)
 
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures"
 
@@ -1185,6 +1195,20 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
     raise NotHandled
 
 
+class _MethodSynthesizer:
+    """A class whose *method* is a Template returning a Callable, so its synthesis
+    anchor is a bound-method ``__default__`` (eb8680: bound-method Templates)."""
+
+    @Template.define
+    def make_adder(self) -> Callable[[int, int], int]:
+        """Generate a Python function that adds two integers together.
+
+        The function should take two integer parameters and return their sum.
+        Return a code block whose last definition is the function.
+        """
+        raise NotHandled
+
+
 class TestCallableSynthesis:
     """Tests for synthesizing callable functions via LLM."""
 
@@ -1200,6 +1224,23 @@ class TestCallableSynthesis:
             assert callable(add_func)
             assert add_func(2, 3) == 5
             assert add_func(0, 0) == 0
+            assert add_func(-1, 1) == 0
+            assert add_func(100, 200) == 300
+
+    def test_synthesize_via_bound_method(self, request):
+        """A *method* Template synthesizes a callable end-to-end -- exercising the
+        bound-method `__default__` anchor through the real splice type-check
+        (RetryLLMHandler lets the model recover from a malformed first draft)."""
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(RetryLLMHandler(stop=tenacity.stop_after_attempt(4))),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+        ):
+            add_func = _MethodSynthesizer().make_adder()
+
+            assert callable(add_func)
+            assert add_func(2, 3) == 5
             assert add_func(-1, 1) == 0
             assert add_func(100, 200) == 300
 
@@ -1552,6 +1593,32 @@ def type_error_tool(x: int) -> str:
     raise TypeError(f"bad type for {x}")
 
 
+def _drive_repl(body):
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+
+    A tiny `Template.__apply__` handler stands in for the LLM loop, handing
+    `body` the call's `exec_code` tool so it runs against one REPL session (the
+    supported way to reach a session).  Install any outer handlers (e.g.
+    `RetryLLMHandler`) around the call.  Returns `body`'s result.
+    """
+    box = []
+
+    class _Loop(ObjectInterpretation):
+        @implements(Template.__apply__)
+        def _call(self, *_a, **_k):
+            box.append(body(collect_tools(collections.ChainMap({}))["exec_code"]))
+            return None
+
+    @Template.define
+    def _t() -> None:
+        """Drive one REPL-scoped call."""
+        raise NotImplementedError
+
+    with handler(_Loop()), handler(UnsafeEvalProvider()), handler(PythonRepl()):
+        _t()
+    return box[0]
+
+
 class TestCallToolWrapsExecutionError:
     """call_tool should wrap runtime tool errors in ToolCallExecutionError."""
 
@@ -1589,6 +1656,23 @@ class TestCallToolWrapsExecutionError:
         result = call_tool(tc)
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
+
+    def test_call_tool_returns_exec_code_error_in_output(self):
+        """An `exec_code` runtime error is reported in the returned tool message's
+        content (the traceback), not raised as a `ToolCallExecutionError`, so the
+        assistant loop continues with it as feedback."""
+
+        def body(exec_code):
+            bound_args = inspect.signature(exec_code).bind(
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
+            )
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            return call_tool(tc)
+
+        msg = _drive_repl(body)
+        assert msg["role"] == "tool"
+        assert msg["tool_call_id"] == "call_exec"
+        assert "ZeroDivisionError" in str(msg["content"])
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
@@ -2158,3 +2242,282 @@ class TestAgentSystemMessageDeduplication:
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
+
+
+# ============================================================================
+# Prompt Caching Tests
+# ============================================================================
+
+
+def _has_cache_control(msg: dict) -> bool:
+    """Check if a message dict contains cache_control in any content block."""
+    content = msg.get("content")
+    if isinstance(content, list):
+        return any(isinstance(b, dict) and "cache_control" in b for b in content)
+    return False
+
+
+class CachingAgent(Agent):
+    """A test agent with persistent history."""
+
+    @Template.define
+    def ask(self, question: str) -> str:
+        """You are a helpful assistant. Answer concisely: {question}"""
+        raise NotHandled
+
+
+class TestPromptCaching:
+    """Tests that cache_control is present in messages sent to litellm."""
+
+    def test_system_message_has_cache_control(self):
+        """System message should include cache_control for prompt caching."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        msgs = capture.received_messages[0]
+        system_msgs = [m for m in msgs if m["role"] == "system"]
+        assert len(system_msgs) == 1
+        assert _has_cache_control(system_msgs[0]), (
+            f"System message should have cache_control. Got: {system_msgs[0]}"
+        )
+
+    def test_agent_user_message_has_cache_control(self):
+        """Agent calls should add cache_control to the last user message."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+        agent = CachingAgent()
+
+        with handler(provider), handler(capture):
+            agent.ask("What is 2+2?")
+
+        msgs = capture.received_messages[0]
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        assert len(user_msgs) == 1
+        content = user_msgs[0]["content"]
+        assert isinstance(content, list)
+        assert "cache_control" in content[-1], (
+            f"Agent user message should have cache_control. Got: {content[-1]}"
+        )
+
+    def test_non_agent_user_message_no_cache_control(self):
+        """Non-agent calls should NOT add cache_control to user messages."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        msgs = capture.received_messages[0]
+        user_msgs = [m for m in msgs if m["role"] == "user"]
+        content = user_msgs[0]["content"]
+        assert isinstance(content, list)
+        assert "cache_control" not in content[-1], (
+            "Non-agent user messages should NOT have cache_control"
+        )
+
+    def test_cache_control_format_is_ephemeral(self):
+        """cache_control should use the ephemeral type."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+
+        with handler(provider), handler(capture):
+            simple_prompt("test")
+
+        for msg in capture.received_messages[0]:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and "cache_control" in block:
+                        assert block["cache_control"] == {"type": "ephemeral"}
+
+    def test_litellm_strips_cache_control_for_openai(self):
+        """Verify litellm strips cache_control when transforming for OpenAI."""
+        from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
+
+        msgs = [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+        ]
+        config = OpenAIGPTConfig()
+        transformed = config.transform_request(
+            model="gpt-4o",
+            messages=msgs,
+            optional_params={},
+            litellm_params={},
+            headers={},
+        )
+        for msg in transformed["messages"]:
+            content = msg.get("content")
+            if isinstance(content, list):
+                for block in content:
+                    assert "cache_control" not in block
+
+    @requires_openai
+    def test_openai_accepts_cache_control_via_litellm(self):
+        """OpenAI works fine with cache_control (litellm strips it)."""
+        provider = LiteLLMProvider(model="gpt-4o-mini")
+        with handler(provider):
+            result = simple_prompt("math")
+        assert isinstance(result, str)
+
+    @requires_anthropic
+    def test_anthropic_accepts_cache_control(self):
+        """Anthropic should accept messages with cache_control."""
+        provider = LiteLLMProvider(model="claude-opus-4-6", max_tokens=20)
+        with handler(provider):
+            result = simple_prompt("math")
+        assert isinstance(result, str)
+
+
+# ---------------------------------------------------------------------------
+# Synthetic readers — integration (PR #545 finish-up)
+# ---------------------------------------------------------------------------
+
+
+class TestSyntheticReaderIntegration:
+    """The LLM can read lexical context through synthetic reader tools."""
+
+    @requires_llm
+    def test_llm_reads_lexical_value(self, request):
+        """Template asks LLM to inspect _known_data and report its sum.
+        The synthetic reader for _known_data is available in the tools
+        array; the LLM should call it, see [10,20,30,40,50], and report
+        the sum (150)."""
+        _known_data = [10, 20, 30, 40, 50]
+
+        @Template.define
+        def report_sum() -> int:
+            """Use the `_known_data` tool to read the list of numbers,
+            then return their sum as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalReaders()),
+        ):
+            result = report_sum()
+
+        assert isinstance(result, int)
+        assert result == sum(_known_data)  # 150
+
+    @requires_llm
+    def test_template_synthesis_uses_lexical_reader(self, request):
+        """A Template that synthesizes a callable grounds its output
+        in a lexical value exposed as a synthetic reader.
+
+        The Template asks the LLM to write a lambda comparing its
+        argument against `threshold`; the LLM must call the `threshold`
+        reader to inspect the value before emitting code.
+        """
+        threshold = 0.85
+
+        @Template.define
+        def make_above_threshold() -> Callable[[float], bool]:
+            """Use the `threshold` reader tool to inspect its current
+            float value, then emit a single Python function definition:
+
+                def above(x: float) -> bool:
+                    return x > <the value you read>
+
+            The function definition MUST be the last and only statement.
+            Do not emit any other code, no trailing assignment, no
+            imports, no comments after the function."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LimitLLMCallsHandler(max_calls=4)),
+            handler(LexicalReaders()),
+        ):
+            fn = make_above_threshold()
+
+        assert fn(0.9) is True
+        assert fn(0.5) is False
+        assert fn(threshold) is False
+
+    def test_template_exposes_lexical_classes(self):
+        """When `LexicalReaders` is installed, classes in the defining
+        scope are exposed as readers via the broad `Encodable[Callable]`
+        handler — the `Hand`/`Finger`/`generate_arm` motivating example
+        from #497.  Without the handler the readers are gated off; this
+        test pins both contracts.
+        """
+
+        class Finger:
+            def wiggle(self) -> str:
+                return "wiggle"
+
+        class Hand:
+            fingers: list[Finger]
+
+        @Template.define
+        def describe_hand_action() -> str:
+            """Doc."""
+            raise NotImplementedError
+
+        # Off by default.
+        assert "Finger" not in describe_hand_action.tools
+        assert "Hand" not in describe_hand_action.tools
+
+        # On under the handler.
+        with handler(LexicalReaders()):
+            tools = describe_hand_action.tools
+            assert "Finger" in tools
+            assert "Hand" in tools
+
+
+class TestPythonReplIntegration:
+    """The LLM can run code in a persistent session through `exec_code`."""
+
+    @requires_llm
+    def test_llm_computes_via_exec_code(self, request):
+        """A Template seeds a list in lexical scope and asks the LLM to
+        compute a derived statistic by running code.  The LLM uses the
+        `exec_code` tool (possibly across several rounds, with state
+        persisting) and returns the typed result."""
+        readings = [12, 19, 23, 31, 8, 27]
+
+        @Template.define
+        def outlier_count() -> int:
+            """Use the `exec_code` tool to compute how many values in the
+            `readings` list lie strictly more than one population standard
+            deviation from the mean.  `readings` is available in scope.
+            Return that count as an integer."""
+            raise NotImplementedError
+
+        with (
+            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(UnsafeEvalProvider()),
+            handler(LexicalReaders()),
+            handler(PythonRepl()),
+        ):
+            result = outlier_count()
+
+        import statistics
+
+        m = statistics.mean(readings)
+        s = statistics.pstdev(readings)
+        expected = sum(1 for r in readings if abs(r - m) > s)
+        assert result == expected

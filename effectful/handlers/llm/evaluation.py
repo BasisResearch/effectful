@@ -1,21 +1,24 @@
 import ast
 import builtins
+import code
+import codeop
 import collections.abc
-import copy
+import contextlib
 import inspect
-import keyword
+import io
+import json
 import linecache
-import random
-import string
+import logging
+import os
+import shutil
+import subprocess
 import sys
-import types
+import tempfile
 import typing
-from collections.abc import Mapping
+from collections.abc import MutableMapping
 from types import CodeType
-from typing import Any, TypeAliasType
+from typing import Any
 
-import autoflake
-from mypy import api as mypy_api
 from RestrictedPython import (
     Eval,
     Guards,
@@ -23,8 +26,9 @@ from RestrictedPython import (
     compile_restricted,
     safe_globals,
 )
+from RestrictedPython.PrintCollector import PrintCollector
 
-from effectful.internals.unification import nested_type
+from effectful.handlers.llm.template import Tool
 from effectful.ops.syntax import ObjectInterpretation, defop, implements
 from effectful.ops.types import Operation
 
@@ -46,22 +50,30 @@ def parse(source: str, filename: str) -> ast.Module:
 
 @defop
 def type_check(
-    module: ast.Module,
-    ctx: typing.Mapping[str, Any],
-    expected_params: list[type] | None,
-    expected_return: type,
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    *,
+    lenient: bool = False,
 ) -> None:
     """
-    Type check a parsed module against an expected signature and lexical context.
+    Type check a module source, reporting only diagnostics inside a line region.
 
-    module: The parsed Python source code module to type check.
-    ctx: The lexical context under which the file should be type checked
-    expected_params, expected_return: The expected signature of the last function in the module.
+    source: A complete module source to check (e.g. produced by
+        ``splice_into_source``, which splices generated code into a Template's real
+        module source).
+    lo, hi: Inclusive line range within ``source`` to report errors from; when
+        omitted, the whole source is in scope. Errors outside the region are
+        ignored so unrelated pre-existing code never blocks synthesis.
+    lenient: when True, relax mypy for incrementally-built REPL code spliced into a
+        Template body -- allow redefinition (a cell may rebind or redefine a name)
+        and don't require the body to satisfy the Template's return type. Off (strict)
+        for synthesized ``Callable`` bodies, which must honor their signature.
 
-    Returns None, raises TypeError on typechecking failure.
+    Returns None, raises TypeError on an in-region failure.
     """
     raise NotImplementedError(
-        "An eval provider must be installed in order to parse code."
+        "An eval provider must be installed in order to type check code."
     )
 
 
@@ -90,586 +102,312 @@ def exec(
 
     bytecode: A code object to execute (typically produced by compile()).
     env: The namespace mapping used during execution.
+
+    After ``exec(bytecode, env)`` returns, ``env`` reflects all top-level
+    binding effects of the executed code (new names and rebindings alike).
     """
     raise NotImplementedError(
         "An eval provider must be installed in order to execute code."
     )
 
 
-# Type checking implementation
-def type_to_ast(typ: Any) -> ast.expr:
-    """Convert a Python type to an AST expression.
+logger = logging.getLogger(__name__)
 
-    Takes a type (e.g. from nested_type(value).value) and converts to AST.
+
+def scan_non_nestable(generated: ast.Module) -> None:
+    """Reject constructs legal at module level but illegal once nested in a function.
+
+    ``from ... import *`` and ``from __future__ import ...`` are both ``SyntaxError``s
+    inside a function body, but mypy *accepts* a nested star import silently, so the
+    splice would slip an illegal construct past the type check and fail later at
+    ``compile``/``exec``. Detect them explicitly and raise before splicing. Raises
+    ``ValueError`` (this is rejecting invalid generated *source*, not signaling a type
+    error), so a decoder can catch it alongside ``SyntaxError`` without swallowing a real
+    ``TypeError`` from a broken provider.
     """
-    # Handle None type (both None value and NoneType)
-    if typ is None or typ is type(None):
-        return ast.Constant(value=None)
-
-    # Handle typing.Any (via its metaclass _AnyMeta)
-    if isinstance(typ, type(typing.Any)):
-        return ast.Attribute(
-            value=ast.Name(id="typing", ctx=ast.Load()), attr="Any", ctx=ast.Load()
-        )
-
-    # Handle function type -> Callable (before builtins check since FunctionType is in builtins)
-    if typ is types.FunctionType:
-        return ast.Attribute(
-            value=ast.Attribute(
-                value=ast.Name(id="collections", ctx=ast.Load()),
-                attr="abc",
-                ctx=ast.Load(),
-            ),
-            attr="Callable",
-            ctx=ast.Load(),
-        )
-
-    # Handle basic builtin types
-    if isinstance(typ, type) and typ.__module__ == "builtins":
-        return ast.Name(id=typ.__name__, ctx=ast.Load())
-
-    # Handle runtime-only types (__main__ or <locals> in qualname)
-    # These can't be imported, so we just use the simple name
-    if isinstance(typ, type) and (
-        typ.__module__ == "__main__" or "<locals>" in typ.__qualname__
-    ):
-        return ast.Name(id=typ.__name__, ctx=ast.Load())
-
-    # Handle types from other modules (e.g., collections.abc.Callable)
-    if isinstance(typ, type) and typ.__module__:
-        parts = typ.__module__.split(".")
-        node: ast.expr = ast.Name(id=parts[0], ctx=ast.Load())
-        for part in parts[1:]:
-            node = ast.Attribute(value=node, attr=part, ctx=ast.Load())
-        return ast.Attribute(value=node, attr=typ.__name__, ctx=ast.Load())
-
-    # Handle typing special forms (Union, Optional, etc.)
-    if isinstance(typ, typing._SpecialForm):
-        return ast.Attribute(
-            value=ast.Name(id="typing", ctx=ast.Load()),
-            attr=typ._name,  # type: ignore[attr-defined]
-            ctx=ast.Load(),
-        )
-
-    # Handle TypeVars, ParamSpecs, TypeVarTuples
-    if isinstance(typ, typing.TypeVar | typing.ParamSpec | typing.TypeVarTuple):
-        return ast.Name(id=typ.__name__, ctx=ast.Load())
-
-    # Handle TypeAliasType (PEP 695 type aliases)
-    if isinstance(typ, TypeAliasType):
-        return ast.Name(id=typ.__name__, ctx=ast.Load())
-
-    # Handle union types (int | str)
-    if isinstance(typ, types.UnionType):
-        args = typing.get_args(typ)
-        result = type_to_ast(args[0])
-        for arg in args[1:]:
-            result = ast.BinOp(left=result, op=ast.BitOr(), right=type_to_ast(arg))
-        return result
-
-    # Handle typing.Annotated: use the first argument (the actual type) for typecheck stubs
-    origin = typing.get_origin(typ)
-    if origin is typing.Annotated:
-        args = typing.get_args(typ)
-        if args:
-            return type_to_ast(args[0])
-        raise TypeError("type_to_ast: Annotated must have at least one type argument")
-
-    # Handle generic aliases (e.g., Callable[[int], str], list[int])
-    origin = typing.get_origin(typ)
-    if origin is not None:
-        args = typing.get_args(typ)
-        origin_ast = type_to_ast(origin)
-
-        if not args:
-            return origin_ast
-
-        # Handle Callable-like types: Callable[[arg_types], return_type]
-        # Also handles Operation subclasses which have the same structure
-        is_callable_like = isinstance(origin, type) and issubclass(  # noqa: UP038
-            origin,
-            (collections.abc.Callable, Operation),  # type: ignore[arg-type]
-        )
-        if is_callable_like:
-            if len(args) != 2:
-                raise TypeError(
-                    f"type_to_ast: Callable-like type {typ} must have exactly 2 args, got {len(args)}"
+    for stmt in generated.body:
+        if isinstance(stmt, ast.ImportFrom):
+            if stmt.module == "__future__":
+                raise ValueError(
+                    "generated code uses `from __future__ import ...`, which is "
+                    "illegal once spliced into a function body"
                 )
-            param_types, return_type = args
-            # Handle varargs: Callable[..., T] or ParamSpec: Callable[P, T]
-            params_ast: ast.expr
-            if param_types is ...:
-                params_ast = ast.Constant(value=...)
-            elif isinstance(param_types, typing.ParamSpec):
-                params_ast = type_to_ast(param_types)
-            elif isinstance(param_types, list | tuple):
-                params_ast = ast.List(
-                    elts=[type_to_ast(p) for p in param_types], ctx=ast.Load()
+            if any(alias.name == "*" for alias in stmt.names):
+                raise ValueError(
+                    "generated code uses a star import (`from ... import *`), which "
+                    "is illegal once spliced into a function body"
                 )
-            else:
-                raise TypeError(
-                    f"type_to_ast: Callable param_types must be list, tuple, ParamSpec, or ..., got {type(param_types)}"
-                )
-            return ast.Subscript(
-                value=origin_ast,
-                slice=ast.Tuple(
-                    elts=[params_ast, type_to_ast(return_type)], ctx=ast.Load()
-                ),
-                ctx=ast.Load(),
-            )
-
-        # Handle single type argument
-        if len(args) == 1:
-            return ast.Subscript(
-                value=origin_ast, slice=type_to_ast(args[0]), ctx=ast.Load()
-            )
-
-        # Handle multiple type arguments
-        return ast.Subscript(
-            value=origin_ast,
-            slice=ast.Tuple(elts=[type_to_ast(arg) for arg in args], ctx=ast.Load()),
-            ctx=ast.Load(),
-        )
-
-    raise TypeError(f"type_to_ast: unhandled type {typ}")
 
 
-# globals always present in python runtime, so we should not stub, or import for
-SKIPPED_GLOBALS = (
-    "__builtins__",
-    "__annotations__",
-    "__doc__",
-    "__file__",
-    "__loader__",
-    "__name__",
-    "__package__",
-    "__spec__",
-    "_frozen_importlib",
-)
-
-
-def collect_imports(ctx: Mapping[str, Any]) -> list[ast.stmt]:
-    """Collect module imports and symbol imports from context.
-
-    - Modules in context (e.g. ``import math``) produce ``import math``.
-    - Symbols from a module that is not in context (e.g. ``from typing import Any``
-      gives context ``{"Any": typing.Any}`` but no ``typing`` module) produce
-      ``from <module> import <name>`` or ``from <module> import <name> as <alias>``.
-    """
-    # (module_name, asname_in_context) for plain imports; asname is None when same as module_name
-    modules: set[tuple[str, str | None]] = set(
-        (k, None)
-        for k in sys.modules.keys()
-        if k not in SKIPPED_GLOBALS and not k.startswith("_") and k[0].isalpha()
-    )
-    # module -> list of (name_in_module, name_in_context) for from-imports
-    symbol_imports: dict[str, list[tuple[str, str]]] = {}
-
-    for name_in_ctx, value in ctx.items():
-        if name_in_ctx.startswith("@") or name_in_ctx in SKIPPED_GLOBALS:
-            # pytest adds @pytest_ar, @py_builtins, etc into the context, we skip
-            continue
-
-        if isinstance(value, types.ModuleType):
-            mod_name = value.__name__
-            asname = name_in_ctx if name_in_ctx != mod_name else None
-            modules.add((mod_name, asname))
-            continue
-        module = getattr(value, "__module__", None)
-        if module in (None, "", "__main__", "builtins"):
-            continue
-        if not isinstance(module, str):
-            continue
-        if isinstance(value, type) and _is_runtime_only_type(value):
-            continue
-        # module not in runtime context
-        if not sys.modules.get(module):
-            continue
-        name_in_module = getattr(value, "__name__", name_in_ctx)
-        if not hasattr(sys.modules[module], name_in_module):
-            continue
-        modules.add((module, None))
-        symbol_imports.setdefault(module, []).append((name_in_module, name_in_ctx))
-
-    stmts: list[ast.stmt] = []
-    # Module imports: list of (module_name, asname_in_context)
-    module_pairs = sorted((m, asname or "") for m, asname in modules)
-    if module_pairs:
-        stmts.append(
-            ast.Import(
-                names=[
-                    ast.alias(name=m, asname=asname or None)
-                    for m, asname in module_pairs
-                ]
-            )
-        )
-    for module in sorted(symbol_imports):
-        names = [
-            ast.alias(
-                name=name_in_module,
-                asname=name_in_ctx if name_in_ctx != name_in_module else None,
-            )
-            for name_in_module, name_in_ctx in sorted(
-                symbol_imports[module], key=lambda t: (t[0], t[1])
-            )
-        ]
-        stmts.append(ast.ImportFrom(module=module, names=names, level=0))
-    return stmts
-
-
-def collect_variable_declarations(ctx: Mapping[str, Any]) -> list[ast.stmt]:
-    """Generate variable declarations with type annotations from context.
-
-    For each variable, calls nested_type(value).value to get the type,
-    then type_to_ast to convert to AST.
-    """
-    nodes: list[ast.stmt] = []
-
-    for name, value in sorted(ctx.items()):
-        if name in SKIPPED_GLOBALS:
-            continue
-        # Skip modules (handled by collect_imports)
-        if isinstance(value, types.ModuleType):
-            continue
-
-        # Skip types (classes) - they don't need variable declarations
-        if isinstance(value, type):
-            continue
-
-        # skip values that can be imported from
-        # somewhere, mypy can just use the imports
-        if (
-            hasattr(value, "__qualname__")
-            and hasattr(value, "__module__")
-            and "<locals>" not in value.__qualname__
-            and value.__module__ != "__main__"
-        ):
-            continue
-
-        try:
-            inferred_type = nested_type(value).value
-            type_ast = type_to_ast(inferred_type)
-        except (TypeError, AttributeError):
-            # Use Any for values we can't infer
-            type_ast = type_to_ast(typing.Any)
-
-        ann_assign = ast.AnnAssign(
-            target=ast.Name(id=name, ctx=ast.Store()),
-            annotation=type_ast,
-            value=None,
-            simple=1,
-        )
-        nodes.append(ann_assign)
-
-    return nodes
-
-
-def _is_runtime_only_type(typ: type) -> bool:
-    """Check if a type is runtime-only (can't be imported)."""
-    return typ.__module__ == "__main__" or "<locals>" in typ.__qualname__
-
-
-def signature_to_ast(name: str, sig: inspect.Signature) -> ast.FunctionDef:
-    """Convert an inspect.Signature to an AST function definition stub."""
-    # Build arguments
-    args_list: list[ast.arg] = []
-    for param_name, param in sig.parameters.items():
-        annotation: ast.expr | None = None
-        if param.annotation is not inspect.Parameter.empty:
-            try:
-                annotation = type_to_ast(param.annotation)
-            except TypeError:
-                annotation = type_to_ast(typing.Any)
-        args_list.append(ast.arg(arg=param_name, annotation=annotation))
-
-    # Build return annotation
-    returns: ast.expr | None = None
-    if (
-        sig.return_annotation is not inspect.Signature.empty and name != "__init__"
-    ):  # mypy complains that __init__ must not return anything
-        try:
-            returns = type_to_ast(sig.return_annotation)
-        except TypeError:
-            returns = type_to_ast(typing.Any)
-
-    node = ast.FunctionDef(
-        name=name,
-        args=ast.arguments(
-            posonlyargs=[],
-            args=args_list,
-            vararg=None,
-            kwonlyargs=[],
-            kw_defaults=[],
-            kwarg=None,
-            defaults=[],
-        ),
-        body=[
-            ast.Raise(
-                exc=ast.Call(
-                    func=ast.Name(id="NotImplementedError", ctx=ast.Load()),
-                    args=[],
-                    keywords=[],
-                ),
-                cause=None,
-            )
-        ],
-        decorator_list=[],
-        returns=returns,
-        type_params=[],
-    )
-    return ast.fix_missing_locations(node)
-
-
-def collect_runtime_type_stubs(ctx: Mapping[str, Any]) -> list[ast.stmt]:
-    """Generate class stubs for runtime-only types.
-
-    For types defined at runtime (in __main__ or local scopes), generates
-    class definitions with proper inheritance, typed attributes, and method stubs.
-    """
-    nodes: list[ast.stmt] = []
-
-    for name, value in sorted(ctx.items()):
-        # Only process types (classes)
-        if not isinstance(value, type):
-            continue
-
-        # Only process runtime-only types
-        if not _is_runtime_only_type(value):
-            continue
-
-        # Build base classes (use __orig_bases__ to preserve generic params)
-        bases: list[ast.expr] = []
-        orig_bases = getattr(value, "__orig_bases__", value.__bases__)
-        for base in orig_bases:
-            if base is object:
-                continue
-            try:
-                bases.append(type_to_ast(base))
-            except TypeError:
-                pass
-
-        # Build class body
-        body: list[ast.stmt] = []
-
-        # Add typed attributes from __annotations__
-        annotations = getattr(value, "__annotations__", {})
-        for attr_name, attr_type in annotations.items():
-            try:
-                type_ast = type_to_ast(attr_type)
-            except TypeError:
-                type_ast = type_to_ast(typing.Any)
-            body.append(
-                ast.AnnAssign(
-                    target=ast.Name(id=attr_name, ctx=ast.Store()),
-                    annotation=type_ast,
-                    value=None,
-                    simple=1,
-                )
-            )
-
-        # Add method stubs
-        for method_name in dir(value):
-            attr = getattr(value, method_name, None)
-            if attr is None:
-                continue
-            if not isinstance(attr, types.FunctionType):
-                continue
-            try:
-                sig = inspect.signature(attr)
-            except (ValueError, TypeError):
-                continue
-            method_ast = signature_to_ast(method_name, sig)
-            body.append(method_ast)
-
-        # Use ellipsis if body is empty
-        if not body:
-            body = [ast.Expr(value=ast.Constant(value=...))]
-
-        class_def = ast.ClassDef(
-            name=name,
-            bases=bases,
-            keywords=[],
-            body=body,
-            decorator_list=[],
-            type_params=[],
-        )
-        nodes.append(class_def)
-
-    return nodes
-
-
-def _generate_unique_name(existing_names: set[str]) -> str:
-    """Generate a random valid Python identifier that is not in existing_names.
-
-    Produces names like ``_synth_a3f7b2`` that are valid identifiers,
-    not Python keywords, and not in the given set of existing names.
-    """
-    while True:
-        suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=8))
-        candidate = f"_synth_{suffix}"
-        if (
-            candidate not in existing_names
-            and candidate.isidentifier()
-            and not keyword.iskeyword(candidate)
-        ):
-            return candidate
-
-
-class _RenameTransformer(ast.NodeTransformer):
-    """Rename function definitions and their references in a module AST.
-
-    Given a mapping ``{old_name: new_name}``, renames:
-    - ``FunctionDef.name`` for matching definitions
-    - ``ast.Name.id`` references throughout the entire AST
-
-    The rename is applied uniformly because it only targets module-level
-    function definitions that collide with context variable declarations.
-    Local assignments inside function bodies are in their own scope and
-    cannot cause the mypy ``[no-redef]`` error, so they need no special
-    handling.
-    """
-
-    def __init__(self, rename_map: dict[str, str]):
-        self.rename_map = rename_map
-
-    def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef:
-        if node.name in self.rename_map:
-            node.name = self.rename_map[node.name]
-        self.generic_visit(node)
-        return node
-
-    visit_AsyncFunctionDef = visit_FunctionDef  # type: ignore[assignment]
-
-    def visit_Name(self, node: ast.Name) -> ast.Name:
-        if node.id in self.rename_map:
-            node.id = self.rename_map[node.id]
-        return node
-
-
-def mypy_type_check(
+def _def_nodes(
     module: ast.Module,
-    ctx: typing.Mapping[str, Any],
-    expected_params: list[type] | None,
-    expected_return: type,
-) -> None:
-    """Type-check a module with mypy against expected signature and context.
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """All function definitions in ``module``, in a stable order that an
+    ``ast.unparse`` -> ``ast.parse`` round-trip preserves (so a def keeps its
+    index across it)."""
+    return [
+        n
+        for n in ast.walk(module)
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
 
-    Builds a stub module from ctx (imports, runtime type stubs, variable declarations),
-    appends the module body, then a postlude that assigns the last function to a
-    variable annotated with Callable[expected_params, expected_return]. Runs mypy
-    on the combined source; raises TypeError with the mypy report on failure.
 
-    If the synthesized function name clashes with a name already in the context,
-    the function is renamed to a unique random identifier for type-checking only.
+def _find_def_at_lineno(
+    module: ast.Module, lineno: int
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Locate the function definition whose definition site is ``lineno``.
+
+    Matches ``fn.__code__.co_firstlineno`` -- the first decorator line, or the
+    ``def`` line when undecorated -- which identifies the def directly and
+    unambiguously (no name matching, and nesting-agnostic). Returns None only if
+    no def starts there: a dynamically generated ``fn`` with no source def, or
+    source that has drifted since import.
     """
-    if not module.body:
-        raise TypeError("mypy_type_check: module.body is empty")
-    last = module.body[-1]
-    if not isinstance(last, ast.FunctionDef):
+    for node in _def_nodes(module):
+        start = node.decorator_list[0].lineno if node.decorator_list else node.lineno
+        if start == lineno:
+            return node
+    return None
+
+
+def _region_errors(stdout: str, lo: int | None, hi: int | None) -> list[dict[str, Any]]:
+    """mypy ``--output=json`` diagnostics of severity ``error`` whose reported
+    line falls within ``[lo, hi]`` -- the spliced region. An open bound (``None``)
+    is unbounded on that side, so ``lo=hi=None`` reports every error.
+
+    ``--output=json`` emits one JSON object per diagnostic carrying mypy's own
+    ``severity`` and ``line`` fields, so we filter on those directly rather than
+    parsing (and risking mis-parsing) its human-readable format.  Only reached
+    for exit status < 2; a fatal status emits text, not JSON, and is handled by
+    the caller before this runs.
+    """
+    errors: list[dict[str, Any]] = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        diag = json.loads(line)
+        if diag["severity"] != "error":
+            continue
+        if (lo is None or lo <= diag["line"]) and (hi is None or diag["line"] <= hi):
+            errors.append(diag)
+    return errors
+
+
+def splice_into_source(
+    generated: ast.Module, anchor: Any
+) -> tuple[str, int, int] | None:
+    """Splice `generated` into the anchor Template's own function body, in its real
+    module source.
+
+    Returns the modified module source and the ``[lo, hi]`` line span of the
+    spliced body within it, or ``None`` when the anchor's source can't be recovered
+    (the caller skips rather than guesses). Raises ``RuntimeError`` if the source is
+    recovered but the anchor's def can't be located in it (source drift) -- a real
+    error, not a silent pass.
+
+    The generated function -- and any helpers it defines alongside -- becomes the
+    body of the Template's own function at its real (possibly nested) position, so
+    the generated code is checked in its real lexical scope with no synthesized
+    type stubs.
+    """
+    if not generated.body:
+        raise TypeError("splice: generated module is empty")
+    last = generated.body[-1]
+    if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
         raise TypeError(
-            f"mypy_type_check: last statement must be a function definition, "
+            f"splice: last statement must be a function definition, "
             f"got {type(last).__name__}"
         )
-    func_name = last.name
+    target_name = last.name
 
-    imports = collect_imports(ctx)
-    # Ensure annotations in the postlude can be resolved (e.g. collections.abc.Callable, typing)
-    baseline_imports: list[ast.stmt] = [
-        ast.Import(names=[ast.alias(name="collections", asname=None)]),
-        ast.Import(names=[ast.alias(name="collections.abc", asname=None)]),
-        ast.Import(names=[ast.alias(name="typing", asname=None)]),
-        ast.Import(names=[ast.alias(name="types", asname=None)]),
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+
+    # Splice in place: replace the body with the generated body and bind the
+    # target against the (source) return annotation via `return`. Decorators are
+    # left untouched -- mypy checks a function's body against its declared return
+    # type regardless of decorators (even an unresolvable / `Any` one), and the
+    # decorator application itself doesn't spuriously fail, so touching the
+    # surrounding source as little as possible keeps the splice robust.
+    template_def.body = [
+        *generated.body,
+        ast.Return(ast.Name(target_name, ast.Load())),
     ]
-    stubs = collect_runtime_type_stubs(ctx)
-    variables = collect_variable_declarations(ctx)
 
-    # Collect names already declared in the type-checking preamble
-    # (variable declarations and class stubs) that could collide with
-    # function definitions in the synthesized module.
-    declared_names = {
-        stmt.target.id
-        for stmt in variables
-        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name)
-    } | {stmt.name for stmt in stubs if isinstance(stmt, ast.ClassDef)}
+    # mypy reports line numbers in the coordinates of `checked_source`, so we need
+    # the spliced *body's* span there. ast.unparse reassigns line numbers but
+    # preserves def order, so the def keeps its index in walk order -- take the def
+    # at that same index in the re-parsed source.
+    #
+    # The region is the body (the generated code) only, NOT the def header: the
+    # signature and decorators are the Template author's own pre-existing source,
+    # which we must not attribute to synthesis. This matters for templates whose
+    # module source can't be fully recovered -- notably notebook/REPL cells, which
+    # share a runtime namespace but whose recovered source is a single cell missing
+    # the other cells' imports, so the signature's own annotations (e.g. `Literal`,
+    # `Callable`) look undefined to mypy. Flagging only the body keeps those
+    # spurious signature-line diagnostics out of the gate.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
+    hi = spliced.end_lineno or lo
+    return checked_source, lo, hi
 
-    # Find all function names in the synthesized module that collide
-    synthesized_func_names = {
-        stmt.name
-        for stmt in module.body
-        if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
-    colliding_names = synthesized_func_names & declared_names
 
-    if colliding_names:
-        # Build a rename map for every colliding function name
-        all_reserved = declared_names | synthesized_func_names
-        rename_map: dict[str, str] = {}
-        for name in colliding_names:
-            unique = _generate_unique_name(all_reserved)
-            rename_map[name] = unique
-            all_reserved.add(unique)
+def _recover_template_def(
+    anchor: Any,
+) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """Locate the anchor Template's own ``def`` in its real module source.
 
-        # Deep-copy the module body so we don't mutate the caller's AST,
-        # then rename definitions and all references to them.
-        module_body = copy.deepcopy(list(module.body))
-        stub_module_body = ast.Module(body=module_body, type_ignores=[])
-        _RenameTransformer(rename_map).visit(stub_module_body)
-        module_body = stub_module_body.body
-        tc_func_name = rename_map.get(func_name, func_name)
-    else:
-        module_body = list(module.body)
-        tc_func_name = func_name
+    Returns the parsed module AST and the def node, or ``None`` when the source can't
+    be recovered (REPL/exec/notebook Template with no linecache entry -- the caller
+    skips rather than guesses). Raises ``RuntimeError`` on source drift (source
+    recovered but the def no longer sits where ``fn`` was compiled from).
+    """
+    fn = inspect.unwrap(anchor)  # staticmethod/classmethod -> underlying function
+    # Recover the module source via fn's own filename -- a real path or a
+    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
+    # notebook templates; linecache.getlines reads real files from disk too.
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except TypeError:
+        source_file = None
+    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    if not module_source:
+        logger.warning("skipping type check: cannot recover source for %r", fn)
+        return None
+    module_ast = ast.parse(module_source)
+    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
+    if template_def is None:
+        raise RuntimeError(
+            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
+            f"source (source drifted since import?)"
+        )
+    return module_ast, template_def
 
-    param_types = expected_params
-    expected_callable_type: type = typing.cast(
-        type,
-        collections.abc.Callable[param_types, expected_return]
-        if expected_params is not None
-        else collections.abc.Callable[..., expected_return],
-    )
 
-    expected_callable_ast = type_to_ast(expected_callable_type)
-    postlude = ast.AnnAssign(
-        target=ast.Name(id="_synthesized_check", ctx=ast.Store()),
-        annotation=expected_callable_ast,
-        value=ast.Name(id=tc_func_name, ctx=ast.Load()),
-        simple=1,
-    )
-    full_body = (
-        baseline_imports
-        + list(imports)
-        + list(stubs)
-        + list(variables)
-        + module_body
-        + [postlude]
-    )
-    stub_module = ast.Module(body=full_body, type_ignores=[])
-    source = ast.unparse(ast.fix_missing_locations(stub_module))
-    # Drop unused imports/vars
+def _splice_repl(
+    prior: list[str], snippet: str, anchor: Any
+) -> tuple[str, int, int] | None:
+    """Splice the cumulative REPL code -- ``prior`` snippets followed by the current
+    ``snippet`` -- into the anchor Template's body, in its real module source, and return
+    the modified source with the ``[lo, hi]`` line span of the *current* snippet.
 
-    source = autoflake.fix_code(
-        source,
-        additional_imports=None,
-        expand_star_imports=True,
-        remove_all_unused_imports=True,
-        remove_duplicate_keys=True,
-        remove_unused_variables=True,
-    )
+    The REPL code becomes the Template function's body at its real (possibly nested)
+    position, so the Template's parameters and enclosing scope -- i.e. the session's seed
+    env -- are in scope, and each snippet sees the ones before it (they are function
+    locals). No ``return`` is appended; the REPL code doesn't produce the Template's
+    declared type, and that contract is waived by ``lenient`` type checking. Every prior
+    snippet stays in the body so its bindings resolve (matching the runtime, which ran
+    them), but only the current snippet's lines are reported, so an earlier cell's error
+    isn't re-reported on every later call.
 
-    stdout, stderr, status = mypy_api.run(
+    Returns ``None`` when the current snippet has no statements to check, or when the
+    Template's source can't be recovered -- a Template defined at a REPL, in a notebook, or
+    via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
+    as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
+    only on source *drift* (source recovered but the def no longer sits where it was
+    compiled from), which ``_recover_template_def`` surfaces.
+    """
+    # An empty or comment-only snippet parses to zero statements: nothing to check.
+    n_current = len(ast.parse(snippet).body)
+    if n_current == 0:
+        return None
+    # None means the Template's source can't be recovered (REPL/exec/notebook-defined) --
+    # skip, like the Callable path, rather than break the tool; `_recover_template_def`
+    # raises on source drift, which is a real error and propagates.
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+    cumulative = "".join(s if s.endswith("\n") else s + "\n" for s in [*prior, snippet])
+    template_def.body = ast.parse(cumulative).body
+
+    # mypy reports line numbers in the coordinates of the unparsed source; the current
+    # snippet is the last `n_current` statements of the spliced body. ast.unparse keeps def
+    # order, so the template def is at the same walk index after the round-trip.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.body[-n_current].lineno
+    hi = spliced.body[-1].end_lineno or lo
+    return checked_source, lo, hi
+
+
+def _mypy_check_region(
+    source: str,
+    lo: int | None = None,
+    hi: int | None = None,
+    lenient: bool = False,
+) -> None:
+    """Run mypy on `source` and raise ``TypeError`` if any error diagnostic falls
+    within ``[lo, hi]``; raise ``RuntimeError`` if mypy itself fails to run.
+
+    Applies mypy to whatever source it's given -- spliced or otherwise -- and
+    reports only the region's errors (the whole source when the region is
+    omitted), so pre-existing errors elsewhere in `source` never block synthesis.
+
+    When ``lenient`` (for REPL code spliced into a Template body): allow a variable to be
+    redefined with a new type across cells (``--allow-redefinition``), a def/class/import
+    to be redefined (``no-redef``), and the body not to return the Template's declared type
+    (``return``/``empty-body``). All normal for an incrementally-built REPL, not real errors.
+    """
+    lenient_flags = (
         [
-            "--command",
-            source,
-            "--no-error-summary",
-            "--no-pretty",
-            "--ignore-missing-imports",
-            "--disable-error-code=import-untyped",
+            "--allow-redefinition",
+            "--disable-error-code=no-redef",
+            "--disable-error-code=return",
+            "--disable-error-code=empty-body",
         ]
+        if lenient
+        else []
     )
-    if status != 0:
-        report = (stdout or "") + (stderr or "")
-        raise TypeError(f"mypy type check failed:\n{report}\n{source}")
-    return None
+    # Run mypy as a subprocess, not the in-process `mypy.api.run`: the API builds
+    # typeshed and a full module graph inside this process and never returns that
+    # memory, so under a test/agent session doing many checks it accumulates to many
+    # GB (OOM). A subprocess reclaims all of it on exit. Pass a file (not --command:
+    # it hits an argv length limit on large modules); each call gets an isolated temp
+    # dir + cache so parallel decodes don't share -- and deadlock on -- mypy's cache.
+    tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
+    try:
+        tf_path = os.path.join(tmpdir, "_synthesized.py")
+        with open(tf_path, "w", encoding="utf-8") as f:
+            f.write(source)
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "mypy",
+                tf_path,
+                "--cache-dir",
+                os.path.join(tmpdir, "cache"),
+                "--no-error-summary",
+                "--output=json",
+                "--ignore-missing-imports",
+                "--disable-error-code=import-untyped",
+                *lenient_flags,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        stdout, stderr, status = proc.stdout, proc.stderr, proc.returncode
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
+    # tool failure, not a type error -- and it emits text rather than JSON, so
+    # raise `RuntimeError` rather than parse or silently pass.
+    if status >= 2:
+        raise RuntimeError(
+            f"mypy could not check the source:\n{(stdout or '') + (stderr or '')}"
+        )
+    errors = _region_errors(stdout or "", lo, hi)
+    if errors:
+        # Not the source: it's large and the model already has the generated code.
+        report = "\n".join(json.dumps(e) for e in errors)
+        raise TypeError("mypy type check failed:\n" + report)
 
 
 # Eval Providers
@@ -682,12 +420,13 @@ class UnsafeEvalProvider(ObjectInterpretation):
     @implements(type_check)
     def type_check(
         self,
-        module: ast.Module,
-        ctx: typing.Mapping[str, Any],
-        expected_params: list[type] | None,
-        expected_return: type,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        mypy_type_check(module, ctx, expected_params, expected_return)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -719,6 +458,16 @@ class UnsafeEvalProvider(ObjectInterpretation):
         builtins.exec(bytecode, env, env)
 
 
+class _StdoutPrintCollector(PrintCollector):
+    """`_print_` factory whose `print(...)` writes to the real `sys.stdout`
+    (so output-capturing callers see it) rather than accumulating into the
+    collector's discarded `printed` buffer."""
+
+    def _call_print(self, *objects, **kwargs):
+        kwargs.setdefault("file", sys.stdout)
+        builtins.print(*objects, **kwargs)
+
+
 class RestrictedEvalProvider(ObjectInterpretation):
     """
     Safer provider using RestrictedPython.
@@ -742,12 +491,13 @@ class RestrictedEvalProvider(ObjectInterpretation):
     @implements(type_check)
     def type_check(
         self,
-        module: ast.Module,
-        ctx: typing.Mapping[str, Any],
-        expected_params: list[type] | None,
-        expected_return: type,
+        source: str,
+        lo: int | None = None,
+        hi: int | None = None,
+        *,
+        lenient: bool = False,
     ) -> None:
-        mypy_type_check(module, ctx, expected_params, expected_return)
+        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
@@ -795,12 +545,161 @@ class RestrictedEvalProvider(ObjectInterpretation):
         rglobals["setattr"] = Guards.guarded_setattr
         rglobals["_write_"] = lambda x: x
 
-        # Track keys before execution to identify new definitions
-        keys_before = set(rglobals.keys())
+        # RestrictedPython rewrites `print(...)` into its `_print_` collector
+        # protocol; route it to the real stdout so output-capturing callers
+        # (e.g. redirect_stdout) see it instead of a discarded collector.
+        rglobals["_print_"] = _StdoutPrintCollector
 
+        # Snapshot value identities before execution so we can copy back every
+        # *binding effect* — both new names and rebindings of seeded names.
+        before = dict(rglobals)
         builtins.exec(bytecode, rglobals, rglobals)
 
-        # Copy newly defined items back to env so caller can access them
-        for key in rglobals:
-            if key not in keys_before:
-                env[key] = rglobals[key]
+        sentinel = object()
+        env.update(
+            {
+                key: value
+                for key, value in rglobals.items()
+                if key != "__builtins__" and before.get(key, sentinel) is not value
+            }
+        )
+
+
+class _OpCommandCompiler(codeop.CommandCompiler):
+    """A `codeop.CommandCompiler` that routes compilation through the
+    `parse`/`compile` effect operations (so the installed eval provider owns it
+    and `parse` populates `linecache`), replacing the native single-mode
+    compiler that `code.InteractiveInterpreter` installs.
+    """
+
+    def __call__(
+        self, source: str, filename: str = "<input>", symbol: str = "single"
+    ) -> CodeType:
+        # `runsource` passes symbol="single"; we ignore it and compile in the
+        # exec mode the ops produce, so a complete multi-statement block runs in
+        # one shot.  Incomplete/invalid input raises SyntaxError, which
+        # `runsource` routes to `showsyntaxerror` (we do not buffer partial input
+        # -- there is no line-at-a-time protocol).
+        return compile(parse(source, filename), filename)
+
+
+class ReplSession(code.InteractiveInterpreter):
+    """A persistent, output-capturing Python session seeded from a lexical
+    context.
+
+    `exec_code(source)` runs a pre-compiled code object in `self.locals` through
+    the `exec` effect operation.  Both bindings and captured stdout/stderr
+    persist across calls -- variables, imports and definitions accumulate exactly
+    like a REPL -- and the session (with its buffer) is discarded as a whole when
+    it goes out of scope.  Each call returns only the output it produced; a
+    snippet that raises has its traceback appended to that output rather than
+    propagating -- mirroring `code.InteractiveInterpreter`, only `SystemExit`
+    propagates -- so failures are surfaced as text.  There is no bare-expression
+    auto-echo, so use `print()` to surface values.
+
+    Compilation -- and therefore syntax checking -- happens earlier, at the
+    `Encodable[CodeType]` boundary; this session only executes.
+    """
+
+    # The session's captured output, accumulated across calls and exposed for
+    # introspection.  stdout (`print` output) and stderr (writes plus tracebacks)
+    # are kept separate; `exec_code` returns each call's slice of both.
+    stdout: io.StringIO
+    stderr: io.StringIO
+
+    def __init__(self, env: MutableMapping[str, Any]):
+        # Run in a fresh writable dict seeded with a flat view of `env`.  This is
+        # forced by `exec`: its globals must be one real dict (a ChainMap is
+        # rejected), and a REPL needs a single persistent namespace so a function
+        # defined in one snippet sees a name a later snippet binds.  Seeding a flat
+        # copy also leaves the lexical seed untouched, so REPL assignments never
+        # leak into the surrounding scope.
+        scope: dict[str, Any] = dict(env)
+        # When `env` is the per-call `ChainMap` (its outer layers are read-only
+        # frame proxies), splice this dict in as an extra shadowing first layer so
+        # the bindings are *also* visible to the rest of the Template call
+        # (mirroring `exec`) -- still scoped to the call, since that ChainMap is.
+        if isinstance(env, collections.ChainMap):
+            env.maps.insert(0, scope)
+        # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
+        # the base's runcode/showtraceback/write machinery.
+        super().__init__(scope)
+        # Route `runsource`'s compilation through the `parse`/`compile` ops too, so
+        # it stays consistent with our `runcode` (which execs through the `exec`
+        # op) rather than the native single-mode compiler the base installed.
+        self.compile = _OpCommandCompiler()
+        self.stdout = io.StringIO()
+        self.stderr = io.StringIO()
+        self._prior_snippets: list[str] = []
+
+    @property
+    def prior_snippets(self) -> list[str]:
+        """Sources of the actual error-free executed snippets, in order -- the type-check
+        context the `Encodable[CodeType]` decoder splices before the current snippet."""
+        return self._prior_snippets
+
+    def runcode(self, code: CodeType) -> None:
+        # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
+        # is that `exec` here is the effect operation, so execution routes
+        # through the installed eval provider.  `showtraceback` reports failures
+        # via `self.write`, which `exec_code` has redirected into `self.stderr`.
+        try:
+            exec(code, self.locals)
+        except SystemExit:
+            raise
+        except:
+            self.showtraceback()
+
+    @Tool.define
+    def exec_code(self, code: CodeType) -> str:
+        """Run Python in a persistent, stateful session and return its output.
+
+        This is a long-lived REPL, not a one-shot sandbox: every call runs in the
+        SAME namespace, so names you bind in one call stay available in later
+        calls within the same task.  Imports, function/class definitions and
+        variable assignments all accumulate during the session of this template.
+        The namespace starts seeded with the in-scope variables of the surrounding context, which you may read and
+        rebind.
+
+        Output: returns this call's output -- its stdout (what `print` wrote)
+        followed by its stderr (which includes the traceback if the code raised).
+        There is NO automatic echoing of results -- a bare expression on its own
+        line (e.g. `1 + 1`) displays nothing, so call `print(...)` for anything
+        you want to see.  A snippet that raises has its traceback returned and the
+        session survives, so you can read the error and continue in the next call
+        (only `SystemExit` aborts).
+
+        Provide `code` as a string of Python source.  It must be a complete,
+        compilable snippet -- incomplete or invalid source is rejected before it
+        runs.
+        """
+        out_start = self.stdout.tell()
+        err_start = self.stderr.tell()
+        # Record this snippet's source so the *next* snippet's decode-time type check can
+        # splice the accumulated session code into the Template body. The type check itself
+        # lives in the `Encodable[CodeType]` decoder (as it does for synthesized Callables),
+        # not here -- this session only runs code.
+        self._prior_snippets.append("".join(linecache.getlines(code.co_filename)))
+        with (
+            contextlib.redirect_stdout(self.stdout),
+            contextlib.redirect_stderr(self.stderr),
+        ):
+            self.runcode(code)
+        return self.stdout.getvalue()[out_start:] + self.stderr.getvalue()[err_start:]
+
+
+@Operation.define
+def _repl_session(env: MutableMapping[str, Any]) -> "ReplSession":
+    """Return the REPL session for the current Template call, seeded from `env`.
+
+    `PythonRepl` (in completions.py) installs a fresh handler for this inside each
+    `Template.__apply__` (mirroring how `__history__` is managed), giving the session a
+    lifetime of exactly one Template call. Outside such a scope there is no managed
+    session, so this falls back to a fresh one -- e.g. when tools are listed outside a
+    Template call, or when a code object is decoded with no REPL in scope.
+
+    Defined here (not with `PythonRepl`) so the `Encodable[CodeType]` decoder can reach the
+    session -- and its accumulated `prior_snippets` -- at decode time without importing
+    `completions` (which would be a cycle).
+    """
+    return ReplSession(env)

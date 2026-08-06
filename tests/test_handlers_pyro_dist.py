@@ -29,27 +29,6 @@ def setup_module():
     torch.distributions.Distribution.set_default_validate_args(False)
 
 
-TEST_CASES = []
-
-
-def random_scale_tril(*args):
-    if isinstance(args[0], tuple):
-        assert len(args) == 1
-        shape = args[0]
-    else:
-        shape = args
-
-    data = torch.randn(shape)
-    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
-
-
-def from_indexed(tensor, batch_dims):
-    tensor_sizes = sizesof(tensor)
-    indices = [name_to_sym(str(i)) for i in range(batch_dims)]
-    indices = [i for i in indices if i in tensor_sizes]
-    return bind_dims(tensor, *indices)
-
-
 class DistTestCase:
     raw_dist: str
     params: dict[str, torch.Tensor]
@@ -102,6 +81,27 @@ class DistTestCase:
 
     def __repr__(self):
         return f"{self.raw_dist} {self.batch_shape} {self.kind}"
+
+
+TEST_CASES: list[DistTestCase] = []
+
+
+def random_scale_tril(*args):
+    if isinstance(args[0], tuple):
+        assert len(args) == 1
+        shape = args[0]
+    else:
+        shape = args
+
+    data = torch.randn(shape)
+    return dist.transforms.transform_to(dist.constraints.lower_cholesky)(data)
+
+
+def from_indexed(tensor, batch_dims):
+    tensor_sizes = sizesof(tensor)
+    indices = [name_to_sym(str(i)) for i in range(batch_dims)]
+    indices = [i for i in indices if i in tensor_sizes]
+    return bind_dims(tensor, *indices)
 
 
 def full_indexed_test_case(

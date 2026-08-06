@@ -5,10 +5,20 @@ import functools
 import operator
 import types
 import typing
+import weakref
 from collections.abc import Callable
 from typing import Any
 
-from effectful.ops.syntax import _CustomSingleDispatchCallable, defdata, defop
+from effectful.ops.syntax import (
+    ConstructorOperation,
+    DataclassConstructorOperation,
+    ObjectInterpretation,
+    PureInterpretation,
+    _BaseTerm,
+    _CustomSingleDispatchCallable,
+    defop,
+    implements,
+)
 from effectful.ops.types import (
     Expr,
     Interpretation,
@@ -89,76 +99,18 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
 
     res = dict(intp)
     for op, i2 in intp2.items():
-        if op is fwd or op is _get_args:
+        if op in {fwd, _get_args}:
             res[op] = i2  # fast path for special cases, should be equivalent if removed
         else:
-            i1 = intp.get(op, op.__default_rule__)
-
             # calling fwd in the right handler should dispatch to the left handler
-            res[op] = _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+            i1 = intp.get(op)
+            res[op] = (
+                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+                if i1 is not None
+                else _save_args(i2)
+            )
 
     return res
-
-
-def product(intp: Interpretation, intp2: Interpretation) -> Interpretation:
-    """The product of two interpretations handles any effect that is handled by
-    ``intp2``. Handlers in ``intp2`` may override handlers in ``intp``, but
-    those changes are not visible to the handlers in ``intp``. In this way,
-    ``intp`` is isolated from ``intp2``.
-
-    **Example usage**:
-
-    In this example, ``i1`` has a ``param`` effect that defines some hyperparameter and
-    an effect ``f1`` that uses it. ``i2`` redefines ``param`` and uses it in a new effect
-    ``f2``, which calls ``f1``.
-
-    >>> param, f1, f2 = defop(int), defop(dict), defop(dict)
-    >>> i1 = {param: lambda: 1, f1: lambda: {'inner': param()}}
-    >>> i2 = {param: lambda: 2, f2: lambda: f1() | {'outer': param()}}
-
-    Using :func:`product`, ``i2``'s override of ``param`` is not visible to ``i1``.
-
-    >>> with handler(product(i1, i2)):
-    ...     print(f2())
-    {'inner': 1, 'outer': 2}
-
-    However, if we use :func:`coproduct`, ``i1`` is not isolated from ``i2``.
-
-    >>> with handler(coproduct(i1, i2)):
-    ...     print(f2())
-    {'inner': 2, 'outer': 2}
-
-    **References**
-
-    [1] Ahman, D., & Bauer, A. (2020, April). Runners in action. In European
-    Symposium on Programming (pp. 29-55). Cham: Springer International
-    Publishing.
-
-    """
-    if any(op in intp for op in intp2):  # alpha-rename
-        renaming: Interpretation = {op: defop(op) for op in intp2 if op in intp}
-        intp_fresh = {renaming.get(op, op): handler(renaming)(intp[op]) for op in intp}
-        return product(intp_fresh, intp2)
-    else:
-        refls2 = {op: op.__default_rule__ for op in intp2}
-        intp_ = coproduct({}, {op: runner(refls2)(intp[op]) for op in intp})
-        return {op: runner(intp_)(intp2[op]) for op in intp2}
-
-
-@contextlib.contextmanager
-def runner(intp: Interpretation):
-    """Install an interpretation by taking a product with the current
-    interpretation.
-
-    """
-    from effectful.internals.runtime import get_interpretation, interpreter
-
-    @interpreter(get_interpretation())
-    def _reapply[**P, S](op: Operation[P, S], *args: P.args, **kwargs: P.kwargs):
-        return op(*args, **kwargs)
-
-    with interpreter({apply: _reapply, **intp}):
-        yield intp
 
 
 @contextlib.contextmanager
@@ -171,6 +123,11 @@ def handler(intp: Interpretation):
 
     with interpreter(coproduct(get_interpretation(), intp)):
         yield intp
+
+
+@ConstructorOperation.define
+def as_tuple(*args) -> tuple:
+    return tuple(args)
 
 
 @_CustomSingleDispatchCallable
@@ -198,12 +155,19 @@ def evaluate[T](
     6
 
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import get_runtime, interpreter
 
-    if intp is not None:
-        return interpreter(intp)(evaluate)(expr)
-
-    return __dispatch(type(expr))(expr)
+    with interpreter(intp if intp is not None else get_runtime().interpretation):
+        cache = get_runtime().cache
+        assert cache is not None, "Cache should be initialized by interpreter"
+        key = id(expr)
+        if key in cache:
+            ref, result = cache[key]
+            if ref is expr:
+                return result
+        result = __dispatch(type(expr))(expr)
+        cache[key] = (expr, result)
+        return result
 
 
 @evaluate.register(object)
@@ -211,24 +175,59 @@ def evaluate[T](
 @evaluate.register(bytes)
 def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
-        return typing.cast(
-            T,
-            dataclasses.replace(
-                expr,
-                **{
-                    field.name: evaluate(getattr(expr, field.name))
-                    for field in dataclasses.fields(expr)
-                },
-            ),
-        )
+        return _evaluate_dataclass(expr, **kwargs)
     return expr
+
+
+def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
+    subst = {
+        field.name: evaluate(getattr(expr, field.name))
+        for field in dataclasses.fields(expr)  # type: ignore[arg-type]
+    }
+    return typing.cast(
+        T,
+        DataclassConstructorOperation.define(type(expr))(**subst),  # type: ignore[arg-type]
+    )
+
+
+_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
+
+
+def _term_cache(
+    expr: Term,
+) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
+    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
+    try:
+        return getattr(expr, _EVALUATION_CACHE_ATTR)
+    except AttributeError:
+        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
+            weakref.WeakKeyDictionary()
+        )
+        try:
+            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
+        except (AttributeError, TypeError):
+            return None
+        return cache
 
 
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
+    from effectful.internals.runtime import get_interpretation
+
+    current_intp = get_interpretation()
+    if isinstance(current_intp, PureInterpretation):
+        cache = _term_cache(expr)
+        if cache is not None and current_intp in cache:
+            return cache[current_intp]
+    else:
+        cache = None
+
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    return expr.op(*args, **kwargs)
+    result = expr.op(*args, **kwargs)
+    if cache is not None:
+        cache[current_intp] = result
+    return result
 
 
 @evaluate.register(Operation)
@@ -241,17 +240,24 @@ def _evaluate_operation(expr: Operation, **kwargs) -> Operation:
 
 @evaluate.register(collections.defaultdict)
 def _evaluate_defaultdict(expr, **kwargs):
-    return type(expr)(expr.default_factory, evaluate(tuple(expr.items())))
+    return ConstructorOperation.define(type(expr))(
+        expr.default_factory,
+        as_tuple(*(evaluate(item) for item in expr.items())),
+    )
 
 
 @evaluate.register(types.MappingProxyType)
 def _evaluate_mappingproxytype(expr, **kwargs):
-    return type(expr)(dict(evaluate(tuple(expr.items()))))
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr.items()))
+    )
 
 
 @evaluate.register(collections.abc.Mapping)
 def _evaluate_mapping(expr, **kwargs):
-    return type(expr)(evaluate(tuple(expr.items())))
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr.items()))
+    )
 
 
 @evaluate.register(tuple)
@@ -261,27 +267,35 @@ def _evaluate_tuple(expr, **kwargs):
         and hasattr(expr, "_fields")
         and all(hasattr(expr, field) for field in getattr(expr, "_fields"))
     ):  # namedtuple
-        return type(expr)(
+        return ConstructorOperation.define(type(expr))(
             **{field: evaluate(getattr(expr, field)) for field in expr._fields}
         )
     else:
-        return type(expr)(evaluate(item) for item in expr)
+        return ConstructorOperation.define(type(expr))(
+            as_tuple(*(evaluate(item) for item in expr))
+        )
 
 
 @evaluate.register(collections.abc.Sequence)
 def _evaluate_sequence(expr, **kwargs):
-    return type(expr)(evaluate(item) for item in expr)
+    return ConstructorOperation.define(type(expr))(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 @evaluate.register(collections.abc.ItemsView)
 @evaluate.register(collections.abc.KeysView)
 def _evaluate_set_view(expr, **kwargs):
-    return {evaluate(item) for item in expr}
+    return ConstructorOperation.define(set)(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 @evaluate.register(collections.abc.ValuesView)
 def _evaluate_list_view(expr, **kwargs):
-    return [evaluate(item) for item in expr]
+    return ConstructorOperation.define(list)(
+        as_tuple(*(evaluate(item) for item in expr))
+    )
 
 
 def _simple_type(tp: type) -> type:
@@ -306,6 +320,32 @@ def _simple_type(tp: type) -> type:
     return typing.get_origin(tp) or tp
 
 
+class _TypeofIntp(ObjectInterpretation):
+    @implements(apply)
+    def _apply(self, op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
+        return Box(op.__type_rule__(*args, **kwargs))
+
+    @implements(ConstructorOperation.__apply__)
+    def _constructor_apply(self, op, *args, **kwargs):
+        return op.__default_rule__(*args, **kwargs)
+
+    @implements(DataclassConstructorOperation.__apply__)
+    def _dataclass_constructor_apply(self, op, *args, **kwargs):
+        from effectful.internals.unification import Box
+
+        return Box(op.__type_rule__(*args, **kwargs))
+
+
+_TYPEOF_INTP = PureInterpretation(_TypeofIntp())
+
+
+def _typeof(term: Expr):
+    """Evaluate the cached type analysis without unwrapping its result."""
+    return evaluate(term, intp=_TYPEOF_INTP)
+
+
 def typeof[T](term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
@@ -328,45 +368,119 @@ def typeof[T](term: Expr[T]) -> type[T]:
     <class 'int'>
 
     """
-    from effectful.internals.runtime import interpreter
     from effectful.internals.unification import Box
 
-    def _apply(op, *args, **kwargs):
-        return Box(op.__type_rule__(*args, **kwargs))
+    type_or_value = _typeof(term)
+    if isinstance(type_or_value, Box):
+        return _simple_type(type_or_value.value)
+    return typing.cast(type[T], type(type_or_value))
 
-    with interpreter({apply: _apply}):
-        type_or_value = evaluate(term)
-        if isinstance(type_or_value, Box):
-            return _simple_type(type_or_value.value)
-        return typing.cast(type[T], type(type_or_value))
+
+@functools.cache
+def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
+    """Construct the singleton interpretation used by ``fvsof``."""
+    from effectful.internals.product_n import argsof, productN
+
+    def _apply_collection_binders(op, *args, **kwargs):
+        return frozenset().union(
+            *(
+                {x}
+                if isinstance(x, Operation)
+                else x
+                if isinstance(x, frozenset)
+                else set()
+                for x in (*args, *kwargs.values())
+            )
+        )
+
+    def _apply_binders(op, *args, **kwargs):
+        # Parent operations only need to know that this child is a term. Its
+        # arguments are available through argsof while this node is analyzed.
+        return _BaseTerm(op)
+
+    def _apply_passthrough_fvs(op, *args, **kwargs):
+        return frozenset().union(
+            *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
+        )
+
+    def _apply_fvs(op, *args, **kwargs):
+        binder_args, binder_kwargs = argsof(_fvsof_binders)
+        # This rule handles Operation.__apply__ directly, so its first argument
+        # is the operation being applied rather than an argument to that
+        # operation.
+        binder_args = tuple(
+            frozenset() if isinstance(x, Term) else x for x in binder_args[1:]
+        )
+        binder_kwargs = {
+            k: frozenset() if isinstance(v, Term) else v
+            for k, v in binder_kwargs.items()
+        }
+        bindings = op.__fvs_rule__(*binder_args, **binder_kwargs)
+        binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
+
+        fvs = frozenset().union(
+            {op},
+            *(
+                x if isinstance(x, frozenset) else frozenset()
+                for x in (*args, *kwargs.values())
+            ),
+        )
+        fvs -= binders
+        return fvs
+
+    _fvsof_fvs = defop(object, name="fvsof_fvs")
+    _fvsof_binders = defop(object, name="fvsof_binders")
+
+    return (
+        PureInterpretation(
+            productN(
+                {
+                    _fvsof_fvs: {
+                        apply: _apply_fvs,
+                        ConstructorOperation.__apply__: _apply_passthrough_fvs,
+                    },
+                    _fvsof_binders: {
+                        apply: _apply_binders,
+                        ConstructorOperation.__apply__: _apply_collection_binders,
+                    },
+                }
+            )
+        ),
+        _fvsof_fvs,
+    )
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
-    """Return the free variables of an expression.
+    """Return the free operations in a term.
+
+    An operation belongs to `fvsof(t)` when it appears free in the term `t`.
+    This excludes operations like `apply` or collection constructors that are
+    raised during `evaluate` but do not appear in `t`. It also excludes
+    operations that are bound by a `Scoped` operation. However, it is not
+    restricted to the nullary operations in `t`.
 
     **Example usage**:
 
+    `fvsof` includes all unbound operations in a term:
+
+    >>> a = defop(int)
     >>> @defop
     ... def f(x: int, y: int) -> int:
     ...     raise NotHandled
-    >>> fvs = fvsof(f(1, 2))
-    >>> assert f in fvs
-    >>> assert len(fvs) == 1
+    >>> fvs = fvsof(f(a(), 1))
+    >>> assert fvs >= {f, a}
+
+    `fvsof` accepts the same values as `evaluate`, including collections:
+
+    >>> fvs = fvsof([a(), {'k': f(0, 1)}])
+    >>> assert fvs >= {f, a}
+
     """
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.product_n import _unpack
 
-    _fvs: set[Operation] = set()
-
-    def _update_fvs(op, *args, **kwargs):
-        _fvs.add(op)
-        bindings = op.__fvs_rule__(*args, **kwargs)
-        for bound_var in set().union(*(*bindings.args, *bindings.kwargs.values())):
-            assert isinstance(bound_var, Operation)
-            if bound_var in _fvs:
-                _fvs.remove(bound_var)
-        return defdata(op, *args, **kwargs)
-
-    with interpreter({apply: _update_fvs}):
-        evaluate(term)
-
-    return _fvs
+    intp, prompt = _fvsof_intp()
+    result = evaluate(term, intp=intp)
+    fvs = _unpack(result, prompt)
+    if not isinstance(fvs, frozenset):
+        return frozenset()
+    return fvs

@@ -10,16 +10,22 @@ from typing import Annotated, Any, Literal, Union
 import pytest
 
 from effectful.ops.semantics import (
+    apply,
     coproduct,
     evaluate,
     fvsof,
     fwd,
     handler,
-    product,
-    runner,
     typeof,
 )
-from effectful.ops.syntax import ObjectInterpretation, Scoped, deffn, defop, implements
+from effectful.ops.syntax import (
+    ObjectInterpretation,
+    PureInterpretation,
+    Scoped,
+    deffn,
+    defop,
+    implements,
+)
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 logger = logging.getLogger(__name__)
@@ -207,7 +213,37 @@ def test_op_fail_nest_interpreter(op, args, n, depth):
             raise e
 
 
-def test_object_interpretation_inheretance():
+@pytest.mark.parametrize(
+    "make_intp",
+    [
+        pytest.param(
+            lambda f: coproduct(coproduct({}, {f: lambda x: x}), {f: lambda _: fwd()}),
+            id="right-assoc-empty-left",
+        ),
+        pytest.param(
+            lambda f: coproduct(coproduct({f: lambda x: x}, {}), {f: lambda _: fwd()}),
+            id="right-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda f: coproduct({f: lambda x: x}, coproduct({}, {f: lambda _: fwd()})),
+            id="left-assoc-empty-mid",
+        ),
+        pytest.param(
+            lambda f: coproduct({f: lambda x: x}, coproduct({f: lambda _: fwd()}, {})),
+            id="left-assoc-empty-right",
+        ),
+    ],
+)
+def test_coproduct_identity(make_intp) -> None:
+    @Operation.define
+    def f(x) -> int:
+        raise NotHandled
+
+    intp = make_intp(f)
+    assert handler(intp)(evaluate)(f(42)) == 42
+
+
+def test_object_interpretation_inheritance():
     @defop
     def op1():
         return "op1"
@@ -423,112 +459,6 @@ def test_fwd_default():
     with handler(coproduct({}, {do_stuff: do_more_stuff})):
         assert do_stuff() == "default stuff and more"
 
-    # ditto products
-    with handler(product({}, {do_stuff: do_more_stuff})):
-        assert do_stuff() == "default stuff and more"
-
-
-def test_product_resets_fwd():
-    @defop
-    def do_stuff():
-        raise NotHandled
-
-    @defop
-    def do_other_stuff():
-        return "other stuff"
-
-    h_outer = {
-        do_stuff: lambda: "default stuff",
-        do_other_stuff: lambda: fwd() + " and more " + do_stuff(),
-    }
-    h_inner = {do_stuff: lambda: "fancy " + do_other_stuff()}
-    h_topmost = {do_stuff: lambda: "should not be called"}
-
-    with handler(product(h_topmost, product(h_outer, h_inner))):
-        assert do_stuff() == "fancy other stuff and more default stuff"
-
-
-@defop
-def op0():
-    raise NotHandled
-
-
-@defop
-def op1():
-    raise NotHandled
-
-
-@defop
-def op2():
-    raise NotHandled
-
-
-def f_op2():
-    return op2()
-
-
-def test_product_alpha_equivalent():
-    h0 = {op0: lambda: (op1(), 0), op1: lambda: 2}
-    h1 = {op0: lambda: (op2(), 0), op2: lambda: 2}
-    h2 = {op2: lambda: (op0(), 2)}
-
-    h_lhs = product(h0, h2)
-    h_rhs = product(h1, h2)
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_associative():
-    h0 = {op0: lambda: 0}
-    h1 = {op1: lambda: (op0(), 1)}
-    h2 = {op2: lambda: (op1(), 2)}
-
-    h_lhs = product(h0, product(h1, h2))
-    h_rhs = product(product(h0, h1), h2)
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_commute_orthogonal():
-    h0 = {op0: lambda: 0}
-    h1 = {op1: lambda: 1}
-    h2 = {op2: lambda: (op1(), op0(), 2)}
-
-    h_lhs = product(h0, product(h1, h2))
-    h_rhs = product(h1, product(h0, h2))
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-
-    assert lhs == rhs
-
-
-def test_product_distributive():
-    h0 = {op0: lambda: 0, op1: lambda: (op0(), 1)}
-    h1 = {op2: lambda: (op0(), op1(), 1)}
-    h2 = {op2: lambda: (fwd(), op0(), op1(), 2)}
-
-    h_lhs = product(h0, coproduct(h1, h2))
-    h_rhs = coproduct(product(h0, h1), product(h0, h2))
-
-    h00 = {op0: lambda: 5, op1: lambda: (op0(), 6)}
-    h_invalid_1 = product(h00, coproduct(product(h0, h1), h2))
-    h_invalid_2 = product(h00, coproduct(h1, product(h0, h2)))
-
-    lhs = handler(h_lhs)(f_op2)()
-    rhs = handler(h_rhs)(f_op2)()
-    invalid_1 = handler(h_invalid_1)(f_op2)()
-    invalid_2 = handler(h_invalid_2)(f_op2)()
-
-    assert lhs == rhs
-    assert invalid_1 != invalid_2 and invalid_1 != lhs and invalid_2 != lhs
-
 
 def test_evaluate():
     @defop
@@ -543,18 +473,106 @@ def test_evaluate():
         assert evaluate(t) == Nested([{"a": 2}, 1, (1, 2)], 1, arg1={"b": 1})
 
 
-def test_ctxof():
-    x = defop(object)
-    y = defop(object)
+def test_memoized_interpretation():
+    from effectful.internals.runtime import interpreter
+
+    @defop
+    def node(x: object) -> object:
+        raise NotHandled
+
+    term = node(node(1))
+
+    class Intp(ObjectInterpretation):
+        def __init__(self):
+            self.calls = 0
+
+        @implements(apply)
+        def _(self, op, *args, **kwargs):
+            self.calls += 1
+            return (op.__name__, args, kwargs)
+
+    intp_impl = Intp()
+    intp = PureInterpretation(intp_impl)
+    expected = ("node", (("node", (1,), {}),), {})
+
+    assert interpreter(intp)(evaluate)(term) == expected
+    assert intp_impl.calls == 2
+
+    # The root cache is checked before its children are traversed, including
+    # when evaluation is expressed directly through a handler.
+    with interpreter(intp):
+        assert evaluate(term) == expected
+    assert intp_impl.calls == 2
+
+    # Child results are cached independently and can be reused directly.
+    assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
+    assert intp_impl.calls == 2
+
+    # A composition has a distinct identity even when its added handler is not
+    # used while evaluating this term.
+    combined_intp = coproduct(intp, {plus_1: lambda x: x})
+    assert interpreter(combined_intp)(evaluate)(term) == expected
+    assert intp_impl.calls == 4
+
+    # A separate pure interpretation has its own cache namespace.
+    other_intp_impl = Intp()
+    other_intp = PureInterpretation(other_intp_impl)
+    assert interpreter(other_intp)(evaluate)(term) == expected
+    assert other_intp_impl.calls == 2
+
+
+def test_memoized_interpretation_does_not_cache_failures():
+    from effectful.internals.runtime import interpreter
+
+    @defop
+    def node() -> object:
+        raise NotHandled
+
+    term = node()
+
+    class Intp(ObjectInterpretation):
+        def __init__(self):
+            self.calls = 0
+
+        @implements(apply)
+        def _(self, op, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise ValueError("failed analysis")
+            return "success"
+
+    intp_impl = Intp()
+    intp = PureInterpretation(intp_impl)
+    with pytest.raises(ValueError, match="failed analysis"):
+        interpreter(intp)(evaluate)(term)
+
+    assert interpreter(intp)(evaluate)(term) == "success"
+    assert intp_impl.calls == 2
+    assert interpreter(intp)(evaluate)(term) == "success"
+    assert intp_impl.calls == 2
+
+
+@pytest.mark.parametrize(
+    "build_args",
+    [
+        lambda x, y: (x(), y()),
+        lambda x, y: ([x()], y()),
+        lambda x, y: ([x()], [y()]),
+        lambda x, y: (([x()], [y()]),),
+    ],
+)
+def test_ctxof(build_args):
+    x = defop(object, name="x")
+    y = defop(object, name="y")
 
     @defop
     def Nested(*args, **kwargs):
         raise NotHandled
 
-    assert fvsof(Nested(x(), y())) >= {x, y}
-    assert fvsof(Nested([x()], y())) >= {x, y}
-    assert fvsof(Nested([x()], [y()])) >= {x, y}
-    assert fvsof(Nested((x(), y()))) >= {x, y}
+    term = Nested(*build_args(x, y))
+    actual = fvsof(term)
+    expected = {x, y, Nested}
+    assert actual >= expected
 
 
 def test_handler_typing() -> None:
@@ -576,19 +594,12 @@ def test_handler_typing() -> None:
     i: Interpretation = {f: lambda x: x + 1, g: lambda x, y: x + str(y)}
 
     handler(i)
-    runner(i)
-    product(i, i)
     coproduct(i, i)
     evaluate(0, intp=i)
 
     # include tests with inlined interpretation, because mypy might do inference
     # differently
     handler({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
-    runner({f: lambda x: x + 1, g: lambda x, y: x + str(y)})
-    product(
-        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
-        {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
-    )
     coproduct(
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
         {f: lambda x: x + 1, g: lambda x, y: x + str(y)},
@@ -744,6 +755,21 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_typeof_dataclass_does_not_run_constructor_with_inferred_types():
+    @dataclasses.dataclass
+    class AbsoluteValue:
+        value: int
+
+        def __init__(self, value: Any):
+            # This works for both concrete numbers and numeric Terms, but not for
+            # the internal boxes used by typeof to represent inferred types.
+            self.value = abs(value)
+
+    value = defop(int, name="value")
+
+    assert typeof(AbsoluteValue(value())) is AbsoluteValue
+
+
 def test_defdata_large(benchmark):
     """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random
@@ -815,8 +841,15 @@ def test_fvsof_binder():
         raise NotHandled
 
     term = Lam2(add(x(), add(y(), z())), x, y)
-    assert not {x, y} <= fvsof(term)
-    assert fvsof(term) == {z, Lam2, add}
+    actual = fvsof(term)
+    assert not ({x, y} & actual)
+    assert actual >= {z, Lam2, add}
+
+
+def test_fvsof_collection_does_not_include_apply():
+    x = defop(int, name="x")
+
+    assert fvsof((x(),)) == {x}
 
 
 def test_interpretation_typing():
@@ -867,6 +900,83 @@ def test_typeof_literal():
         typeof(get_mixed())
 
 
+def test_evaluate_dag_no_exponential_blowup():
+    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n)."""
+    call_count = 0
+
+    @defop
+    def counted() -> int:
+        raise NotHandled
+
+    def counted_handler():
+        nonlocal call_count
+        call_count += 1
+        return 42
+
+    # Build a DAG of nested tuples: each level shares the same child object.
+    # As a tree this would have 2^depth leaves; as a DAG it's depth+1 objects.
+    depth = 20
+    node = counted()
+    for _ in range(depth):
+        node = (node, node)
+
+    call_count = 0
+    with handler({counted: counted_handler}):
+        result = evaluate(node)
+
+    deffn(node, counted)(0)
+
+    # The handler should only be called once (the shared Term)
+    assert call_count == 1
+    # The result should be nested tuples of 42
+    leaf = result
+    for _ in range(depth):
+        assert isinstance(leaf, tuple) and len(leaf) == 2
+        assert leaf[0] is leaf[1]  # memoization returns same object
+        leaf = leaf[0]
+    assert leaf == 42
+
+
+def test_evaluate_dag_cache_isolation():
+    """Different interpretations produce different results for the same expr."""
+    x = defop(int, name="x")
+    shared = x()
+    expr = (shared, shared)
+
+    assert evaluate(expr, intp={x: lambda: 1}) == (1, 1)
+    assert evaluate(expr, intp={x: lambda: 99}) == (99, 99)
+
+
+def test_evaluate_dag_nested_different_intp():
+    """evaluate(expr, intp=...) inside a handler gets its own cache."""
+    x = defop(int, name="x")
+    y = defop(int, name="y")
+
+    shared = x()
+    inner_expr = (shared, shared)
+
+    result = evaluate(y(), intp={y: lambda: evaluate(inner_expr, intp={x: lambda: 7})})
+    assert result == (7, 7)
+
+
+def test_evaluate_dag_matches_tree():
+    """DAG evaluation produces the same result as evaluating an equivalent tree."""
+    x = defop(int, name="x")
+
+    @defop
+    def mul(a: int, b: int) -> int:
+        raise NotHandled
+
+    shared = x()
+    dag = (mul(shared, shared), mul(shared, shared))
+
+    # Equivalent tree with distinct Term objects
+    tree = (mul(x(), x()), mul(x(), x()))
+
+    intp = {x: lambda: 3, mul: lambda a, b: a * b}
+    assert evaluate(dag, intp=intp) == evaluate(tree, intp=intp) == (9, 9)
+
+
 def test_fvsof_dataclass() -> None:
     @dataclasses.dataclass
     class A:
@@ -877,7 +987,29 @@ def test_fvsof_dataclass() -> None:
             self.x = x
 
     v = Operation.define(int)
-    assert fvsof(A(v())) == {v}
+    actual = fvsof(A(v()))
+    assert actual == {v}
+
+
+def test_defdata_dataclass_init_effects() -> None:
+    @Operation.define
+    def f(x: int):
+        raise NotHandled
+
+    @dataclasses.dataclass
+    class A:
+        x: int
+
+        def __init__(self, x: int):
+            self.x = f(x)
+
+    @Operation.define
+    def g(a: A):
+        raise NotHandled
+
+    v = Operation.define(int)
+    t = g(A(v()))
+    assert isinstance(t.args[0].x, Term)
 
 
 def test_instanceop_super() -> None:
@@ -909,6 +1041,66 @@ def test_instanceop_super() -> None:
     b = B()
     with handler({b.f: lambda: "*B*"}):
         assert b.f() == "*B*"
+
+
+def test_instanceop_dataclass() -> None:
+    """Dataclasses with no free variables get instance operations."""
+
+    @dataclasses.dataclass
+    class A:
+        @Operation.define
+        def f(self):
+            raise NotHandled
+
+    assert isinstance(A.f, Operation)
+    assert isinstance(A().f, Operation)
+
+    @dataclasses.dataclass
+    class B:
+        x: int
+
+        @Operation.define
+        def g(self):
+            raise NotHandled
+
+    assert isinstance(B.g, Operation)
+    fv = Operation.define(int)()
+    assert not isinstance(B(fv).g, Operation)
+
+
+def test_coproduct_fwd_chain(benchmark):
+    """Benchmark coproduct + fwd over a deep chain of forwarding handlers.
+
+    Compose n - 1 interpretations that simply ``fwd()`` on top of a single
+    base interpretation that returns 0, then measure the cost of dispatching
+    through the whole chain.
+    """
+    n = 50
+
+    @defop
+    def op() -> int:
+        raise NotHandled
+
+    base: Interpretation[int, int] = {op: lambda: 0}
+    intp = base
+    for _ in range(n - 1):
+        intp = coproduct(intp, {op: lambda: fwd()})
+
+    def run():
+        with handler(intp):
+            return op()
+
+    assert run() == 0
+    assert benchmark(run) == 0
+
+
+def test_fwd_in_definition_raises():
+    @Operation.define
+    def f():
+        return fwd()
+
+    with pytest.raises(RuntimeError):
+        f()
 
 
 # --- Module-level classes for typing.Self tests ---

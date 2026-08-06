@@ -68,6 +68,7 @@ import functools
 import inspect
 import numbers
 import operator
+import threading
 import types
 import typing
 
@@ -587,6 +588,17 @@ def _unify_generic(
             typing.get_origin(typ), collections.abc.Generator
         ):
             return unify(typing.get_args(typ)[0], typing.get_args(subtyp)[0], subs)
+        elif typing.get_origin(subtyp) is effectful.ops.types.Operation and not (
+            isinstance(typing.get_origin(typ), type)
+            and issubclass(typing.get_origin(typ), effectful.ops.types.Operation)
+        ):
+            # An Operation[P, R] is a Callable[P, R] (gh #669): unify the pattern
+            # against the operation's parameter/return signature. ``Operation``'s
+            # args are (params, return) just like ``Callable``'s, except params is
+            # a tuple (or ``...``) rather than a list.
+            op_params, op_ret = typing.get_args(subtyp)
+            callable_params = op_params if op_params is ... else list(op_params)
+            return unify(typ, collections.abc.Callable[callable_params, op_ret], subs)  # type: ignore
         elif typing.get_origin(typ) == typing.get_origin(subtyp):
             return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
         elif types.get_original_bases(typing.get_origin(subtyp)):
@@ -609,6 +621,17 @@ def _unify_generic(
         and issubclass(subtyp, typing.get_origin(typ))
     ):
         return subs  # implicit expansion to subtyp[Any]
+    elif isinstance(typ, GenericAlias):
+        # Special case for treating arrays as iterables of arrays
+        try:
+            import jax
+
+            if typing.get_origin(typ) is collections.abc.Iterable and issubclass(
+                subtyp, jax.Array
+            ):
+                return unify(typing.get_args(typ)[0], jax.Array, subs)
+        except ImportError:
+            pass
     raise TypeError(f"Cannot unify generic type {typ} with {subtyp} given {subs}.")
 
 
@@ -1066,11 +1089,11 @@ def nested_type(value) -> Box[TypeExpression]:
 
         # Empty collections return their base type
         >>> nested_type([]).value
-        <class 'list'>
+        <class 'collections.abc.MutableSequence'>
         >>> nested_type({}).value
         <class 'dict'>
         >>> nested_type(set()).value
-        <class 'set'>
+        <class 'collections.abc.MutableSet'>
 
         # Sequences become Sequence[element_type]
         >>> nested_type([1, 2, 3]).value
@@ -1139,18 +1162,39 @@ def _(value: effectful.ops.types.Term):
 @nested_type.register
 def _(value: effectful.ops.types.Operation):
     typ = nested_type.dispatch(collections.abc.Callable)(value).value
-    (arg_types, return_type) = typing.get_args(typ)
+    args = typing.get_args(typ)
+    if not args:
+        # Callable branch widened to `Box(type(value))` because
+        # introspection failed (#673); propagate the widening.
+        return Box(type(value))
+    (arg_types, return_type) = args
     return Box(effectful.ops.types.Operation[arg_types, return_type])  # type: ignore
 
 
 @nested_type.register
 def _(value: collections.abc.Callable):
-    if typing.get_overloads(value):
+    # `typing.get_overloads(value)` reads `__qualname__`/`__module__` on
+    # the callable and raises `AttributeError` on values like
+    # `pytest.mark.parametrize` (a `MarkDecorator`) or `dict.get` (a
+    # `method_descriptor`).  Treat that the same way as the
+    # no-signature fallback: widen to `Box(type(value))`.  #673.
+    try:
+        if typing.get_overloads(value):
+            return Box(type(value))
+    except (AttributeError, TypeError):
         return Box(type(value))
 
+    # `inspect.signature(value)` may consult a custom `__signature__`
+    # property (e.g. `Operation.__signature__` calls
+    # `typing.get_type_hints`) which raises `NameError` when an
+    # annotation forward-ref cannot be resolved.  Per canonicalize's
+    # widening principle (see eb8680 on PR #613), an unresolvable
+    # annotation does not mean the value isn't callable -- widen to
+    # `Box(type(value))` rather than propagating the introspection
+    # failure.  #673.
     try:
         sig = inspect.signature(value)
-    except ValueError:
+    except (ValueError, TypeError, NameError, AttributeError):
         return Box(type(value))
 
     if sig.return_annotation is inspect.Signature.empty:
@@ -1196,14 +1240,20 @@ def _(value: collections.abc.Mapping):
         ktyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.keys()]
         )
-        if ktyp is str:
-            # str-keyed multi-entry dicts → always TypedDict
-            fields = {key: nested_type(vl).value for key, vl in value.items()}
-            return Box(typing_extensions.TypedDict("RuntimeTypeDict", fields))  # type: ignore
         vtyp = functools.reduce(
             operator.or_, [nested_type(x).value for x in value.values()]
         )
-        if isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
+        if type(value) is dict and ktyp is str and isinstance(vtyp, UnionType):
+            # str-keyed dicts with *heterogeneous* values → TypedDict, which
+            # captures the per-field value types that a single ``V`` cannot.
+            # Homogeneous str-keyed dicts fall through to ``Mapping[str, V]``
+            # below: a closed required-key TypedDict is unsound for a runtime
+            # value (it is really an inhabitant of ``dict[str, V]``), and two
+            # sibling dicts with different keys would otherwise fail to unify
+            # against a shared TypeVar (gh #662).
+            fields = {key: nested_type(vl).value for key, vl in value.items()}
+            return Box(typing.TypedDict("RuntimeTypeDict", fields))  # type: ignore
+        elif isinstance(ktyp, UnionType) or isinstance(vtyp, UnionType):
             return Box(type(value))
         else:
             return Box(canonicalize(type(value))[ktyp, vtyp])  # type: ignore
@@ -1211,17 +1261,24 @@ def _(value: collections.abc.Mapping):
 
 @nested_type.register
 def _(value: collections.abc.Collection):
-    if len(value) == 0:
-        return Box(type(value))
-    elif len(value) == 1:
+    typ = canonicalize(type(value))
+    if not (
+        isinstance(typ, type) and hasattr(typ, "__class_getitem__")
+    ):  # not a parameterizable type
+        return Box(typ)
+
+    l = len(value)
+    if l == 0:
+        return Box(typ)
+    elif l == 1:
         vtyp = nested_type(next(iter(value))).value
-        return Box(canonicalize(type(value))[vtyp])  # type: ignore
+        return Box(typ[vtyp])  # type: ignore
     else:
         valtyp = functools.reduce(operator.or_, [nested_type(x).value for x in value])
         if isinstance(valtyp, UnionType):
-            return Box(type(value))
+            return Box(typ)
         else:
-            return Box(canonicalize(type(value))[valtyp])  # type: ignore
+            return Box(typ[valtyp])  # type: ignore
 
 
 @nested_type.register
@@ -1237,7 +1294,27 @@ def _(value: str | bytes | range | None):
     return Box(type(value))
 
 
-def freetypevars(typ: TypeExpressions) -> collections.abc.Set[TypeVariable]:
+_nested_type_dispatch = nested_type
+_nested_type_state = threading.local()
+_NESTED_TYPE_MAX_DEPTH = 5
+
+
+def nested_type(value) -> Box[TypeExpression]:  # type: ignore[no-redef]
+    depth = getattr(_nested_type_state, "depth", 0)
+    if depth >= _NESTED_TYPE_MAX_DEPTH:
+        return Box(type(value))
+    _nested_type_state.depth = depth + 1
+    try:
+        return _nested_type_dispatch(value)
+    finally:
+        _nested_type_state.depth = depth
+
+
+nested_type.register = _nested_type_dispatch.register  # type: ignore
+nested_type.dispatch = _nested_type_dispatch.dispatch  # type: ignore
+
+
+def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
 

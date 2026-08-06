@@ -11,6 +11,7 @@ import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from types import CodeType
 from typing import Annotated, Any, Literal, NamedTuple, TypedDict, Union
 
 import litellm
@@ -21,12 +22,16 @@ from PIL import Image
 
 from effectful.handlers.llm.encoding import (
     CONTENT_BLOCK_TYPES,
+    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     Encodable,
     SynthesizedFunction,
     to_content_blocks,
 )
-from effectful.handlers.llm.evaluation import RestrictedEvalProvider, UnsafeEvalProvider
+from effectful.handlers.llm.evaluation import (
+    RestrictedEvalProvider,
+    UnsafeEvalProvider,
+)
 from effectful.handlers.llm.template import Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
@@ -761,13 +766,24 @@ def test_callable_full_pipeline_behavioral(
     assert decoded(*args) == expected
 
 
-# Callable error cases: (type, ctx, source, exc_type, match)
+# A Template-style anchor whose return type is the Callable being decoded.
+# Decoding only runs the (source-anchored) type check when an anchor is in scope
+# (bound by Template.__apply__); the result path has one, the argument path does
+# not. The return-type case needs the body checked against the expected signature,
+# so it provides an anchor; the structural cases (param count, missing/last-stmt)
+# are caught without one.
+def _int_pair_anchor() -> Callable[[int, int], int]:
+    raise NotImplementedError
+
+
+# Callable error cases: (type, ctx, source, exc_type, anchor)
 CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
         SynthesizedFunction(module_code="x = 42"),
         ValueError,
+        None,
         id="non-function-last-stmt",
     ),
     pytest.param(
@@ -775,6 +791,7 @@ CALLABLE_ERROR_CASES = [
         {},
         SynthesizedFunction(module_code="def add(a: int) -> int:\n    return a"),
         ValueError,
+        None,
         id="wrong-param-count",
     ),
     pytest.param(
@@ -784,6 +801,7 @@ CALLABLE_ERROR_CASES = [
             module_code="def add(a: int, b: int) -> str:\n    return str(a + b)"
         ),
         TypeError,
+        _int_pair_anchor,
         id="wrong-return-type",
     ),
     pytest.param(
@@ -791,17 +809,22 @@ CALLABLE_ERROR_CASES = [
         {},
         SynthesizedFunction(module_code="def add(a: int, b: int):\n    return a + b"),
         ValueError,
+        None,
         id="missing-return-annotation",
     ),
 ]
 
 
-@pytest.mark.parametrize("ty,ctx,source,exc_type", CALLABLE_ERROR_CASES)
+@pytest.mark.parametrize("ty,ctx,source,exc_type,anchor", CALLABLE_ERROR_CASES)
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
-def test_callable_decode_rejects_invalid(ty, ctx, source, exc_type, eval_provider):
+def test_callable_decode_rejects_invalid(
+    ty, ctx, source, exc_type, anchor, eval_provider
+):
     with pytest.raises(exc_type):
         with handler(eval_provider):
-            pydantic.TypeAdapter(Encodable[ty]).validate_python(source, context=ctx)
+            pydantic.TypeAdapter(Encodable[ty]).validate_python(
+                source, context={**ctx, TYPE_CHECK_ANCHOR_KEY: anchor}
+            )
 
 
 def test_callable_encode_non_callable():
@@ -971,3 +994,49 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
         max_tokens=400,
     )
     assert isinstance(response, litellm.ModelResponse)
+
+
+# ============================================================================
+# Encodable[CodeType] -- syntax checking at the Encodable boundary
+# ============================================================================
+
+
+def test_encodable_code_compiles_source_to_a_code_object():
+    """Decoding `Encodable[CodeType]` compiles the source through the eval
+    provider, yielding a ready-to-run code object."""
+    src = "x = 1\nprint(x)\n"
+    adapter = pydantic.TypeAdapter(Encodable[CodeType])
+    with handler(UnsafeEvalProvider()):
+        decoded = adapter.validate_python(src)
+    assert isinstance(decoded, CodeType)
+
+
+def test_encodable_code_round_trips_to_source():
+    """Re-encoding a decoded code object recovers its source string (from
+    `linecache`)."""
+    src = "a = 2\n"
+    adapter = pydantic.TypeAdapter(Encodable[CodeType])
+    with handler(UnsafeEvalProvider()):
+        decoded = adapter.validate_python(src)
+        assert adapter.dump_python(decoded) == src
+
+
+def test_encodable_code_rejects_syntax_error():
+    """Source that does not parse is rejected at decode."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            pydantic.TypeAdapter(Encodable[CodeType]).validate_python("def f(:")
+
+
+def test_encodable_code_rejects_compile_only_error():
+    """`return` outside a function parses but does not compile -- still rejected,
+    so the check is `compile`, not merely `ast.parse`."""
+    with handler(UnsafeEvalProvider()):
+        with pytest.raises(pydantic.ValidationError):
+            pydantic.TypeAdapter(Encodable[CodeType]).validate_python("return 5")
+
+
+def test_encodable_code_schema_is_a_string():
+    """The LLM sees a `CodeType` parameter as a plain string."""
+    schema = pydantic.TypeAdapter(Encodable[CodeType]).json_schema()
+    assert schema["type"] == "string"
