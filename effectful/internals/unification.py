@@ -626,8 +626,10 @@ def _unify_generic(
         try:
             import jax
 
-            if typing.get_origin(typ) is collections.abc.Iterable and issubclass(
-                subtyp, jax.Array
+            if (
+                typing.get_origin(typ) is collections.abc.Iterable
+                and isinstance(subtyp, type)
+                and issubclass(subtyp, jax.Array)
             ):
                 return unify(typing.get_args(typ)[0], jax.Array, subs)
         except ImportError:
@@ -1314,7 +1316,7 @@ nested_type.register = _nested_type_dispatch.register  # type: ignore
 nested_type.dispatch = _nested_type_dispatch.dispatch  # type: ignore
 
 
-def freetypevars(typ) -> collections.abc.Set[TypeVariable]:
+def freetypevars(typ: TypeExpressions) -> collections.abc.Set[TypeVariable]:
     """
     Return a set of free type variables in the given type expression.
 
