@@ -568,6 +568,22 @@ def test_update(flavor: Flavor) -> None:
 
 
 @flavors()
+def test_update_from_pairs_preserves_distinct_identity_keys(flavor: Flavor) -> None:
+    """M8: pair iterables must not collapse equal-but-distinct keys."""
+    first, second = flavor.key(0), flavor.key(0)
+    assert first == second and first is not second
+
+    d = flavor.cls()
+    d.update([(first, "first"), (second, "second")])
+
+    assert_model(
+        d,
+        {id(first): "first", id(second): "second"},
+        present=[first, second],
+    )
+
+
+@flavors()
 def test_clear(flavor: Flavor) -> None:
     """M9."""
     d, keys, _ = build(flavor)
