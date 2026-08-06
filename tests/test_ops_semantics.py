@@ -856,6 +856,30 @@ def test_fvsof_binder():
     assert actual >= {z, Lam2, add}
 
 
+def test_fvsof_collection_binder():
+    a, b, c, d = (
+        defop(int, name="a"),
+        defop(int, name="b"),
+        defop(int, name="c"),
+        defop(int, name="d"),
+    )
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def let_many[A, B](
+        body: Annotated[int, Scoped[A | B]],
+        bindings: Annotated[dict[Operation[[], int], int], Scoped[A]],
+    ) -> Annotated[int, Scoped[B]]:
+        raise NotHandled
+
+    term = let_many(add(a(), b()), {a: c(), c: d()})
+    actual = fvsof(term)
+    assert actual == {b, d, let_many, add}
+
+
 def test_fvsof_collection_does_not_include_apply():
     x = defop(int, name="x")
 
