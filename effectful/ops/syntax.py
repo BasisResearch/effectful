@@ -317,6 +317,41 @@ class Scoped(Annotation):
         assert cls._get_root_ordinal(inferred_sig) == root_ordinal != set()
         return inferred_sig
 
+    @classmethod
+    def extract_operations(
+        cls, value, _seen: set[int] | None = None
+    ) -> frozenset[Operation]:
+        """Computes the set of :class:`Operation` s appearing directly in ``value`` .
+
+        An :class:`Operation` counts when it appears as a value in a collection,
+        including as the key of a mapping, which is why this cannot be written
+        in terms of :func:`flatten` . It does not count when it is applied to
+        arguments, since the resulting :class:`Term` is a use of the operation
+        rather than a binding occurrence of it.
+
+        :param value: The value to traverse.
+        :returns: The operations that could be bound by a parameter given ``value``.
+        """
+        _seen = set() if _seen is None else _seen
+        if id(value) in _seen:
+            return frozenset()
+        _seen.add(id(value))
+
+        if isinstance(value, Operation):
+            return frozenset({value})
+        elif isinstance(value, dict):
+            return frozenset().union(
+                frozenset(),
+                *(cls.extract_operations(k, _seen) for k in value.keys()),
+                *(cls.extract_operations(v, _seen) for v in value.values()),
+            )
+        elif isinstance(value, list | set | frozenset | tuple):
+            return frozenset().union(
+                frozenset(), *(cls.extract_operations(v, _seen) for v in value)
+            )
+        else:
+            return frozenset()
+
     def analyze(self, bound_sig: inspect.BoundArguments) -> frozenset[Operation]:
         """
         Computes a set of bound variables given a signature with bound arguments.
@@ -342,43 +377,19 @@ class Scoped(Annotation):
             param_ordinal = self._get_param_ordinal(param)
             if param_ordinal <= self.ordinal and not param_ordinal <= return_ordinal:
                 param_value = bound_sig.arguments[name]
-                param_bound_vars = set()
+                param_bound_vars: frozenset[Operation] = (
+                    self.extract_operations(param_value)
+                    # only process if the parameter is an Operation or is Scoped
+                    if self._param_is_var(param) or param_ordinal
+                    else frozenset()
+                )
 
-                if self._param_is_var(param):
-                    # Handle individual Operation parameters (existing behavior)
-                    if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                        # pre-condition: all bound variables should be distinct
-                        assert len(param_value) == len(set(param_value))
-                        param_bound_vars = set(param_value)
-                    elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                        # pre-condition: all bound variables should be distinct
-                        assert len(param_value.values()) == len(
-                            set(param_value.values())
-                        )
-                        param_bound_vars = set(param_value.values())
-                    else:
-                        param_bound_vars = {param_value}
-                elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use flatten here because we want to be able
-                    # to see dict keys
-                    def extract_operations(obj, _seen=None):
-                        if _seen is None:
-                            _seen = set()
-                        obj_id = id(obj)
-                        if obj_id in _seen:
-                            return
-                        _seen.add(obj_id)
-                        if isinstance(obj, Operation):
-                            param_bound_vars.add(obj)
-                        elif isinstance(obj, dict):
-                            for k, v in obj.items():
-                                extract_operations(k, _seen)
-                                extract_operations(v, _seen)
-                        elif isinstance(obj, list | set | tuple):
-                            for v in obj:
-                                extract_operations(v, _seen)
-
-                    extract_operations(param_value)
+                if self._param_is_var(param) and param.kind in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
+                    # pre-condition: all bound variables should be distinct
+                    assert len(param_bound_vars) == len(param_value)
 
                 # pre-condition: all bound variables should be distinct
                 if param_bound_vars:

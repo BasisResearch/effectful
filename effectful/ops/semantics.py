@@ -11,6 +11,7 @@ from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
+    Scoped,
     _CustomSingleDispatchCallable,
     defop,
     implements,
@@ -351,27 +352,40 @@ def typeof[T](term: Expr[T]) -> type[T]:
     return typing.cast(type[T], type(type_or_value))
 
 
+class _FvsAnalysis(typing.NamedTuple):
+    ops: frozenset[Operation] = frozenset()
+    fvs: frozenset[Operation] = frozenset()
+
+
 class _FvsofIntp(ObjectInterpretation):
+    @staticmethod
+    def _analysis(value) -> _FvsAnalysis:
+        if isinstance(value, _FvsAnalysis):
+            return value
+        else:
+            return _FvsAnalysis(Scoped.extract_operations(value))
+
     @implements(ConstructorOperation.__apply__)
     def _apply_collection_binders(self, op, *args, **kwargs):
-        return frozenset().union(
-            *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
+        analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
+        return _FvsAnalysis(
+            frozenset().union(frozenset(), *(a.ops for a in analyses)),
+            frozenset().union(frozenset(), *(a.fvs for a in analyses)),
         )
 
     @implements(apply)
     def _apply_fvs(self, op, *args, **kwargs):
-        bindings = op.__fvs_rule__(*args, **kwargs)
-        binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
-
-        fvs = frozenset().union(
-            {op},
-            *(
-                x if isinstance(x, frozenset) else frozenset()
-                for x in (*args, *kwargs.values())
-            ),
+        arg_analyses = tuple(self._analysis(a) for a in args)
+        kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
+        bindings = op.__fvs_rule__(
+            *(a.ops for a in arg_analyses),
+            **{k: a.ops for k, a in kwarg_analyses.items()},
         )
-        fvs -= binders
-        return fvs
+        binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
+        fvs = frozenset().union(
+            {op}, *(a.fvs for a in (*arg_analyses, *kwarg_analyses.values()))
+        )
+        return _FvsAnalysis(fvs=fvs - binders)
 
 
 _FVSOF_INTP = _FvsofIntp()
@@ -404,4 +418,4 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
 
     """
     result = evaluate(term, intp=_FVSOF_INTP)
-    return frozenset() if not isinstance(result, frozenset) else result
+    return result.fvs if isinstance(result, _FvsAnalysis) else frozenset()
