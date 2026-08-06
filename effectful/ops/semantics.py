@@ -5,9 +5,8 @@ import functools
 import operator
 import types
 import typing
-from collections.abc import Callable
-from typing import Any
 
+from effectful.internals.runtime import cache
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
@@ -29,7 +28,7 @@ apply = Operation.__apply__
 
 
 @defop
-def fwd(*args, **kwargs) -> Any:
+def fwd(*args, **kwargs) -> typing.Any:
     """Forward execution to the next most enclosing handler.
 
     :func:`fwd` should only be called in the context of a handler.
@@ -128,12 +127,14 @@ def as_tuple(*args) -> tuple:
     return tuple(args)
 
 
-_MISSING: Any = object()
+_MISSING: typing.Any = object()
 
 
 @_CustomSingleDispatchCallable
 def evaluate[T](
-    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    __dispatch: collections.abc.Callable[
+        [type], collections.abc.Callable[..., Expr[T]]
+    ],
     expr: Expr[T],
     *,
     intp: Interpretation | None = None,
@@ -158,7 +159,6 @@ def evaluate[T](
     """
     from effectful.internals.runtime import (
         EVAL_CACHE,
-        cache,
         cache_get,
         cache_put,
         get_interpretation,
