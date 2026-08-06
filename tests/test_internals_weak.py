@@ -2,8 +2,8 @@
 
 Two complementary strategies:
 
-* Hand-written invariant tests, parameterised over the dictionary flavours, that
-  name the law they check (``M3``, ``K5``, ...). These give a named failure.
+* Hand-written invariant tests, parameterised over the dictionary flavours,
+  each stating in its docstring the law it checks.
 * A differential harness that replays a random operation sequence against both
   :class:`weakref.WeakKeyDictionary` and the dictionary under test, over the
   domain where the two are meant to be indistinguishable: weakly referenceable
@@ -205,7 +205,7 @@ def assert_model(
 
 
 ###############################################################################
-# Reference types: WeakIdRef, IdRef, AutoIdRef
+# Reference types: WeakIdRef, StrongIdRef, AutoIdRef
 ###############################################################################
 
 REF_TYPES = [WeakIdRef, StrongIdRef, AutoIdRef]
@@ -216,7 +216,7 @@ ref_types = pytest.mark.parametrize(
 
 @ref_types
 def test_ref_deref_and_hash(ref_type: typing.Any) -> None:
-    """R1, R2: a live ref dereferences to its key and hashes as its id."""
+    """A live reference dereferences to its key and hashes as the key's id."""
     o = Obj(1)
     r = ref_type(o)
     assert r() is o
@@ -225,7 +225,7 @@ def test_ref_deref_and_hash(ref_type: typing.Any) -> None:
 
 @ref_types
 def test_ref_equal_to_itself_and_to_a_twin(ref_type: typing.Any) -> None:
-    """R3, R4: reflexive, and two refs to one object are equal and hash alike."""
+    """A reference equals itself, and two to one object are equal and hash alike."""
     o = Obj(1)
     r, s = ref_type(o), ref_type(o)
     assert r == r
@@ -235,7 +235,7 @@ def test_ref_equal_to_itself_and_to_a_twin(ref_type: typing.Any) -> None:
 
 @ref_types
 def test_ref_uses_identity_not_equality(ref_type: typing.Any) -> None:
-    """R5: refs to equal-but-distinct objects are unequal."""
+    """References to equal-but-distinct objects are unequal."""
     a, b = Obj(1), Obj(1)
     assert a == b and hash(a) == hash(b)
     assert ref_type(a) != ref_type(b)
@@ -244,7 +244,10 @@ def test_ref_uses_identity_not_equality(ref_type: typing.Any) -> None:
 
 @ref_types
 def test_ref_never_touches_the_keys_protocols(ref_type: typing.Any) -> None:
-    """R6: an unhashable key whose ``__eq__`` raises still works as a referent."""
+    """The key's own ``__eq__`` and ``__hash__`` are never called.
+
+    So an unhashable key whose ``__eq__`` raises still works as a referent.
+    """
     a, b = Hostile(), Hostile()
     with pytest.raises(TypeError):
         hash(a)
@@ -254,7 +257,7 @@ def test_ref_never_touches_the_keys_protocols(ref_type: typing.Any) -> None:
 
 
 def test_weak_ref_death() -> None:
-    """R2, R3, R7: a dead ref still hashes, equals only itself, derefs to None."""
+    """A dead reference dereferences to None, still hashes, and equals only itself."""
     live = Obj(1)
     live_ref = WeakIdRef(live)
     dying = Obj(2)
@@ -271,7 +274,7 @@ def test_weak_ref_death() -> None:
 
 
 def test_weak_ref_aba() -> None:
-    """R8: a dead ref is not equal to a fresh ref that reused its address.
+    """A dead reference is not equal to a fresh one that reused its address.
 
     Deliberately no collection between the two allocations: ``Plain`` has no
     cycles, so refcounting frees it at the ``del``, and a ``gc.collect()`` in
@@ -296,7 +299,10 @@ def test_weak_ref_aba() -> None:
 
 
 def test_ref_cross_type_symmetry() -> None:
-    """R9: weak and strong refs to one object are interchangeable in one dict."""
+    """A weak and a strong reference to one object are equal and hash alike.
+
+    This is what lets :class:`AutoIdKeyDictionary` hold both kinds at once.
+    """
     o = Obj(1)
     w, s = WeakIdRef(o), StrongIdRef(o)
     assert w == s and s == w
@@ -304,7 +310,7 @@ def test_ref_cross_type_symmetry() -> None:
 
 
 def test_ref_cross_type_death() -> None:
-    """R9: a dead weak ref is not equal to a strong ref, in either direction."""
+    """A dead weak reference is not equal to a strong one, in either direction."""
     live = Obj(1)
     strong = StrongIdRef(live)
     dying = Obj(2)
@@ -316,7 +322,7 @@ def test_ref_cross_type_death() -> None:
 
 
 def test_id_ref_is_strong() -> None:
-    """R10: an IdRef keeps its referent alive."""
+    """A strong reference keeps its referent alive."""
     o = Obj(1)
     r = StrongIdRef(o)
     probe = weakref.ref(o)
@@ -342,7 +348,7 @@ NON_WEAKREFABLE = [
     "key", [v for _, v in NON_WEAKREFABLE], ids=[n for n, _ in NON_WEAKREFABLE]
 )
 def test_id_ref_accepts_non_weakrefable_keys(key: typing.Any) -> None:
-    """R10: StrongIdRef takes keys weakref cannot."""
+    """A strong reference takes keys ``weakref.ref`` cannot."""
     assert not weakrefable_ground_truth(key)
     r = StrongIdRef(key)
     assert r() is key
@@ -351,7 +357,7 @@ def test_id_ref_accepts_non_weakrefable_keys(key: typing.Any) -> None:
 
 
 def test_weak_id_ref_callback_fires() -> None:
-    """R12."""
+    """A weak reference calls its callback, with itself, when the referent dies."""
     fired: list = []
     o = Obj(1)
     r = WeakIdRef(o, fired.append)
@@ -361,7 +367,7 @@ def test_weak_id_ref_callback_fires() -> None:
 
 
 def test_id_ref_callback_never_fires() -> None:
-    """R12: IdRef accepts the removal callback and ignores it."""
+    """A strong reference accepts the removal callback and never fires it."""
     fired: list = []
     o = Obj(1)
     r = StrongIdRef(o, fired.append)
@@ -379,7 +385,7 @@ NON_REFS = [("int", 5), ("str", "x"), ("none", None), ("obj", Obj(1))]
     "other", [v for _, v in NON_REFS], ids=[n for n, _ in NON_REFS]
 )
 def test_ref_compared_to_a_non_ref(ref_type: typing.Any, other: typing.Any) -> None:
-    """R13: comparing against a non-reference answers False rather than raising."""
+    """Comparing against a non-reference answers False rather than raising."""
     r = ref_type(Obj(99))
     assert (r == other) is False
     assert (other == r) is False
@@ -420,7 +426,7 @@ WEAKREF_CASES = [
     "key", [v for _, v in WEAKREF_CASES], ids=[n for n, _ in WEAKREF_CASES]
 )
 def test_auto_id_ref_picks_by_weakrefability(key: typing.Any) -> None:
-    """R11, W1, W2: weak exactly when ``weakref.ref`` would have worked.
+    """AutoIdRef builds a weak reference exactly when ``weakref.ref`` would work.
 
     Covers every kind of key the check can be asked about, including the ones it
     has to answer "no" for without raising.
@@ -434,7 +440,7 @@ def test_auto_id_ref_picks_by_weakrefability(key: typing.Any) -> None:
 
 
 def test_auto_id_ref_type_cache_is_invisible() -> None:
-    """W3: repeated keys and sibling instances of a cold type all get the same answer.
+    """Repeated keys and sibling instances of a cold type all get the same answer.
 
     Fresh classes, so the per-type cache starts empty for them and both the miss
     and the hit path are exercised.
@@ -460,7 +466,7 @@ def test_auto_id_ref_type_cache_is_invisible() -> None:
 
 @flavors()
 def test_set_and_get(flavor: Flavor) -> None:
-    """M1, M2: assignment round-trips; re-assignment overwrites in place."""
+    """Assignment round-trips, and re-assigning a key overwrites it in place."""
     d = flavor.cls()
     k = flavor.key(0)
     value = ["a value"]
@@ -477,7 +483,7 @@ def test_set_and_get(flavor: Flavor) -> None:
 
 @flavors()
 def test_keys_are_compared_by_identity(flavor: Flavor) -> None:
-    """M3: equal-but-distinct keys are distinct entries."""
+    """Equal-but-distinct keys are distinct entries."""
     k1, k2 = flavor.key(0), flavor.key(0)
     assert k1 == k2 and k1 is not k2
 
@@ -492,7 +498,7 @@ def test_keys_are_compared_by_identity(flavor: Flavor) -> None:
 
 @flavors()
 def test_delitem(flavor: Flavor) -> None:
-    """M4."""
+    """``del`` removes the entry; deleting it again raises KeyError."""
     d, keys, model = build(flavor)
     del d[keys[1]]
     del model[id(keys[1])]
@@ -504,7 +510,10 @@ def test_delitem(flavor: Flavor) -> None:
 
 @flavors()
 def test_pop(flavor: Flavor) -> None:
-    """M5: ports ``WeakKeyDictionaryTestCase.test_pop``."""
+    """``pop`` removes and returns, honours a default, and raises without one.
+
+    Ports ``WeakKeyDictionaryTestCase.test_pop``.
+    """
     d, keys, model = build(flavor)
     assert d.pop(keys[1]) == model.pop(id(keys[1]))
     assert_model(d, model, absent=[keys[1]])
@@ -517,7 +526,10 @@ def test_pop(flavor: Flavor) -> None:
 
 @flavors()
 def test_popitem(flavor: Flavor) -> None:
-    """M6: ports ``check_popitem`` from pytorch's test_weak.py."""
+    """``popitem`` removes and returns a pair, then raises KeyError when empty.
+
+    Ports ``check_popitem`` from pytorch's test_weak.py.
+    """
     d, keys, model = build(flavor, n=2)
     for _ in range(2):
         k, v = d.popitem()
@@ -529,7 +541,10 @@ def test_popitem(flavor: Flavor) -> None:
 
 @flavors()
 def test_setdefault(flavor: Flavor) -> None:
-    """M7: ports ``check_setdefault`` from pytorch's test_weak.py."""
+    """``setdefault`` inserts once, then returns the stored value without overwriting.
+
+    Ports ``check_setdefault`` from pytorch's test_weak.py.
+    """
     first, second = ["first"], ["second"]
     d = flavor.cls()
     k = flavor.key(0)
@@ -543,7 +558,11 @@ def test_setdefault(flavor: Flavor) -> None:
 
 @flavors()
 def test_update(flavor: Flavor) -> None:
-    """M8: ports ``check_update``; mapping, same-class, pairs, and no-op forms."""
+    """``update`` and the constructor accept every form of source, or none.
+
+    A mapping, another dictionary of the same class, an iterable of pairs, and no
+    argument at all. Ports ``check_update``.
+    """
     keys = flavor.keys(3)
     model = {id(k): i for i, k in enumerate(keys)}
     source = dict(zip(keys, range(3)))
@@ -569,7 +588,7 @@ def test_update(flavor: Flavor) -> None:
 
 @flavors()
 def test_update_from_pairs_preserves_distinct_identity_keys(flavor: Flavor) -> None:
-    """M8: pair iterables must not collapse equal-but-distinct keys."""
+    """A pair iterable must not collapse equal-but-distinct keys."""
     first, second = flavor.key(0), flavor.key(0)
     assert first == second and first is not second
 
@@ -585,7 +604,7 @@ def test_update_from_pairs_preserves_distinct_identity_keys(flavor: Flavor) -> N
 
 @flavors()
 def test_clear(flavor: Flavor) -> None:
-    """M9."""
+    """``clear`` empties the dictionary."""
     d, keys, _ = build(flavor)
     d.clear()
     assert_model(d, {}, absent=keys)
@@ -593,7 +612,7 @@ def test_clear(flavor: Flavor) -> None:
 
 @flavors()
 def test_copy(flavor: Flavor) -> None:
-    """M10: preserves the subclass, shares keys and values, is independent."""
+    """``copy`` keeps the subclass, shares keys and values, and is independent."""
     d, keys, model = build(flavor)
     c = d.copy()
 
@@ -611,7 +630,7 @@ def test_copy(flavor: Flavor) -> None:
 
 @flavors()
 def test_deepcopy(flavor: Flavor) -> None:
-    """M11: keys by identity, values deep-copied."""
+    """``deepcopy`` keeps the keys by identity but copies the values."""
     d = flavor.cls()
     keys = flavor.keys(2)
     for i, k in enumerate(keys):
@@ -627,7 +646,10 @@ def test_deepcopy(flavor: Flavor) -> None:
 
 @flavors()
 def test_union_operators(flavor: Flavor) -> None:
-    """M12: ports ``test_weak_keyed_union_operators`` from both upstreams."""
+    """``|``, ``|=`` and reflected ``|`` agree with the union, and keep the subclass.
+
+    Ports ``test_weak_keyed_union_operators`` from both upstreams.
+    """
     o1, o2, o3 = flavor.keys(3)
     wkd1 = flavor.cls({o1: 1, o2: 2})
     wkd2 = flavor.cls({o3: 3, o1: 4})
@@ -663,7 +685,7 @@ def test_union_operators(flavor: Flavor) -> None:
 
 @flavors()
 def test_union_with_a_non_mapping(flavor: Flavor) -> None:
-    """M12."""
+    """``|`` against a non-mapping raises TypeError."""
     d, _, _ = build(flavor)
     # The annotations now reject these statically too, which is the point.
     with pytest.raises(TypeError):
@@ -674,7 +696,7 @@ def test_union_with_a_non_mapping(flavor: Flavor) -> None:
 
 @flavors()
 def test_eq_is_identity_based(flavor: Flavor) -> None:
-    """M13: equality compares key *identity*, not key equality."""
+    """Equality compares key *identity*, not key equality."""
     d, keys, _ = build(flavor)
 
     assert d == d
@@ -694,13 +716,16 @@ def test_eq_is_identity_based(flavor: Flavor) -> None:
 
 @flavors()
 def test_repr(flavor: Flavor) -> None:
-    """M14: ports ``test_make_weak_keyed_dict_repr``; names the actual subclass."""
+    """``repr`` names the actual subclass, and its address.
+
+    Ports ``test_make_weak_keyed_dict_repr``.
+    """
     assert re.fullmatch(rf"<{flavor.cls.__name__} at 0x[0-9a-f]+>", repr(flavor.cls()))
 
 
 @flavors()
 def test_keyrefs(flavor: Flavor) -> None:
-    """M16."""
+    """``keyrefs`` dereference to exactly the live keys, and hash as their ids."""
     d, keys, _ = build(flavor)
     refs = d.keyrefs()
     assert sorted(id(r()) for r in refs) == sorted(id(k) for k in keys)
@@ -709,7 +734,7 @@ def test_keyrefs(flavor: Flavor) -> None:
 
 @flavors()
 def test_views_are_generators(flavor: Flavor) -> None:
-    """M17."""
+    """``keys``, ``values`` and ``items`` are generators rather than views."""
     d, keys, _ = build(flavor)
     for view in (d.keys(), d.values(), d.items(), iter(d)):
         assert hasattr(view, "__iter__") and hasattr(view, "__next__")
@@ -720,7 +745,10 @@ def test_views_are_generators(flavor: Flavor) -> None:
 
 @classes
 def test_hostile_keys_are_supported(cls: type[AnyDict]) -> None:
-    """M18: the fork's premise -- keys whose ``__eq__``/``__hash__`` are unusable."""
+    """Keys whose ``__eq__`` and ``__hash__`` are unusable work throughout.
+
+    The fork's premise: a stock dict cannot even be built from one of these.
+    """
     d = cls()
     a, b = Hostile(), Hostile()
     d[a] = "a"
@@ -753,7 +781,11 @@ def make_dict(flavor: Flavor, n: int = 10) -> tuple[AnyDict, list]:
 
 
 def test_weak_bad_key_types() -> None:
-    """K1: ports ``test_weak_keyed_bad_delitem``."""
+    """A key that cannot be weakly referenced raises, except for ``in``.
+
+    Membership has to answer rather than raise, since ``x in d`` is legal for any
+    ``x``. Ports ``test_weak_keyed_bad_delitem``.
+    """
     d: typing.Any = WeakIdKeyDictionary()
     o = Obj(1)
 
@@ -778,7 +810,7 @@ def test_weak_bad_key_types() -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_death_removes_the_entry(flavor: Flavor) -> None:
-    """K2, K3: the entry goes when the key does, and the dict never keeps it."""
+    """The entry goes when its key does, and the dictionary never keeps a key alive."""
     d = flavor.cls()
     keys = flavor.keys(3)
     for i, k in enumerate(keys):
@@ -797,7 +829,7 @@ def test_death_removes_the_entry(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_dict_level_aba(flavor: Flavor) -> None:
-    """K4: a new object reusing a dead key's address is not in the dictionary.
+    """A new object reusing a dead key's address is not in the dictionary.
 
     As in ``test_weak_ref_aba``, no collection between the two allocations: the
     key dies by refcount at the ``del``, and collecting in between makes the
@@ -823,7 +855,7 @@ def test_dict_level_aba(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_removal_is_deferred_while_iterating(flavor: Flavor) -> None:
-    """K5: a death mid-iteration is deferred, but never visible in ``len``.
+    """A death mid-iteration is deferred, but never visible in ``len``.
 
     The entry stays in place until the iterator is dropped -- otherwise the walk
     would mutate the dictionary underneath itself -- so the dead reference is
@@ -849,7 +881,10 @@ def test_removal_is_deferred_while_iterating(flavor: Flavor) -> None:
 @flavors(WEAK_FLAVORS)
 @pytest.mark.parametrize("iter_name", ["keys", "items", "values", "keyrefs"])
 def test_destroy_while_iterating(flavor: Flavor, iter_name: str) -> None:
-    """K6: ports cpython's ``check_weak_destroy_while_iterating``."""
+    """A key dying mid-walk neither breaks the iterator nor loses the removal.
+
+    Ports cpython's ``check_weak_destroy_while_iterating``.
+    """
     d, objs = make_dict(flavor)
     n = len(d)
     it = iter(getattr(d, iter_name)())
@@ -879,7 +914,10 @@ def killing_one_key(d: AnyDict, objs: list) -> collections.abc.Iterator[typing.A
 
 @flavors(WEAK_FLAVORS)
 def test_destroy_and_mutate_while_iterating(flavor: Flavor) -> None:
-    """K7: ports cpython's ``check_weak_destroy_and_mutate_while_iterating``."""
+    """Every mutation still behaves while removals are pending.
+
+    Ports cpython's ``check_weak_destroy_and_mutate_while_iterating``.
+    """
     d, objs = make_dict(flavor)
     k, v = flavor.key(99), "v"
 
@@ -908,10 +946,10 @@ def test_destroy_and_mutate_while_iterating(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_del_and_len_while_iterating(flavor: Flavor) -> None:
-    """K8: ports cpython's ``check_weak_del_and_len_while_iterating``.
+    """``len`` stays exact across pop, popitem, del and insert with removals pending.
 
-    This is the extensional exercise of the pending-removal bookkeeping that
-    cpython issue #21173 added ``_scrub_removals`` for.
+    Ports cpython's ``check_weak_del_and_len_while_iterating``, the extensional
+    exercise of the bookkeeping cpython issue #21173 added ``_scrub_removals`` for.
     """
     d, objs = make_dict(flavor)
     extra = flavor.key(123456)
@@ -942,7 +980,7 @@ def test_del_and_len_while_iterating(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_explicit_delete_then_death_while_iterating(flavor: Flavor) -> None:
-    """K9: a key deleted by hand and *then* collected is not counted twice."""
+    """A key deleted by hand and *then* collected is not counted twice."""
     d, objs = make_dict(flavor)
     it = iter(d.items())
     next(it)
@@ -960,7 +998,7 @@ def test_explicit_delete_then_death_while_iterating(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_copy_skips_dead_keys(flavor: Flavor) -> None:
-    """K10."""
+    """``copy`` and ``deepcopy`` skip dead keys rather than raising."""
     d, objs = make_dict(flavor, n=4)
     del objs[1:3]
     gc_collect()
@@ -972,7 +1010,10 @@ def test_copy_skips_dead_keys(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_len_with_cycles(flavor: Flavor) -> None:
-    """K11: ports cpython's ``check_len_cycles``."""
+    """``len`` settles to zero once cyclic keys are collected.
+
+    Ports cpython's ``check_len_cycles``.
+    """
     n = 20
     items = [RefCycle() for _ in range(n)]
     d = flavor.cls({o: 1 for o in items})
@@ -991,7 +1032,10 @@ def test_len_with_cycles(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_len_race_against_the_collector(flavor: Flavor) -> None:
-    """K11: ports cpython's ``check_len_race``."""
+    """``len`` stays within bounds however the collector interleaves.
+
+    Ports cpython's ``check_len_race``.
+    """
     thresholds = gc.get_threshold()
     try:
         for th in range(1, 100, 7):
@@ -1015,7 +1059,7 @@ def test_len_race_against_the_collector(flavor: Flavor) -> None:
 
 @flavors(WEAK_FLAVORS)
 def test_clear_with_only_dead_keys(flavor: Flavor) -> None:
-    """M9, K10: ``clear`` drives ``popitem``, which must survive dead refs."""
+    """``clear`` drives ``popitem``, which must survive a map of only dead keys."""
     d, objs = make_dict(flavor, n=3)
     del objs[:]
     gc_collect()
@@ -1024,12 +1068,12 @@ def test_clear_with_only_dead_keys(flavor: Flavor) -> None:
 
 
 ###############################################################################
-# Strong keys: IdKeyDictionary
+# Strong keys: StrongIdKeyDictionary
 ###############################################################################
 
 
 def test_id_key_dictionary_keeps_keys_alive() -> None:
-    """S1, S3."""
+    """A strong dictionary keeps its keys alive, and its entries with them."""
     d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     k = Obj(1)
     probe = weakref.ref(k)
@@ -1048,7 +1092,7 @@ def test_id_key_dictionary_keeps_keys_alive() -> None:
     "key", [v for _, v in NON_WEAKREFABLE], ids=[n for n, _ in NON_WEAKREFABLE]
 )
 def test_id_key_dictionary_accepts_non_weakrefable_keys(key: typing.Any) -> None:
-    """S2: including unhashable ones such as list and dict."""
+    """A strong dictionary takes any key, including unhashable ones."""
     d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     d[key] = "v"
     assert d[key] == "v"
@@ -1059,7 +1103,7 @@ def test_id_key_dictionary_accepts_non_weakrefable_keys(key: typing.Any) -> None
 
 
 def test_id_key_dictionary_is_stable_across_collection() -> None:
-    """S3, S4: nothing ever disappears on its own."""
+    """Nothing in a strong dictionary ever disappears on its own."""
     d, objs = make_dict(
         Flavor(StrongIdKeyDictionary, Obj, weak=False, label="strong/obj")
     )
@@ -1071,7 +1115,7 @@ def test_id_key_dictionary_is_stable_across_collection() -> None:
 
 
 def test_id_key_dictionary_accepts_string_kwargs() -> None:
-    """S2: ``update(**kwargs)``, which the weak dictionary cannot take."""
+    """``update(**kwargs)`` works, since string keys need no weak reference."""
     d: StrongIdKeyDictionary = StrongIdKeyDictionary()
     d.update(a=1, b=2)
     assert sorted((k, v) for k, v in d.items()) == [("a", 1), ("b", 2)]
@@ -1083,7 +1127,10 @@ def test_id_key_dictionary_accepts_string_kwargs() -> None:
 
 
 def test_auto_mixes_weak_and_strong_keys() -> None:
-    """A1, A2: one dictionary, two reference strengths, chosen per key."""
+    """One dictionary, two reference strengths, chosen per key.
+
+    Only the weakly referenceable entry is evictable.
+    """
     d: AutoIdKeyDictionary = AutoIdKeyDictionary()
     weak_key, strong_key = Obj(1), (1, 2)
     d[weak_key] = "weak"
@@ -1102,7 +1149,7 @@ def test_auto_mixes_weak_and_strong_keys() -> None:
 
 
 def test_auto_accepts_string_kwargs() -> None:
-    """A3."""
+    """``update(**kwargs)`` works here, where the weak dictionary raises."""
     d: AutoIdKeyDictionary = AutoIdKeyDictionary()
     d.update(a=1, b=2)
     assert sorted((k, v) for k, v in d.items()) == [("a", 1), ("b", 2)]
@@ -1121,7 +1168,7 @@ def snapshot(d: typing.Any) -> tuple:
     """Every observable that both implementations must agree on.
 
     Excludes ``repr``, ``type(d.copy())`` and the class of ``keyrefs()`` elements,
-    which legitimately differ; those are pinned by M10/M14/M16 instead.
+    which legitimately differ; the copy, repr and keyrefs tests pin those.
     """
     return (
         len(d),
@@ -1164,14 +1211,14 @@ OPS = [
 @pytest.mark.parametrize("seed", range(6))
 @classes
 def test_agrees_with_weak_key_dictionary(cls: type[AnyDict], seed: int) -> None:
-    """D1, D2, D3: identical observable behaviour on identity-semantics keys.
+    """Indistinguishable from the standard library on identity-semantics keys.
 
-    ``IdKeyDictionary`` agrees too, for a reason worth spelling out: it holds its
-    keys strongly, which keeps the *reference* implementation's entries alive as
-    well, so both dictionaries observe the same (empty) set of key deaths.
+    ``StrongIdKeyDictionary`` agrees too, for a reason worth spelling out: it
+    holds its keys strongly, which keeps the *reference* implementation's entries
+    alive as well, so both dictionaries observe the same (empty) set of deaths.
 
     Iterators are never left open on one side only -- that would defer removals
-    asymmetrically. Those cases are covered directly by the K tests.
+    asymmetrically. Those cases are covered by the iteration tests above.
     """
     rng = random.Random(seed)
     ref: typing.Any = weakref.WeakKeyDictionary()
@@ -1234,7 +1281,7 @@ def test_agrees_with_weak_key_dictionary(cls: type[AnyDict], seed: int) -> None:
 
 
 def test_diverges_from_weak_key_dictionary_on_equality_keys() -> None:
-    """D4: the witness that identity keying is not equality keying."""
+    """The witness that identity keying is not equality keying."""
     k1, k2 = Obj(1), Obj(1)
 
     ref: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -1248,7 +1295,7 @@ def test_diverges_from_weak_key_dictionary_on_equality_keys() -> None:
 
 
 def test_diverges_from_weak_key_dictionary_on_hostile_keys() -> None:
-    """D5: keys the standard library cannot hold at all."""
+    """Keys the standard library cannot hold at all."""
     k = Hostile()
 
     ref: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -1295,7 +1342,7 @@ PURE_FUNCTIONS = [
     "fn", [f for _, f in PURE_FUNCTIONS], ids=[n for n, _ in PURE_FUNCTIONS]
 )
 def test_memoize_agrees_with_the_bare_function(fn: typing.Any) -> None:
-    """F1, F4: same answers, including for None and other falsy results."""
+    """Memoizing does not change the answers, including None and other falsy ones."""
     memoized = weak_memoize(fn)
     keys = [Obj(i) for i in range(3)]
     for k in keys:
@@ -1304,7 +1351,7 @@ def test_memoize_agrees_with_the_bare_function(fn: typing.Any) -> None:
 
 
 def test_memoize_calls_once_per_argument() -> None:
-    """F2, F4."""
+    """The wrapped function runs once per argument, however often it is called."""
     fn = counted(lambda x: None)
     memoized = weak_memoize(fn)
     a, b = Obj(1), Obj(2)
@@ -1317,7 +1364,7 @@ def test_memoize_calls_once_per_argument() -> None:
 
 
 def test_memoize_keys_on_identity_not_equality() -> None:
-    """F3."""
+    """Equal-but-distinct arguments are memoized separately."""
     fn = counted(lambda x: x.arg)
     memoized = weak_memoize(fn)
     a, b = Obj(1), Obj(1)
@@ -1329,7 +1376,7 @@ def test_memoize_keys_on_identity_not_equality() -> None:
 
 
 def test_memoize_does_not_cache_exceptions() -> None:
-    """F5."""
+    """A raising call is not cached, so the next call tries again."""
     calls: list = []
 
     @weak_memoize
@@ -1345,7 +1392,7 @@ def test_memoize_does_not_cache_exceptions() -> None:
 
 
 def test_memoize_decorator_forms_agree() -> None:
-    """F6."""
+    """Bare, with arguments, and as a plain call all behave the same."""
     cache: AutoIdKeyDictionary = AutoIdKeyDictionary()
     bare = weak_memoize(counted(lambda x: x.arg))
     with_kwarg = weak_memoize(cache=cache)(counted(lambda x: x.arg))
@@ -1359,7 +1406,7 @@ def test_memoize_decorator_forms_agree() -> None:
 
 
 def test_memoize_uses_the_supplied_cache() -> None:
-    """F7."""
+    """The supplied cache is populated, and pre-seeding it short-circuits the call."""
     cache: AutoIdKeyDictionary = AutoIdKeyDictionary()
     fn = counted(lambda x: x.arg)
     memoized = weak_memoize(fn, cache=cache)
@@ -1377,7 +1424,7 @@ def test_memoize_uses_the_supplied_cache() -> None:
 CACHE_FACTORIES = [
     ("WeakKeyDictionary", weakref.WeakKeyDictionary),
     ("WeakIdKeyDictionary", WeakIdKeyDictionary),
-    ("IdKeyDictionary", StrongIdKeyDictionary),
+    ("StrongIdKeyDictionary", StrongIdKeyDictionary),
     ("AutoIdKeyDictionary", AutoIdKeyDictionary),
 ]
 
@@ -1386,7 +1433,7 @@ CACHE_FACTORIES = [
     "factory", [f for _, f in CACHE_FACTORIES], ids=[n for n, _ in CACHE_FACTORIES]
 )
 def test_memoize_works_with_every_cache_type(factory: typing.Any) -> None:
-    """F8."""
+    """Every cache type the signature admits memoizes."""
     fn = counted(lambda x: x.arg)
     memoized = weak_memoize(fn, cache=factory())
     keys = [Obj(i) for i in range(3)]
@@ -1398,7 +1445,7 @@ def test_memoize_works_with_every_cache_type(factory: typing.Any) -> None:
 
 
 def test_memoize_and_non_weakrefable_arguments() -> None:
-    """F9: the default cache takes them; an explicit weak cache does not."""
+    """A non-weakrefable argument: the default cache takes it, a weak cache does not."""
     fn = counted(lambda x: str(x))
     memoized = weak_memoize(fn)
     key = (1, 2)
@@ -1411,7 +1458,7 @@ def test_memoize_and_non_weakrefable_arguments() -> None:
 
 
 def test_memoize_is_scoped_to_the_arguments_lifetime() -> None:
-    """F10."""
+    """An entry disappears when the argument it was computed from does."""
     cache: AutoIdKeyDictionary = AutoIdKeyDictionary()
     fn = counted(lambda x: x.arg)
     memoized = weak_memoize(fn, cache=cache)
@@ -1427,7 +1474,7 @@ def test_memoize_is_scoped_to_the_arguments_lifetime() -> None:
 
 
 def test_memoize_keying_and_lifetime_follow_the_cache() -> None:
-    """F8, F10: what ``weak_memoize``'s docstring promises about each cache type.
+    """Neither the keying nor the entries' lifetime is fixed by ``weak_memoize``.
 
     Neither the identity keying nor the scoping to the argument's lifetime is a
     property of ``weak_memoize`` itself; both come from the cache, and the two
@@ -1455,7 +1502,7 @@ def test_memoize_keying_and_lifetime_follow_the_cache() -> None:
 
 
 def test_memoize_entry_survives_when_the_result_holds_the_argument() -> None:
-    """F11: the documented hazard of caching values that reference their key.
+    """An entry outlives its key if the value refers back to it.
 
     The entry can never be collected, because the value keeps the key alive. This
     is inherent to a weak-keyed cache; the test exists so that anyone changing the
@@ -1484,7 +1531,7 @@ def test_memoize_entry_survives_when_the_result_holds_the_argument() -> None:
 
 
 def test_memoize_preserves_wrapper_metadata() -> None:
-    """F12."""
+    """``__name__``, ``__doc__`` and ``__wrapped__`` come from the wrapped function."""
 
     def original(x: typing.Any) -> typing.Any:
         """A docstring."""
@@ -1497,7 +1544,7 @@ def test_memoize_preserves_wrapper_metadata() -> None:
 
 
 def test_memoize_agrees_with_functools_cache() -> None:
-    """F13: on identity-semantics arguments held alive, the two are the same cache."""
+    """On identity-semantics arguments held alive, this is ``functools.cache``."""
     reference = counted(lambda x: x.arg * 2)
     test = counted(lambda x: x.arg * 2)
     cached = functools.cache(reference)
