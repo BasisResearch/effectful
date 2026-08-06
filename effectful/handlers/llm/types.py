@@ -375,7 +375,7 @@ class Agent(abc.ABC):
     base classes.  Instance attributes are available in template
     docstrings via `{self.attr}`.
 
-    Set `self.agent_id` (a plain attribute, read lazily -- see below) to make
+    Set `self._agent_id` (a plain attribute, read lazily -- see below) to make
     this instance's history and declared dataclass fields persist across
     process restarts when a persistence handler (see
     `effectful.handlers.llm.completions.SQLitePersister`) is installed.
@@ -390,8 +390,8 @@ class Agent(abc.ABC):
     evaluation machinery). Nothing here depends on constructor timing, so
     there's no chaining requirement of any kind: `__agent_id__` and
     `__persistent__` are derived lazily, on first access, from whatever
-    `self.agent_id` happens to be at that point -- a subclass just needs
-    `self.agent_id` to end up set to a stable string, however it prefers to
+    `self._agent_id` happens to be at that point -- a subclass just needs
+    `self._agent_id` to end up set to a stable string, however it prefers to
     do that (a `@dataclass` field, a custom `__init__`, or nothing at all,
     for a transient instance).
 
@@ -448,18 +448,16 @@ class Agent(abc.ABC):
 
     """
 
-    agent_id: str | None = None
-
-    def __init__(self, *, agent_id: str | None = None) -> None:
-        self.agent_id = agent_id
+    def __init__(self, agent_id: str | None = None) -> None:
+        self._agent_id = agent_id
 
     @functools.cached_property
     def __persistent__(self) -> bool:
-        return self.agent_id is not None
+        return self._agent_id is not None
 
     @functools.cached_property
     def __agent_id__(self) -> str:
-        return self.agent_id if self.agent_id is not None else str(uuid.uuid4())
+        return self._agent_id if self._agent_id is not None else str(uuid.uuid4())
 
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
