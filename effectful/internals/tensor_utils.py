@@ -1,4 +1,3 @@
-import abc
 import collections.abc
 import functools
 import types
@@ -82,25 +81,19 @@ class _SizeAnalysis[T](typing.NamedTuple):
     shape: tuple[int, ...] | None = None
 
 
-class _BaseSizesofIntp[T](abc.ABC, ObjectInterpretation):
+class _BaseSizesofIntp[T](ObjectInterpretation):
     """Shared part of the analysis behind ``sizesof``.
 
-    The hook below is where the backends differ, and it has to answer exactly
-    as that backend's :func:`defdata` rule does. That rule decides whether an
-    indexed result is built eagerly, and so whether it has a shape at all; an
-    analysis that disagreed would predict a shape for a term that is never
-    built with one, or miss one that is. The default is the permissive answer,
-    which is what ``_embed_array`` gives; ``_embed_tensor`` is stricter about
-    what may name a dimension and overrides it.
+    A backend supplies the array type it analyses and wires its own getitem
+    operation to :meth:`_getitem`; the analysis itself is common to all of
+    them. What it decides about a getitem -- which entries name a dimension,
+    and whether the result is eager and so has a shape at all -- has to match
+    what that backend's :func:`defdata` rule decides, or the analysis will
+    predict a shape for a term that is never built with one, or miss one that
+    is.
     """
 
     arr_type: typing.ClassVar[type] = object
-
-    @classmethod
-    @abc.abstractmethod
-    def _names_dim(cls, op: Operation[[], T]) -> bool:
-        """Whether a bare call to ``op`` names a dimension of what it indexes."""
-        raise NotImplementedError
 
     @classmethod
     def _analysis(cls, value) -> _SizeAnalysis[T]:
@@ -134,7 +127,9 @@ class _BaseSizesofIntp[T](abc.ABC, ObjectInterpretation):
         analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
         return _SizeAnalysis(
             functools.reduce(self._merge, (a.sizes for a in analyses), {}),
-            _Name(op) if not (args or kwargs) and self._names_dim(op) else _OPAQUE,
+            # Only a bare call can name a dimension, which is the test each
+            # backend's ``defdata`` rule indexes eagerly under.
+            _Name(op) if not (args or kwargs) else _OPAQUE,
         )
 
     @implements(ConstructorOperation.__apply__)

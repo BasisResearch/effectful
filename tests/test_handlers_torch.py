@@ -248,8 +248,7 @@ def test_sizesof_nested_getitem():
 
     ``sizesof`` computes that shape itself rather than reading it off a rebuilt
     term, so these pin it against the conditions ``_embed_tensor`` builds an
-    eager term under: a concrete tensor indexed by a non-empty key whose every
-    term entry is a bare, tensor-typed name.
+    eager term under: a concrete tensor whose every term entry is a bare name.
     """
     a, b = defop(torch.Tensor, name="a"), defop(torch.Tensor, name="b")
 
@@ -261,21 +260,20 @@ def test_sizesof_nested_getitem():
     inner = torch_getitem(torch.ones(4, 5), (torch.arange(4), a()))
     assert sizesof(torch_getitem(inner, (b(),))) == {a: 5, b: 4}
 
-    # A subclass of torch.Tensor names a dimension just as torch.Tensor does,
-    # down to consuming it: with every dimension named there is nothing left to
-    # index into, and both fail alike.
+    # The type an index is declared with does not matter -- a bare call names a
+    # dimension whatever it returns, down to consuming it. With every dimension
+    # named there is nothing left to index into, and all of them fail alike.
     class _SubTensor(torch.Tensor):
         pass
 
     sub = defop(_SubTensor, name="sub")
+    n = defop(int, name="n")
+
     assert sizesof(torch_getitem(torch.ones(4, 5), (sub(), a()))) == {sub: 4, a: 5}
-    for name in (sub, defop(torch.Tensor, name="t")):
+    assert sizesof(torch_getitem(torch.ones(4, 5), (n(), a()))) == {n: 4, a: 5}
+    for name in (sub, n, defop(torch.Tensor, name="t")):
         with pytest.raises(IndexError):
             torch_getitem(torch_getitem(torch.ones(4, 5), (name(), a())), (b(),))
-
-    # An index that is not tensor-typed at all names nothing.
-    n = defop(int, name="n")
-    assert sizesof(torch_getitem(torch.ones(4, 5), (n(), a()))) == {a: 5}
 
 
 def test_sizesof_symbolic_key():

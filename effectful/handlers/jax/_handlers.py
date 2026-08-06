@@ -144,10 +144,6 @@ def jax_getitem(x: jax.Array, key: tuple[IndexElement[jax.Array], ...]) -> jax.A
 class _SizesofIntp(_BaseSizesofIntp[jax.Array]):
     arr_type: typing.ClassVar[type] = jax.Array
 
-    @classmethod
-    def _names_dim(cls, op: Operation[[], jax.Array]) -> bool:
-        return True
-
     @implements(jax_getitem)
     def _jax_getitem(self, arr, key):
         return self._getitem(arr, key)
