@@ -497,12 +497,20 @@ class WeakIdKeyDictionary[K, V](collections.abc.MutableMapping[K, V]):
     ) -> None:
         d = self.data
         if dict is not None:
-            # Any because the fallback is whatever the builtin dict() accepts,
-            # which covers both forms above and is not expressible as a type.
+            # Any because "whatever the builtin dict() accepts" covers all three
+            # forms below and is not expressible as a type.
             source: typing.Any = dict
-            if not hasattr(source, "items"):
-                source = type({})(source)
-            for key, value in source.items():
+            items: typing.Any
+            if hasattr(source, "items"):
+                items = source.items()
+            elif hasattr(source, "keys"):
+                items = ((k, source[k]) for k in source.keys())
+            else:
+                # An iterable of pairs, walked directly. Upstream builds a plain
+                # dict out of it first, which would collapse equal-but-distinct
+                # keys -- the very thing this dictionary exists not to do.
+                items = source
+            for key, value in items:
                 d[self.ref_type(key, self._remove)] = value
         if kwargs:
             # Only well typed when K is str, which no annotation here can say.
