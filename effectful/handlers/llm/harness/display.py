@@ -17,7 +17,7 @@ import rich.styled
 import rich.syntax
 import rich.text
 
-from effectful.handlers.llm.hooks import (
+from effectful.handlers.llm.harness.hooks import (
     Message,
     _BoxedResponse,
     call_system,

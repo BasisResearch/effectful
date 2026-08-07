@@ -8,7 +8,7 @@ import typing
 
 import pydantic
 
-from effectful.handlers.llm.hooks import (
+from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     call_assistant,
     call_system,

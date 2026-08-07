@@ -448,16 +448,13 @@ class Agent(abc.ABC):
 
     """
 
-    def __init__(self, agent_id: str | None = None) -> None:
-        self._agent_id = agent_id
-
     @functools.cached_property
     def __persistent__(self) -> bool:
-        return self._agent_id is not None
+        return len(self.__agent_id__) > 0 and not self.__agent_id__.startswith("EPHEMERAL-")
 
     @functools.cached_property
     def __agent_id__(self) -> str:
-        return self._agent_id if self._agent_id is not None else str(uuid.uuid4())
+        return f"EPHEMERAL-{uuid.uuid4()}"
 
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:

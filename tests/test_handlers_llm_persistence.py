@@ -20,11 +20,11 @@ from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.harness.durability import TenacityRetryer
-from effectful.handlers.llm.harness.persistence import SQLitePersister
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.hooks import (
+from effectful.handlers.llm.harness.hooks import (
     completion,
 )
+from effectful.handlers.llm.harness.persistence import SQLitePersister
+from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -34,8 +34,10 @@ from effectful.ops.types import NotHandled
 # ---------------------------------------------------------------------------
 
 
+@dataclasses.dataclass
 class _Bot(Agent):
     """A minimal test bot. Pass `agent_id` to make it persistent."""
+    __agent_id__: str = ""
 
     @Template.define
     def ask(self, q: str) -> str:
@@ -43,7 +45,7 @@ class _Bot(Agent):
         raise NotHandled
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass
 class _StatefulBot(Agent):
     """A test bot with dataclass state to checkpoint alongside history.
 
@@ -53,7 +55,7 @@ class _StatefulBot(Agent):
     `self.agent_id`, whichever way it ends up set.
     """
 
-    agent_id: str | None = None
+    __agent_id__: str = ""
     counter: int = 0
     label: str = "x"
 
@@ -86,7 +88,7 @@ class _PlainHelper(Agent):
         raise NotHandled
 
 
-@dataclasses.dataclass(kw_only=True)
+@dataclasses.dataclass
 class _DelegatingBot(Agent):
     """A bot that delegates to another agent.
 
@@ -96,7 +98,7 @@ class _DelegatingBot(Agent):
     that (if persistent) already checkpoints itself independently.
     """
 
-    agent_id: str | None = None
+    __agent_id__: str
     helper: Agent = dataclasses.field(metadata={"persist": False})
 
     @Template.define
@@ -234,17 +236,17 @@ class TestAgentPersistenceOptIn:
         assert _Bot().__persistent__ is False
 
     def test_explicit_agent_id_marks_agent_persistent(self):
-        assert _Bot(agent_id="p1").__persistent__ is True
+        assert _Bot("p1").__persistent__ is True
 
     def test_construction_never_requires_a_handler(self):
         # Persistence is opt-in and best-effort: constructing (even with an
         # explicit agent_id) never touches the database and never raises,
         # regardless of whether a handler is active.
-        bot = _Bot(agent_id="no-handler")
+        bot = _Bot("no-handler")
         assert dict(bot.__history__) == {}
 
     def test_agent_id_is_stable_across_instances(self):
-        a, b = _Bot(agent_id="shared"), _Bot(agent_id="shared")
+        a, b = _Bot("shared"), _Bot("shared")
         assert a.__agent_id__ == b.__agent_id__ == "shared"
 
         # Contrast with a transient Agent: two instances always get distinct,
@@ -254,7 +256,7 @@ class TestAgentPersistenceOptIn:
         assert p1.__agent_id__ != p2.__agent_id__
 
     def test_bound_template_exposes_agent_instance(self):
-        bot = _Bot(agent_id="x")
+        bot = _Bot(__agent_id__="x")
         assert bot.ask.__agent__ is bot
 
 
@@ -264,27 +266,27 @@ class TestCheckpointStateDefaults:
     marked `persist: False`."""
 
     def test_dataclass_fields_are_captured(self):
-        bot = _StatefulBot(agent_id="s1", counter=5, label="hi")
+        bot = _StatefulBot(__agent_id__="s1", counter=5, label="hi")
         assert SQLitePersister._checkpoint_state(bot) == {"counter": 5, "label": "hi"}
 
     def test_non_dataclass_agent_has_empty_state(self):
-        bot = _Bot(agent_id="p1")
+        bot = _Bot("p1")
         assert SQLitePersister._checkpoint_state(bot) == {}
 
     def test_persist_false_field_is_excluded(self):
         """`_DelegatingBot.helper` is itself an independently checkpointed
         agent -- excluding it prevents it from being embedded as a
         duplicate, divergent copy inside the delegator's own checkpoint."""
-        orch = _DelegatingBot(agent_id="orch1", helper=_PlainHelper())
+        orch = _DelegatingBot(__agent_id__="orch1", helper=_PlainHelper())
         assert SQLitePersister._checkpoint_state(orch) == {}
 
     def test_unpicklable_field_raises_instead_of_silently_dropping(self, tmp_path):
         """Unlike the old JSON-based design (which silently dropped any field
         that wasn't JSON-serialisable), pickling fails loudly."""
 
-        @dataclasses.dataclass(kw_only=True)
+        @dataclasses.dataclass
         class _LockBot(Agent):
-            agent_id: str | None = None
+            __agent_id__: str
             handle: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
             @Template.define
@@ -297,7 +299,7 @@ class TestCheckpointStateDefaults:
             handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
             handler(SQLitePersister(db_path)),
         ):
-            bot = _LockBot(agent_id="lock1")
+            bot = _LockBot(__agent_id__="lock1")
             with pytest.raises(TypeError):
                 bot.ask("hi")
 
@@ -314,7 +316,7 @@ class TestCheckpointPersistence:
             handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
             handler(SQLitePersister(db_path)),
         ):
-            bot = _Bot(agent_id="wal1")
+            bot = _Bot(__agent_id__="wal1")
             bot.ask("hi")
 
         assert db_path.exists()
@@ -329,7 +331,7 @@ class TestCheckpointPersistence:
             handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
             handler(SQLitePersister(db_path)),
         ):
-            bot = _Bot(agent_id="f1")
+            bot = _Bot(__agent_id__="f1")
             bot.ask("hi")
 
         row = _load_row(db_path, "f1")
@@ -345,7 +347,7 @@ class TestCheckpointPersistence:
             ),
             handler(SQLitePersister(db_path)),
         ):
-            bot = _Bot(agent_id="idem1")
+            bot = _Bot(__agent_id__="idem1")
             bot.ask("first")
             bot.ask("second")
 
@@ -365,13 +367,13 @@ class TestCheckpointPersistence:
             handler(_FakeAgentCalls([("hi a", "hi a reply", "hi a reply")])),
             handler(SQLitePersister(db_path)),
         ):
-            _Bot(agent_id="ma").ask("hi a")
+            _Bot(__agent_id__="ma").ask("hi a")
 
         with (
             handler(_FakeAgentCalls([("hi b", "hi b reply", "hi b reply")])),
             handler(SQLitePersister(db_path)),
         ):
-            _Bot(agent_id="mb").ask("hi b")
+            _Bot(__agent_id__="mb").ask("hi b")
 
         row_a, row_b = _load_row(db_path, "ma"), _load_row(db_path, "mb")
         assert row_a is not None and row_b is not None
@@ -389,10 +391,10 @@ class TestCheckpointPersistence:
             handler(_FakeAgentCalls([("before restart", "ack", "ack")])),
             handler(SQLitePersister(db_path)),
         ):
-            _Bot(agent_id="restart1").ask("before restart")
+            _Bot(__agent_id__="restart1").ask("before restart")
 
         with handler(SQLitePersister(db_path)):
-            fresh = _Bot(agent_id="restart1")
+            fresh = _Bot(__agent_id__="restart1")
             assert fresh.__history__["u0"]["content"] == "before restart"
 
     def test_history_access_outside_handler_scope_does_not_load(self, tmp_path):
@@ -405,9 +407,9 @@ class TestCheckpointPersistence:
             handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
             handler(SQLitePersister(db_path)),
         ):
-            _Bot(agent_id="scoped1").ask("hi")
+            _Bot(__agent_id__="scoped1").ask("hi")
 
-        fresh = _Bot(agent_id="scoped1")
+        fresh = _Bot(__agent_id__="scoped1")
         assert dict(fresh.__history__) == {}
 
 
@@ -417,7 +419,7 @@ class TestAutomaticCheckpointing:
         fake = _FakeAgentCalls([("hi", "hello!", "hello!")])
 
         with handler(fake), handler(SQLitePersister(db_path)):
-            bot = _Bot(agent_id="auto1")
+            bot = _Bot(__agent_id__="auto1")
             result = bot.ask("hi")
 
         assert result == "hello!"
@@ -440,7 +442,7 @@ class TestAutomaticCheckpointing:
                 handler(_FakeAgentCalls([_boom])),
                 handler(SQLitePersister(db_path)),
             ):
-                bot = _Bot(agent_id="fail1")
+                bot = _Bot(__agent_id__="fail1")
                 bot.ask("hi")
 
         assert _load_row(db_path, "fail1") is None
@@ -456,7 +458,7 @@ class TestAutomaticCheckpointing:
                 handler(_FakeAgentCalls([_boom])),
                 handler(SQLitePersister(db_path)),
             ):
-                bot = _Bot(agent_id="clear1")
+                bot = _Bot(__agent_id__="clear1")
                 bot.ask("first")
 
         assert _load_row(db_path, "clear1") is None
@@ -477,7 +479,7 @@ class TestAutomaticCheckpointing:
         fake = _FakeAgentCalls([("hi", "hello", "hello")])
 
         with handler(fake), handler(SQLitePersister(db_path)):
-            bot = _StatefulBot(agent_id="state1", counter=7)
+            bot = _StatefulBot(__agent_id__="state1", counter=7)
             bot.ask("hi")
 
         conn = sqlite3.connect(str(db_path))
@@ -514,7 +516,7 @@ class TestNestingAndPersistence:
 
         fake = _FakeAgentCalls([_outer, ("nested q", "inner reply", "inner reply")])
         persist = SQLitePersister(db_path)
-        bot = _NestingBot(agent_id="nest1")
+        bot = _NestingBot(__agent_id__="nest1")
 
         # There's no separate `save()` to spy on (checkpoint-writing is
         # inlined into `_call`), so count checkpoint-connection opens
@@ -561,7 +563,7 @@ class TestNestingAndPersistence:
 
         fake = _FakeAgentCalls([_outer, _inner_boom])
         persist = SQLitePersister(db_path)
-        bot = _NestingBot(agent_id="nestfail1")
+        bot = _NestingBot(__agent_id__="nestfail1")
 
         with pytest.raises(RuntimeError):
             with handler(fake), handler(persist):
@@ -578,7 +580,7 @@ class TestNestingAndPersistence:
             return f"orchestrated: {result}"
 
         fake = _FakeAgentCalls([_run, ("sub-question", "sub-answer", "sub-answer")])
-        orch = _DelegatingBot(agent_id="orch1", helper=helper)
+        orch = _DelegatingBot(__agent_id__="orch1", helper=helper)
 
         with handler(fake), handler(SQLitePersister(db_path)):
             result = orch.run("go")
@@ -599,8 +601,8 @@ class TestNestingAndPersistence:
         self, tmp_path
     ):
         db_path = tmp_path / "checkpoints.db"
-        helper = _Bot(agent_id="helper1")
-        orch = _DelegatingBot(agent_id="orch3", helper=helper)
+        helper = _Bot(__agent_id__="helper1")
+        orch = _DelegatingBot(__agent_id__="orch3", helper=helper)
 
         def _run(template, args, kwargs):
             return f"orchestrated: {helper.ask('sub-question')}"
@@ -639,7 +641,7 @@ class TestHandlerComposition:
             handler(TenacityRetryer()),
             handler(SQLitePersister(db_path)),
         ):
-            bot = _Bot(agent_id="compose1")
+            bot = _Bot(__agent_id__="compose1")
             result = bot.ask("go")
 
         assert result == "done"
@@ -654,7 +656,7 @@ class TestHandlerComposition:
         checkpoint load, no save, no crash. Persistence is best-effort,
         gated entirely on whether a handler happens to be active whenever
         `__history__` is touched."""
-        bot = _Bot(agent_id="nopersist1")
+        bot = _Bot(__agent_id__="nopersist1")
 
         mock = MockCompletionHandler([make_text_response("fine")])
         with handler(LiteLLMProvider(model="test")), handler(mock):
@@ -680,7 +682,7 @@ class TestThreadSafety:
                     ),
                     handler(persist),
                 ):
-                    bot = _Bot(agent_id=f"thread-{i}")
+                    bot = _Bot(__agent_id__=f"thread-{i}")
                     bot.ask(f"msg {i}")
             except Exception as e:  # noqa: BLE001
                 errors.append(e)

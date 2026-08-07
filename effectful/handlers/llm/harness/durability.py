@@ -3,8 +3,7 @@ import typing
 
 import tenacity
 
-from effectful.handlers.llm.harness.serialization import DecodedToolCall
-from effectful.handlers.llm.hooks import (
+from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     ResultDecodingError,
     ToolCallDecodingError,
@@ -15,6 +14,7 @@ from effectful.handlers.llm.hooks import (
     call_assistant,
     call_tool,
 )
+from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.handlers.llm.types import Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
