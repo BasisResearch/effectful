@@ -52,8 +52,8 @@ def _add_cache_control_to_history(
                 history[key] = typing.cast(Message, {**msg, "content": new_content})
 
 
-class LiteLLMProvider(ObjectInterpretation):
-    """Implements templates using the LiteLLM API."""
+class LiteLLMConfigurer(ObjectInterpretation):
+    """Configures the LiteLLM API."""
 
     config: collections.abc.Mapping[str, typing.Any]
 
@@ -68,6 +68,10 @@ class LiteLLMProvider(ObjectInterpretation):
         """Inject the provider's configuration (model and bound litellm kwargs)
         into the low-level request before delegating."""
         return fwd(*args, **{**self.config, **kwargs})
+
+
+class LiteLLMProvider(LiteLLMConfigurer):
+    """Implements templates using the LiteLLM API."""
 
     @implements(Template.__apply__)
     def _call[**P, T](
