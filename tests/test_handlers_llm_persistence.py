@@ -34,10 +34,11 @@ from effectful.ops.types import NotHandled
 # ---------------------------------------------------------------------------
 
 
-@dataclasses.dataclass
 class _Bot(Agent):
     """A minimal test bot. Pass `agent_id` to make it persistent."""
-    __agent_id__: str = ""
+
+    def __init__(self, __agent_id__: str = "") -> None:
+        self.__agent_id__ = __agent_id__
 
     @Template.define
     def ask(self, q: str) -> str:
@@ -65,8 +66,11 @@ class _StatefulBot(Agent):
         raise NotHandled
 
 
+@dataclasses.dataclass
 class _NestingBot(Agent):
     """A test bot with two templates, for nested-call tests."""
+
+    __agent_id__: str = ""
 
     @Template.define
     def outer(self, task: str) -> str:
@@ -233,10 +237,10 @@ class TestAgentPersistenceOptIn:
     `SQLitePersister`. Omitting it is a normal, transient agent."""
 
     def test_omitting_agent_id_yields_transient_agent(self):
-        assert _Bot().__persistent__ is False
+        assert _Bot().__is_persistent__ is False
 
     def test_explicit_agent_id_marks_agent_persistent(self):
-        assert _Bot("p1").__persistent__ is True
+        assert _Bot("p1").__is_persistent__ is True
 
     def test_construction_never_requires_a_handler(self):
         # Persistence is opt-in and best-effort: constructing (even with an
@@ -253,6 +257,7 @@ class TestAgentPersistenceOptIn:
         # randomly-generated ids -- this is exactly the property that makes
         # cross-restart resumption possible for a persistent one.
         p1, p2 = _PlainHelper(), _PlainHelper()
+        assert not p1.__is_persistent__ and not p2.__is_persistent__
         assert p1.__agent_id__ != p2.__agent_id__
 
     def test_bound_template_exposes_agent_instance(self):

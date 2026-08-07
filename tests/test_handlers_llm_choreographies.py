@@ -205,7 +205,11 @@ class TestChoreography:
         assert mock.calls_for("coder") == ["coder.implement"]
 
     def test_every_agent_computes_the_same_result(self):
-        agents = [Architect(__agent_id__="a"), Coder(__agent_id__="c"), Reviewer(__agent_id__="r")]
+        agents = [
+            Architect(__agent_id__="a"),
+            Coder(__agent_id__="c"),
+            Reviewer(__agent_id__="r"),
+        ]
         architect, coder, reviewer = agents
 
         seen: list[Any] = []

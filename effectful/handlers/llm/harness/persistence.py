@@ -126,7 +126,7 @@ class SQLitePersister(ObjectInterpretation):
         return {
             f.name: getattr(agent, f.name)
             for f in dataclasses.fields(agent)
-            if f.name != "agent_id" and f.metadata.get("persist", True)
+            if f.name != "__agent_id__" and f.metadata.get("persist", True)
         }
 
     @implements(Template.__apply__)
@@ -134,7 +134,7 @@ class SQLitePersister(ObjectInterpretation):
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         agent = getattr(template, "__agent__", None)
-        if not isinstance(agent, Agent) or not agent.__persistent__:
+        if not isinstance(agent, Agent) or not agent.__is_persistent__:
             return fwd()
 
         with self._scope(agent.__agent_id__) as is_outermost:

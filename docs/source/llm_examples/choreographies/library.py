@@ -349,7 +349,6 @@ class EndpointProjection(ObjectInterpretation):
         executor: concurrent.futures.Executor | None = None,
     ) -> None:
         self._agent = agent
-        self._agent_id = agent.__agent_id__
         self._steps = steps
         self._agent_ids = agent_ids
         self._executor = executor
@@ -359,6 +358,10 @@ class EndpointProjection(ObjectInterpretation):
         step_id = f"step-{self._step:04d}"
         self._step += 1
         return step_id
+
+    @property
+    def _agent_id(self) -> str:
+        return self._agent.__agent_id__
 
     @implements(step)
     def _step(self, template: Callable, *args, **kwargs) -> Awaitable:

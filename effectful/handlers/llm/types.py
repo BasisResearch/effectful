@@ -290,6 +290,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
+            result.__is_persistent__ = instance.__is_persistent__  # type: ignore[attr-defined]
             result.__agent_id__ = instance.__agent_id__  # type: ignore[attr-defined]
             result.__agent__ = instance  # type: ignore[attr-defined]
         return result
@@ -375,7 +376,7 @@ class Agent(abc.ABC):
     base classes.  Instance attributes are available in template
     docstrings via `{self.attr}`.
 
-    Set `self._agent_id` (a plain attribute, read lazily -- see below) to make
+    Set `self.__agent_id__` (a plain attribute, read lazily -- see below) to make
     this instance's history and declared dataclass fields persist across
     process restarts when a persistence handler (see
     `effectful.handlers.llm.completions.SQLitePersister`) is installed.
@@ -390,8 +391,8 @@ class Agent(abc.ABC):
     evaluation machinery). Nothing here depends on constructor timing, so
     there's no chaining requirement of any kind: `__agent_id__` and
     `__persistent__` are derived lazily, on first access, from whatever
-    `self._agent_id` happens to be at that point -- a subclass just needs
-    `self._agent_id` to end up set to a stable string, however it prefers to
+    `self.__agent_id__` happens to be at that point -- a subclass just needs
+    `self.__agent_id__` to end up set to a stable string, however it prefers to
     do that (a `@dataclass` field, a custom `__init__`, or nothing at all,
     for a transient instance).
 
@@ -448,20 +449,27 @@ class Agent(abc.ABC):
 
     """
 
-    @functools.cached_property
-    def __persistent__(self) -> bool:
-        return len(self.__agent_id__) > 0 and not self.__agent_id__.startswith("EPHEMERAL-")
+    def __init__(self, __agent_id__: str | None = None):
+        if __agent_id__ is not None:
+            self.__agent_id__ = __agent_id__
 
-    @functools.cached_property
-    def __agent_id__(self) -> str:
-        return f"EPHEMERAL-{uuid.uuid4()}"
+    __agent_id__: str
+
+    @property
+    @typing.final
+    def __is_persistent__(self) -> bool:
+        if not hasattr(self, "__agent_id__"):
+            self.__agent_id__ = f"EPHEMERAL-{uuid.uuid4()}"
+        return len(self.__agent_id__) > 0 and not self.__agent_id__.startswith(
+            "EPHEMERAL-"
+        )
 
     @functools.cached_property
     def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
         history: collections.OrderedDict[str, Mapping[str, typing.Any]] = (
             collections.OrderedDict()
         )
-        if self.__persistent__:
+        if self.__is_persistent__:
             # Deferred import: completions.py imports Agent/Template from this
             # module, so this can only be resolved at call time, not at module
             # load time. The query below and `SQLitePersister.__init__`'s
