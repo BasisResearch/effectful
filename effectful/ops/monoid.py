@@ -1271,6 +1271,16 @@ class SumPlus(ObjectInterpretation):
         return -value
 
 
+class SumInverse(ObjectInterpretation):
+    """Scalar implementation of :meth:`Sum.inverse`."""
+
+    @implements(Sum.inverse)
+    def inverse(self, value):
+        if isinstance(value, Term) or not isinstance(value, int | float):
+            return fwd()
+        return -value
+
+
 class MinPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Min`."""
 
@@ -1842,6 +1852,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
+    SumInverse(),
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
