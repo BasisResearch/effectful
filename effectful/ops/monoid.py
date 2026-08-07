@@ -892,6 +892,34 @@ class ReducePartial(ObjectInterpretation):
         return fwd()
 
 
+class PlusPartial(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        """Evaluate maximal concrete runs without reordering symbolic operands."""
+        n_concrete = sum(len(fvsof(arg)) == 0 for arg in args)
+        if n_concrete <= 0 or n_concrete >= len(args):
+            return fwd()
+
+        progress = False
+        new_args = []
+        run = []
+        for arg in args:
+            if fvsof(arg):
+                if run:
+                    new_args.append(monoid.plus(*run) if len(run) > 1 else run[0])
+                    progress |= len(run) > 1
+                    run = []
+                new_args.append(arg)
+            else:
+                run.append(arg)
+        if run:
+            progress |= len(run) > 1
+            new_args.append(monoid.plus(*run) if len(run) > 1 else run[0])
+        if not progress:
+            return fwd()
+        return monoid.plus(*new_args)
+
+
 class ReduceFusion(ObjectInterpretation):
     """Implements the identity
     reduce(R, S1, reduce(R, S2, body)) = reduce(R, S1 ∪ S2, body)
@@ -2147,6 +2175,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceDependentRangeMask(),
     ReduceDisequalityMask(),
     ContractLongestStream(),
+    PlusPartial(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

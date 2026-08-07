@@ -36,6 +36,7 @@ from effectful.ops.monoid import (
     PlusEmpty,
     PlusInverseCancellation,
     PlusOrder,
+    PlusPartial,
     PlusSingle,
     Product,
     ReduceDependentRangeMask,
@@ -564,6 +565,34 @@ def test_plus_zero(monoid, backend: Backend):
     rhs = monoid.zero
     backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule={})
     backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
+
+
+@pytest.mark.parametrize(
+    ("monoid", "left", "right"),
+    [
+        pytest.param(Sum, 3, 7, id="Sum"),
+        pytest.param(Product, 2, 12, id="Product"),
+        pytest.param(Min, 1, 3, id="Min"),
+        pytest.param(Max, 2, 4, id="Max"),
+    ],
+)
+def test_plus_partial(monoid, left, right):
+    backend = IntBackend()
+    x = backend.define_vars("x", ret="scalar")
+    lhs = monoid.plus(1, 2, x(), 3, 4)
+    rhs = monoid.plus(left, x(), right)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=coproduct(EvaluateIntp, PlusPartial()))
+
+
+def test_plus_partial_without_concrete_rule_is_noop():
+    backend = IntBackend()
+    monoid = Monoid(0, "Custom")
+    x = backend.define_vars("x", ret="scalar")
+    term = monoid.plus(1, 2, x(), 3, 4)
+
+    with handler(ReducePartial()):
+        actual = evaluate(term)
+    assert syntactic_eq(actual, term)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
