@@ -5,7 +5,6 @@ import pickle
 import sqlite3
 import typing
 
-from effectful.handlers.llm.harness.hooks import new_agent_call_scope
 from effectful.handlers.llm.types import Agent, Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -75,7 +74,6 @@ class SQLitePersister(ObjectInterpretation):
 
     def __init__(self, db_path: pathlib.Path) -> None:
         self.db_path = pathlib.Path(db_path)
-        self._scope = new_agent_call_scope()
 
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
@@ -133,26 +131,22 @@ class SQLitePersister(ObjectInterpretation):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        agent = getattr(template, "__agent__", None)
-        if not isinstance(agent, Agent) or not agent.__is_persistent__:
-            return fwd()
+        result = fwd()
+        if hasattr(template, "__history__") and template.__agent__.__is_persistent__:  # type: ignore
+            agent: Agent = template.__agent__  # type: ignore
+            agent_id = agent.__agent_id__
+            state_blob = pickle.dumps(self._checkpoint_state(agent))
+            history_json = json.dumps(list(template.__history__.values()), default=str)
+            with self._checkpoint_connection() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO checkpoints (agent_id, state, history)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(agent_id) DO UPDATE SET
+                        state   = excluded.state,
+                        history = excluded.history
+                    """,
+                    (agent_id, state_blob, history_json),
+                )
 
-        with self._scope(agent.__agent_id__) as is_outermost:
-            result = fwd()
-            if is_outermost:
-                agent_id = agent.__agent_id__
-                state_blob = pickle.dumps(self._checkpoint_state(agent))
-                history_json = json.dumps(list(agent.__history__.values()), default=str)
-                with self._checkpoint_connection() as conn:
-                    conn.execute(
-                        """
-                        INSERT INTO checkpoints (agent_id, state, history)
-                        VALUES (?, ?, ?)
-                        ON CONFLICT(agent_id) DO UPDATE SET
-                            state   = excluded.state,
-                            history = excluded.history
-                        """,
-                        (agent_id, state_blob, history_json),
-                    )
-
-            return result
+        return result

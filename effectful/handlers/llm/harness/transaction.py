@@ -36,11 +36,11 @@ class HistoryBuilder(ObjectInterpretation):
     @classmethod
     def append_message(cls, message: Message, last: bool = True) -> None:
         if "id" not in message:
-            message = {**message, "id": str(uuid.uuid4())}
+            message = {**message, "id": str(uuid.uuid4())}  # type: ignore
         history = cls.get_history()
-        history[message["id"]] = message
+        history[message["id"]] = message  # type: ignore
         if not last:
-            history.move_to_end(message["id"], last=False)
+            history.move_to_end(message["id"], last=False)  # type: ignore
 
     @implements(call_system)
     def call_system(self, *args, **kwargs):

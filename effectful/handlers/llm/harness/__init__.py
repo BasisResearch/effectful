@@ -59,6 +59,7 @@ from effectful.handlers.llm.harness.synthesis import (
     FinalBodySynthesizer,
     StatefulReplSynthesizer,
 )
+from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them
@@ -154,6 +155,7 @@ class harness(contextlib.ContextDecorator):
                 )
             )
         )
+        stack.enter_context(handler(HistoryBuilder()))
         if self.render:
             stack.enter_context(handler(RichTerminalRenderer()))
         if self.dump_system_prompt:

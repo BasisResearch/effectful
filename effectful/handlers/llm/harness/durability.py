@@ -9,14 +9,13 @@ from effectful.handlers.llm.harness.hooks import (
     ToolCallDecodingError,
     ToolCallExecutionError,
     ToolResult,
-    _get_history,
-    append_message,
     call_assistant,
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
+from effectful.handlers.llm.harness.transaction import transaction
 from effectful.handlers.llm.types import Template, Tool
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
@@ -44,40 +43,26 @@ class TenacityRetryer(ObjectInterpretation):
 
     call_assistant_retryer: tenacity.Retrying
 
-    _user_before_sleep: collections.abc.Callable[[tenacity.RetryCallState], None] | None
-
     def __init__(
         self,
-        include_traceback: bool = True,
         catch_tool_errors: type[BaseException]
         | tuple[type[BaseException], ...] = Exception,
         stop: tenacity.stop.stop_base = tenacity.stop_after_attempt(4),
         **kwargs,
     ):
-        self.include_traceback = include_traceback
         self.catch_tool_errors = catch_tool_errors
         assert "retry" not in kwargs, "Cannot override retry logic of RetryLLMHandler"
         assert "reraise" not in kwargs, (
             "Cannot override reraise logic of RetryLLMHandler"
         )
-        self._user_before_sleep = kwargs.pop("before_sleep", None)
         self.call_assistant_retryer = tenacity.Retrying(
             retry=tenacity.retry_if_exception_type(
                 (ToolCallDecodingError, ResultDecodingError)
             ),
             reraise=True,
-            before_sleep=self._before_sleep,
             stop=stop,
             **kwargs,
         )
-
-    def _before_sleep(self, retry_state: tenacity.RetryCallState) -> None:
-        e = retry_state.outcome.exception()  # type: ignore
-        assert isinstance(e, (ToolCallDecodingError, ResultDecodingError))
-        append_message(e.raw_message)
-        append_message(e.to_feedback_message(self.include_traceback))
-        if self._user_before_sleep is not None:
-            self._user_before_sleep(retry_state)
 
     @implements(call_assistant)
     def _call_assistant[T](
@@ -88,13 +73,8 @@ class TenacityRetryer(ObjectInterpretation):
         anchor: "Template | None" = None,
         force_tool: bool = False,
     ) -> AssistantResult[T]:
-        _message_sequence = _get_history().copy()
-
-        with handler({_get_history: lambda: _message_sequence}):
-            message, tool_calls, result = self.call_assistant_retryer(fwd)
-
-        append_message(message)
-        return (message, tool_calls, result)
+        with transaction(write_back=False):
+            return self.call_assistant_retryer(fwd)
 
     @implements(call_tool)
     def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
@@ -112,8 +92,6 @@ class TenacityRetryer(ObjectInterpretation):
             return fwd(tool_call)
         except ToolCallExecutionError as e:
             if isinstance(e.original_error, self.catch_tool_errors):
-                message = e.to_feedback_message(self.include_traceback)
-                append_message(message)
-                return (message, None, False)
+                return (e.to_feedback_message(include_traceback=True), None, False)
             else:
                 raise

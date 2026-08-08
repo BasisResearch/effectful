@@ -1,14 +1,12 @@
 import abc
 import collections
 import collections.abc
-import contextlib
 import dataclasses
 import functools
 import inspect
 import json
 import traceback
 import typing
-import uuid
 
 import litellm
 import pydantic
@@ -28,57 +26,15 @@ from effectful.handlers.llm.types import (
     Tool,
 )
 from effectful.internals.unification import nested_type
-from effectful.ops.semantics import fwd, handler
 from effectful.ops.types import Operation
 
-
-class AssistantMessage(litellm.OpenAIChatCompletionAssistantMessage):
-    id: str
-
-
-class ToolMessage(litellm.ChatCompletionToolMessage):
-    id: str
-
-
-class FunctionMessage(litellm.ChatCompletionFunctionMessage):
-    id: str
-
-
-class SystemMessage(litellm.OpenAIChatCompletionSystemMessage):
-    id: str
-
-
-class UserMessage(litellm.OpenAIChatCompletionUserMessage):
-    id: str
-
-
-Message = AssistantMessage | ToolMessage | FunctionMessage | SystemMessage | UserMessage
-
-
-class _NoActiveHistoryException(Exception):
-    """Raised when there is no active message history to append to."""
-
-
-@Operation.define
-def _get_history() -> collections.OrderedDict[str, Message]:
-    raise _NoActiveHistoryException(
-        "No active message history. This operation should only be used within a handler that provides a message history."
-    )
-
-
-def append_message(message: Message, last: bool = True) -> None:
-    try:
-        _get_history()[message["id"]] = message
-        if not last:
-            _get_history().move_to_end(message["id"], last=False)
-    except _NoActiveHistoryException:
-        pass
-
-
-def _make_message(content: dict) -> Message:
-    m_id = content.get("id") or str(uuid.uuid1())
-    message = typing.cast(Message, {**content, "id": m_id})
-    return message
+Message = (
+    litellm.ChatCompletionAssistantMessage
+    | litellm.ChatCompletionToolMessage
+    | litellm.ChatCompletionFunctionMessage
+    | litellm.ChatCompletionSystemMessage
+    | litellm.ChatCompletionUserMessage
+)
 
 
 class DecodingError[E: Exception](abc.ABC, Exception):
@@ -87,7 +43,7 @@ class DecodingError[E: Exception](abc.ABC, Exception):
     original_error: E
 
     @abc.abstractmethod
-    def to_feedback_message(self, include_traceback: bool) -> Message:
+    def to_feedback_message(self, *, include_traceback: bool = True) -> Message:
         """Convert the decoding error into a feedback message to be sent back to the LLM."""
         raise NotImplementedError
 
@@ -103,18 +59,18 @@ class ToolCallDecodingError[E: Exception](DecodingError[E]):
     def __str__(self) -> str:
         return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
 
-    def to_feedback_message(self, include_traceback: bool) -> Message:
+    def to_feedback_message(
+        self, *, include_traceback: bool = True
+    ) -> litellm.ChatCompletionToolMessage:
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return _make_message(
-            {
-                "role": "tool",
-                "tool_call_id": self.raw_tool_call.id,
-                "content": error_message,
-            },
-        )
+        return {
+            "role": "tool",
+            "tool_call_id": self.raw_tool_call.id,
+            "content": error_message,
+        }
 
 
 @dataclasses.dataclass
@@ -127,14 +83,14 @@ class ResultDecodingError[E: Exception](DecodingError[E]):
     def __str__(self) -> str:
         return f"Error decoding response: {self.original_error}. Please provide a valid response and try again."
 
-    def to_feedback_message(self, include_traceback: bool) -> Message:
+    def to_feedback_message(
+        self, *, include_traceback: bool = True
+    ) -> litellm.ChatCompletionUserMessage:
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return _make_message(
-            {"role": "user", "content": error_message},
-        )
+        return {"role": "user", "content": error_message}
 
 
 @dataclasses.dataclass
@@ -147,21 +103,18 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     def __str__(self) -> str:
         return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
-    def to_feedback_message(self, include_traceback: bool) -> Message:
+    def to_feedback_message(
+        self, *, include_traceback: bool = True
+    ) -> litellm.ChatCompletionToolMessage:
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return _make_message(
-            {
-                "role": "tool",
-                "tool_call_id": self.raw_tool_call.id,
-                "content": error_message,
-            },
-        )
-
-
-type MessageResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+        return {
+            "role": "tool",
+            "tool_call_id": self.raw_tool_call.id,
+            "content": error_message,
+        }
 
 
 @Operation.define
@@ -180,7 +133,11 @@ class _BoxedResponse[T](pydantic.BaseModel):
     value: T
 
 
-type AssistantResult[T] = tuple[Message, typing.Sequence[DecodedToolCall], T | None]
+type AssistantResult[T] = tuple[
+    litellm.ChatCompletionAssistantMessage,
+    typing.Sequence[DecodedToolCall],
+    T | None,
+]
 
 
 @Operation.define
@@ -215,6 +172,8 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    from effectful.handlers.llm.harness.transaction import HistoryBuilder
+
     name2tool = {t.__name__: t for t in tools}
     assert len(tools) == len(name2tool), "Tool name collision detected"
     env = {_TOOLS_KEY: name2tool, REPL_ANCHOR_KEY: anchor, **env}
@@ -236,7 +195,7 @@ def call_assistant[T](
     )
 
     response: litellm.types.utils.ModelResponse = completion(
-        messages=list(_get_history().values()),
+        messages=list(HistoryBuilder.get_history().values()),
         response_format=None if response_type is str else response_format,
         tools=tool_specs,
     )
@@ -244,21 +203,13 @@ def call_assistant[T](
     assert isinstance(choice, litellm.types.utils.Choices)
 
     message: litellm.Message = choice.message
-    assert message.role == "assistant"
 
-    raw_message = _make_message({**message.model_dump(mode="json")})
-    append_message(raw_message)
+    raw_message = typing.cast(
+        litellm.ChatCompletionAssistantMessage, message.model_dump(mode="json")
+    )
+    assert raw_message["role"] == "assistant"
 
     raw_tool_calls = message.get("tool_calls") or []
-    if force_tool and not raw_tool_calls:
-        raise ResultDecodingError(
-            ValueError(
-                "tool_choice='required' but the model returned no tool call."
-                "**IMPORTANT: YOU MUST GENERATE A TOOL CALL IN YOUR NEXT RESPONSE.**"
-            ),
-            raw_message=raw_message,
-        )
-
     tool_calls: list[DecodedToolCall] = []
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
@@ -289,15 +240,18 @@ def call_assistant[T](
 
     result = None
     if not tool_calls:
-        # return response
         serialized_result = message.get("content") or message.get("reasoning_content")
-        assert isinstance(serialized_result, str), (
-            "final response from the model should be a string"
-        )
-        if response_type is str:
-            result = typing.cast(T, serialized_result)
-        else:
-            try:
+        assert isinstance(serialized_result, str)
+        try:
+            if force_tool:
+                raise ValueError(
+                    "tool_choice='required' but the model returned no tool call."
+                    "**IMPORTANT: YOU MUST GENERATE A TOOL CALL IN YOUR NEXT RESPONSE.**"
+                )
+
+            if response_type is str:
+                result = typing.cast(T, serialized_result)
+            else:
                 # Add the type-check anchor to the decode context only (not `env`,
                 # which is exposed as tools), so a synthesized result is checked
                 # against the Template's source.
@@ -305,13 +259,13 @@ def call_assistant[T](
                     json.loads(serialized_result),
                     context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
                 ).value
-            except Exception as e:
-                raise ResultDecodingError(e, raw_message=raw_message) from e
+        except Exception as e:
+            raise ResultDecodingError(e, raw_message=raw_message) from e
 
     return (raw_message, tool_calls, result)
 
 
-type ToolResult[T] = tuple[Message, T | None, bool]
+type ToolResult[T] = tuple[litellm.ChatCompletionToolMessage, T | None, bool]
 
 
 @Operation.define
@@ -338,10 +292,11 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
     )
-    message = _make_message(
-        dict(role="tool", content=encoded_result, tool_call_id=tool_call.id),
+    message = litellm.ChatCompletionToolMessage(
+        role="tool",
+        content=encoded_result,  # type: ignore
+        tool_call_id=tool_call.id,
     )
-    append_message(message)
     return (message, result, isinstance(tool_call.tool, FinalTool))
 
 
@@ -349,7 +304,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 def call_user(
     template: Template,
     env: collections.abc.Mapping[str, typing.Any],
-) -> Message:
+) -> litellm.ChatCompletionUserMessage:
     """
     Format a `Template`'s prompt applied to arguments into a user message.
 
@@ -357,21 +312,20 @@ def call_user(
     escaped so it is not itself formatted) followed by its docstring; its
     ``{...}`` fields are filled from `env`.
     """
-    assert template.__default__.__doc__ is not None
+    assert template.__doc__ is not None
     header = f"{template.__name__}{template.__signature__}".replace("{", "{{").replace(
         "}", "}}"
     )
-    prompt = f"{header}\n\n{template.__default__.__doc__}"
+    prompt = f"{header}\n\n{template.__doc__}"
     parts = format_as_content_blocks(prompt, env)
-    message = _make_message(dict(role="user", content=parts))
-    append_message(message)
+    message = litellm.ChatCompletionUserMessage(role="user", content=parts)
     return message
 
 
 @Operation.define
 def call_system(
     template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
-) -> Message:
+) -> litellm.ChatCompletionSystemMessage:
     """Assemble and install the system message (a Markdown document)."""
     from effectful.handlers.llm.harness.contextualization import (
         _system_agent_block,
@@ -389,41 +343,7 @@ def call_system(
         _system_vars_block(template.__context__),
     ]
     content = "\n\n".join(s for s in sections if s)
-    message = _make_message(
-        dict(role="system", content=content, cache_control={"type": "ephemeral"})
+    message = litellm.ChatCompletionSystemMessage(
+        role="system", content=content, cache_control={"type": "ephemeral"}
     )
-    append_message(message, last=False)
     return message
-
-
-def new_agent_call_scope():
-    """Create an independent, per-agent nesting tracker.
-
-    Returns a context manager `scope(agent_id)` yielding whether this is the
-    outermost call for `agent_id` on the current call stack (`agent_id=None`
-    always yields `True`, with no tracking installed -- for callers with no
-    agent to key on). Each call to this factory produces its own private
-    `Operation`, so composed handlers that each need their own "am I
-    outermost at my layer" notion (e.g. `LiteLLMProvider`'s history
-    write-back tracking and `SQLitePersister`'s checkpoint tracking,
-    which sit at different layers in the handler stack) don't interfere
-    with each other: installing a marker for agent X at one layer never
-    makes a *different* agent, or the *same* agent at a *different* layer,
-    look nested.
-    """
-
-    @Operation.define
-    def _active(agent_id: str) -> bool:
-        """Whether a call for `agent_id` is already in progress at this scope's layer."""
-        return False
-
-    @contextlib.contextmanager
-    def scope(agent_id: str | None):
-        if agent_id is None:
-            yield True
-            return
-        is_outermost = not _active(agent_id)
-        with handler({_active: lambda aid, _id=agent_id: aid == _id or fwd(aid)}):
-            yield is_outermost
-
-    return scope

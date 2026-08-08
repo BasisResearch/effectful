@@ -70,7 +70,9 @@ CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
 
 
 @pydantic.validate_call(validate_return=True)
-def to_content_blocks(value: typing.Any) -> list[OpenAIMessageContentListBlock]:
+def to_content_blocks(
+    value: typing.Any,
+) -> collections.abc.Sequence[OpenAIMessageContentListBlock]:
     """Convert an encoded JSON-compatible value into a flat list of content blocks.
 
     Walks the value tree, extracting content-block-shaped dicts (identified by
