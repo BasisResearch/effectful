@@ -937,8 +937,8 @@ def test_restricted_runs_doctests_under_the_same_policy():
     Left to `doctest`, the examples are compiled by the built-in `compile` and run
     with whatever globals they are handed -- so an escape written in a docstring
     would execute with nothing restricting it. Here the identical function passes
-    its doctests under no provider and fails them under `RestrictedEvalProvider`,
-    because the example itself is rejected by the policy.
+    its doctests under `BuiltinExecutor` and fails them under
+    `RestrictedPythonExecutor`, because the example itself is rejected by the policy.
     """
 
     def peek(x: int) -> int:
@@ -949,7 +949,8 @@ def test_restricted_runs_doctests_under_the_same_policy():
         """
         return x
 
-    run_doctests(peek, {"peek": peek})  # unrestricted: the example is just Python
+    with handler(BuiltinExecutor()):  # unrestricted: the example is just Python
+        run_doctests(peek, {"peek": peek})
     with handler(RestrictedPythonExecutor()):
         with pytest.raises(TypeError, match="doctest failed"):
             run_doctests(peek, {"peek": peek})
@@ -975,6 +976,14 @@ def test_restricted_doctest_can_print_and_import():
 
 class TestRunDoctests:
     """Doctest validation stage for synthesized functions (#433)."""
+
+    @pytest.fixture(autouse=True)
+    def _provider(self):
+        # `run_doctests` compiles and runs each example through the `compile` and
+        # `exec` operations, so it needs a provider installed exactly as the code
+        # it validates does.
+        with handler(BuiltinExecutor()):
+            yield
 
     def test_passing_doctests_pass(self):
         def count_char(s: str, c: str) -> int:
@@ -1032,10 +1041,9 @@ class TestRunDoctests:
         # `offset` resolves from globs, not the example's literals.
         run_doctests(add_offset, {"add_offset": add_offset, "offset": offset})
 
-    def test_op_runs_via_default_rule_without_provider(self):
-        # `run_doctests` carries its mechanics in its default rule, so it works
-        # with no eval provider installed (wrappers like SynthesizeAndCall still
-        # always enclose it).
+    def test_op_finds_and_reports_via_its_default_rule(self):
+        # Finding the examples and reporting their failures is the default rule's
+        # own work -- only compiling and running them is the provider's.
         def f(x: int) -> int:
             """Identity.
 
@@ -1056,6 +1064,24 @@ class TestRunDoctests:
 
         with pytest.raises(TypeError, match="doctest failed"):
             run_doctests(g, {"g": g})
+
+
+def test_run_doctests_requires_a_provider():
+    """With no provider installed, the examples cannot be compiled or executed at
+    all: `run_doctests` delegates both to the operations, so `doctest` reports the
+    provider's own `NotImplementedError` as a failed example."""
+
+    def f(x: int) -> int:
+        """Identity.
+
+        >>> f(1)
+        1
+        """
+        return x
+
+    with pytest.raises(TypeError, match="doctest failed") as exc:
+        run_doctests(f, {"f": f})
+    assert "eval provider must be installed" in str(exc.value)
 
 
 class TestRunDoctestsThroughCallableDecode:

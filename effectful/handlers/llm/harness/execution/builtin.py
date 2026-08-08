@@ -43,8 +43,23 @@ class BuiltinExecutor(ObjectInterpretation):
         return ast.parse(source, filename=filename, mode="exec")
 
     @implements(compile)
-    def compile(self, module: ast.AST, filename: str) -> types.CodeType:
-        return builtins.compile(typing.cast(typing.Any, module), filename, "exec")
+    def compile(
+        self,
+        source: str | ast.AST,
+        filename: str,
+        mode: str = "exec",
+        flags: int = 0,
+        dont_inherit: bool = False,
+        optimize: int = -1,
+    ) -> types.CodeType:
+        return builtins.compile(
+            typing.cast(typing.Any, source),
+            filename,
+            mode,
+            flags,
+            dont_inherit,
+            optimize,
+        )
 
     @implements(exec)
     def exec(

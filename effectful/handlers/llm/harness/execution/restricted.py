@@ -1,9 +1,7 @@
 import ast
 import builtins
 import collections.abc
-import contextlib
 import copy
-import doctest
 import linecache
 import operator
 import string
@@ -28,11 +26,9 @@ from RestrictedPython.transformer import (
 
 from effectful.handlers.llm.harness.execution import (
     _mypy_check_region,
-    _run_doctests,
     compile,
     exec,
     parse,
-    run_doctests,
     type_check,
 )
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -45,40 +41,6 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 # read from it: the compile-time policy (`RestrictedPythonPolicy`) and the runtime
 # guards installed in the exec environment (`_guarded_getattr`, `_guarded_import`).
 # ----------------------------------------------------------------------------
-
-
-@contextlib.contextmanager
-def _doctest_compiled_with(
-    compiler: collections.abc.Callable[..., types.CodeType],
-):
-    """Run the examples inside this block through ``compiler`` instead of the
-    built-in `compile`.
-
-    `doctest.DocTestRunner` compiles and runs every example with a bare
-    ``exec(compile(source, filename, "single", flags, True), test.globs)``, with no
-    hook to supply a different compiler. Both names resolve as globals of the
-    `doctest` module before falling back to builtins, so binding ``compile`` there
-    for the duration of the run redirects example compilation without
-    reimplementing (and having to track) the runner. ``compiler`` is called with
-    `compile`'s positional signature, which `RestrictedPython.compile_restricted`
-    already matches.
-
-    This rebinds module state, so it is not safe against another thread running
-    doctests concurrently under a *different* compiler; the block is short and
-    holds only for the examples of one synthesized object.
-    """
-    sentinel = object()
-    original = doctest.__dict__.get("compile", sentinel)
-    doctest.compile = compiler  # type: ignore[attr-defined]
-    try:
-        yield
-    finally:
-        # Restore `doctest` exactly as we found it -- normally by *removing* the
-        # global again, so `compile` resolves to the builtin as it did before.
-        if original is sentinel:
-            del doctest.compile  # type: ignore[attr-defined]
-        else:
-            doctest.compile = original  # type: ignore[attr-defined]
 
 
 class _StdoutPrintCollector(PrintCollector):
@@ -725,12 +687,23 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         )
         return ast.parse(source, filename=filename, mode="exec")
 
-    def _compile_restricted(
-        self, source: typing.Any, filename: str, mode: str = "exec", *args: typing.Any
+    @implements(compile)
+    def compile(
+        self,
+        source: str | ast.AST,
+        filename: str,
+        mode: str = "exec",
+        flags: int = 0,
+        dont_inherit: bool = False,
+        optimize: int = -1,
     ) -> types.CodeType:
-        """`compile_restricted` under this provider's policy, with `compile`'s
-        positional signature so it can stand in for the built-in (which is how
-        `_doctest_compiled_with` uses it)."""
+        """`compile_restricted` under this provider's policy.
+
+        Takes source text as readily as an AST, since `run_doctests` routes
+        `doctest`'s own example compilation -- which is textual, and in ``single``
+        mode -- through this operation, so a docstring's examples are held to the
+        same policy as the code they document.
+        """
         # RestrictedPython's transformer rewrites its argument *in place*, so after
         # this call `tree` is the checked, guard-injected program -- which we then
         # compile ourselves. That second compile is not redundant: RestrictedPython
@@ -738,8 +711,9 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         # `from __future__ import annotations`, so its future flag leaks into every
         # program it compiles and turns generated code's annotations into strings
         # (which breaks, among others, every `@dataclass`). Compiling the same tree
-        # here, from a module with no future imports and with `dont_inherit`, gives
-        # generated code the semantics its source actually asks for.
+        # here -- from a module that deliberately has none, so the default
+        # `dont_inherit=False` inherits nothing -- gives generated code the
+        # semantics its source actually asks for.
         #
         # Transform a *copy*, so the caller's AST is left as it passed it: it is the
         # `parse` op's output, which callers also read (and could compile again --
@@ -766,7 +740,9 @@ class RestrictedPythonExecutor(ObjectInterpretation):
             typing.cast(typing.Any, tree),
             filename,
             mode,
-            dont_inherit=True,
+            flags,
+            dont_inherit,
+            optimize,
         )
 
     def _restricted_globals(
@@ -829,17 +805,17 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         )
         return rglobals
 
-    @implements(compile)
-    def compile(self, module: ast.Module, filename: str) -> types.CodeType:
-        # RestrictedPython can compile from an AST directly.
-        return self._compile_restricted(module, filename, "exec")
-
     @implements(exec)
     def exec(
         self,
         bytecode: types.CodeType,
         env: dict[str, typing.Any],
     ) -> None:
+        # This is also where a docstring's doctests are executed: `run_doctests`
+        # routes `doctest`'s own `exec` through this operation, so the examples run
+        # in the same guarded namespace as the code they document -- otherwise
+        # `>>> __import__("os").system(...)` in a synthesized docstring would
+        # execute with nothing restricting it at all.
         rglobals = self._restricted_globals(env)
 
         # Snapshot value identities before execution so we can copy back every
@@ -859,16 +835,3 @@ class RestrictedPythonExecutor(ObjectInterpretation):
                 and before.get(key, sentinel) is not value
             }
         )
-
-    @implements(run_doctests)
-    def run_doctests(
-        self,
-        obj: collections.abc.Callable | type | types.ModuleType,
-        globs: collections.abc.Mapping[str, typing.Any],
-    ) -> None:
-        # A docstring's examples are as much model output as the code they
-        # document, so run them under the same policy and in the same guarded
-        # namespace -- otherwise `>>> __import__("os").system(...)` in a synthesized
-        # docstring would execute with nothing restricting it at all.
-        with _doctest_compiled_with(self._compile_restricted):
-            _run_doctests(obj, self._restricted_globals(globs))

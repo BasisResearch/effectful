@@ -13,10 +13,10 @@ import tempfile
 import types
 import typing
 
-from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
 
 
-@defop
+@Operation.define
 def parse(source: str, filename: str) -> ast.Module:
     """
     Parse source text into an AST.
@@ -31,7 +31,7 @@ def parse(source: str, filename: str) -> ast.Module:
     )
 
 
-@defop
+@Operation.define
 def type_check(
     source: str,
     lo: int | None = None,
@@ -61,7 +61,7 @@ def type_check(
     )
 
 
-@defop
+@Operation.define
 def run_doctests(
     obj: collections.abc.Callable | type | types.ModuleType,
     globs: collections.abc.Mapping[str, typing.Any],
@@ -77,22 +77,76 @@ def run_doctests(
     with no examples is a no-op (passes trivially).
 
     Unlike the other operations here, this one carries its mechanics in its
-    default rule: running examples needs nothing an eval provider owns beyond
-    the compiler `doctest` itself uses, so it works with no provider installed.
-    A provider overrides it only to change *how* the examples are executed --
-    `RestrictedEvalProvider` does, to run them under the same restrictions as
-    the code they exercise.
+    default rule: finding the examples and reporting their failures is the same
+    work whatever provider is installed. What differs is how each example is
+    compiled and executed, and that is delegated to the `compile` and `exec`
+    operations -- so a docstring's examples run under exactly the provider that
+    runs the code they document, and no provider at all is an error here just as
+    it is there.
     """
-    return _run_doctests(obj, globs)
+    assert hasattr(obj, "__name__")
+    finder = doctest.DocTestFinder(recurse=False)
+    runner = doctest.DocTestRunner(verbose=False)
+    # `doctest.DocTestRunner` runs every example as a bare
+    # ``exec(compile(source, filename, "single", flags, True), test.globs)``, with
+    # no hook to supply a different compiler or a different way to execute the
+    # result. Both names resolve as globals of the `doctest` module before falling
+    # back to builtins, so binding the operations there for the duration of the run
+    # redirects example compilation and execution without reimplementing (and
+    # having to track) the runner. `compile`'s signature is `builtins.compile`'s, so
+    # it takes the runner's call as written; `exec` takes the runner's ``(code,
+    # globs)`` and, under a provider that sandboxes it, supplies its own namespace.
+    #
+    # This rebinds module state, so it is not safe against another thread running
+    # doctests concurrently under a *different* interpretation; the block is short
+    # and holds only for the examples of one synthesized object.
+    doctest.compile = compile  # type: ignore[attr-defined]
+    doctest.exec = exec  # type: ignore[attr-defined]
+    # Collect each example's want/got report via `out=...` and read failure
+    # counts from `run`'s return value, avoiding `summarize`, which would print
+    # to stdout instead of returning the report.
+    output: list[str] = []
+    failed = attempted = 0
+    try:
+        for test in finder.find(obj, name=obj.__name__, globs=dict(globs)):
+            results = runner.run(test, out=output.append)
+            failed += results.failed
+            attempted += results.attempted
+    finally:
+        # `doctest` defines neither name itself, so removing the bindings restores
+        # it exactly as we found it: both resolve to the builtin again.
+        doctest.__dict__.pop("compile", None)
+        doctest.__dict__.pop("exec", None)
+    if failed:
+        report = "".join(output).strip()
+        if not report:
+            report = f"{failed} doctest(s) failed out of {attempted} attempted."
+        raise TypeError(f"doctest failed:\n{report}")
+    return None
 
 
-@defop
-def compile(module: ast.Module, filename: str) -> types.CodeType:
+@Operation.define
+def compile(
+    source: str | ast.AST,
+    filename: str,
+    mode: str = "exec",
+    flags: int = 0,
+    dont_inherit: bool = False,
+    optimize: int = -1,
+) -> types.CodeType:
     """
-    Compile an AST into a Python code object.
+    Compile source text or an AST into a Python code object.
 
-    module: The AST to compile (typically produced by parse()).
+    Takes `builtins.compile`'s signature, so it can stand in for the builtin
+    wherever one is called positionally -- notably inside `doctest`'s runner, which
+    `run_doctests` redirects here. Only ``mode`` differs, defaulting to ``"exec"``
+    (the module compile that synthesis does) rather than being required.
+
+    source: The source to compile: an AST (typically produced by parse()) or the
+        source text of one.
     filename: The filename recorded in the resulting code object (CodeType.co_filename), used in tracebacks and by inspect.getsource().
+    mode: ``"exec"``, ``"eval"`` or ``"single"``, as for `builtins.compile`.
+    flags, dont_inherit, optimize: as for `builtins.compile`.
 
     Returns the compiled code object.
     """
@@ -101,7 +155,7 @@ def compile(module: ast.Module, filename: str) -> types.CodeType:
     )
 
 
-@defop
+@Operation.define
 def exec(
     bytecode: types.CodeType,
     env: dict[str, typing.Any],
@@ -571,36 +625,3 @@ def _mypy_check_region(
         # Not the source: it's large and the model already has the generated code.
         report = "\n".join(json.dumps(e) for e in errors)
         raise TypeError("mypy type check failed:\n" + report)
-
-
-def _run_doctests(
-    obj: collections.abc.Callable | type | types.ModuleType,
-    globs: collections.abc.Mapping[str, typing.Any],
-) -> None:
-    """The mechanics behind the `run_doctests` operation: find the interactive
-    examples in ``obj``'s own docstring and run them in ``globs``, raising
-    ``TypeError`` with the failure report if any example fails.
-
-    Compilation of each example is `doctest`'s own (see `_doctest_compiled_with`,
-    which a provider uses to substitute its compiler), so this is shared by every
-    provider; only the compiler differs.
-    """
-    assert hasattr(obj, "__name__")
-    name = obj.__name__
-    finder = doctest.DocTestFinder(recurse=False)
-    runner = doctest.DocTestRunner(verbose=False)
-    # Collect each example's want/got report via `out=...` and read failure
-    # counts from `run`'s return value, avoiding `summarize`, which would print
-    # to stdout instead of returning the report.
-    output: list[str] = []
-    failed = attempted = 0
-    for test in finder.find(obj, name=name, globs=dict(globs)):
-        results = runner.run(test, out=output.append)
-        failed += results.failed
-        attempted += results.attempted
-    if failed:
-        report = "".join(output).strip()
-        if not report:
-            report = f"{failed} doctest(s) failed out of {attempted} attempted."
-        raise TypeError(f"doctest failed:\n{report}")
-    return None
