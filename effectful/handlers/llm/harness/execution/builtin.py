@@ -4,30 +4,20 @@ import linecache
 import types
 import typing
 
-from effectful.handlers.llm.harness.execution import (
-    _mypy_check_region,
+from effectful.handlers.llm.harness.execution.hooks import (
     compile,
     exec,
     parse,
-    type_check,
 )
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.handlers.llm.harness.execution.mypy import (
+    MypyTypeChecker,
+)
+from effectful.ops.syntax import implements
 
 
-class BuiltinExecutor(ObjectInterpretation):
+class BuiltinExecutor(MypyTypeChecker):
     """UNSAFE provider that handles parse, comple and exec operations
     by shelling out to python *without* any further checks. Only use for testing."""
-
-    @implements(type_check)
-    def type_check(
-        self,
-        source: str,
-        lo: int | None = None,
-        hi: int | None = None,
-        *,
-        lenient: bool = False,
-    ) -> None:
-        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:

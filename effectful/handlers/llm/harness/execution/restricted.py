@@ -24,14 +24,13 @@ from RestrictedPython.transformer import (
     copy_locations,
 )
 
-from effectful.handlers.llm.harness.execution import (
-    _mypy_check_region,
+from effectful.handlers.llm.harness.execution.hooks import (
     compile,
     exec,
     parse,
-    type_check,
 )
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
+from effectful.ops.syntax import implements
 
 # ----------------------------------------------------------------------------
 # The RestrictedPython policy: what generated code may name, touch and import
@@ -637,7 +636,7 @@ def _guarded_apply(
     return func(*args, **kwargs)
 
 
-class RestrictedPythonExecutor(ObjectInterpretation):
+class RestrictedPythonExecutor(MypyTypeChecker):
     """
     Safer provider using RestrictedPython.
 
@@ -664,17 +663,6 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         policy: type[RestrictingNodeTransformer] | None = None,
     ):
         self.policy = policy
-
-    @implements(type_check)
-    def type_check(
-        self,
-        source: str,
-        lo: int | None = None,
-        hi: int | None = None,
-        *,
-        lenient: bool = False,
-    ) -> None:
-        _mypy_check_region(source, lo, hi, lenient)
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:

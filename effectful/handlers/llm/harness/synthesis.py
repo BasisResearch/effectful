@@ -10,7 +10,7 @@ import linecache
 import types
 import typing
 
-from effectful.handlers.llm.harness.execution import compile, exec, parse
+from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     call_assistant,
