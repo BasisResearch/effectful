@@ -15,23 +15,23 @@ import pydantic
 import pytest
 from RestrictedPython import RestrictingNodeTransformer
 
-from effectful.handlers.llm.harness.execution import (
-    scan_non_nestable,
-    splice_into_source,
-    splice_repl_code_into_body,
-)
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.hooks import run_doctests, type_check
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
-from effectful.handlers.llm.harness.serialization import (
-    REPL_ANCHOR_KEY,
+from effectful.handlers.llm.harness.synthesis.function import (
     TYPE_CHECK_ANCHOR_KEY,
     SynthesizedFunction,
+    splice_into_source,
 )
-from effectful.handlers.llm.harness.synthesis import ReplSession
+from effectful.handlers.llm.harness.synthesis.snippet import (
+    REPL_ANCHOR_KEY,
+    ReplSession,
+    scan_non_nestable,
+    splice_repl_code_into_body,
+)
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 

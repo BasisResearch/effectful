@@ -24,7 +24,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
-from effectful.handlers.llm.harness.synthesis import StatefulReplSynthesizer
+from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements

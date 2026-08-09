@@ -13,8 +13,6 @@ import pydantic
 
 from effectful.handlers.llm.harness.serialization import (
     _TOOLS_KEY,
-    REPL_ANCHOR_KEY,
-    TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     format_as_content_blocks,
     to_content_blocks,
@@ -171,6 +169,8 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+    from effectful.handlers.llm.harness.synthesis.function import TYPE_CHECK_ANCHOR_KEY
+    from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
     from effectful.handlers.llm.harness.transaction import HistoryBuilder
 
     name2tool = {t.__name__: t for t in tools}

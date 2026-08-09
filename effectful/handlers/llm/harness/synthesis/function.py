@@ -1,0 +1,446 @@
+import ast
+import collections.abc
+import inspect
+import linecache
+import logging
+import textwrap
+import types
+import typing
+from collections.abc import Callable, Mapping
+
+import pydantic
+
+import effectful.handlers.llm.harness.execution.hooks
+from effectful.handlers.llm.harness.serialization import (
+    EncodedFunction,
+    TypeToPydanticType,
+    _inline_refs,
+    _serialize_callable,
+)
+
+# The shared output of the three splicers (`splice_into_source`,
+# `splice_template_body`, `splice_repl_code_into_body`): the module ``source`` to
+# type-check and the inclusive ``[lo, hi]`` line span within it to report
+# diagnostics from -- exactly the leading arguments of `type_check`. ``None`` (not
+# this type) is returned when the anchor's source can't be recovered.
+type SplicedRegion = tuple[str, int, int]
+
+logger = logging.getLogger(__name__)
+
+
+def _reject_param_count_mismatch(fn: Callable, ty: typing.Any) -> None:
+    """Raise ``ValueError`` if the synthesized ``fn``'s positional arity does not
+    match the expected ``Callable[[...], ret]`` type.
+
+    The mypy signature check only runs when a type-check anchor is in scope; this
+    structural check runs unconditionally, so a wrong parameter count is still
+    rejected on the anchorless argument-decoding path.
+    """
+    args = typing.get_args(ty)
+    if not args or args[0] is ...:
+        return  # bare ``Callable`` or ``Callable[..., R]``: any arity is acceptable
+    expected = len(args[0])
+    params = list(inspect.signature(fn).parameters.values())
+    if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+        return  # ``*args`` accepts any number of positional arguments
+    positional = sum(
+        p.kind
+        in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        for p in params
+    )
+    if positional != expected:
+        raise ValueError(
+            f"synthesized function takes {positional} positional parameter(s), "
+            f"but the expected signature has {expected}"
+        )
+
+
+# Reserved key under which the type-check anchor -- the enclosing `Template`
+# itself -- rides in the Pydantic decoding context, alongside the lexical
+# environment. `decode` reads it to type-check a synthesized function against the
+# Template's source (recovered from the Template via `inspect.unwrap`); absent
+# (tool-argument decoding) means skip. Deliberately not a valid identifier so
+# `LexicalReaders` skips it (no tool leak) and it can never collide with a lexical
+# name.
+TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
+
+
+def _def_nodes(
+    module: ast.Module,
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """All function definitions in ``module``, in a stable order that an
+    ``ast.unparse`` -> ``ast.parse`` round-trip preserves (so a def keeps its
+    index across it)."""
+    return [
+        n
+        for n in ast.walk(module)
+        if isinstance(n, ast.FunctionDef | ast.AsyncFunctionDef)
+    ]
+
+
+def _find_def_at_lineno(
+    module: ast.Module, lineno: int
+) -> ast.FunctionDef | ast.AsyncFunctionDef | None:
+    """Locate the function definition whose definition site is ``lineno``.
+
+    Matches ``fn.__code__.co_firstlineno`` -- the first decorator line, or the
+    ``def`` line when undecorated -- which identifies the def directly and
+    unambiguously (no name matching, and nesting-agnostic). Returns None only if
+    no def starts there: a dynamically generated ``fn`` with no source def, or
+    source that has drifted since import.
+    """
+    for node in _def_nodes(module):
+        start = node.decorator_list[0].lineno if node.decorator_list else node.lineno
+        if start == lineno:
+            return node
+    return None
+
+
+def _recover_template_def(
+    anchor: collections.abc.Callable[..., typing.Any],
+) -> tuple[ast.Module, ast.FunctionDef | ast.AsyncFunctionDef] | None:
+    """Locate the anchor Template's own ``def`` in its real module source.
+
+    Returns the parsed module AST and the def node, or ``None`` when the source can't
+    be recovered (REPL/exec/notebook Template with no linecache entry -- the caller
+    skips rather than guesses). Raises ``RuntimeError`` on source drift (source
+    recovered but the def no longer sits where ``fn`` was compiled from).
+    """
+    # `anchor` is the enclosing `Template` (an `Operation`), a bound method, or a
+    # plain function; `inspect.unwrap` follows the `__wrapped__` chain that
+    # `Operation`/method binding sets up, resolving all of them to the original
+    # source-backed function (staticmethod/classmethod included).
+    fn = inspect.unwrap(anchor)
+    # Recover the module source via fn's own filename -- a real path or a
+    # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
+    # notebook templates; linecache.getlines reads real files from disk too.
+    try:
+        source_file = inspect.getsourcefile(fn)
+    except TypeError:
+        source_file = None
+    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    if not module_source:
+        logger.warning("skipping type check: cannot recover source for %r", fn)
+        return None
+    module_ast = ast.parse(module_source)
+    template_def = _find_def_at_lineno(module_ast, fn.__code__.co_firstlineno)
+    if template_def is None:
+        raise RuntimeError(
+            f"cannot locate {getattr(fn, '__qualname__', fn)!r} in its module "
+            f"source (source drifted since import?)"
+        )
+    return module_ast, template_def
+
+
+def splice_into_source(
+    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
+) -> SplicedRegion | None:
+    """Splice `generated` into the anchor Template's own function body, in its real
+    module source.
+
+    Returns the modified module source and the ``[lo, hi]`` line span of the
+    spliced body within it, or ``None`` when the anchor's source can't be recovered
+    (the caller skips rather than guesses). Raises ``RuntimeError`` if the source is
+    recovered but the anchor's def can't be located in it (source drift) -- a real
+    error, not a silent pass.
+
+    The generated function -- and any helpers it defines alongside -- becomes the
+    body of the Template's own function at its real (possibly nested) position, so
+    the generated code is checked in its real lexical scope with no synthesized
+    type stubs.
+
+    This is the splice for a Template whose *return type* is a callable (the model
+    writes a function and the Template returns it). Example. For the Template ::
+
+        @Template.define
+        def make_adder(n: int) -> Callable[[int], int]:
+            '''Return a function that adds {n}.'''
+
+    a model that submits this ``generated`` (its last statement is the function to
+    return) ::
+
+        def adder(x: int) -> int:
+            return x + n
+
+    becomes the whole Template body followed by ``return <its name>`` ::
+
+        @Template.define
+        def make_adder(n: int) -> Callable[[int], int]:
+            def adder(x: int) -> int:
+                return x + n
+            return adder
+
+    so mypy checks that ``adder`` satisfies ``Callable[[int], int]`` and that its
+    body may reference the Template's ``n``. Contrast `splice_template_body`, which
+    grafts the model's function *body* under the Template's own header (for a
+    Template whose body -- not return value -- is synthesized). The returned
+    ``[lo, hi]`` spans the generated statements only, not the ``def`` header.
+    """
+    if not generated.body:
+        raise TypeError("splice: generated module is empty")
+    last = generated.body[-1]
+    if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
+        raise TypeError(
+            f"splice: last statement must be a function definition, "
+            f"got {type(last).__name__}"
+        )
+    target_name = last.name
+
+    recovered = _recover_template_def(anchor)
+    if recovered is None:
+        return None
+    module_ast, template_def = recovered
+
+    # Splice in place: replace the body with the generated body and bind the
+    # target against the (source) return annotation via `return`. Decorators are
+    # left untouched -- mypy checks a function's body against its declared return
+    # type regardless of decorators (even an unresolvable / `Any` one), and the
+    # decorator application itself doesn't spuriously fail, so touching the
+    # surrounding source as little as possible keeps the splice robust.
+    template_def.body = [
+        *generated.body,
+        ast.Return(ast.Name(target_name, ast.Load())),
+    ]
+
+    # mypy reports line numbers in the coordinates of `checked_source`, so we need
+    # the spliced *body's* span there. ast.unparse reassigns line numbers but
+    # preserves def order, so the def keeps its index in walk order -- take the def
+    # at that same index in the re-parsed source.
+    #
+    # The region is the body (the generated code) only, NOT the def header: the
+    # signature and decorators are the Template author's own pre-existing source,
+    # which we must not attribute to synthesis. This matters for templates whose
+    # module source can't be fully recovered -- notably notebook/REPL cells, which
+    # share a runtime namespace but whose recovered source is a single cell missing
+    # the other cells' imports, so the signature's own annotations (e.g. `Literal`,
+    # `Callable`) look undefined to mypy. Flagging only the body keeps those
+    # spurious signature-line diagnostics out of the gate.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
+    hi = spliced.end_lineno or lo
+    return checked_source, lo, hi
+
+
+def _synthesize_callable(
+    module_code: str,
+    ctx: Mapping,
+    *,
+    template_body: bool,
+) -> tuple[Callable, dict[str, typing.Any]]:
+    """Parse, type-check, compile and exec a synthesized module, returning the
+    function it defines and the exec namespace.
+
+    The code is type-checked against the enclosing Template's source when an
+    ``anchor`` is present in ``ctx``.  ``template_body`` selects the splice: a
+    `TemplateBody` (submit_solution) is spliced as the Template's own body; a
+    general `Callable` uses the strict result splice (`splice_into_source`) when it
+    is a structured-output result, else the lenient REPL splice.
+    """
+    from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
+
+    filename = f"<synthesis:{id(module_code)}>"
+    module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
+        module_code, filename
+    )
+
+    if template_body:
+        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        if anchor is not None:
+            # Check the synthesized function *as the Template's body*, strictly: it
+            # is the final answer, so -- unlike incrementally-built REPL code -- it
+            # must honor the Template's declared types and gets no redefinition slack
+            # (no name reuse with a new type, no duplicate definitions).
+            from effectful.handlers.llm.harness.synthesis.body import (
+                splice_template_body,
+            )
+
+            spliced = splice_template_body(module, anchor)
+            if spliced is not None:
+                effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+    elif ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
+        spliced = splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
+        if spliced is not None:
+            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+    elif ctx.get(REPL_ANCHOR_KEY) is not None:
+        from effectful.handlers.llm.harness.synthesis.snippet import (
+            splice_repl_code_into_body,
+        )
+
+        spliced = splice_repl_code_into_body(module, ctx[REPL_ANCHOR_KEY])
+        if spliced is not None:
+            effectful.handlers.llm.harness.execution.hooks.type_check(
+                *spliced, lenient=True
+            )
+
+    bytecode: types.CodeType = effectful.handlers.llm.harness.execution.hooks.compile(
+        module, filename
+    )
+    g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
+    effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
+    result = g[module.body[-1].name]  # type: ignore
+    return result, g
+
+
+class SynthesizedFunction(EncodedFunction):
+    """
+    Structured output for function synthesis.
+    """
+
+    module_code: str = pydantic.Field(
+        ...,
+        description=textwrap.dedent("""
+        A string containing the complete Python source code for the function.
+        The code MUST satisfy the following constraints, or it will fail validation:
+
+        <constraints>
+        1. The code MUST be one complete syntactically valid Python module.
+        2. The code MUST NOT use star imports or ``__future__`` imports.
+        3. The function definition MUST be the LAST statement - do not add any code after it.
+        4. The function MUST have type annotations for all parameters and the return type.
+        5. You may include doctest examples (lines starting with >>>) inside the function's
+        docstring to demonstrate and verify its behavior; these examples are run as tests.
+        </constraints>
+        """),
+    )
+
+    # A general `Callable` is type-checked against the requested signature, so it must
+    # be fully annotated. A Template *body* is instead checked against the enclosing
+    # Template's own signature (`splice_template_body`), which already carries the
+    # annotations -- so its subclasses waive this and may omit the `self` receiver.
+    _require_annotations: typing.ClassVar[bool] = True
+
+    @pydantic.field_validator("module_code")
+    @classmethod
+    def _validate_module_code(cls, value: str) -> str:
+        module: ast.AST = ast.parse(value)
+
+        if not isinstance(module, ast.Module) or not module.body:
+            raise ValueError(
+                "decode() requires module code with at least one statement."
+            )
+
+        last_stmt = module.body[-1]
+        if not isinstance(last_stmt, ast.FunctionDef):
+            raise ValueError(
+                f"decode() requires the last statement to be a function definition, "
+                f"got {type(last_stmt).__name__}"
+            )
+
+        if cls._require_annotations:
+            for arg in last_stmt.args.args:
+                if arg.annotation is None:
+                    raise ValueError(
+                        f"decode() requires all parameters to have type annotations, "
+                        f"parameter '{arg.arg}' is missing an annotation"
+                    )
+            if last_stmt.returns is None:
+                raise ValueError(
+                    "decode() requires the function to have a return type annotation"
+                )
+
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
+                raise ValueError(
+                    "decode() does not allow __future__ imports in the module code"
+                )
+
+        for stmt in module.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.names:
+                for alias in stmt.names:
+                    if alias.name == "*":
+                        raise ValueError(
+                            "decode() does not allow star imports in the module code"
+                        )
+
+        return value
+
+    @classmethod
+    def _create_model_from_callable_type(cls, typ: type[Callable]) -> type[typing.Self]:
+        """Create a SynthesizedFunction subclass carrying the requested signature in
+        the model-facing description.
+
+        Uses ``pydantic.create_model`` so the rendered signature (and any
+        subclass-specific instructions) ride in the JSON schema ``description`` sent
+        to the model. Subclasses customize the receiver rendering via `_param_names`
+        and add guidance via `_extra_instructions`.
+        """
+        doc = (
+            f"Python function with signature "
+            f"<signature>{cls._signature_str(typ)}</signature>"
+            f"{cls._extra_instructions()}"
+        )
+        return pydantic.create_model(
+            "TypedSynthesizedFunction",
+            __base__=cls,
+            __doc__=doc,
+        )
+
+    @classmethod
+    def _signature_str(cls, typ: type[Callable]) -> str:
+        """Render a ``Callable[[...], ...]`` signature by type *name* (not its
+        fully-qualified ``repr``), so the model sees ``Callable[[State], int]`` rather
+        than ``collections.abc.Callable[[pkg.mod.State], builtins.int]``."""
+        args = typing.get_args(typ)
+        if not args:
+            return "Callable"
+        param_types, return_type = args
+        params_str = (
+            "..." if param_types is ... else ", ".join(cls._param_names(param_types))
+        )
+        return_str = getattr(return_type, "__name__", str(return_type))
+        return f"Callable[[{params_str}], {return_str}]"
+
+    @classmethod
+    def _param_names(cls, param_types: typing.Iterable[typing.Any]) -> list[str]:
+        return [getattr(t, "__name__", str(t)) for t in param_types]
+
+    @classmethod
+    def _extra_instructions(cls) -> str:
+        return ""
+
+
+@TypeToPydanticType.register(Callable)
+def _pydantic_callable(ty: typing.Any) -> typing.Any:
+    """Pydantic-compatible Annotated type for a parameterized `Callable` value.
+
+    The model *produces* a function (as ``module_code``); it is synthesized,
+    type-checked in the enclosing Template's scope, and its own doctests are run.
+    Template-body synthesis (`submit_solution`) has its own encoding,
+    `_pydantic_template_body`.
+    """
+    typed_enc = SynthesizedFunction._create_model_from_callable_type(
+        Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
+    )
+
+    def _validate(
+        value: SynthesizedFunction | dict | str, info: pydantic.ValidationInfo
+    ) -> Callable:
+        if isinstance(value, str):
+            value = typed_enc.model_validate_json(value)
+        if isinstance(value, dict):
+            value = typed_enc.model_validate(value)
+        result, g = _synthesize_callable(
+            value.module_code, info.context or {}, template_body=False
+        )
+        _reject_param_count_mismatch(result, ty)
+        effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+        return result
+
+    # Distinct schemas per direction: validation (the model *produces* a function)
+    # carries the synthesis instructions; serialization (the model *reads* an
+    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
+    # emits, with no synthesis prose.
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate),
+        pydantic.PlainSerializer(_serialize_callable),
+        pydantic.WithJsonSchema(
+            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            mode="validation",
+        ),
+        pydantic.WithJsonSchema(
+            EncodedFunction.model_json_schema(), mode="serialization"
+        ),
+    ]

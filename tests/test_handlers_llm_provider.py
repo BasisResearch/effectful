@@ -45,10 +45,10 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.harness.synthesis import (
+from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
-    StatefulReplSynthesizer,
 )
+from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler

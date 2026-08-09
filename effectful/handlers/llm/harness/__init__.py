@@ -55,10 +55,10 @@ from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.handlers.llm.harness.provision import (
     LiteLLMProvider,
 )
-from effectful.handlers.llm.harness.synthesis import (
+from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
-    StatefulReplSynthesizer,
 )
+from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
 
