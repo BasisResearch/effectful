@@ -3,7 +3,7 @@ import os
 import litellm
 import pytest
 
-from effectful.handlers.llm.harness.contextualization import _tools_in_scope
+from effectful.handlers.llm.harness.context import _tools_in_scope
 
 EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4o-mini")
 

@@ -326,7 +326,7 @@ def call_system(
     template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
 ) -> litellm.ChatCompletionSystemMessage:
     """Assemble and install the system message (a Markdown document)."""
-    from effectful.handlers.llm.harness.contextualization import (
+    from effectful.handlers.llm.harness.context import (
         _system_agent_block,
         _system_global_block,
         _system_imports_block,

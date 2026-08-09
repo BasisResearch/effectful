@@ -5,7 +5,7 @@ import typing
 
 import litellm
 
-from effectful.handlers.llm.harness.contextualization import _tools_in_scope
+from effectful.handlers.llm.harness.context import _tools_in_scope
 from effectful.handlers.llm.harness.hooks import (
     Message,
     call_assistant,

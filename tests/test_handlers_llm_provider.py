@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.harness.contextualization import (
+from effectful.handlers.llm.harness.context import (
     LexicalReaders,
     _tools_in_scope,
 )
