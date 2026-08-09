@@ -2,7 +2,6 @@ import ast
 import collections.abc
 import dataclasses
 import json
-import pathlib
 import sys
 import time
 import typing
@@ -20,7 +19,6 @@ import rich.text
 from effectful.handlers.llm.harness.hooks import (
     Message,
     _BoxedResponse,
-    call_system,
     completion,
 )
 from effectful.ops.semantics import fwd
@@ -457,21 +455,3 @@ class RichTerminalRenderer(ObjectInterpretation):
             live.update(_render_frame(history, partial, ttft=ttft, streaming=False))
 
         return litellm.stream_chunk_builder(chunks, messages=kwargs.get("messages"))
-
-
-@dataclasses.dataclass(frozen=True)
-class SystemPromptDumper(ObjectInterpretation):
-    """Dump the system prompt produced by `call_system` to a Markdown file.
-
-    Opt-in debugging handler: intercepts `call_system`, forwards to let the
-    prompt be assembled and installed as usual, then writes the resulting
-    system message content to `path`, overwriting the whole file each time.
-    """
-
-    path: pathlib.Path
-
-    @implements(call_system)
-    def _call_system(self, template, tool_types=frozenset()):
-        message = fwd()
-        self.path.write_text(_message_text(message.get("content")))
-        return message
