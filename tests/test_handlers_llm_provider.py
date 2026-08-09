@@ -2754,6 +2754,19 @@ def _has_cache_control(msg: dict) -> bool:
     return "cache_control" in msg
 
 
+def _has_block_cache_control(msg: dict) -> bool:
+    """Check for a breakpoint on a *content block* specifically.
+
+    `LiteLLMConfigurer._add_cache_control` only ever produces this form, so it
+    distinguishes what the provider added from the message-level key
+    `call_system` puts on the system prompt.
+    """
+    content = msg.get("content")
+    return isinstance(content, list) and any(
+        isinstance(b, dict) and "cache_control" in b for b in content
+    )
+
+
 class CachingAgent(Agent):
     """A test agent with persistent history."""
 
@@ -2771,7 +2784,10 @@ class TestPromptCaching:
         capture = MockCompletionHandler([make_text_response("42")])
         provider = LiteLLMProvider(model="test")
 
-        with handler(provider), handler(HistoryBuilder()), handler(capture):
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
             simple_prompt("test")
 
         msgs = capture.received_messages[0]
@@ -2781,19 +2797,16 @@ class TestPromptCaching:
             f"System message should have cache_control. Got: {system_msgs[0]}"
         )
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="cache_control on an agent's last user message is not applied: "
-        "LiteLLMConfigurer._add_cache_control_to_history is defined but never "
-        "called (see its TODO in provision.py).",
-    )
     def test_agent_user_message_has_cache_control(self):
         """Agent calls should add cache_control to the last user message."""
         capture = MockCompletionHandler([make_text_response("42")])
         provider = LiteLLMProvider(model="test")
         agent = CachingAgent()
 
-        with handler(provider), handler(HistoryBuilder()), handler(capture):
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
             agent.ask("What is 2+2?")
 
         msgs = capture.received_messages[0]
@@ -2805,20 +2818,101 @@ class TestPromptCaching:
             f"Agent user message should have cache_control. Got: {content[-1]}"
         )
 
-    def test_non_agent_user_message_no_cache_control(self):
-        """Non-agent calls should NOT add cache_control to user messages."""
+    def test_non_agent_user_message_has_cache_control(self):
+        """Non-agent calls are marked too: the breakpoint is a transport-level
+        concern applied to every request, so a plain Template's tool-use rounds
+        get the same cached prefix an Agent's turns do."""
         capture = MockCompletionHandler([make_text_response("42")])
         provider = LiteLLMProvider(model="test")
 
-        with handler(provider), handler(HistoryBuilder()), handler(capture):
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
             simple_prompt("test")
 
         msgs = capture.received_messages[0]
         user_msgs = [m for m in msgs if m["role"] == "user"]
         content = user_msgs[0]["content"]
         assert isinstance(content, list)
-        assert "cache_control" not in content[-1], (
-            "Non-agent user messages should NOT have cache_control"
+        assert "cache_control" in content[-1], (
+            f"User message should have cache_control. Got: {content[-1]}"
+        )
+
+    def test_exactly_one_breakpoint_beyond_the_system_message(self):
+        """Providers cap cache breakpoints per request (Anthropic allows four),
+        so a long exchange must not accumulate one per turn."""
+        capture = MockCompletionHandler(
+            [
+                make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+                make_tool_call_response("add_numbers", '{"a": 3, "b": 4}', "call_2"),
+                make_text_response("42"),
+            ]
+        )
+        provider = LiteLLMProvider(model="test")
+        agent = CachingAgent()
+
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
+            agent.ask("What is 2+2?")
+
+        # The final request carries the longest history; count its breakpoints.
+        msgs = capture.received_messages[-1]
+        marked = [m for m in msgs if _has_cache_control(m)]
+        assert [m["role"] for m in marked] == ["system", "tool"], (
+            f"Expected the system message plus the last input message. Got: {marked}"
+        )
+
+    def test_breakpoint_advances_to_the_newest_message(self):
+        """The breakpoint tracks the end of the conversation across turns, so
+        each request extends the cached prefix instead of re-reading a stale one."""
+        capture = MockCompletionHandler(
+            [make_text_response("first"), make_text_response("second")]
+        )
+        provider = LiteLLMProvider(model="test")
+        agent = CachingAgent()
+
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
+            agent.ask("first question")
+            agent.ask("second question")
+
+        first, second = capture.received_messages
+        assert len(second) > len(first)
+        # In the second request only its own (newest) user message is marked.
+        marked = [i for i, m in enumerate(second) if _has_cache_control(m)]
+        assert marked == [0, len(second) - 1], (
+            f"Expected the system message and the last message only. Got: {marked}"
+        )
+
+    def test_cache_control_never_enters_stored_history(self):
+        """The annotation is added to the outgoing request, not the transcript,
+        so it never reaches `__history__` (or an Agent's checkpoint)."""
+        capture = MockCompletionHandler([make_text_response("42")])
+        provider = LiteLLMProvider(model="test")
+        agent = CachingAgent()
+
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
+            agent.ask("What is 2+2?")
+
+        # The system message carries its own message-level key from
+        # `call_system`; what must not appear is a block-level breakpoint, which
+        # is the only thing `_add_cache_control` adds.
+        sent = capture.received_messages[0]
+        assert any(_has_block_cache_control(m) for m in sent), (
+            "sanity: the outgoing request should carry a block-level breakpoint"
+        )
+        assert not [
+            m for m in agent.__history__.values() if _has_block_cache_control(m)
+        ], (
+            f"cache_control leaked into stored history: {list(agent.__history__.values())}"
         )
 
     def test_cache_control_format_is_ephemeral(self):
@@ -2826,7 +2920,10 @@ class TestPromptCaching:
         capture = MockCompletionHandler([make_text_response("42")])
         provider = LiteLLMProvider(model="test")
 
-        with handler(provider), handler(HistoryBuilder()), handler(capture):
+        # `capture` is terminal (it never forwards), so it goes *below* the
+        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # it, or the request never gets the provider's config or breakpoint.
+        with handler(capture), handler(provider), handler(HistoryBuilder()):
             simple_prompt("test")
 
         for msg in capture.received_messages[0]:

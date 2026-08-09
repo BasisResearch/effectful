@@ -30,38 +30,63 @@ class LiteLLMConfigurer(ObjectInterpretation):
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
 
-    # TODO reinstate this (and check, it seems wrong)
-    def _add_cache_control_to_history(
+    def _add_cache_control(
         self,
-        history: collections.abc.Sequence[Message],
-    ) -> None:
-        """Add cache_control to the last user/tool message in an agent's history.
+        messages: collections.abc.Sequence[Message],
+    ) -> list[Message]:
+        """Mark the last user/tool message of a request for prompt caching.
 
-        This enables prompt caching on providers that support it (e.g. Anthropic).
-        Providers that don't support it (e.g. OpenAI) have cache_control stripped
-        by litellm's request transformation, so this is always safe to apply.
+        A `cache_control` breakpoint caches the request prefix -- tools, system,
+        and messages, in that order -- up to and including the block it sits on,
+        and a later request that shares that prefix reads it back at a fraction
+        of the input price. Putting the breakpoint on the *last* input message
+        therefore caches as much of a growing conversation as possible: an
+        agent's accumulated history, or the rounds of a single tool-use loop.
+
+        Exactly one breakpoint is added, and it moves to the newest message on
+        every request. That matters in both directions: providers cap how many
+        breakpoints a request may carry (Anthropic allows four), and a
+        breakpoint pinned to an old position stops extending the cached prefix
+        as the conversation grows. The assembled system prompt carries its own,
+        separately (see `call_system`).
+
+        Returns a new list, leaving the caller's messages untouched, so this
+        transport-level annotation never reaches the stored history -- and so
+        never reaches an `Agent`'s checkpointed transcript.
         """
-        if not history:
-            return
-        for msg in history:
-            if msg["role"] not in ("user", "tool", "assistant"):
+        out = list(messages)
+        for i in reversed(range(len(out))):
+            msg = out[i]
+            if msg["role"] not in ("user", "tool"):
                 continue
             content = msg.get("content")
-            if isinstance(content, list) and content:
-                last_block = content[-1]
-                if isinstance(last_block, dict) and "cache_control" not in last_block:
-                    new_content = list(content)
-                    new_content[-1] = {
-                        **last_block,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                    msg["content"] = new_content
+            if not isinstance(content, list) or not content:
+                continue
+            last_block = content[-1]
+            if not isinstance(last_block, dict):
+                continue
+            if "cache_control" not in last_block:
+                out[i] = typing.cast(
+                    Message,
+                    {
+                        **msg,
+                        "content": [
+                            *content[:-1],
+                            {**last_block, "cache_control": {"type": "ephemeral"}},
+                        ],
+                    },
+                )
+            break
+        return out
 
     @implements(completion)
     def _completion(self, *args, **kwargs):
         """Inject the provider's configuration (model and bound litellm kwargs)
         into the low-level request before delegating."""
-        return fwd(*args, **{**self.config, **kwargs})
+        kwargs = {**self.config, **kwargs}
+        if kwargs.get("messages"):
+            kwargs["messages"] = self._add_cache_control(kwargs["messages"])
+        return fwd(*args, **kwargs)
 
 
 class LiteLLMProvider(LiteLLMConfigurer):
