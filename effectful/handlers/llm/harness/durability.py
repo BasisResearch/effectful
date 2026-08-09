@@ -13,7 +13,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
-from effectful.handlers.llm.harness.transaction import transaction
+from effectful.handlers.llm.harness.transaction import HistoryBuilder, transaction
 from effectful.handlers.llm.types import Template, Tool
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -74,7 +74,9 @@ class TenacityRetryer(ObjectInterpretation):
         force_tool: bool = False,
     ) -> AssistantResult[T]:
         with transaction(write_back=False):
-            return self.call_assistant_retryer(fwd)
+            result = self.call_assistant_retryer(fwd)
+        HistoryBuilder.append_message(result[0])
+        return result
 
     @implements(call_tool)
     def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:

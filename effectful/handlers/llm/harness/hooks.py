@@ -31,7 +31,6 @@ from effectful.ops.types import Operation
 Message = (
     litellm.ChatCompletionAssistantMessage
     | litellm.ChatCompletionToolMessage
-    | litellm.ChatCompletionFunctionMessage
     | litellm.ChatCompletionSystemMessage
     | litellm.ChatCompletionUserMessage
 )

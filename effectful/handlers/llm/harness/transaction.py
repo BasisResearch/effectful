@@ -38,6 +38,8 @@ class HistoryBuilder(ObjectInterpretation):
         if "id" not in message:
             message = {**message, "id": str(uuid.uuid4())}  # type: ignore
         history = cls.get_history()
+        if message["role"] == "tool":
+            assert cls._tool_call_answers_request(message, history)
         history[message["id"]] = message  # type: ignore
         if not last:
             history.move_to_end(message["id"], last=False)  # type: ignore
@@ -65,6 +67,18 @@ class HistoryBuilder(ObjectInterpretation):
             raise
         self.append_message(message)
         return (message, tool_calls, result)
+
+    @staticmethod
+    def _tool_call_answers_request(
+        message: Message, history: collections.OrderedDict[str, Message]
+    ) -> bool:
+        for request_message in reversed(history.values()):
+            if request_message["role"] == "assistant":
+                for call in request_message.get("tool_calls") or []:
+                    if message["tool_call_id"] == call["id"]:  # type: ignore
+                        return True
+                return False
+        raise ValueError("shouldnt be here")
 
     @implements(call_tool)
     def call_tool(self, *args, **kwargs):
