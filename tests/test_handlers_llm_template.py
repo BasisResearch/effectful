@@ -18,7 +18,6 @@ from effectful.handlers.llm.harness.contextualization import LexicalReaders
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
-    _get_history,
     call_system,
     call_user,
     completion,
@@ -26,6 +25,7 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
 from effectful.handlers.llm.harness.synthesis import StatefulReplSynthesizer
+from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -293,7 +293,7 @@ class TestAgentHistoryAccumulation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("hello")
             bot.send("how are you")
 
@@ -317,7 +317,7 @@ class TestAgentHistoryAccumulation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("a")
             bot.send("b")
 
@@ -335,7 +335,7 @@ class TestAgentHistoryAccumulation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("a")
             bot.send("b")
 
@@ -356,7 +356,7 @@ class TestAgentIsolation:
         bot1 = ChatBot()
         bot2 = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot1.send("msg for bot1")
             bot2.send("msg for bot2")
 
@@ -384,7 +384,7 @@ class TestAgentIsolation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("hello")
             standalone("fish")
             bot.send("bye")
@@ -404,7 +404,7 @@ class TestSystemPromptInvariant:
         mock = MockCompletionHandler([make_text_response("hi")])
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("hello")
 
         assert_single_system_message_first(mock.received_messages[0])
@@ -418,7 +418,7 @@ class TestSystemPromptInvariant:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             bot.send("first")
             bot.send("second")
 
@@ -435,7 +435,7 @@ class TestSystemPromptInvariant:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             agent.outer("demo")
 
         for messages in mock.received_messages:
@@ -461,6 +461,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(LiteLLMProvider()),
+            handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
         ):
@@ -483,7 +484,7 @@ class TestSystemPromptInvariant:
             ]
         )
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             standalone("fish")
             standalone("birds")
 
@@ -497,7 +498,7 @@ class TestSystemPromptInvariant:
             raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("ok")])
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
@@ -512,10 +513,7 @@ class TestAgentDocstringFallback:
     """Agent subclasses' class docstrings flow into the assembled system message."""
 
     def _system_content(self, template):
-        od = collections.OrderedDict()
-        with handler({_get_history: lambda: od}):
-            call_system(template)
-        return next(iter(od.values()))["content"]
+        return call_system(template)["content"]
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):
@@ -620,7 +618,7 @@ class TestAgentWithToolCalls:
         )
         agent = MathAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             result = agent.compute("what is 2+3?")
 
         assert result == "The answer is 5"
@@ -659,6 +657,7 @@ class TestAgentWithRetryHandler:
 
         with (
             handler(LiteLLMProvider()),
+            handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
         ):
@@ -694,7 +693,7 @@ class TestNestedTemplateCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             result = agent.outer("demo")
 
         assert result == "all good"
@@ -710,7 +709,7 @@ class TestNestedTemplateCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             agent.outer("demo")
 
         roles = [m["role"] for m in agent.__history__.values()]
@@ -734,7 +733,7 @@ class TestNestedTemplateCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             agent.outer("demo")
 
         # Call 0: outer's first call_assistant → [user]
@@ -758,7 +757,7 @@ class TestNestedTemplateCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             agent.outer("first")
             agent.outer("second")
 
@@ -786,7 +785,7 @@ class TestNestedTemplateCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             r1 = agent.outer("first")
             r2 = agent.outer("second")
 
@@ -831,10 +830,11 @@ class TestCrossAgentNestedTemplateCalling:
     """A tool call that delegates to a *different* Agent must write back that
     agent's own history, not be mistaken for a same-agent nested call.
 
-    `LiteLLMProvider._call`'s outermost-call detection used to be a single
-    global flag (any enclosing `_get_history` handler on the stack), which
-    couldn't distinguish "nested call on the same agent" from "a different
-    agent invoked mid-call" -- so the delegate's history was silently dropped.
+    `HistoryBuilder.call_template` keys its outermost-call detection on the
+    identity of each agent's `__history__` (`agents_called`), so being inside
+    *some* transaction is not enough to make a call look nested: only a second
+    call against the same agent's history is, and a different agent invoked
+    mid-call still writes back.
     """
 
     def test_delegated_agent_history_is_written_back(self):
@@ -849,7 +849,7 @@ class TestCrossAgentNestedTemplateCalling:
         helper = _HelperAgent()
         orch = _OrchestratorAgent(helper)
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             result = orch.run("do the thing")
 
         assert result == "final answer"
@@ -870,7 +870,7 @@ class TestCrossAgentNestedTemplateCalling:
         helper = _HelperAgent()
         orch = _OrchestratorAgent(helper)
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             orch.run("do the thing")
 
         assert set(orch.__history__.keys()).isdisjoint(set(helper.__history__.keys()))
@@ -889,7 +889,7 @@ class TestCrossAgentNestedTemplateCalling:
         helper = _HelperAgent()
         orch = _OrchestratorAgent(helper)
 
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             orch.run("first task")
             helper.answer("second question")
 
@@ -1230,7 +1230,7 @@ class TestStaticAndClassMethodTemplates:
                 raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("42")])
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             result = MyClass.ask("what is 6*7?")
         assert result == "42"
 
@@ -1290,7 +1290,7 @@ class TestStaticAndClassMethodTemplates:
                 raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("yes")])
-        with handler(LiteLLMProvider()), handler(mock):
+        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             result = MyClass.ask("is the sky blue?")
         assert result == "yes"
 
@@ -2098,7 +2098,7 @@ def test_primes_decode_int():
     """A non-string return type is decoded from the model's structured output."""
     mock = MockCompletionHandler([make_text_response('{"value": 61}')])
 
-    with handler(LiteLLMProvider()), handler(mock):
+    with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
         result = primes(6)
 
     assert result == 61

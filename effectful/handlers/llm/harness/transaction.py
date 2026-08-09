@@ -93,8 +93,9 @@ class HistoryBuilder(ObjectInterpretation):
     @implements(Template.__apply__)
     def call_template(self, template, *args, **kwargs):
         history = getattr(template, "__history__", collections.OrderedDict())
-        with transaction(history, write_back=id(history) not in self.agents_called()):
-            with handler({self.agents_called: lambda: fwd() | {id(history)}}):
+        called = self.agents_called()
+        with transaction(history, write_back=id(history) not in called):
+            with handler({self.agents_called: lambda: called | {id(history)}}):
                 return fwd(template, *args, **kwargs)
 
 
