@@ -37,7 +37,7 @@ Source = "https://github.com/BasisResearch/effectful"
 "Bug Tracker" = "https://github.com/BasisResearch/effectful/issues"
 
 [project.optional-dependencies]
-torch = ["torch"]
+torch = ["torch>=2.10"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
 numpyro = [
