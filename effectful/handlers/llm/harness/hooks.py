@@ -20,6 +20,7 @@ from effectful.handlers.llm.harness.serialization import (
     to_content_blocks,
 )
 from effectful.handlers.llm.types import (
+    Agent,
     Encodable,
     FinalTool,
     Template,
@@ -139,6 +140,36 @@ type AssistantResult[T] = tuple[
 ]
 
 
+def _tools_in_scope(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> collections.abc.Set[Tool]:
+    """Return the tools available to a Template given its lexical context.
+
+    Default rule: real `Tool` and `Template` values bound directly in
+    `env`, plus `Tool` methods discovered through the MRO of any
+    `Agent` instance in `env`.
+
+    Tools are identified by object, so the same `Tool` visible under
+    several bindings appears once.  Names are derived from each tool's
+    `__name__` by :func:`call_assistant`, not from the binding name.
+    """
+    result: set[Tool] = set()
+
+    for name, obj in env.items():
+        if not name.isidentifier():
+            continue
+        if isinstance(obj, Tool | Template):
+            result.add(obj)
+        elif isinstance(obj, Agent):
+            for cls in type(obj).__mro__:
+                for attr_name in vars(cls):
+                    attr = getattr(obj, attr_name)
+                    if isinstance(attr, Tool):
+                        result.add(attr)
+
+    return frozenset(result)
+
+
 @Operation.define
 def call_assistant[T](
     messages: collections.abc.Sequence[Message],
@@ -167,6 +198,8 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
+
+    tools = tools | _tools_in_scope(env)
     if _TYPE_CHECK_ANCHOR_KEY in env:
         tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
 

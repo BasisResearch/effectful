@@ -29,7 +29,6 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Template
 from effectful.handlers.llm.harness.context import (
     LexicalReaders,
-    _tools_in_scope,
 )
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
@@ -40,6 +39,7 @@ from effectful.handlers.llm.harness.hooks import (
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
+    _tools_in_scope,
     call_assistant,
     call_tool,
     completion,

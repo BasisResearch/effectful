@@ -96,34 +96,6 @@ class LexicalReaders(ObjectInterpretation):
         return fwd(messages, env, response_type, readers)
 
 
-def _tools_in_scope(
-    env: collections.abc.Mapping[str, typing.Any],
-) -> collections.abc.Set[Tool]:
-    """Return the tools available to a Template given its lexical context.
-
-    Default rule: real `Tool` and `Template` values bound directly in
-    `env`, plus `Tool` methods discovered through the MRO of any
-    `Agent` instance in `env`.
-
-    Tools are identified by object, so the same `Tool` visible under
-    several bindings appears once.  Names are derived from each tool's
-    `__name__` by :func:`call_assistant`, not from the binding name.
-    """
-    result: set[Tool] = set()
-
-    for obj in env.values():
-        if isinstance(obj, Tool | Template):
-            result.add(obj)
-        elif isinstance(obj, Agent):
-            for cls in type(obj).__mro__:
-                for attr_name in vars(cls):
-                    attr = getattr(obj, attr_name)
-                    if isinstance(attr, Tool):
-                        result.add(attr)
-
-    return result
-
-
 def _get_qualname(cls) -> str:
     """Module-qualified name of a type, dropping the ``builtins`` prefix."""
     if not isinstance(cls, type):

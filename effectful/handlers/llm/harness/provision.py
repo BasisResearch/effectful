@@ -6,7 +6,6 @@ import typing
 import litellm
 from litellm.types.llms.openai import ChatCompletionToolChoiceValues
 
-from effectful.handlers.llm.harness.context import _tools_in_scope
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
@@ -194,7 +193,8 @@ class LiteLLMProvider(LiteLLMConfigurer):
         header = f"{template.__name__}{template.__signature__}".replace(
             "{", "{{"
         ).replace("}", "}}")
-        prompt_template = f"{header}\n\n{template.__doc__}"
+        assert template.__doc__ is not None
+        prompt_template = header + "\n\n" + template.__doc__
         message = call_user(prompt_template, env)
 
         result: T | None = None
@@ -204,7 +204,6 @@ class LiteLLMProvider(LiteLLMConfigurer):
                 list(HistoryBuilder.get_history().values()),
                 env,
                 template.__signature__.return_annotation,
-                _tools_in_scope(env),
             )
             if tool_calls:
                 for tool_call in tool_calls:

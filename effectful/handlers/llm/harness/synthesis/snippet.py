@@ -72,6 +72,8 @@ class ReplSession(code.InteractiveInterpreter):
     `Encodable[CodeType]` boundary; this session only executes.
     """
 
+    locals: dict[str, typing.Any]
+
     # The session's captured output, accumulated across calls and exposed for
     # introspection.  stdout (`print` output) and stderr (writes plus tracebacks)
     # are kept separate; `exec_code` returns each call's slice of both.
@@ -79,22 +81,7 @@ class ReplSession(code.InteractiveInterpreter):
     stderr: io.StringIO
 
     def __init__(self, env: collections.abc.MutableMapping[str, typing.Any]):
-        # Run in a fresh writable dict seeded with a flat view of `env`.  This is
-        # forced by `exec`: its globals must be one real dict (a ChainMap is
-        # rejected), and a REPL needs a single persistent namespace so a function
-        # defined in one snippet sees a name a later snippet binds.  Seeding a flat
-        # copy also leaves the lexical seed untouched, so REPL assignments never
-        # leak into the surrounding scope.
-        scope: dict[str, typing.Any] = dict(env)
-        # When `env` is the per-call `ChainMap` (its outer layers are read-only
-        # frame proxies), splice this dict in as an extra shadowing first layer so
-        # the bindings are *also* visible to the rest of the Template call
-        # (mirroring `exec`) -- still scoped to the call, since that ChainMap is.
-        if isinstance(env, collections.ChainMap):
-            env.maps.insert(0, scope)
-        # `InteractiveInterpreter.__init__` stores it as `self.locals`, so we reuse
-        # the base's runcode/showtraceback/write machinery.
-        super().__init__(scope)
+        super().__init__(dict(env))
         # Route `runsource`'s compilation through the `parse`/`compile` ops too, so
         # it stays consistent with our `runcode` (which execs through the `exec`
         # op) rather than the native single-mode compiler the base installed.
@@ -383,6 +370,13 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         """
         return []
 
+    @typing.final
+    @Operation.define
+    @classmethod
+    def repl_env(cls) -> dict[str, typing.Any]:
+        """The REPL session's current namespace, as a flat dict of name -> value"""
+        return {}
+
     @implements(call_system)
     def _call_system(self, template, tool_types=frozenset()):
         return fwd(template, tool_types=tool_types | {self._ReplInteractionTool})
@@ -400,6 +394,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
                 self.exec_code: session.exec_code,
                 self.read_lexical_variable: env.get,
                 self.repl_history: lambda: session.prior_snippets,
+                self.repl_env: lambda: session.locals,
             }
         ):
             return fwd()
@@ -414,7 +409,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     ) -> AssistantResult[T]:
         return fwd(
             messages,
-            env,
+            {**env, **self.repl_env()},
             response_type,
             tools | {self.exec_code, self.read_lexical_variable},
         )
