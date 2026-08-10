@@ -74,6 +74,7 @@ test = [
     "pytest-xdist",
     "pytest-benchmark",
     "pytest-timeout",
+    "hypothesis",
     "mypy",
     "ruff",
     "nbval",
