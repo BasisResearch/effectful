@@ -11,7 +11,6 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
-    Interpretation,
     NotHandled,
     Operation,
     Term,
@@ -318,6 +317,41 @@ class Scoped(Annotation):
         assert cls._get_root_ordinal(inferred_sig) == root_ordinal != set()
         return inferred_sig
 
+    @classmethod
+    def extract_operations(
+        cls, value, _seen: set[int] | None = None
+    ) -> frozenset[Operation]:
+        """Computes the set of :class:`Operation` s appearing directly in ``value`` .
+
+        An :class:`Operation` counts when it appears as a value in a collection,
+        including as the key of a mapping, which is why this cannot be written
+        in terms of :func:`flatten` . It does not count when it is applied to
+        arguments, since the resulting :class:`Term` is a use of the operation
+        rather than a binding occurrence of it.
+
+        :param value: The value to traverse.
+        :returns: The operations that could be bound by a parameter given ``value``.
+        """
+        _seen = set() if _seen is None else _seen
+        if id(value) in _seen:
+            return frozenset()
+        _seen.add(id(value))
+
+        if isinstance(value, Operation):
+            return frozenset({value})
+        elif isinstance(value, dict):
+            return frozenset().union(
+                frozenset(),
+                *(cls.extract_operations(k, _seen) for k in value.keys()),
+                *(cls.extract_operations(v, _seen) for v in value.values()),
+            )
+        elif isinstance(value, list | set | frozenset | tuple):
+            return frozenset().union(
+                frozenset(), *(cls.extract_operations(v, _seen) for v in value)
+            )
+        else:
+            return frozenset()
+
     def analyze(self, bound_sig: inspect.BoundArguments) -> frozenset[Operation]:
         """
         Computes a set of bound variables given a signature with bound arguments.
@@ -343,43 +377,19 @@ class Scoped(Annotation):
             param_ordinal = self._get_param_ordinal(param)
             if param_ordinal <= self.ordinal and not param_ordinal <= return_ordinal:
                 param_value = bound_sig.arguments[name]
-                param_bound_vars = set()
+                param_bound_vars: frozenset[Operation] = (
+                    self.extract_operations(param_value)
+                    # only process if the parameter is an Operation or is Scoped
+                    if self._param_is_var(param) or param_ordinal
+                    else frozenset()
+                )
 
-                if self._param_is_var(param):
-                    # Handle individual Operation parameters (existing behavior)
-                    if param.kind is inspect.Parameter.VAR_POSITIONAL:
-                        # pre-condition: all bound variables should be distinct
-                        assert len(param_value) == len(set(param_value))
-                        param_bound_vars = set(param_value)
-                    elif param.kind is inspect.Parameter.VAR_KEYWORD:
-                        # pre-condition: all bound variables should be distinct
-                        assert len(param_value.values()) == len(
-                            set(param_value.values())
-                        )
-                        param_bound_vars = set(param_value.values())
-                    else:
-                        param_bound_vars = {param_value}
-                elif param_ordinal:  # Only process if there's a Scoped annotation
-                    # We can't use flatten here because we want to be able
-                    # to see dict keys
-                    def extract_operations(obj, _seen=None):
-                        if _seen is None:
-                            _seen = set()
-                        obj_id = id(obj)
-                        if obj_id in _seen:
-                            return
-                        _seen.add(obj_id)
-                        if isinstance(obj, Operation):
-                            param_bound_vars.add(obj)
-                        elif isinstance(obj, dict):
-                            for k, v in obj.items():
-                                extract_operations(k, _seen)
-                                extract_operations(v, _seen)
-                        elif isinstance(obj, list | set | tuple):
-                            for v in obj:
-                                extract_operations(v, _seen)
-
-                    extract_operations(param_value)
+                if self._param_is_var(param) and param.kind in (
+                    inspect.Parameter.VAR_POSITIONAL,
+                    inspect.Parameter.VAR_KEYWORD,
+                ):
+                    # pre-condition: all bound variables should be distinct
+                    assert len(param_bound_vars) == len(param_value)
 
                 # pre-condition: all bound variables should be distinct
                 if param_bound_vars:
@@ -445,12 +455,17 @@ def _build_term[T](
     type from the types of its arguments and dispatches on that type to pick a
     constructor.
     """
-    from effectful.ops.semantics import _simple_type, _typeof
+    from effectful.internals.runtime import copy_cache_entries
+    from effectful.ops.semantics import typeof
 
-    typed_args = tuple(_typeof(arg) for arg in args)
-    typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
-    dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
-    return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    # Compute the type on a throwaway node so that the analysis is cached against
+    # something, then move that cache onto the node actually returned: a parent's
+    # later typeof on this child is then a hit rather than a fresh traversal.
+    raw_term: Expr[T] = _BaseTerm(op, *args, **kwargs)
+    dispatch_type: type = typeof(raw_term)
+    result = __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    copy_cache_entries(raw_term, result)
+    return result
 
 
 @_CustomSingleDispatchCallable
@@ -978,25 +993,6 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
 
     def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
         return self.implementations[item].__get__(self, type(self))
-
-
-class PureInterpretation[T, V](Mapping[Operation[..., T], Callable[..., V]]):
-    """Mark an interpretation as pure so its evaluation results can be cached."""
-
-    def __init__(self, intp: Interpretation[T, V]):
-        self.intp = intp
-
-    def __iter__(self):
-        return iter(self.intp)
-
-    def __len__(self):
-        return len(self.intp)
-
-    def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
-        return self.intp[item]
-
-    __hash__ = object.__hash__
-    __eq__ = object.__eq__
 
 
 class _ImplementedOperation[**P, **Q, T, V]:

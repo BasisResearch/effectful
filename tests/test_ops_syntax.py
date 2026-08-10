@@ -1418,6 +1418,7 @@ def test_defop_forward_ref_mutual_recursion():
 
 def test_bench_term_construction(benchmark):
     """Benchmark polymorphic type checking during term construction."""
+    from effectful.internals.runtime import cache
 
     @defop
     def _benchmark_identity[T](value: T) -> T:
@@ -1455,7 +1456,14 @@ def test_bench_term_construction(benchmark):
         assert isinstance(value, Term)
         return value
 
-    result = benchmark(_make_benchmark_term, 25)
+    def run():
+        # A scope per iteration rather than one around ``benchmark``: each round
+        # builds fresh objects, so a shared cache would only accumulate entries
+        # that can never be hit.
+        with cache():
+            return _make_benchmark_term(25)
+
+    result = benchmark(run)
     assert isinstance(result, Term)
 
 
@@ -1471,6 +1479,7 @@ def test_bench_nested_binder_construction(benchmark):
     reaches this path -- it is fast even when nested construction is
     exponential in depth.
     """
+    from effectful.internals.runtime import cache
 
     @defop
     def _benchmark_let[S, T, A](
@@ -1497,5 +1506,186 @@ def test_bench_nested_binder_construction(benchmark):
         assert isinstance(body, Term)
         return body
 
-    result = benchmark(_make_nested_term, 10)
+    def run():
+        with cache():
+            return _make_nested_term(10)
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+# ---------------------------------------------------------------------------
+# Operation calls whose arguments are large dataclasses.
+#
+# ``_build_term`` computes a node's dispatch type with ``typeof``, which is a
+# full recursive traversal of every argument, so an operation call costs O(size
+# of its arguments). These model a robotics workload -- a component tree built
+# up one part at a time -- where that traversal dominated the run time.
+
+
+@dataclasses.dataclass(frozen=True)
+class _Pose:
+    """Leaf payload, mirroring a rigid-body transform."""
+
+    x: float = 0.0
+    y: float = 0.0
+    z: float = 0.0
+
+
+@dataclasses.dataclass(frozen=True)
+class _Part:
+    """One child of an assembly, holding an unsolved pose."""
+
+    name: str
+    pose: _Pose
+
+
+@dataclasses.dataclass(frozen=True)
+class _Assembly:
+    """Container that accumulates children, like a robot component."""
+
+    parts: tuple[_Part, ...] = ()
+
+    def add(self, part: "_Part") -> "_Assembly":
+        return _Assembly(self.parts + (part,))
+
+
+@defop
+def _link(parent: _Assembly, child: _Part, delta: _Pose) -> None:
+    """Unhandled, so calling it builds a term via ``defdata`` -> ``_build_term``."""
+    raise NotHandled
+
+
+def _free_pose() -> _Pose:
+    """A free variable of type ``_Pose``, standing for a component's unsolved pose."""
+    return defop(_Pose)()
+
+
+def _make_assembly(k: int) -> _Assembly:
+    """An assembly of ``k`` parts, each with a distinct free pose."""
+    a = _Assembly()
+    for i in range(k):
+        a = a.add(_Part(f"p{i}", _free_pose()))
+    return a
+
+
+def test_typeof_dataclass_is_cached_within_a_scope(monkeypatch):
+    """Repeating ``typeof`` on the same dataclass does no work inside one scope.
+
+    Counted rather than timed: the property is that the second traversal is
+    free, which a call count states exactly where a wall-clock threshold would
+    only approximate it and would be flaky besides.
+
+    Before evaluation was memoized this was the central problem -- ``Term``
+    arguments were cached but plain dataclasses were re-walked on every call, so
+    an operation taking a large dataclass paid for the whole traversal every
+    time it was called.
+    """
+    from effectful.internals.runtime import cache
+    from effectful.ops import semantics
+
+    traversals = 0
+    original = semantics._evaluate_dataclass
+
+    def counting(expr, **kwargs):
+        nonlocal traversals
+        traversals += 1
+        return original(expr, **kwargs)
+
+    monkeypatch.setattr(semantics, "_evaluate_dataclass", counting)
+
+    assembly = _make_assembly(8)
+    with cache():
+        typeof(assembly)
+        after_first = traversals
+        typeof(assembly)
+        after_second = traversals
+
+    # The first call walks the container and every part inside it.
+    assert after_first > 8
+    # The second visits nothing.
+    assert after_second == after_first
+
+
+def test_bench_dataclass_argument_op_call(benchmark):
+    """Benchmark one operation call whose argument is a large dataclass.
+
+    Expected to stay O(k) in the number of children: the dispatch type of the
+    node genuinely depends on every one of them, so no cache can remove the
+    traversal of an argument being seen for the first time. Caching addresses
+    repeat visits, which is what the two tests below exercise.
+    """
+    from effectful.internals.runtime import cache
+
+    assembly = _make_assembly(160)
+    child, delta = _Part("t", _free_pose()), _Pose(1.0)
+
+    def run():
+        # A fresh scope per round, so this stays the cost of a *cold* call
+        # rather than a cache hit on the previous round.
+        with cache():
+            return _link(assembly, child, delta)
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_dataclass_growing_container(benchmark):
+    """Benchmark N operation calls against a container that grows by one per call.
+
+    This is the shape that motivated memoizing evaluation: a model assembled
+    component by component, where every call re-analyses the whole container.
+    Holding one :func:`cache` scope across the loop turns each element into a
+    cache hit rather than a fresh traversal, which is worth roughly 4x here.
+
+    It is a constant-factor win and not an asymptotic one, so this benchmark is
+    expected to remain quadratic in ``n``. Call ``i`` still visits all ``i``
+    elements: ``_Assembly.add`` allocates a new instance wrapping a new tuple
+    every call, and a new container has no cache entry of its own. Making this
+    linear needs the container's own analysis to be reusable -- structural
+    sharing so a new tuple shares a cached prefix, or a container-type rule that
+    does not inspect every element.
+
+    ``test_bench_dataclass_fixed_container`` is the control: same call count,
+    argument size held constant.
+    """
+    from effectful.internals.runtime import cache
+
+    n = 100
+
+    def run():
+        a, delta = _Assembly(), _Pose(1.0)
+        term = None
+        with cache():
+            for i in range(n):
+                child = _Part(f"c{i}", _free_pose())
+                term = _link(a, child, delta)
+                a = a.add(child)
+        return term
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_dataclass_fixed_container(benchmark):
+    """Control for :func:`test_bench_dataclass_growing_container`.
+
+    The same number of operation calls, but the container argument stays one
+    element wide, so this is linear in ``n``. The gap between the two is the
+    cost attributable to argument size rather than to call count.
+    """
+    from effectful.internals.runtime import cache
+
+    n = 100
+
+    def run():
+        hub = _Assembly((_Part("hub", _free_pose()),))
+        delta = _Pose(1.0)
+        term = None
+        with cache():
+            for i in range(n):
+                term = _link(hub, _Part(f"c{i}", _free_pose()), delta)
+        return term
+
+    result = benchmark(run)
     assert isinstance(result, Term)
