@@ -18,6 +18,7 @@ from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     And,
+    Body,
     CartesianProduct,
     EvaluateIntp,
     LogSumExp,
@@ -52,23 +53,9 @@ from effectful.ops.types import Expr, Interpretation, Operation, Term
 logger = logging.getLogger(__name__)
 
 
-def _optimum_flatten(optimum: Optimum):
-    keys = None if optimum.assignment is None else tuple(optimum.assignment)
-    values = () if optimum.assignment is None else tuple(optimum.assignment.values())
-    return (optimum.value, *values), keys
-
-
-def _optimum_unflatten(keys, children):
-    value, *assignment_values = children
-    assignment = (
-        None if keys is None else dict(zip(keys, assignment_values, strict=True))
-    )
-    return Optimum(value, assignment)
-
-
 # ``Optimum`` lives in the backend-independent module, but once the JAX backend
 # is imported it should be a valid input/output of ``jax.jit``.
-jax.tree_util.register_pytree_node(Optimum, _optimum_flatten, _optimum_unflatten)
+jax.tree_util.register_dataclass(Optimum)
 
 
 is_equality.register(jnp.equal)
@@ -282,22 +269,16 @@ ARRAY_REDUCTORS[LogSumExp] = logsumexp
 class ReduceOptimum(ObjectInterpretation):
     """Reduce an assignment-carrying JAX score with ``argmin`` or ``argmax``.
 
-    This is deliberately a lowering for the normalized ``Optimum`` body rather
-    than for weighted-stream syntax.  ``ReduceWeightedStream`` turns the latter
-    into this form, so the same kernel handles both spellings.
-
     The initial kernel supports independent ``range`` streams and assignments
     that record stream variables directly.  Those are the normal form produced
     by ``Sum.weighted(..., lambda v: Optimum(0, {x: v}))``.
     """
 
     @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
+    def reduce(self, monoid: Monoid, body: Body, streams: Streams):
         if monoid not in (Min, Max) or not isinstance(body, Optimum):
             return fwd()
         if not issubclass(typeof(body.value), jax.Array):
-            return fwd()
-        if not body.feasible or not isinstance(body.assignment, Mapping):
             return fwd()
         if not streams or not all(
             isinstance(stream, range) for stream in streams.values()
@@ -309,17 +290,12 @@ class ReduceOptimum(ObjectInterpretation):
         # provenance value for an arbitrary assignment expression.
         assignment_vars = {}
         for key, value in body.assignment.items():
-            if not (
-                isinstance(value, Term)
-                and not value.args
-                and not value.kwargs
-                and value.op in streams
-            ):
+            if not (isinstance(value, Term) and value.op in streams):
                 return fwd()
             assignment_vars[key] = value.op
 
         if any(len(stream) == 0 for stream in streams.values()):
-            return Optimum(monoid.identity, None)
+            return monoid.identity
 
         score_fvs = fvsof(body.value)
         used = tuple(k for k in streams if k in score_fvs)
