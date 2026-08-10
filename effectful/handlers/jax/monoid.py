@@ -16,6 +16,7 @@ from effectful.ops.monoid import (
     Product,
     Streams,
     Sum,
+    distributes_over,
     outer_stream,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
@@ -37,6 +38,10 @@ def cartesian_prod(x, y):
 
 
 LogSumExp = Monoid(name="LogSumExp", identity=jnp.asarray(float("-inf")))
+
+# ``Sum`` in log space is multiplication, which distributes over ``LogSumExp``:
+#   a + logsumexp(b, c) = logsumexp(a + b, a + c)
+distributes_over.register(Sum, LogSumExp)
 
 
 def _jax_args(args):
@@ -108,7 +113,15 @@ class CartesianProductPlusJax(ObjectInterpretation):
             if not isinstance(a, jax.Array):
                 return fwd()
             result = a if result is None else cartesian_prod(result, a)
-        return result if result is not None else CartesianProduct.identity
+        if result is None:
+            return CartesianProduct.identity
+        # CartesianProduct values are streams of rows. ``cartesian_prod``
+        # already lifts 1D inputs to 2D, but a single-array call seeds
+        # ``result = a`` unchanged — promote so the rank invariant holds for
+        # every array-path return.
+        if result.ndim == 1:
+            result = result[:, None]
+        return result
 
 
 ARRAY_REDUCTORS = {
