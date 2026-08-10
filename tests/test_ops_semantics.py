@@ -1,6 +1,5 @@
 import contextlib
 import dataclasses
-import functools
 import itertools
 import logging
 from collections.abc import Callable, Mapping
@@ -19,7 +18,6 @@ from effectful.ops.semantics import (
 )
 from effectful.ops.syntax import (
     ObjectInterpretation,
-    PureInterpretation,
     Scoped,
     deffn,
     defop,
@@ -473,7 +471,7 @@ def test_evaluate():
 
 
 def test_memoized_interpretation():
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import cache, interpreter
 
     @defop
     def node(x: object) -> object:
@@ -490,38 +488,40 @@ def test_memoized_interpretation():
             self.calls += 1
             return (op.__name__, args, kwargs)
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
+    intp = Intp()
     expected = ("node", (("node", (1,), {}),), {})
 
-    assert interpreter(intp)(evaluate)(term) == expected
-    assert intp_impl.calls == 2
+    # ``evaluate`` installs a cache for the duration of a call when none is
+    # active, so results are shared between separate calls only while a scope
+    # holds one open.
+    with cache():
+        assert interpreter(intp)(evaluate)(term) == expected
+        assert intp.calls == 2
 
-    # The root cache is checked before its children are traversed, including
-    # when evaluation is expressed directly through a handler.
-    with interpreter(intp):
-        assert evaluate(term) == expected
-    assert intp_impl.calls == 2
+        # The root cache is checked before its children are traversed, including
+        # when evaluation is expressed directly through a handler.
+        with interpreter(intp):
+            assert evaluate(term) == expected
+        assert intp.calls == 2
 
-    # Child results are cached independently and can be reused directly.
-    assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
-    assert intp_impl.calls == 2
+        # Child results are cached independently and can be reused directly.
+        assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
+        assert intp.calls == 2
 
-    # A composition has a distinct identity even when its added handler is not
-    # used while evaluating this term.
-    combined_intp = coproduct(intp, {plus_1: lambda x: x})
-    assert interpreter(combined_intp)(evaluate)(term) == expected
-    assert intp_impl.calls == 4
+        # A composition has a distinct identity even when its added handler is not
+        # used while evaluating this term.
+        combined_intp = coproduct(intp, {plus_1: lambda x: x})
+        assert interpreter(combined_intp)(evaluate)(term) == expected
+        assert intp.calls == 4
 
-    # A separate pure interpretation has its own cache namespace.
-    other_intp_impl = Intp()
-    other_intp = PureInterpretation(other_intp_impl)
-    assert interpreter(other_intp)(evaluate)(term) == expected
-    assert other_intp_impl.calls == 2
+        # A separate interpretation has its own cache namespace.
+        other_intp = Intp()
+        assert interpreter(other_intp)(evaluate)(term) == expected
+        assert other_intp.calls == 2
 
 
 def test_memoized_interpretation_does_not_cache_failures():
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import cache, interpreter
 
     @defop
     def node() -> object:
@@ -540,15 +540,17 @@ def test_memoized_interpretation_does_not_cache_failures():
                 raise ValueError("failed analysis")
             return "success"
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
-    with pytest.raises(ValueError, match="failed analysis"):
-        interpreter(intp)(evaluate)(term)
+    intp = Intp()
+    with cache():
+        with pytest.raises(ValueError, match="failed analysis"):
+            interpreter(intp)(evaluate)(term)
 
-    assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp_impl.calls == 2
-    assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp_impl.calls == 2
+        # The failure left nothing behind, so the retry recomputes; the result of
+        # that retry is what gets cached and reused.
+        assert interpreter(intp)(evaluate)(term) == "success"
+        assert intp.calls == 2
+        assert interpreter(intp)(evaluate)(term) == "success"
+        assert intp.calls == 2
 
 
 @pytest.mark.parametrize(
@@ -773,6 +775,8 @@ def test_defdata_large(benchmark):
     """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random
 
+    from effectful.internals.runtime import cache
+
     @defop
     def f[T, A, B](
         v: Annotated[Operation[[], int], Scoped[A]],
@@ -807,7 +811,14 @@ def test_defdata_large(benchmark):
         return f(defop(int), left, right)
 
     # Test a very large tree (depth 8 = 255 leaf nodes)
-    benchmark(functools.partial(build_tree, 7))
+    def run():
+        # A scope per iteration rather than one around ``benchmark``: each round
+        # builds fresh objects, so a shared cache would only accumulate entries
+        # that can never be hit.
+        with cache():
+            return build_tree(7)
+
+    benchmark(run)
 
 
 def test_evaluate_deep():
@@ -843,6 +854,30 @@ def test_fvsof_binder():
     actual = fvsof(term)
     assert not ({x, y} & actual)
     assert actual >= {z, Lam2, add}
+
+
+def test_fvsof_collection_binder():
+    a, b, c, d = (
+        defop(int, name="a"),
+        defop(int, name="b"),
+        defop(int, name="c"),
+        defop(int, name="d"),
+    )
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def let_many[A, B](
+        body: Annotated[int, Scoped[A | B]],
+        bindings: Annotated[dict[Operation[[], int], int], Scoped[A]],
+    ) -> Annotated[int, Scoped[B]]:
+        raise NotHandled
+
+    term = let_many(add(a(), b()), {a: c(), c: d()})
+    actual = fvsof(term)
+    assert actual == {b, d, let_many, add}
 
 
 def test_fvsof_collection_does_not_include_apply():
@@ -899,8 +934,16 @@ def test_typeof_literal():
         typeof(get_mixed())
 
 
+@pytest.mark.timeout(20)
 def test_evaluate_dag_no_exponential_blowup():
-    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n)."""
+    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n).
+
+    Bounded by a timeout because the regression this guards against does not
+    fail, it hangs: losing memoization turns the depth-20 DAG below into 2**20
+    evaluations.
+    """
+    from effectful.internals.runtime import cache
+
     call_count = 0
 
     @defop
@@ -919,11 +962,15 @@ def test_evaluate_dag_no_exponential_blowup():
     for _ in range(depth):
         node = (node, node)
 
-    call_count = 0
-    with handler({counted: counted_handler}):
-        result = evaluate(node)
+    # One cache scope spanning both the evaluation and the term construction
+    # below. Without it each would install its own, so nothing computed by the
+    # first would be available to the second.
+    with cache():
+        call_count = 0
+        with handler({counted: counted_handler}):
+            result = evaluate(node)
 
-    deffn(node, counted)(0)
+        deffn(node, counted)(0)
 
     # The handler should only be called once (the shared Term)
     assert call_count == 1

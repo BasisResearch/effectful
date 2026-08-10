@@ -253,6 +253,68 @@ def test_jax_nested_getitem():
     assert sizesof(t_ij) == {i: 2, j: 3}
 
 
+def test_sizesof_compound_index():
+    """A compound index is not a named dimension.
+
+    Only a bare call names a dimension. An index built out of one, like
+    ``a() + 1``, names nothing -- neither the operation applied nor the
+    variable underneath it. The entry still holds its place, so the names
+    beside it are found against the right dimensions.
+    """
+    a, b = defop(jax.Array, name="a"), defop(jax.Array, name="b")
+
+    assert sizesof(jax_getitem(jnp.ones((4, 5)), (a() + 1, b()))) == {b: 5}
+    assert sizesof(jax_getitem(jnp.ones((4, 5)), (a() + 1, a() * 2))) == {}
+    assert sizesof(jax_getitem(jnp.ones((2, 3)), (a() + 1, None, b()))) == {b: 3}
+    assert sizesof(jax_getitem(jnp.ones((2, 3)), (None, a() + 1, b()))) == {b: 3}
+    assert sizesof(jax_getitem(jnp.ones((2, 3, 4)), (a() + 1, ..., b()))) == {b: 4}
+
+    # A bare named dimension is still reported, alongside a compound sibling.
+    assert sizesof(jax_getitem(jnp.ones((4, 5)), (a(), b()))) == {a: 4, b: 5}
+
+
+def test_sizesof_nested_getitem():
+    """Sizes are found through an inner getitem, using its residual shape.
+
+    ``sizesof`` computes that shape itself rather than reading it off a
+    rebuilt term, so these pin it against the conditions ``_embed_array``
+    builds an eager term under: a concrete array whose every term entry is a
+    bare name.
+    """
+    a, b = defop(jax.Array, name="a"), defop(jax.Array, name="b")
+
+    # A named dimension is consumed by the indexing; the rest stays.
+    inner = jax_getitem(jnp.ones((2, 3, 4)), (a(), slice(None), slice(None)))
+    assert sizesof(jax_getitem(inner, (b(), slice(None)))) == {a: 2, b: 3}
+
+    inner = jax_getitem(jnp.ones((2, 3)), (slice(None), a()))
+    assert sizesof(jax_getitem(inner, (b(),))) == {a: 3, b: 2}
+
+    # A concrete index keeps its dimension.
+    inner = jax_getitem(jnp.ones((4, 5)), (jnp.arange(4), a()))
+    assert sizesof(jax_getitem(inner, (b(),))) == {a: 5, b: 4}
+
+    # Unlike torch, an index is not required to be array-typed.
+    n = defop(int, name="n")
+    assert sizesof(jax_getitem(jnp.ones((4, 5)), (n(), a()))) == {n: 4, a: 5}
+
+
+def test_sizesof_symbolic_key():
+    """A key can be a term rather than a sequence of index entries.
+
+    Indexing the result of an earlier indexing this way is what reaches the
+    analysis: the inner term has a shape to read while being a term, which is
+    what stops ``_embed_array`` from inspecting the key at all.
+    """
+    a = defop(jax.Array, name="a")
+    key = defop(tuple, name="key")
+
+    inner = jax_getitem(jnp.ones((2, 3, 4)), (a(), slice(None), slice(None)))
+    assert tuple(inner.shape) == (3, 4)
+
+    assert sizesof(jax_getitem(inner, key())) == {a: 2}
+
+
 def test_jax_at_updates():
     """Test .at array update functionality for indexed arrays."""
     i, j, k = defop(jax.Array), defop(jax.Array), defop(jax.Array)

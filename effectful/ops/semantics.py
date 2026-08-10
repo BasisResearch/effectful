@@ -5,16 +5,13 @@ import functools
 import operator
 import types
 import typing
-import weakref
-from collections.abc import Callable
-from typing import Any
 
+from effectful.internals.runtime import cache
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
-    PureInterpretation,
-    _BaseTerm,
+    Scoped,
     _CustomSingleDispatchCallable,
     defop,
     implements,
@@ -31,7 +28,7 @@ apply = Operation.__apply__
 
 
 @defop
-def fwd(*args, **kwargs) -> Any:
+def fwd(*args, **kwargs) -> typing.Any:
     """Forward execution to the next most enclosing handler.
 
     :func:`fwd` should only be called in the context of a handler.
@@ -92,8 +89,8 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """
     from effectful.internals.runtime import (
         _get_args,
-        _restore_args,
         _save_args,
+        _save_then_restore_args,
         _set_prompt,
     )
 
@@ -105,7 +102,7 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
             # calling fwd in the right handler should dispatch to the left handler
             i1 = intp.get(op)
             res[op] = (
-                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+                _set_prompt(fwd, _save_then_restore_args(i1), _save_args(i2))
                 if i1 is not None
                 else _save_args(i2)
             )
@@ -130,9 +127,14 @@ def as_tuple(*args) -> tuple:
     return tuple(args)
 
 
+_MISSING: typing.Any = object()
+
+
 @_CustomSingleDispatchCallable
 def evaluate[T](
-    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    __dispatch: collections.abc.Callable[
+        [type], collections.abc.Callable[..., Expr[T]]
+    ],
     expr: Expr[T],
     *,
     intp: Interpretation | None = None,
@@ -155,18 +157,30 @@ def evaluate[T](
     6
 
     """
-    from effectful.internals.runtime import _EVAL_CACHE, get_interpretation, interpreter
+    from effectful.internals.runtime import (
+        EVAL_CACHE,
+        cache_get,
+        cache_put,
+        get_interpretation,
+        interpreter,
+    )
 
-    with interpreter(intp if intp is not None else get_interpretation()):
-        cache = _EVAL_CACHE.get()
-        assert cache is not None, "Cache should be initialized by interpreter"
-        key = id(expr)
-        if key in cache:
-            ref, result = cache[key]
-            if ref is expr:
-                return result
+    with interpreter(intp if intp is not None else get_interpretation()) as current:
+        store = EVAL_CACHE.get()
+        if store is None:
+            # No cache installed. Open one for the duration of this call and start
+            # over. Without it, an expression that reaches a subexpression along
+            # several paths re-evaluates it once per path, which is exponential in
+            # the depth of a DAG. Only the outermost call takes this branch, so the
+            # extra re-entry is paid once.
+            with cache():
+                return evaluate(expr, intp=current)
+
+        result = cache_get(store, expr, current, _MISSING)
+        if result is not _MISSING:
+            return result
         result = __dispatch(type(expr))(expr)
-        cache[key] = (expr, result)
+        cache_put(store, expr, current, result)
         return result
 
 
@@ -190,44 +204,11 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
     )
 
 
-_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
-
-
-def _term_cache(
-    expr: Term,
-) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
-    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
-    try:
-        return getattr(expr, _EVALUATION_CACHE_ATTR)
-    except AttributeError:
-        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
-            weakref.WeakKeyDictionary()
-        )
-        try:
-            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
-        except (AttributeError, TypeError):
-            return None
-        return cache
-
-
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    from effectful.internals.runtime import get_interpretation
-
-    current_intp = get_interpretation()
-    if isinstance(current_intp, PureInterpretation):
-        cache = _term_cache(expr)
-        if cache is not None and current_intp in cache:
-            return cache[current_intp]
-    else:
-        cache = None
-
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    result = expr.op(*args, **kwargs)
-    if cache is not None:
-        cache[current_intp] = result  # type: ignore
-    return result
+    return expr.op(*args, **kwargs)
 
 
 @evaluate.register(Operation)
@@ -338,12 +319,7 @@ class _TypeofIntp(ObjectInterpretation):
         return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTP = PureInterpretation(_TypeofIntp())
-
-
-def _typeof(term: Expr):
-    """Evaluate the cached type analysis without unwrapping its result."""
-    return evaluate(term, intp=_TYPEOF_INTP)
+_TYPEOF_INTP = _TypeofIntp()
 
 
 def typeof[T](term: Expr[T]) -> type[T]:
@@ -370,84 +346,49 @@ def typeof[T](term: Expr[T]) -> type[T]:
     """
     from effectful.internals.unification import Box
 
-    type_or_value = _typeof(term)
+    type_or_value = evaluate(term, intp=_TYPEOF_INTP)
     if isinstance(type_or_value, Box):
         return _simple_type(type_or_value.value)
     return typing.cast(type[T], type(type_or_value))
 
 
-@functools.cache
-def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
-    """Construct the singleton interpretation used by ``fvsof``."""
-    from effectful.internals.product_n import argsof, productN
+class _FvsAnalysis(typing.NamedTuple):
+    ops: frozenset[Operation] = frozenset()
+    fvs: frozenset[Operation] = frozenset()
 
-    def _apply_collection_binders(op, *args, **kwargs):
-        return frozenset().union(
-            *(
-                {x}
-                if isinstance(x, Operation)
-                else x
-                if isinstance(x, frozenset)
-                else set()
-                for x in (*args, *kwargs.values())
-            )
+
+class _FvsofIntp(ObjectInterpretation):
+    @staticmethod
+    def _analysis(value) -> _FvsAnalysis:
+        if isinstance(value, _FvsAnalysis):
+            return value
+        else:
+            return _FvsAnalysis(Scoped.extract_operations(value))
+
+    @implements(ConstructorOperation.__apply__)
+    def _apply_collection_binders(self, op, *args, **kwargs):
+        analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
+        return _FvsAnalysis(
+            frozenset().union(frozenset(), *(a.ops for a in analyses)),
+            frozenset().union(frozenset(), *(a.fvs for a in analyses)),
         )
 
-    def _apply_binders(op, *args, **kwargs):
-        # Parent operations only need to know that this child is a term. Its
-        # arguments are available through argsof while this node is analyzed.
-        return _BaseTerm(op)
-
-    def _apply_passthrough_fvs(op, *args, **kwargs):
-        return frozenset().union(
-            *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
+    @implements(apply)
+    def _apply_fvs(self, op, *args, **kwargs):
+        arg_analyses = tuple(self._analysis(a) for a in args)
+        kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
+        bindings = op.__fvs_rule__(
+            *(a.ops for a in arg_analyses),
+            **{k: a.ops for k, a in kwarg_analyses.items()},
         )
-
-    def _apply_fvs(op, *args, **kwargs):
-        binder_args, binder_kwargs = argsof(_fvsof_binders)
-        # This rule handles Operation.__apply__ directly, so its first argument
-        # is the operation being applied rather than an argument to that
-        # operation.
-        binder_args = tuple(
-            frozenset() if isinstance(x, Term) else x for x in binder_args[1:]
-        )
-        binder_kwargs = {
-            k: frozenset() if isinstance(v, Term) else v
-            for k, v in binder_kwargs.items()
-        }
-        bindings = op.__fvs_rule__(*binder_args, **binder_kwargs)
         binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
-
         fvs = frozenset().union(
-            {op},
-            *(
-                x if isinstance(x, frozenset) else frozenset()
-                for x in (*args, *kwargs.values())
-            ),
+            {op}, *(a.fvs for a in (*arg_analyses, *kwarg_analyses.values()))
         )
-        fvs -= binders
-        return fvs
+        return _FvsAnalysis(fvs=fvs - binders)
 
-    _fvsof_fvs = defop(object, name="fvsof_fvs")
-    _fvsof_binders = defop(object, name="fvsof_binders")
 
-    return (
-        PureInterpretation(
-            productN(
-                {
-                    _fvsof_fvs: {
-                        apply: _apply_fvs,
-                        ConstructorOperation.__apply__: _apply_passthrough_fvs,
-                    },
-                    _fvsof_binders: {
-                        apply: _apply_binders,
-                        ConstructorOperation.__apply__: _apply_collection_binders,
-                    },
-                }
-            )
-        ),
-        _fvsof_fvs,
-    )
+_FVSOF_INTP = _FvsofIntp()
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
@@ -476,11 +417,5 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert fvs >= {f, a}
 
     """
-    from effectful.internals.product_n import _unpack
-
-    intp, prompt = _fvsof_intp()
-    result = evaluate(term, intp=intp)
-    fvs = _unpack(result, prompt)
-    if not isinstance(fvs, frozenset):
-        return frozenset()
-    return fvs
+    result = evaluate(term, intp=_FVSOF_INTP)
+    return result.fvs if isinstance(result, _FvsAnalysis) else frozenset()
