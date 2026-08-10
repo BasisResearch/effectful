@@ -21,11 +21,15 @@ from effectful.handlers.jax.monoid import (
 from effectful.ops.monoid import (
     EliminateSingletonStreams,
     EvaluateIntp,
+    Max,
+    Min,
     NormalizeIntp,
+    Optimum,
     Product,
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
+from effectful.ops.syntax import deffn
 from tests._monoid_helpers import JaxBackend
 
 MONOIDS = [
@@ -122,6 +126,47 @@ def test_reduce_array_2(monoid, reductor, backend: JaxBackend):
         )
 
     assert jnp.allclose(actual, expected)
+
+
+@pytest.mark.parametrize(
+    "monoid,expected_value,expected_assignment",
+    [(Min, 0, 1), (Max, 4, 3)],
+)
+def test_reduce_optimum_weighted_stream(
+    monoid, expected_value, expected_assignment, backend: JaxBackend
+):
+    x, v = backend.define_vars("x", "v", ret="scalar")
+    expr = monoid.reduce(
+        (x() - 1) ** 2,
+        {x: Sum.weighted(range(4), deffn(Optimum(0, {x: v()}), v))},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        actual = evaluate(expr)
+
+    assert isinstance(actual, Optimum)
+    assert jnp.array_equal(actual.value, expected_value)
+    assert actual.assignment is not None
+    assert jnp.array_equal(actual.assignment[x], expected_assignment)
+
+
+def test_reduce_optimum_jit(backend: JaxBackend):
+    x = backend.define_vars("x", ret="scalar")
+
+    @jax.jit
+    def run(scores):
+        with handler(NormalizeIntp), handler(EvaluateIntp):
+            return Min.reduce(
+                Optimum(unbind_dims(scores, x), {x: x()}),
+                {x: range(scores.shape[0])},
+            )
+
+    actual = run(jnp.asarray([3.0, 1.0, 2.0]))
+
+    assert isinstance(actual, Optimum)
+    assert jnp.array_equal(actual.value, 1.0)
+    assert actual.assignment is not None
+    assert jnp.array_equal(actual.assignment[x], 1)
 
 
 SCALAR_PLUS = [

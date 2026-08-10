@@ -25,6 +25,7 @@ from effectful.ops.monoid import (
     Min,
     Monoid,
     NormalizeIntp,
+    Optimum,
     Or,
     Product,
     Streams,
@@ -49,6 +50,25 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, Interpretation, Operation, Term
 
 logger = logging.getLogger(__name__)
+
+
+def _optimum_flatten(optimum: Optimum):
+    keys = None if optimum.assignment is None else tuple(optimum.assignment)
+    values = () if optimum.assignment is None else tuple(optimum.assignment.values())
+    return (optimum.value, *values), keys
+
+
+def _optimum_unflatten(keys, children):
+    value, *assignment_values = children
+    assignment = (
+        None if keys is None else dict(zip(keys, assignment_values, strict=True))
+    )
+    return Optimum(value, assignment)
+
+
+# ``Optimum`` lives in the backend-independent module, but once the JAX backend
+# is imported it should be a valid input/output of ``jax.jit``.
+jax.tree_util.register_pytree_node(Optimum, _optimum_flatten, _optimum_unflatten)
 
 
 is_equality.register(jnp.equal)
@@ -257,6 +277,87 @@ for monoid, func in [
     ARRAY_REDUCTORS[monoid] = functools.partial(func, initial=monoid.identity)
 
 ARRAY_REDUCTORS[LogSumExp] = logsumexp
+
+
+class ReduceOptimum(ObjectInterpretation):
+    """Reduce an assignment-carrying JAX score with ``argmin`` or ``argmax``.
+
+    This is deliberately a lowering for the normalized ``Optimum`` body rather
+    than for weighted-stream syntax.  ``ReduceWeightedStream`` turns the latter
+    into this form, so the same kernel handles both spellings.
+
+    The initial kernel supports independent ``range`` streams and assignments
+    that record stream variables directly.  Those are the normal form produced
+    by ``Sum.weighted(..., lambda v: Optimum(0, {x: v}))``.
+    """
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        if monoid not in (Min, Max) or not isinstance(body, Optimum):
+            return fwd()
+        if not issubclass(typeof(body.value), jax.Array):
+            return fwd()
+        if not body.feasible or not isinstance(body.assignment, Mapping):
+            return fwd()
+        if not streams or not all(
+            isinstance(stream, range) for stream in streams.values()
+        ):
+            return fwd()
+
+        # For now assignments must be direct references to reduction variables.
+        # Keeping this check narrow is preferable to silently returning a wrong
+        # provenance value for an arbitrary assignment expression.
+        assignment_vars = {}
+        for key, value in body.assignment.items():
+            if not (
+                isinstance(value, Term)
+                and not value.args
+                and not value.kwargs
+                and value.op in streams
+            ):
+                return fwd()
+            assignment_vars[key] = value.op
+
+        if any(len(stream) == 0 for stream in streams.values()):
+            return Optimum(monoid.identity, None)
+
+        score_fvs = fvsof(body.value)
+        used = tuple(k for k in streams if k in score_fvs)
+        used_streams = {k: streams[k] for k in used}
+
+        if used:
+            # Materialize one leading positional axis per used stream.  Existing
+            # delta lowering performs vectorized substitution and preserves any
+            # trailing batch dimensions of the score.
+            score = monoid.reduce(
+                monoid.delta(tuple(k() for k in used), body.value), used_streams
+            )
+            if not isinstance(score, jax.Array | jax.core.Tracer):
+                return fwd()
+
+            reduction_shape = tuple(len(typing.cast(range, streams[k])) for k in used)
+            if tuple(score.shape[: len(used)]) != reduction_shape:
+                return fwd()
+
+            flat_size = functools.reduce(lambda a, b: a * b, reduction_shape, 1)
+            flat_score = jnp.reshape(score, (flat_size, *score.shape[len(used) :]))
+            arg_reduce = jnp.argmin if monoid is Min else jnp.argmax
+            flat_index = arg_reduce(flat_score, axis=0)
+            value = jnp.take_along_axis(flat_score, flat_index[None], axis=0)[0]
+            coordinates = jnp.unravel_index(flat_index, reduction_shape)
+            positions = dict(zip(used, coordinates, strict=True))
+        else:
+            # An invariant score ties everywhere; monoid reduction chooses the
+            # first candidate, matching both Python's min/max and JAX argmin/max.
+            value = body.value
+            positions = {}
+
+        assignment = {}
+        for key, variable in assignment_vars.items():
+            stream = typing.cast(range, streams[variable])
+            position = positions.get(variable, 0)
+            assignment[key] = stream.start + stream.step * position
+        return Optimum(value, assignment)
 
 
 class ReduceArray(ObjectInterpretation):
@@ -822,6 +923,7 @@ EvaluateIntp.extend(
     ReduceDeltaSimpleRange(),
     ReduceArrayScan(),
     PlusCastArray(),
+    ReduceOptimum(),
 )
 
 NormalizeIntp.extend(
