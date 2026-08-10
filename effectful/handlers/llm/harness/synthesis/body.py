@@ -2,7 +2,6 @@ import ast
 import collections.abc
 import functools
 import inspect
-import json
 import textwrap
 import types
 import typing
