@@ -13,7 +13,7 @@ import pydantic
 
 from effectful.handlers.llm.harness.serialization import (
     _IS_FINAL_KEY,
-    _TOOLS_KEY,
+    _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     format_as_content_blocks,
@@ -205,7 +205,7 @@ def call_assistant[T](
 
     name2tool = {t.__name__: t for t in tools}
     assert len(tools) == len(name2tool), "Tool name collision detected"
-    env = {_TOOLS_KEY: name2tool, **env}
+    env = {_NAME2TOOL_KEY: name2tool, **env}
     tool_specs = []
     for name, t in sorted(name2tool.items()):
         spec = typing.cast(

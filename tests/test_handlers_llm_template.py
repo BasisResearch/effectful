@@ -23,7 +23,7 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.harness.serialization import _TOOLS_KEY, DecodedToolCall
+from effectful.handlers.llm.harness.serialization import _NAME2TOOL_KEY, DecodedToolCall
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
@@ -276,7 +276,7 @@ def test_agent_method_tool_advertised_name_matches_decode_key():
         "function": {"name": advertised, "arguments": '{"payload": "x"}'},
     }
     decoded = pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
-        raw_tool_call, context={_TOOLS_KEY: name2tool}
+        raw_tool_call, context={_NAME2TOOL_KEY: name2tool}
     )
     assert decoded.tool is tool
 

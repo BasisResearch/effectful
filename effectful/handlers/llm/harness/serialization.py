@@ -36,7 +36,7 @@ type ToolCallID = str
 
 # Keys under which special metadata are stashed in the Pydantic decoding context.
 # Deliberately not identifiers so they cannot be confused with lexical variables.
-_TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
+_NAME2TOOL_KEY: typing.Literal["$NAME2TOOL"] = "$NAME2TOOL"
 _IS_FINAL_KEY: typing.Literal["$IS_FINAL"] = "$IS_FINAL"
 _TYPE_CHECK_ANCHOR_KEY: typing.Literal["$TYPE_CHECK_ANCHOR"] = "$TYPE_CHECK_ANCHOR"
 
@@ -473,7 +473,7 @@ def _validate_tool(
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     try:
-        return info.context[_TOOLS_KEY][value["function"]["name"]]
+        return info.context[_NAME2TOOL_KEY][value["function"]["name"]]
     except KeyError as e:
         raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
 
@@ -541,7 +541,7 @@ def _validate_tool_call(
         value = OpenAIChatCompletionMessageToolCall.model_validate(value)
     ctx = info.context or {}
     assert value.function.name is not None
-    tool = ctx[_TOOLS_KEY][value.function.name]
+    tool = ctx[_NAME2TOOL_KEY][value.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
     decoded_args = {}
