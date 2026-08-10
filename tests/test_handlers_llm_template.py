@@ -45,7 +45,7 @@ class TemplateStringIntp(ObjectInterpretation):
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
-        model_input = call_user(template, env)
+        model_input = call_user(template.__doc__, env)
         template_result = model_input["content"]
         assert len(template_result) == 1
         return template_result[0]["text"]

@@ -309,22 +309,13 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 
 @Operation.define
 def call_user(
-    template: Template,
+    prompt_template: str,
     env: collections.abc.Mapping[str, typing.Any],
 ) -> litellm.ChatCompletionUserMessage:
     """
     Format a `Template`'s prompt applied to arguments into a user message.
-
-    The prompt is the template's header (``name(signature)``, with braces
-    escaped so it is not itself formatted) followed by its docstring; its
-    ``{...}`` fields are filled from `env`.
     """
-    assert template.__doc__ is not None
-    header = f"{template.__name__}{template.__signature__}".replace("{", "{{").replace(
-        "}", "}}"
-    )
-    prompt = f"{header}\n\n{template.__doc__}"
-    parts = format_as_content_blocks(prompt, env)
+    parts = format_as_content_blocks(prompt_template, env)
     message = litellm.ChatCompletionUserMessage(role="user", content=parts)
     return message
 

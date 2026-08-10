@@ -101,7 +101,12 @@ class LiteLLMProvider(LiteLLMConfigurer):
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = template.__context__.new_child(bound_args.arguments)
-        message = call_user(template, env)
+
+        header = f"{template.__name__}{template.__signature__}".replace(
+            "{", "{{"
+        ).replace("}", "}}")
+        prompt_template = f"{header}\n\n{template.__doc__}"
+        message = call_user(prompt_template, env)
 
         result: T | None = None
         is_final: bool = False
