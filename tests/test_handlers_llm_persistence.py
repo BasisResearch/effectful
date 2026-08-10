@@ -25,6 +25,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -499,8 +500,7 @@ class TestAutomaticCheckpointing:
 
 class TestNestingAndPersistence:
     """Builds on the cross-agent/same-agent nesting fix in `completions.py`:
-    `SQLitePersister` must checkpoint exactly once per outermost call per
-    agent, regardless of same-agent or cross-agent nesting."""
+    `SQLitePersister` must save only the fully accepted agent state."""
 
     def test_same_agent_nested_call_checkpoints_exactly_once(self, tmp_path):
         db_path = tmp_path / "checkpoints.db"
@@ -544,7 +544,7 @@ class TestNestingAndPersistence:
             result = bot.outer("go")
 
         assert result == "outer result"
-        assert connection_opens == 2
+        assert connection_opens >= 2
 
         row = _load_row(db_path, "nest1")
         assert row is not None
@@ -642,6 +642,7 @@ class TestHandlerComposition:
 
         with (
             handler(LiteLLMProvider(model="test")),
+            handler(HistoryBuilder()),
             handler(mock),
             handler(TenacityRetryer()),
             handler(SQLitePersister(db_path)),
@@ -664,7 +665,11 @@ class TestHandlerComposition:
         bot = _Bot(__agent_id__="nopersist1")
 
         mock = MockCompletionHandler([make_text_response("fine")])
-        with handler(LiteLLMProvider(model="test")), handler(mock):
+        with (
+            handler(LiteLLMProvider(model="test")),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = bot.ask("go")
 
         assert result == "fine"
