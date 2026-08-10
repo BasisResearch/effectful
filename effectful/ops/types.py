@@ -542,7 +542,10 @@ class Operation[**Q, V]:
                     else:
                         return default_result
 
-                instance_op = self.define(types.MethodType(_instance_op, instance))
+                name = ("" if owner is None else f"{owner.__name__}_") + self.__name__
+                instance_op = self.define(
+                    types.MethodType(_instance_op, instance), name=name
+                )
                 # The operation this one is a binding of, and what it is bound to,
                 # named as on types.MethodType, which the other branches return.
                 instance_op.__func__, instance_op.__self__ = self, instance  # type: ignore[attr-defined]

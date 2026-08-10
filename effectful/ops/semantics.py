@@ -260,6 +260,7 @@ def _is_rebuild(result: typing.Any, expr: typing.Any) -> bool:
 @evaluate.register(object)
 @evaluate.register(str)
 @evaluate.register(bytes)
+@evaluate.register(range)
 def _evaluate_object[T](expr: T, **kwargs) -> T:
     if dataclasses.is_dataclass(expr) and not isinstance(expr, type):
         return _evaluate_dataclass(expr, **kwargs)
