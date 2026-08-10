@@ -1678,6 +1678,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
+            handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(BuiltinExecutor()),
             handler(mock),
@@ -1709,6 +1710,7 @@ class TestSynthesizeAndCallDoctests:
         )
         with (
             handler(LiteLLMProvider(model="test-model")),
+            handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(BuiltinExecutor()),
             handler(mock),
@@ -1729,6 +1731,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
+            handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(BuiltinExecutor()),
             handler(mock),
@@ -1774,6 +1777,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(LiteLLMProvider(model="test-model")),
+            handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(BuiltinExecutor()),
             handler(mock),

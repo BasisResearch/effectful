@@ -34,10 +34,12 @@ from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
 
-# Key under which the name->Tool mapping is stashed in the decoding context.
-# Deliberately not a valid Python identifier, so it can never collide with a
-# lexical variable name sharing the context (e.g. a reader named after its var).
+# Keys under which special metadata are stashed in the Pydantic decoding context.
+# Deliberately not identifiers so they cannot be confused with lexical variables.
 _TOOLS_KEY: typing.Literal["$TOOLS"] = "$TOOLS"
+_IS_FINAL_KEY: typing.Literal["$IS_FINAL"] = "$IS_FINAL"
+_TYPE_CHECK_ANCHOR_KEY: typing.Literal["$TYPE_CHECK_ANCHOR"] = "$TYPE_CHECK_ANCHOR"
+
 
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal

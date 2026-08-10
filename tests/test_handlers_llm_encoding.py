@@ -26,11 +26,11 @@ from effectful.handlers.llm.harness.execution.restricted import (
 )
 from effectful.handlers.llm.harness.serialization import (
     _TOOLS_KEY,
+    _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
     to_content_blocks,
 )
-from effectful.handlers.llm.harness.synthesis.function import TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.types import Encodable, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
@@ -838,7 +838,7 @@ def test_callable_decode_rejects_invalid(
     with pytest.raises(exc_type):
         with handler(eval_provider):
             pydantic.TypeAdapter(Encodable[ty]).validate_python(
-                source, context={**ctx, TYPE_CHECK_ANCHOR_KEY: anchor}
+                source, context={**ctx, _TYPE_CHECK_ANCHOR_KEY: anchor}
             )
 
 
@@ -1041,7 +1041,7 @@ def test_encodable_code_round_trips_to_source():
 def test_encodable_code_rejects_syntax_error():
     """Source that does not parse is rejected at decode."""
     with handler(BuiltinExecutor()):
-        with pytest.raises(pydantic.ValidationError):
+        with pytest.raises(SyntaxError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("def f(:")
 
 
@@ -1049,7 +1049,7 @@ def test_encodable_code_rejects_compile_only_error():
     """`return` outside a function parses but does not compile -- still rejected,
     so the check is `compile`, not merely `ast.parse`."""
     with handler(BuiltinExecutor()):
-        with pytest.raises(pydantic.ValidationError):
+        with pytest.raises(SyntaxError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("return 5")
 
 

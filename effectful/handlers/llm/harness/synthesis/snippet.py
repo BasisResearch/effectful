@@ -21,6 +21,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_system,
 )
 from effectful.handlers.llm.harness.serialization import (
+    _TYPE_CHECK_ANCHOR_KEY,
     TypeToPydanticType,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -157,16 +158,9 @@ class ReplSession(code.InteractiveInterpreter):
 
 
 _CODE_FILENAME_PREFIX = "<exec_code-"
-# Anchor for REPL `exec_code` snippets and synthesized tool arguments (including a
-# `TemplateBody`), separate from the structured-output-result synthesis anchor
-# (TYPE_CHECK_ANCHOR_KEY): the two decoders check against different contracts -- a
-# REPL snippet or a `TemplateBody` against the Template body, a synthesized general
-# `Callable` tool argument against its own parameter type. Both keys carry the
-# enclosing `Template`.
-REPL_ANCHOR_KEY = "<repl_anchor>"
 
 
-def scan_non_nestable(generated: ast.Module) -> None:
+def _scan_non_nestable(generated: ast.Module) -> None:
     """Reject constructs legal at module level but illegal once nested in a function.
 
     ``from ... import *`` and ``from __future__ import ...`` are both ``SyntaxError``s
@@ -177,6 +171,8 @@ def scan_non_nestable(generated: ast.Module) -> None:
     error), so a decoder can catch it alongside ``SyntaxError`` without swallowing a real
     ``TypeError`` from a broken provider.
     """
+    if not generated.body:
+        raise ValueError("generated code has empty or trivial body AST")
     for stmt in generated.body:
         if isinstance(stmt, ast.ImportFrom):
             if stmt.module == "__future__":
@@ -191,9 +187,11 @@ def scan_non_nestable(generated: ast.Module) -> None:
                 )
 
 
-def splice_repl_code_into_body(
-    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
-) -> SplicedRegion | None:
+def _splice_snippet(
+    generated: ast.Module,
+    module_ast: ast.Module,
+    template_def: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> SplicedRegion:
     """Splice REPL code -- ``generated`` -- into the anchor Template's body, in its
     real module source, and return the modified source with the ``[lo, hi]`` line
     span of the spliced statements.
@@ -236,16 +234,6 @@ def splice_repl_code_into_body(
     only on source *drift* (source recovered but the def no longer sits where it was
     compiled from), which ``_recover_template_def`` surfaces.
     """
-    # An empty or comment-only module parses to zero statements: nothing to check.
-    if not generated.body:
-        return None
-    # None means the Template's source can't be recovered (REPL/exec/notebook-defined) --
-    # skip, like the Callable path, rather than break the tool; `_recover_template_def`
-    # raises on source drift, which is a real error and propagates.
-    recovered = _recover_template_def(anchor)
-    if recovered is None:
-        return None
-    module_ast, template_def = recovered
     template_def.body = list(generated.body)
 
     # `template_def` is still a node in `module_ast` (only its body changed), so its
@@ -281,17 +269,17 @@ def _pydantic_type_code(ty):
             raise ValueError(
                 f"expected Python source as a string, got {type(value).__name__}"
             )
+
+        ctx = info.context or {}
+        anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+
         filename = f"{_CODE_FILENAME_PREFIX}{uuid.uuid4()}>"
-        try:
-            module = effectful.handlers.llm.harness.execution.hooks.parse(
-                value, filename
-            )
-            # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
-            # function body, so such a snippet can't be spliced into the Template for
-            # type checking.
-            scan_non_nestable(module)
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"source is not valid REPL code: {exc}") from exc
+        module = effectful.handlers.llm.harness.execution.hooks.parse(value, filename)
+
+        # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
+        # function body, so such a snippet can't be spliced into the Template for
+        # type checking.
+        _scan_non_nestable(module)
 
         # Type-check the snippet in its execution context, exactly as a synthesized
         # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
@@ -300,26 +288,22 @@ def _pydantic_type_code(ty):
         # plus this snippet into the Template body and check it. A type error raises here
         # -> the tool-call decode fails -> `RetryLLMHandler` retries, so ill-typed code
         # never reaches `runcode`.
-        ctx = info.context or {}
-        anchor = ctx.get(REPL_ANCHOR_KEY)
-        if anchor is not None:
+        if anchor is not None and _recover_template_def(anchor) is not None:
             # Prepend the already-run (type-clean) session snippets so their bindings
             # resolve; `value` is the current snippet. The whole cumulative body is
             # spliced and checked.
+            anchor_asts = _recover_template_def(anchor)
+            assert anchor_asts is not None
+            module_ast, template_def = anchor_asts
             prior = StatefulReplSynthesizer.repl_history()
             prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
             session = ast.parse(prior_src + value)
-            checked = splice_repl_code_into_body(session, anchor)
-            if checked is not None:
-                effectful.handlers.llm.harness.execution.hooks.type_check(
-                    *checked, lenient=True
-                )
-        try:
-            return effectful.handlers.llm.harness.execution.hooks.compile(
-                module, filename
+            checked = _splice_snippet(session, module_ast, template_def)
+            effectful.handlers.llm.harness.execution.hooks.type_check(
+                *checked, lenient=True
             )
-        except (SyntaxError, ValueError) as exc:
-            raise ValueError(f"source does not compile: {exc}") from exc
+
+        return effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
 
     return typing.Annotated[
         ty,

@@ -6,12 +6,14 @@ import logging
 import textwrap
 import types
 import typing
-from collections.abc import Callable, Mapping
+from collections.abc import Callable
 
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
 from effectful.handlers.llm.harness.serialization import (
+    _IS_FINAL_KEY,
+    _TYPE_CHECK_ANCHOR_KEY,
     EncodedFunction,
     TypeToPydanticType,
     _inline_refs,
@@ -62,9 +64,6 @@ def _reject_param_count_mismatch(fn: Callable, ty: typing.Any) -> None:
 # (tool-argument decoding) means skip. Deliberately not a valid identifier so
 # `LexicalReaders` skips it (no tool leak) and it can never collide with a lexical
 # name.
-TYPE_CHECK_ANCHOR_KEY = "<type_check_anchor>"
-
-
 def _def_nodes(
     module: ast.Module,
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
@@ -132,9 +131,11 @@ def _recover_template_def(
     return module_ast, template_def
 
 
-def splice_into_source(
-    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
-) -> SplicedRegion | None:
+def _splice_function(
+    generated: ast.Module,
+    module_ast: ast.Module,
+    template_def: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> SplicedRegion:
     """Splice `generated` into the anchor Template's own function body, in its real
     module source.
 
@@ -176,20 +177,8 @@ def splice_into_source(
     Template whose body -- not return value -- is synthesized). The returned
     ``[lo, hi]`` spans the generated statements only, not the ``def`` header.
     """
-    if not generated.body:
-        raise TypeError("splice: generated module is empty")
     last = generated.body[-1]
-    if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
-        raise TypeError(
-            f"splice: last statement must be a function definition, "
-            f"got {type(last).__name__}"
-        )
-    target_name = last.name
-
-    recovered = _recover_template_def(anchor)
-    if recovered is None:
-        return None
-    module_ast, template_def = recovered
+    assert isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef)
 
     # Splice in place: replace the body with the generated body and bind the
     # target against the (source) return annotation via `return`. Decorators are
@@ -199,7 +188,7 @@ def splice_into_source(
     # surrounding source as little as possible keeps the splice robust.
     template_def.body = [
         *generated.body,
-        ast.Return(ast.Name(target_name, ast.Load())),
+        ast.Return(ast.Name(last.name, ast.Load())),
     ]
 
     # mypy reports line numbers in the coordinates of `checked_source`, so we need
@@ -221,66 +210,6 @@ def splice_into_source(
     lo = spliced.body[0].lineno  # first generated statement (body is non-empty)
     hi = spliced.end_lineno or lo
     return checked_source, lo, hi
-
-
-def _synthesize_callable(
-    module_code: str,
-    ctx: Mapping,
-    *,
-    template_body: bool,
-) -> tuple[Callable, dict[str, typing.Any]]:
-    """Parse, type-check, compile and exec a synthesized module, returning the
-    function it defines and the exec namespace.
-
-    The code is type-checked against the enclosing Template's source when an
-    ``anchor`` is present in ``ctx``.  ``template_body`` selects the splice: a
-    `TemplateBody` (submit_solution) is spliced as the Template's own body; a
-    general `Callable` uses the strict result splice (`splice_into_source`) when it
-    is a structured-output result, else the lenient REPL splice.
-    """
-    from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
-
-    filename = f"<synthesis:{id(module_code)}>"
-    module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-        module_code, filename
-    )
-
-    if template_body:
-        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
-        if anchor is not None:
-            # Check the synthesized function *as the Template's body*, strictly: it
-            # is the final answer, so -- unlike incrementally-built REPL code -- it
-            # must honor the Template's declared types and gets no redefinition slack
-            # (no name reuse with a new type, no duplicate definitions).
-            from effectful.handlers.llm.harness.synthesis.body import (
-                splice_template_body,
-            )
-
-            spliced = splice_template_body(module, anchor)
-            if spliced is not None:
-                effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
-    elif ctx.get(TYPE_CHECK_ANCHOR_KEY) is not None:
-        spliced = splice_into_source(module, ctx[TYPE_CHECK_ANCHOR_KEY])
-        if spliced is not None:
-            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
-    elif ctx.get(REPL_ANCHOR_KEY) is not None:
-        from effectful.handlers.llm.harness.synthesis.snippet import (
-            splice_repl_code_into_body,
-        )
-
-        spliced = splice_repl_code_into_body(module, ctx[REPL_ANCHOR_KEY])
-        if spliced is not None:
-            effectful.handlers.llm.harness.execution.hooks.type_check(
-                *spliced, lenient=True
-            )
-
-    bytecode: types.CodeType = effectful.handlers.llm.harness.execution.hooks.compile(
-        module, filename
-    )
-    g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
-    effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
-    result = g[module.body[-1].name]  # type: ignore
-    return result, g
 
 
 class SynthesizedFunction(EncodedFunction):
@@ -421,9 +350,32 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
             value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
-        result, g = _synthesize_callable(
-            value.module_code, info.context or {}, template_body=False
+
+        ctx = info.context or {}
+        anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+
+        filename = f"<synthesis:{id(value)}>"
+        module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
+            value.module_code, filename
         )
+
+        if anchor is not None and _recover_template_def(anchor) is not None:
+            anchor_asts = _recover_template_def(anchor)
+            assert anchor_asts is not None
+            module_ast, template_def = anchor_asts
+            spliced = _splice_function(module, module_ast, template_def)
+            # use _IS_FINAL_KEY to determine if this is a return value or a tool argument
+            is_final = ctx.get(_IS_FINAL_KEY, False)
+            effectful.handlers.llm.harness.execution.hooks.type_check(
+                *spliced, lenient=not is_final
+            )
+
+        bytecode: types.CodeType = (
+            effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
+        )
+        g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
+        effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
+        result = g[module.body[-1].name]  # type: ignore
         _reject_param_count_mismatch(result, ty)
         effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
         return result

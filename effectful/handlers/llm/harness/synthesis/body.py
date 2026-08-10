@@ -12,22 +12,103 @@ import pydantic
 import effectful.handlers.llm.harness.execution.hooks
 from effectful.handlers.llm.harness.hooks import call_assistant, call_system
 from effectful.handlers.llm.harness.serialization import (
+    _TYPE_CHECK_ANCHOR_KEY,
     EncodedFunction,
     TypeToPydanticType,
     _inline_refs,
     _serialize_callable,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
-    TYPE_CHECK_ANCHOR_KEY,
     SplicedRegion,
     SynthesizedFunction,
     _def_nodes,
     _recover_template_def,
-    _synthesize_callable,
 )
 from effectful.handlers.llm.types import FinalTool, Template
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+def _splice_body(
+    generated: ast.Module,
+    module_ast: ast.Module,
+    template_def: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> SplicedRegion:
+    """Splice a synthesized function in as the anchor Template's *own body*.
+
+    Unlike `splice_into_source` (which appends ``return <fn>`` and checks that the
+    Template returns the synthesized *function*), this treats the synthesized
+    function as the Template's implementation: the Template keeps its own
+    authoritative signature and its body becomes ``[<helpers/imports the model
+    wrote>, *<the synthesized function's body>]``.  mypy then checks that body
+    against the Template's declared parameter and return types -- so a body that
+    fails to return the declared type is rejected.  The synthesized function's own
+    parameter list (including any ``self``) is intentionally discarded: the
+    Template's real signature is the contract.
+
+    ``generated`` is the model's whole ``module_code`` parsed to a module; its
+    *last* statement is the implementation, any earlier statements are helper
+    definitions/imports.  For example, given the Template ::
+
+        @Template.define
+        def parity(numbers: Sequence[int]) -> bool:
+            '''True iff the sum of {numbers} is odd.
+            >>> parity([1, 2])  # doctest: +SKIP
+            True
+            '''
+
+    a model that submits this ``generated`` (note the header on its final ``def``
+    -- ``numbers: list`` -- is discarded) ::
+
+        import math
+        def _odd(n: int) -> bool:
+            return n % 2 == 1
+        def parity(numbers: list) -> bool:
+            return _odd(sum(numbers))
+
+    is spliced into the Template's real source as ::
+
+        @Template.define
+        def parity(numbers: Sequence[int]) -> bool:   # authoritative header kept
+            import math
+            def _odd(n: int) -> bool:
+                return n % 2 == 1
+            return _odd(sum(numbers))                  # from the final def's body
+
+    so mypy checks the grafted body against ``numbers: Sequence[int]`` and
+    ``-> bool``.  The helper ``_odd`` and ``import math`` (everything before the
+    final ``def``) become locals at the top of the body; only the final ``def``'s
+    *body* is taken, under the Template's own header.
+
+    Returns the modified module source and the ``[lo, hi]`` line span from the
+    ``def`` line through the last body line, or ``None`` when the anchor's source
+    can't be recovered (REPL/notebook template -- the caller skips rather than
+    guesses). Raises ``RuntimeError`` on source drift, via `_recover_template_def`.
+    """
+    last = generated.body[-1]
+    assert isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef)
+
+    # Keep the Template's real header (authoritative annotations, `self` for
+    # methods); replace only its body with the model's helpers/imports followed by
+    # the synthesized function's body statements, so the declared return type is
+    # enforced. Any docstring/doctests in the recovered source are dropped.
+    template_def.body = [*generated.body[:-1], *last.body]
+
+    # Report the def line through the end of the body. Unlike `splice_into_source`,
+    # the region starts at the `def` line (not the first body statement): mypy
+    # anchors "Missing return statement"/"empty-body" there, and a body that doesn't
+    # return the Template's declared type is a real defect we want to catch. The
+    # header is the Template's own (recovered, resolvable) signature -- sourceless
+    # templates return `None` above and skip -- so including it adds no spurious
+    # signature diagnostics. Decorator lines sit above `spliced.lineno` and stay out.
+    # `template_def` is still a node in `module_ast` (only its body changed), so its
+    # walk-order index is stable across the unparse round-trip.
+    def_index = _def_nodes(module_ast).index(template_def)
+    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
+    spliced = _def_nodes(ast.parse(checked_source))[def_index]
+    lo = spliced.lineno
+    hi = spliced.body[-1].end_lineno or lo
+    return checked_source, lo, hi
 
 
 class TemplateBody:
@@ -100,15 +181,33 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
     def _validate(
         value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
-        from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
-
         if isinstance(value, str):
             value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
-        result, g = _synthesize_callable(value.module_code, ctx, template_body=True)
-        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+
+        filename = f"<synthesis:{id(value.module_code)}>"
+        module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
+            value.module_code, filename
+        )
+
+        # `None` means the Template's source can't be recovered (REPL/exec/notebook
+        # template): skip the type check rather than guess, but still route the
+        # doctests below -- that only needs the anchor op, not its source.
+        anchor_asts = _recover_template_def(anchor) if anchor is not None else None
+        if anchor_asts is not None:
+            spliced = _splice_body(module, *anchor_asts)
+            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+
+        bytecode: types.CodeType = (
+            effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
+        )
+        g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
+        effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
+        result = g[module.body[-1].name]  # type: ignore
+
         if anchor is None:
             effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
             return result
@@ -240,15 +339,29 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
     def _validate(
         value: SynthesizedMethodTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
-        from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
-
         if isinstance(value, str):
             value = typed_enc.model_validate_json(value)
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
-        result, g = _synthesize_callable(value.module_code, ctx, template_body=True)
-        anchor = ctx.get(TYPE_CHECK_ANCHOR_KEY) or ctx.get(REPL_ANCHOR_KEY)
+        anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+
+        filename = f"<synthesis:{id(value.module_code)}>"
+        module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
+            value.module_code, filename
+        )
+        anchor_asts = _recover_template_def(anchor) if anchor is not None else None
+        if anchor_asts is not None:
+            spliced = _splice_body(module, *anchor_asts)
+            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+
+        bytecode: types.CodeType = (
+            effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
+        )
+        g: dict[str, typing.Any] = {k: v for k, v in ctx.items() if k.isidentifier()}
+        effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
+        result = g[module.body[-1].name]  # type: ignore
+
         class_template = _class_template_of(anchor) if anchor is not None else None
         if class_template is None:
             effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
@@ -445,94 +558,3 @@ class FinalBodySynthesizer(ObjectInterpretation):
 
         with handler({call_assistant: _add_synthesis_tool}):
             return fwd()
-
-
-def splice_template_body(
-    generated: ast.Module, anchor: collections.abc.Callable[..., typing.Any]
-) -> SplicedRegion | None:
-    """Splice a synthesized function in as the anchor Template's *own body*.
-
-    Unlike `splice_into_source` (which appends ``return <fn>`` and checks that the
-    Template returns the synthesized *function*), this treats the synthesized
-    function as the Template's implementation: the Template keeps its own
-    authoritative signature and its body becomes ``[<helpers/imports the model
-    wrote>, *<the synthesized function's body>]``.  mypy then checks that body
-    against the Template's declared parameter and return types -- so a body that
-    fails to return the declared type is rejected.  The synthesized function's own
-    parameter list (including any ``self``) is intentionally discarded: the
-    Template's real signature is the contract.
-
-    ``generated`` is the model's whole ``module_code`` parsed to a module; its
-    *last* statement is the implementation, any earlier statements are helper
-    definitions/imports.  For example, given the Template ::
-
-        @Template.define
-        def parity(numbers: Sequence[int]) -> bool:
-            '''True iff the sum of {numbers} is odd.
-            >>> parity([1, 2])  # doctest: +SKIP
-            True
-            '''
-
-    a model that submits this ``generated`` (note the header on its final ``def``
-    -- ``numbers: list`` -- is discarded) ::
-
-        import math
-        def _odd(n: int) -> bool:
-            return n % 2 == 1
-        def parity(numbers: list) -> bool:
-            return _odd(sum(numbers))
-
-    is spliced into the Template's real source as ::
-
-        @Template.define
-        def parity(numbers: Sequence[int]) -> bool:   # authoritative header kept
-            import math
-            def _odd(n: int) -> bool:
-                return n % 2 == 1
-            return _odd(sum(numbers))                  # from the final def's body
-
-    so mypy checks the grafted body against ``numbers: Sequence[int]`` and
-    ``-> bool``.  The helper ``_odd`` and ``import math`` (everything before the
-    final ``def``) become locals at the top of the body; only the final ``def``'s
-    *body* is taken, under the Template's own header.
-
-    Returns the modified module source and the ``[lo, hi]`` line span from the
-    ``def`` line through the last body line, or ``None`` when the anchor's source
-    can't be recovered (REPL/notebook template -- the caller skips rather than
-    guesses). Raises ``RuntimeError`` on source drift, via `_recover_template_def`.
-    """
-    if not generated.body:
-        raise TypeError("splice: generated module is empty")
-    last = generated.body[-1]
-    if not isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef):
-        raise TypeError(
-            f"splice: last statement must be a function definition, "
-            f"got {type(last).__name__}"
-        )
-
-    recovered = _recover_template_def(anchor)
-    if recovered is None:
-        return None
-    module_ast, template_def = recovered
-
-    # Keep the Template's real header (authoritative annotations, `self` for
-    # methods); replace only its body with the model's helpers/imports followed by
-    # the synthesized function's body statements, so the declared return type is
-    # enforced. Any docstring/doctests in the recovered source are dropped.
-    template_def.body = [*generated.body[:-1], *last.body]
-
-    # Report the def line through the end of the body. Unlike `splice_into_source`,
-    # the region starts at the `def` line (not the first body statement): mypy
-    # anchors "Missing return statement"/"empty-body" there, and a body that doesn't
-    # return the Template's declared type is a real defect we want to catch. The
-    # header is the Template's own (recovered, resolvable) signature -- sourceless
-    # templates return `None` above and skip -- so including it adds no spurious
-    # signature diagnostics. Decorator lines sit above `spliced.lineno` and stay out.
-    # `template_def` is still a node in `module_ast` (only its body changed), so its
-    # walk-order index is stable across the unparse round-trip.
-    def_index = _def_nodes(module_ast).index(template_def)
-    checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
-    spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo = spliced.lineno
-    hi = spliced.body[-1].end_lineno or lo
-    return checked_source, lo, hi

@@ -12,6 +12,7 @@ import litellm
 import pydantic
 
 from effectful.handlers.llm.harness.serialization import (
+    _IS_FINAL_KEY,
     _TOOLS_KEY,
     DecodedToolCall,
     format_as_content_blocks,
@@ -169,13 +170,17 @@ def call_assistant[T](
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    from effectful.handlers.llm.harness.synthesis.function import TYPE_CHECK_ANCHOR_KEY
-    from effectful.handlers.llm.harness.synthesis.snippet import REPL_ANCHOR_KEY
+    from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
     from effectful.handlers.llm.harness.transaction import HistoryBuilder
 
     name2tool = {t.__name__: t for t in tools}
     assert len(tools) == len(name2tool), "Tool name collision detected"
-    env = {_TOOLS_KEY: name2tool, REPL_ANCHOR_KEY: anchor, **env}
+    env = {
+        _TOOLS_KEY: name2tool,
+        _IS_FINAL_KEY: False,
+        _TYPE_CHECK_ANCHOR_KEY: anchor,
+        **env,
+    }
     tool_specs = []
     for name, t in sorted(name2tool.items()):
         spec = typing.cast(
@@ -256,7 +261,10 @@ def call_assistant[T](
                 # against the Template's source.
                 result = response_format.model_validate(
                     json.loads(serialized_result),
-                    context={**env, TYPE_CHECK_ANCHOR_KEY: anchor},
+                    context={
+                        **env,
+                        _IS_FINAL_KEY: True,
+                    },
                 ).value
         except Exception as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e

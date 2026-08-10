@@ -21,16 +21,16 @@ from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.hooks import run_doctests, type_check
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
+from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
-    TYPE_CHECK_ANCHOR_KEY,
     SynthesizedFunction,
-    splice_into_source,
+    _recover_template_def,
+    _splice_function,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import (
-    REPL_ANCHOR_KEY,
     ReplSession,
-    scan_non_nestable,
-    splice_repl_code_into_body,
+    _scan_non_nestable,
+    _splice_snippet,
 )
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
@@ -80,9 +80,13 @@ def _raises(generated_src: str, anchor: Any) -> bool:
     # provider so the `type_check` op resolves.
     try:
         with handler(BuiltinExecutor()):
-            spliced = splice_into_source(ast.parse(generated_src), anchor)
-            if spliced is not None:
-                type_check(*spliced)
+            anchor_asts = _recover_template_def(anchor)
+            assert anchor_asts is not None
+            module_ast, template_def = anchor_asts
+            spliced = _splice_function(
+                ast.parse(generated_src), module_ast, template_def
+            )
+            type_check(*spliced)
         return False
     except TypeError:
         return True
@@ -144,14 +148,14 @@ def test_unannotated_container_is_not_a_false_positive():
 
 def test_star_import_raises():
     with pytest.raises(ValueError):
-        scan_non_nestable(
+        _scan_non_nestable(
             ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
         )
 
 
 def test_future_import_raises():
     with pytest.raises(ValueError):
-        scan_non_nestable(
+        _scan_non_nestable(
             ast.parse(
                 "from __future__ import annotations\n"
                 "def g(s: str) -> int:\n    return 0\n"
@@ -165,23 +169,6 @@ def test_annotation_collision_with_context_type_raises():
     # wins). The old rename pass rejected this identically; not a regression.
     src = "def _Ctx(q):\n    return q\ndef f(z: _Ctx) -> int:\n    return z.x\n"
     assert _raises(src, _takes_ctx)
-
-
-def test_unrecoverable_source_skips():
-    # An ``exec``-defined function has no recoverable source -> skip, never raise.
-    ns: dict[str, Any] = {}
-    exec("def t(c: str):\n    raise NotImplementedError", ns)
-    assert not _raises(
-        "def count_a(s: str) -> int:\n    return s.count('a')\n", ns["t"]
-    )
-
-
-def test_empty_module_raises():
-    assert _raises("", _count_char)
-
-
-def test_last_statement_not_function_raises():
-    assert _raises("x = 1\n", _count_char)
 
 
 def test_gate_unrelated_module_error_does_not_block(tmp_path):
@@ -343,7 +330,7 @@ def test_decode_with_anchor_typechecks_and_runs():
             SynthesizedFunction(
                 module_code="def count_a(s: str) -> int:\n    return s.count('a')"
             ),
-            context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+            context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
         )
         assert fn("banana") == 3
 
@@ -356,7 +343,7 @@ def test_decode_with_anchor_rejects_bad_code():
                 SynthesizedFunction(
                     module_code="def count_a(s: str) -> str:\n    return s"
                 ),
-                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+                context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
 
@@ -385,7 +372,7 @@ def test_decode_with_anchor_rejects_non_nestable():
                 SynthesizedFunction(
                     module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
                 ),
-                context={TYPE_CHECK_ANCHOR_KEY: _count_char},
+                context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
 
@@ -554,7 +541,7 @@ def test_repl_rejects_invalid_source_at_construction():
     """Invalid source is rejected when it is decoded to a code object -- before it
     ever reaches the session -- and valid code in the same provider still runs."""
     with handler(BuiltinExecutor()):
-        with pytest.raises(pydantic.ValidationError):
+        with pytest.raises(SyntaxError):
             _code("def f(:")
         assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
 
@@ -1157,7 +1144,10 @@ def _repl_raises(prior: list[str], snippet: str) -> bool:
     # Prepend the already-run snippets to the current one (as the production caller
     # does) and splice the whole cumulative module.
     prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
-    checked = splice_repl_code_into_body(ast.parse(prior_src + snippet), _repl_anchor)
+    anchor_asts = _recover_template_def(_repl_anchor)
+    assert anchor_asts is not None
+    module_ast, template_def = anchor_asts
+    checked = _splice_snippet(ast.parse(prior_src + snippet), module_ast, template_def)
     assert checked is not None
     with handler(BuiltinExecutor()):
         try:
@@ -1239,7 +1229,8 @@ def test_repl_splice_skips_sourceless_anchor():
     Callable anchor. Only source *drift* raises."""
     ns: dict[str, Any] = {}
     exec("def t(readings):\n    raise NotImplementedError", ns)
-    assert splice_repl_code_into_body(ast.parse("x = 1"), ns["t"]) is None
+    anchor_asts = _recover_template_def(ns["t"])
+    assert anchor_asts is None
 
 
 # --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
@@ -1249,7 +1240,7 @@ def _decode(source: str, *, anchor: bool) -> types.CodeType:
     """Decode `source` to a code object the way the `exec_code` tool argument does -- with
     the Template type-check anchor in the decode context (``anchor=True``, as a managed
     Template call supplies) or without it."""
-    ctx = {REPL_ANCHOR_KEY: _repl_anchor} if anchor else None
+    ctx = {_TYPE_CHECK_ANCHOR_KEY: _repl_anchor} if anchor else None
     return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
         source, context=ctx
     )
