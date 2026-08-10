@@ -41,7 +41,6 @@ from effectful.ops.monoid import (
     PlusPartial,
     PlusSingle,
     Product,
-    ProductMonoid,
     ReduceDependentRangeMask,
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
@@ -580,25 +579,6 @@ def test_assignment_plus_disjoint_merge():
 def test_assignment_plus_rejects_duplicate_keys():
     with handler(EvaluateIntp), pytest.raises(ValueError, match="Duplicate key"):
         Assignment.plus({"x": 1}, {"x": 1})
-
-
-def test_product_monoid_plus():
-    scored_assignment = ProductMonoid(Sum, Assignment)
-
-    with handler(EvaluateIntp):
-        result = scored_assignment.plus((2, {"x": 1}), (3, {"y": 2}))
-
-    assert result == (5, {"x": 1, "y": 2})
-    assert scored_assignment.identity == (0, {})
-    assert is_commutative(scored_assignment)
-    assert not is_idempotent(scored_assignment)
-
-
-def test_product_monoid_inherits_idempotence():
-    extrema = ProductMonoid(Min, Max)
-
-    assert is_commutative(extrema)
-    assert is_idempotent(extrema)
 
 
 def test_plus_partial():
@@ -1637,45 +1617,45 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
 
 
 def test_reduce_argmin(backend: Backend):
-    x, v = backend.define_vars("x", "v", ret="scalar")
+    x, xx, v = backend.define_vars("x", "xx", "v", ret="scalar")
 
     expr = Min.reduce(
         (x() - 1) ** 2,
-        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v))},
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v))},
     )
 
     with handler(NormalizeIntp), handler(EvaluateIntp):
         result = evaluate(expr)
 
-    assert result == Optimum(0, {x: 1})
+    assert result == Optimum(0, {xx: 1})
 
 
 def test_reduce_argmin_sum(backend: Backend):
-    x, v = backend.define_vars("x", "v", ret="scalar")
+    x, xx, v = backend.define_vars("x", "xx", "v", ret="scalar")
 
     expr = Min.reduce(
         Sum.plus((x() - 1) ** 2, 2 * (x() - 2) ** 2),
-        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v))},
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v))},
     )
 
     with handler(NormalizeIntp), handler(EvaluateIntp):
         result = evaluate(expr)
 
-    assert result == Optimum(1, {x: 2})
+    assert result == Optimum(1, {xx: 2})
 
 
 def test_reduce_argmin_sum_disjoint(backend: Backend):
-    x, y, v = backend.define_vars("x", "y", "v", ret="scalar")
+    x, xx, y, yy, v = backend.define_vars("x", "xx", "y", "yy", "v", ret="scalar")
 
     expr = Min.reduce(
         Sum.plus((x() - 1) ** 2, (y() - 2) ** 2),
         {
-            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {x: v()}), v)),
-            y: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {y: v()}), v)),
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {yy: v()}), v)),
         },
     )
 
     with handler(NormalizeIntp), handler(EvaluateIntp):
         result = evaluate(expr)
 
-    assert result == Optimum(0, {x: 1, y: 2})
+    assert result == Optimum(0, {xx: 1, yy: 2})
