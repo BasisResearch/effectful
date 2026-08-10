@@ -187,6 +187,10 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+        if anchor is not None:
+            # template bodies should not have access to call-local variables
+            assert isinstance(anchor, Template)
+            ctx = anchor.__context__
 
         filename = f"<synthesis:{id(value.module_code)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
@@ -345,6 +349,10 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
+        if anchor is not None:
+            # template bodies should not have access to call-local variables
+            assert isinstance(anchor, Template)
+            ctx = anchor.__context__
 
         filename = f"<synthesis:{id(value.module_code)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
