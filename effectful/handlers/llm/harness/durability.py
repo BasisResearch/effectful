@@ -5,6 +5,7 @@ import tenacity
 
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
+    Message,
     ResultDecodingError,
     ToolCallDecodingError,
     ToolCallExecutionError,
@@ -13,8 +14,12 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
-from effectful.handlers.llm.harness.transaction import HistoryBuilder, transaction
-from effectful.handlers.llm.types import Template, Tool
+from effectful.handlers.llm.harness.transaction import (
+    HistoryBuilder,
+    as_history,
+    transaction,
+)
+from effectful.handlers.llm.types import Tool
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -65,14 +70,20 @@ class TenacityRetryer(ObjectInterpretation):
     @implements(call_assistant)
     def _call_assistant[T](
         self,
+        messages: collections.abc.Sequence[Message],
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: "Template | None" = None,
-        force_tool: bool = False,
     ) -> AssistantResult[T]:
-        with transaction(write_back=False):
-            result = self.call_assistant_retryer(fwd)
+        # Each attempt re-reads `buffer`: the transaction makes it the ambient
+        # history for the duration, so `HistoryBuilder` appends the failed
+        # response and its error feedback there, and the next attempt sends them
+        # to the model. `write_back=False` then discards that scratch work, and
+        # only the response that finally succeeded joins the real history.
+        with transaction(as_history(messages), write_back=False) as buffer:
+            result = self.call_assistant_retryer(
+                lambda: fwd(list(buffer.values()), env, response_type, tools)
+            )
         HistoryBuilder.append_message(result[0])
         return result
 

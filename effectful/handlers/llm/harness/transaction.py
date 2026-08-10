@@ -20,6 +20,30 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 
+def _with_id(message: Message) -> Message:
+    """`message`, given a fresh id if it does not already carry one.
+
+    Messages are keyed by id in a history, so one that reaches a history from
+    outside -- a `call_assistant` argument, a checkpointed transcript -- needs a
+    key before it can be stored.
+    """
+    if "id" not in message:
+        message = {**message, "id": str(uuid.uuid4())}  # type: ignore
+    return message
+
+
+def as_history(
+    messages: collections.abc.Sequence[Message],
+) -> collections.OrderedDict[str, Message]:
+    """Key `messages` by id, for use as a `transaction` prefix.
+
+    Lets a handler that receives a message sequence as an argument (rather than
+    reading the ambient history) run its retries against a history seeded from
+    exactly those messages.
+    """
+    return collections.OrderedDict((m["id"], m) for m in map(_with_id, messages))  # type: ignore[typeddict-item]
+
+
 class HistoryBuilder(ObjectInterpretation):
     """Ensures that the message history does not end up in a malformed state"""
 
@@ -35,8 +59,7 @@ class HistoryBuilder(ObjectInterpretation):
 
     @classmethod
     def append_message(cls, message: Message, last: bool = True) -> None:
-        if "id" not in message:
-            message = {**message, "id": str(uuid.uuid4())}  # type: ignore
+        message = _with_id(message)
         history = cls.get_history()
         if message["role"] == "tool":
             assert cls._tool_call_answers_request(message, history)

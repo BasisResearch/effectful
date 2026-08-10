@@ -44,6 +44,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     completion,
 )
+from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
@@ -571,6 +572,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={},
                 response_type=str,
             )
@@ -603,6 +605,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -638,6 +641,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -668,6 +672,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -698,6 +703,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -724,6 +730,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -801,6 +808,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={},
                 response_type=int,
             )
@@ -835,6 +843,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={},
                     response_type=int,
                 )
@@ -864,6 +873,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -897,6 +907,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={},
                     response_type=int,
                 )
@@ -927,6 +938,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -960,6 +972,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -993,6 +1006,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
+                list(message_sequence.values()),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -1097,8 +1111,10 @@ class TestToolExecutionErrorHandling:
         # We need a custom provider that actually calls call_tool
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
-            def _call_assistant(self, env, response_type, tools=frozenset(), **kwargs):
-                return fwd(env, response_type, tools, **kwargs)
+            def _call_assistant(
+                self, messages, env, response_type, tools=frozenset(), **kwargs
+            ):
+                return fwd(messages, env, response_type, tools, **kwargs)
 
         with (
             handler(TenacityRetryer()),
@@ -1107,6 +1123,7 @@ class TestToolExecutionErrorHandling:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
+                list(message_sequence.values()),
                 env={"failing_tool": failing_tool},
                 response_type=str,
                 tools={failing_tool},
@@ -1115,6 +1132,133 @@ class TestToolExecutionErrorHandling:
         # First call should succeed (tool call is valid)
         assert mock_handler.call_count == 1
         assert len(tool_calls) == 1
+
+
+class _StreamingMockCompletionHandler(ObjectInterpretation):
+    """Streams a fixed text answer back, one character per chunk.
+
+    `RichTerminalRenderer` forces ``stream=True`` and reassembles the chunks with
+    ``litellm.stream_chunk_builder``, so exercising it needs a mock that answers
+    in deltas rather than with a finished `ModelResponse`.
+    """
+
+    def __init__(self, content: str):
+        self.content = content
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        assert kwargs.get("stream"), "expected the renderer to force streaming"
+        return iter(
+            [
+                litellm.types.utils.ModelResponseStream(
+                    id="test",
+                    model="test-model",
+                    choices=[
+                        litellm.types.utils.StreamingChoices(
+                            index=0,
+                            delta=litellm.types.utils.Delta(
+                                role="assistant", content=char
+                            ),
+                        )
+                    ],
+                )
+                for char in self.content
+            ]
+        )
+
+
+class TestForcedToolChoice:
+    """`tool_choice` is provider configuration, so the provider is what enforces
+    it: a response that disobeys it anyway -- some OpenAI-compatible servers
+    treat it as advisory -- is reported as the protocol violation it is, rather
+    than being decoded as a bare result (`required`) or executed (`none`)."""
+
+    def test_prose_answer_is_rejected(self):
+        with (
+            handler(MockCompletionHandler([make_text_response("just prose")])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
+        ):
+            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
+
+    def test_tool_call_is_accepted(self):
+        response = make_tool_call_response("add_numbers", '{"a": 1, "b": 2}')
+        with (
+            handler(MockCompletionHandler([response])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+        ):
+            _, tool_calls, _ = call_assistant(
+                [],
+                env={"add_numbers": add_numbers},
+                response_type=str,
+                tools={add_numbers},
+            )
+        assert len(tool_calls) == 1
+
+    def test_tool_call_is_rejected_when_disabled(self):
+        response = make_tool_call_response("add_numbers", '{"a": 1, "b": 2}')
+        with (
+            handler(MockCompletionHandler([response])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="none")),
+            pytest.raises(ResultDecodingError, match="YOU MUST ANSWER DIRECTLY"),
+        ):
+            call_assistant(
+                [],
+                env={"add_numbers": add_numbers},
+                response_type=str,
+                tools={add_numbers},
+            )
+
+    def test_prose_answer_is_accepted_when_tools_are_disabled(self):
+        with (
+            handler(MockCompletionHandler([make_text_response("just prose")])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="none")),
+        ):
+            _, tool_calls, result = call_assistant(
+                [], env={"add_numbers": add_numbers}, response_type=str
+            )
+        assert not tool_calls
+        assert result == "just prose"
+
+    def test_enclosed_tool_choice_wins(self):
+        """Only the `tool_choice` litellm is actually sent is enforced.
+
+        `_completion` merges as ``{**self.config, **kwargs}``, so the enclosed
+        provider's ``auto`` is what leaves for the model -- and an enclosing
+        ``required`` that never made it into the request must not be held
+        against the response.
+        """
+        with (
+            handler(MockCompletionHandler([make_text_response("just prose")])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(LiteLLMProvider(model="test-model", tool_choice="auto")),
+        ):
+            _, _, result = call_assistant([], env={}, response_type=str)
+        assert result == "just prose"
+
+    def test_enclosed_required_is_enforced(self):
+        """The mirror image: the enclosed ``required`` is the value sent, so both
+        configurers agree it is the one to enforce."""
+        with (
+            handler(MockCompletionHandler([make_text_response("just prose")])),
+            handler(LiteLLMProvider(model="test-model", tool_choice="auto")),
+            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
+        ):
+            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
+
+    def test_prose_answer_is_rejected_while_streaming(self):
+        """The check must survive `RichTerminalRenderer` sitting between the
+        provider and the model: the renderer forces streaming, so all the
+        provider gets back is chunks, and the violation is only visible once
+        they are reassembled."""
+        with (
+            handler(_StreamingMockCompletionHandler("just prose")),
+            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(RichTerminalRenderer()),
+            pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
+        ):
+            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
 
 
 # ============================================================================
@@ -1436,6 +1580,7 @@ class TestFinalToolInvariants:
             handler({HistoryBuilder.get_history: lambda: message_sequence}),
         ):
             return call_assistant(
+                list(message_sequence.values()),
                 env=env,
                 response_type=response_type,
                 tools=_tools_in_scope(env),
@@ -1849,7 +1994,7 @@ class TestMessageSequence:
         assert len(message_sequence) == 3
 
     def test_call_assistant_no_duplicate_messages(self):
-        """call_assistant should prepend unseen frame messages without duplicating those already in input."""
+        """call_assistant should send its `messages` argument on verbatim."""
         message_sequence = collections.OrderedDict()
 
         # Pre-populate frame with two messages
@@ -1873,17 +2018,17 @@ class TestMessageSequence:
                     choices=[{"role": "assistant", "message": response}]
                 )
 
-        # Call with msg_b already in the input — it should not appear twice
         with (
             handler(InnerAssistantHandler()),
             handler({HistoryBuilder.get_history: lambda: message_sequence}),
         ):
             call_assistant(
+                list(message_sequence.values()),
                 env={},
                 response_type=str,
             )
 
-        # Forwarded messages should be [msg_a (prefix), msg_b (input)] — no duplicates
+        # Forwarded messages are exactly the ones passed in — no duplicates
         ids = [m["id"] for m in captured_messages]
         assert ids == ["msg_a", "msg_b"]
         assert len(ids) == len(set(ids))
@@ -1919,23 +2064,20 @@ class TestMessageSequence:
             handler(inner),
             handler({HistoryBuilder.get_history: lambda: message_sequence}),
         ):
-            # First call: input is the latest message (msg_user)
             resp1, _, _ = call_assistant(
+                list(message_sequence.values()),
                 env={},
                 response_type=str,
             )
-            # Second call: input is the first response
+            # HistoryBuilder appended the first response, so the second call
+            # sends it along with the message that preceded it.
             resp2, _, _ = call_assistant(
+                list(message_sequence.values()),
                 env={},
                 response_type=str,
             )
 
-        # First call: prefix=[] + input=[msg_user]
         assert call_log[0] == ["msg_user"]
-
-        # Second call: prefix=[msg_user] + input=[resp_1]
-        # msg_user is in the frame but not in the input, so it appears as prefix
-        # resp_1 is in both the frame and the input, so it's NOT duplicated
         assert call_log[1] == ["msg_user", "response_1"]
         assert len(call_log[1]) == len(set(call_log[1]))
 
@@ -1957,6 +2099,7 @@ class TestMessageSequence:
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
                 call_assistant(
+                    list(message_sequence.values()),
                     env={},
                     response_type=str,
                 )
@@ -1983,8 +2126,8 @@ class MessageSequenceTracker(ObjectInterpretation):
         self.call_log: list[list[str]] = []
 
     @implements(call_assistant)
-    def _call_assistant(self, *args, **kwargs):
-        self.call_log.append([m["id"] for m in HistoryBuilder.get_history().values()])
+    def _call_assistant(self, messages, *args, **kwargs):
+        self.call_log.append([m["id"] for m in messages])
         return fwd()
 
 

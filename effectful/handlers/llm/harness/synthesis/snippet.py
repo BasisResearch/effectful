@@ -17,6 +17,7 @@ import effectful.handlers.llm.harness.execution.hooks
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
+    Message,
     call_assistant,
     call_system,
 )
@@ -406,14 +407,14 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     @implements(call_assistant)
     def _call_assistant[T](
         self,
+        messages: collections.abc.Sequence[Message],
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        force_tool: bool = False,
     ) -> AssistantResult[T]:
         return fwd(
+            messages,
             env,
             response_type,
             tools | {self.exec_code, self.read_lexical_variable},
-            force_tool=force_tool,
         )

@@ -141,15 +141,19 @@ type AssistantResult[T] = tuple[
 
 @Operation.define
 def call_assistant[T](
+    messages: collections.abc.Sequence[Message],
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     tools: collections.abc.Set[Tool] = frozenset(),
-    force_tool: bool = False,
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
     This effect is emitted for model request/response rounds so handlers can
     observe/log requests.
+
+    The request is fully determined by the arguments: `messages` is the
+    conversation sent to the model, so the rule reads no ambient history and a
+    caller (or an intercepting handler) decides exactly what the model sees.
 
     The available `tools` are passed explicitly as a set; handlers that expose
     additional tools (synthetic readers, REPL access, synthesis) intercept this
@@ -157,21 +161,12 @@ def call_assistant[T](
     model-visible name is derived from its `__name__`, so collection and
     decoding agree on a single naming scheme.
 
-    `force_tool` is set when the request requires the model to call a tool (the
-    provider derives it from a ``tool_choice="required"`` config) so that a
-    response which nonetheless comes back with no tool call — some
-    OpenAI-compatible servers treat ``tool_choice`` as advisory — is reported as
-    the protocol violation it is, rather than being misdecoded as a bare
-    structured result.
-
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
             includes the raw assistant message for retry handling.
         ResultDecodingError: If the result cannot be decoded. The error
             includes the raw assistant message for retry handling.
     """
-    from effectful.handlers.llm.harness.transaction import HistoryBuilder
-
     if _TYPE_CHECK_ANCHOR_KEY in env:
         tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
 
@@ -196,7 +191,7 @@ def call_assistant[T](
     )
 
     response: litellm.types.utils.ModelResponse = completion(
-        messages=list(HistoryBuilder.get_history().values()),
+        messages=list(messages),
         response_format=None if response_type is str else response_format,
         tools=tool_specs,
     )
@@ -244,12 +239,6 @@ def call_assistant[T](
         serialized_result = message.get("content") or message.get("reasoning_content")
         assert isinstance(serialized_result, str)
         try:
-            if force_tool:
-                raise ValueError(
-                    "tool_choice='required' but the model returned no tool call."
-                    "**IMPORTANT: YOU MUST GENERATE A TOOL CALL IN YOUR NEXT RESPONSE.**"
-                )
-
             if response_type is str:
                 result = typing.cast(T, serialized_result)
             else:

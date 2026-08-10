@@ -78,7 +78,7 @@ def offered_tools(env, *handlers):
 
     class _Capture(ObjectInterpretation):
         @implements(call_assistant)
-        def _ca(self, env_, response_type, tools=frozenset(), **kw):
+        def _ca(self, messages_, env_, response_type, tools=frozenset(), **kw):
             captured.update(tools)
             return ({}, [], None)
 
@@ -86,7 +86,7 @@ def offered_tools(env, *handlers):
         stack.enter_context(handler(_Capture()))
         for h in handlers:
             stack.enter_context(handler(h))
-        call_assistant(env, str, _tools_in_scope(env))
+        call_assistant([], env, str, _tools_in_scope(env))
     return captured
 
 

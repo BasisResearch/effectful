@@ -10,6 +10,7 @@ import pydantic
 
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
+    Message,
     call_assistant,
     call_system,
 )
@@ -72,10 +73,10 @@ class LexicalReaders(ObjectInterpretation):
     @implements(call_assistant)
     def _call_assistant[T](
         self,
+        messages: collections.abc.Sequence[Message],
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        force_tool: bool = False,
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
         taken = {t.__name__ for t in tools}
@@ -92,7 +93,7 @@ class LexicalReaders(ObjectInterpretation):
                 taken.add(name)
             except Exception:
                 continue
-        return fwd(env, response_type, readers, force_tool=force_tool)
+        return fwd(messages, env, response_type, readers)
 
 
 def _tools_in_scope(
