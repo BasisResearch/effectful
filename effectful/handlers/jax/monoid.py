@@ -1,11 +1,16 @@
 import functools
+import logging
 import typing
-from collections.abc import Iterable
+from typing import Protocol
 
 import jax
+import jax.core
+import opt_einsum
+from opt_einsum import get_symbol
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, unbind_dims
+from effectful.handlers.jax import bind_dims, jax_getitem, unbind_dims
+from effectful.handlers.jax._handlers import is_eager_array
 from effectful.handlers.jax.scipy.special import logsumexp
 from effectful.ops.monoid import (
     CartesianProduct,
@@ -16,12 +21,15 @@ from effectful.ops.monoid import (
     Product,
     Streams,
     Sum,
+    _is_monoid_plus,
+    choose_contraction,
     distributes_over,
-    outer_stream,
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, deffn, implements
 from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+
+logger = logging.getLogger(__name__)
 
 
 def cartesian_prod(x, y):
@@ -46,14 +54,37 @@ distributes_over.register(Sum, LogSumExp)
 
 def _jax_args(args):
     """True iff ``args`` is non-empty and every arg is a concrete
-    :class:`jax.Array` (no Terms).
+    :class:`jax.typing.ArrayLike` or named tensor. At least one argument must be
+    a jax-related type.
+
     """
-    typs = (typeof(a) for a in args)
     return (
         bool(args)
-        and any(issubclass(t, jax.Array) for t in typs)
-        and all(issubclass(t, jax.typing.ArrayLike) for t in typs)
+        and all(is_eager_array(a) or isinstance(a, jax.typing.ArrayLike) for a in args)
+        and any(is_eager_array(a) or isinstance(a, jax.Array) for a in args)
     )
+
+
+class PlusJaxUpcast(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        arg_types = [typeof(a) for a in args]
+
+        def _is_jax(t):
+            return issubclass(t, jax.Array | jax.core.Tracer)
+
+        # exists array valued and non-array-valued args
+        if any(_is_jax(t) for t in arg_types) and any(
+            not _is_jax(t) for t in arg_types
+        ):
+            return monoid.plus(
+                *(
+                    a if _is_jax(t) else jnp.asarray(a)
+                    for (a, t) in zip(args, arg_types, strict=True)
+                )
+            )
+
+        return fwd()
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -124,47 +155,101 @@ class CartesianProductPlusJax(ObjectInterpretation):
         return result
 
 
-ARRAY_REDUCTORS = {
-    Sum: jnp.sum,
-    Product: jnp.prod,
-    Min: jnp.min,
-    Max: jnp.max,
-    LogSumExp: logsumexp,
-}
+class ReduceArrayGather(ObjectInterpretation):
+    """M.reduce(body, {k: a} ∪ S) ≡ M.reduce(body[k := a[k']], {k': range(a.shape[0])} ∪ S)"""
 
-
-class ArrayReduce(ObjectInterpretation):
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        if monoid not in ARRAY_REDUCTORS or typeof(body) is not jax.Array:
+        if typeof(body) is not jax.Array:
             return fwd()
-        if not streams:
-            return monoid.identity
 
-        reductor = ARRAY_REDUCTORS[monoid]
-        index = Operation.define(jax.Array)
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if not issubclass(typeof(stream_body), jax.Array):
-                continue
+        if isinstance(body, Term) and body.op is delta:
+            return fwd()
 
-            if stream_key in fvsof(body):
-                with handler({stream_key: deffn(unbind_dims(stream_body, index))}):
-                    eval_body = evaluate(body)
-                    eval_streams_tail = evaluate(streams_tail)
-                    assert isinstance(eval_streams_tail, dict)
-                    reduce_tail = (
-                        monoid.reduce(eval_body, eval_streams_tail)
-                        if len(eval_streams_tail) > 0
-                        else eval_body
-                    )
-                    return reductor(bind_dims(reduce_tail, index), axis=0)
+        body_fvs = fvsof(body)
+        stream_keys = set(streams)
+
+        body_subst = {}
+        streams_subst = {}
+        range_streams = {}
+        progress = False
+        for k, v in streams.items():
+            if is_eager_array(v) and k in body_fvs and not (fvsof(v) & stream_keys):
+                kk = Operation.define(k)
+                body_subst[k] = deffn(unbind_dims(v, kk))
+                streams_subst[k] = kk
+                range_streams[kk] = range(v.shape[0])
+                progress = True
             else:
-                # TODO: In this case, the stream is unused in the body. The body
-                # should be multiplied by the length of the stream. The current
-                # behavior is not efficient.
+                range_streams[k] = v
+
+        if not progress:
+            return fwd()
+
+        subst_body = handler(body_subst)(evaluate)(body)
+        subst_streams = handler(streams_subst)(evaluate)(range_streams)
+        return monoid.reduce(subst_body, subst_streams)
+
+
+class Reductor(Protocol):
+    def __call__(
+        self, arr: jax.Array, axis: int | tuple[int, ...] | None = None
+    ) -> jax.Array: ...
+
+
+ARRAY_REDUCTORS: dict[Monoid, Reductor] = {}
+for monoid, func in [
+    (Sum, jnp.sum),
+    (Product, jnp.prod),
+    (Min, jnp.min),
+    (Max, jnp.max),
+]:
+    assert isinstance(monoid, Monoid)
+    assert callable(func)
+    ARRAY_REDUCTORS[monoid] = functools.partial(func, initial=monoid.identity)
+
+ARRAY_REDUCTORS[LogSumExp] = logsumexp
+
+
+class ReduceArray(ObjectInterpretation):
+    """Reduce an array body over range streams."""
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        reductor = ARRAY_REDUCTORS.get(monoid, None)
+        if reductor is None:
+            return fwd()
+
+        if typeof(body) is not jax.Array:
+            return fwd()
+
+        pos_dims = {}
+        if isinstance(body, Term):
+            if body.op == delta:
+                pos_dims = {
+                    d.op
+                    for d in body.args[0]
+                    if isinstance(d, Term) and d.op in streams
+                }
+            elif _is_monoid_plus(body.op) and distributes_over(
+                body.op.__self__, monoid
+            ):
+                # delegate to factorization
                 return fwd()
 
-        return fwd()
+        body_fvs = fvsof(body)
+        used = {
+            k
+            for k, v in streams.items()
+            if k in body_fvs and k not in pos_dims and isinstance(v, range)
+        }
+        if not used:
+            return fwd()
+
+        delta_key = tuple(k() for k in streams if k in used)
+        arr = monoid.reduce(delta(delta_key, body), streams)
+        reduced_body = reductor(arr, axis=tuple(range(len(used))))
+        return reduced_body
 
 
 @Operation.define
@@ -172,77 +257,42 @@ def delta(_index: tuple[int, ...], _weight: jax.Array) -> jax.Array:
     raise NotHandled
 
 
-py_range = range
-
-
-@Operation.define
-def range(*args: int) -> Iterable[jax.Array]:
-    raise NotHandled
-
-
-def _range_start(term: Term):
-    assert term.op == range
-    if len(term.args) < 2:
-        return 0
-    return term.args[0]
-
-
 def _range_stop(term: Term):
-    assert term.op == range
+    assert term.op == jnp.arange
+    if "stop" in term.kwargs:
+        return term.kwargs["stop"]
     if len(term.args) < 2:
         return term.args[0]
     return term.args[1]
 
 
-def _range_step(term: Term):
-    assert term.op == range
-    if len(term.args) < 3:
-        return 1
-    return term.args[2]
+class DeltaEmpty(ObjectInterpretation):
+    """delta((), weight) ≡ weight"""
+
+    @implements(delta)
+    def _(self, index, weight):
+        if not index:
+            return weight
+        return fwd()
 
 
-def _is_simple_range(term: Term) -> bool:
-    if term.op != range:
-        return False
+class DeltaFusion(ObjectInterpretation):
+    """delta(i1, delta(i2, weight)) ≡ delta(i1 ++ i2, weight)"""
 
-    start = _range_start(term)
-    step = _range_step(term)
-    return (
-        not isinstance(start, Term)
-        and start == 0
-        and not isinstance(step, Term)
-        and step == 1
-    )
+    @implements(delta)
+    def _(self, index, weight):
+        if isinstance(weight, Term) and weight.op == delta:
+            return delta(index + weight.args[0], weight.args[1])
+        return fwd()
 
 
-class ReduceDeltaIndependent(ObjectInterpretation):
+class ReduceDeltaSimpleRange(ObjectInterpretation):
     """Eliminate a Delta that has independent, dense index arguments.
 
-    reduce(M, streams, delta((), body)) ≡ reduce(M, streams, body)
 
-    reduce(M, streams ∪ {v: range(N)}, delta(idx' ++ (v(),), body))
+    reduce(M, streams ∪ {v: range(N)}, delta((v(),) ++ idx', body))
     ═══════════════════════════════════════════════════════════════════════════
-    reduce(M, streams, delta(idx', bind_dims(body[v() := unbind_dims(streams[v], fv)], fv)))
-
-    Not yet supported:
-
-    - **Strided index streams** (``range(0, N, k)`` for ``k != 1``): the
-      premise ``_is_simple_range`` requires ``start == 0`` and ``step == 1``.
-      A strided extension would substitute ``v() := unbind_dims(jnp.arange(
-      start, stop, step), fv)`` and otherwise follow the same shape — the
-      change is purely in the recognised range form, the bind/unbind cycle
-      below is unchanged.
-    - **Non-zero start** (``range(a, b, 1)`` with ``a != 0``): same template
-      as the strided case; only the recognised range form changes.
-    - **Non-bare index expressions** (``delta((2*v(),), w)``,
-      ``delta((f(v()),), w)``, etc.): currently requires the final index
-      entry to be a bare call ``v()`` of a stream var op. Generalizing to
-      arbitrary index expressions is a scatter, not a bind: materialize the
-      index expression and the weight separately over ``v``, then
-      ``jnp.zeros(N).at[indices].set(values)`` (for Sum; analogous for
-      other monoids using ``.add``/``.min``/``.max``/...). This is a
-      different leaf operation from ``bind_dims`` and warrants a sibling
-      rule rather than an extension of this one.
+    bind_dims(reduce(M, streams, delta(idx', body[v() := unbind_dims(streams[v], fv)])), fv)
     """
 
     @implements(Monoid.reduce)
@@ -250,31 +300,76 @@ class ReduceDeltaIndependent(ObjectInterpretation):
         if not (isinstance(body, Term) and body.op == delta):
             return fwd()
 
-        indices, weight = body.args
-        assert isinstance(indices, tuple)
+        index, weight = body.args
+        assert isinstance(index, tuple)
 
-        if not indices:
-            return monoid.reduce(weight, streams)
-
-        head_indices, tail_index = indices[:-1], indices[-1]
-        if not (isinstance(tail_index, Term) and tail_index.op in streams):
+        if not index:
             return fwd()
 
-        tail_op: Operation = tail_index.op
-        tail_stream = streams[tail_op]
-        if not (isinstance(tail_stream, Term) and _is_simple_range(tail_stream)):
+        head_index, tail_index = index[0], index[1:]
+        if not (isinstance(head_index, Term) and head_index.op in streams):
             return fwd()
 
-        fresh_op = Operation.define(tail_op)
-        indices = jnp.arange(_range_stop(tail_stream))
-        if isinstance(indices, jax.Array) and len(indices) == 0:
-            return monoid.identity
+        head_op: Operation = head_index.op
+        head_stream = streams[head_op]
+        if not (
+            isinstance(head_stream, range)
+            and head_stream.start == 0
+            and head_stream.step == 1
+        ):
+            return fwd()
 
-        fresh_stream = unbind_dims(indices, fresh_op)
-        subst_intp = typing.cast(Interpretation, {tail_op: deffn(fresh_stream)})
-        fresh_body = bind_dims(handler(subst_intp)(evaluate)(weight), fresh_op)
-        fresh_streams = {k: v for (k, v) in streams.items() if k != tail_op}
-        return monoid.reduce(delta(head_indices, fresh_body), fresh_streams)
+        tail_streams = {k: v for (k, v) in streams.items() if k != head_op}
+
+        # peel the head index: substitute it into the weight (slicing direct
+        # uses, materializing the rest) along a fresh named dim, but bind that
+        # dim only *after* the surrounding reduce -- see the class docstring.
+
+        fresh_op = Operation.define(head_op)
+
+        def _jax_getitem(arr, index):
+            inner_index, outer_index = [], []
+            progress = False
+            for i in index:
+                if isinstance(i, Term) and i.op == head_op:
+                    inner_index.append(
+                        slice(head_stream.start, head_stream.stop, head_stream.step)
+                    )
+                    outer_index.append(fresh_op())
+                    progress = True
+                else:
+                    inner_index.append(slice(None))
+                    outer_index.append(i)
+            if progress:
+                return jax_getitem(jax_getitem(arr, inner_index), outer_index)
+            return fwd(arr, index)
+
+        slice_subst = typing.cast(Interpretation, {jax_getitem: _jax_getitem})
+        sliced_weight = handler(slice_subst)(evaluate)(weight)
+        sliced_streams = handler(slice_subst)(evaluate)(tail_streams)
+
+        gather_subst = typing.cast(
+            Interpretation,
+            {
+                head_op: deffn(
+                    unbind_dims(
+                        jnp.arange(
+                            head_stream.start, head_stream.stop, head_stream.step
+                        ),
+                        fresh_op,
+                    )
+                )
+            },
+        )
+        gathered_weight = handler(gather_subst)(evaluate)(sliced_weight)
+        gathered_streams = handler(gather_subst)(evaluate)(sliced_streams)
+
+        inner = (
+            monoid.reduce(delta(tail_index, gathered_weight), gathered_streams)
+            if gathered_streams
+            else gathered_weight
+        )
+        return bind_dims(inner, fresh_op)
 
 
 class ReduceDependentRangeMask(ObjectInterpretation):
@@ -324,15 +419,16 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         simple_ranges = {
             k: v
             for (k, v) in streams.items()
-            if isinstance(v, Term) and _is_simple_range(v)
+            if isinstance(v, range) and v.start == 0 and v.step == 1
         }
         for u, u_stream in simple_ranges.items():
             if fvsof(u_stream) & stream_vars:
                 continue
 
-            for v, v_stream in simple_ranges.items():
+            for v, v_stream in streams.items():
                 if (
                     isinstance(v_stream, Term)
+                    and v_stream.op == jnp.arange
                     and isinstance(_range_stop(v_stream), Term)
                     and _range_stop(v_stream).op == u
                 ):
@@ -355,38 +451,6 @@ class ReduceDependentRangeMask(ObjectInterpretation):
         return fwd()
 
 
-class ReduceRange(ObjectInterpretation):
-    """Replace concrete-range stream values with materialized ``jnp.arange``.
-
-    reduce(M, streams ∪ {v: range(a, b, s)}, body)
-    ≡ reduce(M, streams ∪ {v: jnp.arange(a, b, s)}, body)
-
-    when ``a``, ``b``, ``s`` are concrete and ``body`` is not a delta term.
-    Delegates the actual reduction to whichever handler picks up the
-    materialized ``jax.Array`` streams.
-    """
-
-    @implements(Monoid.reduce)
-    def _(self, monoid: Monoid, body, streams: Streams):
-        if isinstance(body, Term) and body.op == delta:
-            return fwd()
-
-        new_streams: dict = {}
-        any_replaced = False
-        for k, v in streams.items():
-            if isinstance(v, Term) and v.op == range:
-                new_streams[k] = jnp.arange(
-                    _range_start(v), _range_stop(v), _range_step(v)
-                )
-                any_replaced = True
-            else:
-                new_streams[k] = v
-
-        if not any_replaced:
-            return fwd()
-        return monoid.reduce(body, new_streams)
-
-
 # Cross-cutting delta rules not yet implemented:
 #
 # - **Delta-commuting** (DC-hoist): for any pure op ``f`` (no Scoped binders
@@ -406,23 +470,115 @@ class ReduceRange(ObjectInterpretation):
 #   a subsequence of ``idx_b`` (or vice versa). Refuse to fire when neither
 #   is a subsequence of the other, since that would silently insert an
 #   outer-product broadcast.
-#
-# - **Empty-domain detection at the term level**: currently size-0 named
-#   dims must be resolved by leaf consumers (``bind_dims``, reductors with
-#   ``initial=monoid.identity``). The empty-domain check is intentionally
-#   NOT a rule on its own — rewrites stay size-polymorphic and leaf ops
-#   carry the burden. See the conversation in monoid.py's history for why.
+
+
+class ContractLongestArrayStream(ObjectInterpretation):
+    @implements(choose_contraction)
+    def _(self, factors, streams):
+        lengths = {
+            k: v.shape[0] if isinstance(v, jax.Array) and v.shape else 0
+            for (k, v) in streams.items()
+        }
+        longest = max(lengths.values())
+        return fwd(
+            factors, {k: v for (k, v) in streams.items() if lengths[k] == longest}
+        )
+
+
+class ReduceSumProductContraction(ObjectInterpretation):
+    """Fast-path a sum-of-products contraction."""
+
+    @implements(Sum.reduce)
+    def _(self, body, streams: Streams):
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_plus(body.op)
+            and body.op.__self__ is Product
+        ):
+            return fwd()
+
+        factors = body.args
+        if len(factors) != 2 or not all(
+            issubclass(typeof(f), jax.Array) for f in factors
+        ):
+            return fwd()
+
+        (lhs, rhs) = factors
+        stream_vars = set(streams.keys())
+
+        # a fully factored reduce only has streams that are used by all factors
+        shared = fvsof(lhs) & fvsof(rhs) & stream_vars
+        if shared != stream_vars:
+            return fwd()
+
+        if not all(isinstance(v, range) for v in streams.values()):
+            return fwd()
+
+        # create leading reduction dimensions
+        delta_key = tuple(k() for k in streams)
+        pos_lhs = Sum.reduce(delta(delta_key, lhs), streams)
+        pos_rhs = Sum.reduce(delta(delta_key, rhs), streams)
+
+        dims = "".join(get_symbol(i) for i in range(len(streams)))
+        contraction = jnp.einsum(f"{dims}...,{dims}...->...", pos_lhs, pos_rhs)
+        return contraction
+
+
+@jax.jit(static_argnums=(0,))
+def einsum(subscripts: str, /, *operands: jax.Array) -> jax.Array:
+    """Evaluate an einsum expression using monoid reductions."""
+    if not operands:
+        raise ValueError("einsum requires at least one operand")
+
+    in_spec, out_spec, _ = opt_einsum.parser.parse_einsum_input(
+        [subscripts, *(op.shape for op in operands)], shapes=True
+    )
+    in_specs = in_spec.split(",")
+
+    all_letters = set(out_spec) | {c for s in in_specs for c in s}
+    ops = {c: Operation.define(jax.Array, name=c) for c in all_letters}
+
+    sizes: dict[str, int] = {}
+    for spec, op in zip(in_specs, operands, strict=True):
+        for l, s in zip(spec, op.shape, strict=True):
+            if l in sizes and sizes[l] != s:
+                raise ValueError(f"Dimension {l} given sizes {s} and {sizes[l]}")
+            else:
+                sizes[l] = s
+    for c in out_spec:
+        if c not in sizes:
+            raise ValueError(f"einsum: output index {c!r} not present in any input")
+
+    arrays = [Operation.define(jax.Array) for _ in operands]
+    factors = [
+        unbind_dims(arr(), *(ops[c] for c in spec))
+        for arr, spec in zip(arrays, in_specs, strict=True)
+    ]
+    body = Product.plus(*factors)
+
+    out_tuple = tuple(ops[c]() for c in out_spec)
+    streams = {op: range(sizes[c]) for c, op in ops.items()}
+    with handler(NormalizeIntp):
+        norm = deffn(Sum.reduce(delta(out_tuple, body), streams), *arrays)
+        result = norm(*operands)
+        assert isinstance(result, jax.Array)
+        return result
 
 
 NormalizeIntp.extend(
-    ArrayReduce(),
-    ReduceRange(),
-    ReduceDeltaIndependent(),
+    ReduceArray(),
+    ReduceSumProductContraction(),
+    ReduceArrayGather(),
+    ReduceDeltaSimpleRange(),
     ReduceDependentRangeMask(),
+    DeltaEmpty(),
+    DeltaFusion(),
     SumPlusJax(),
     ProductPlusJax(),
     MinPlusJax(),
     MaxPlusJax(),
     LogSumExpPlusJax(),
     CartesianProductPlusJax(),
+    ContractLongestArrayStream(),
+    PlusJaxUpcast(),
 )

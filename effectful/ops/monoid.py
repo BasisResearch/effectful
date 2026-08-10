@@ -4,34 +4,22 @@ import itertools
 import operator
 import typing
 from collections import Counter, UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping
+from collections.abc import Callable, Generator, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
 from typing import Annotated, Any
 
-from effectful.ops.semantics import (
-    coproduct,
-    evaluate,
-    fvsof,
-    fwd,
-    handler,
-    typeof,
-)
+from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
+    defdata,
     deffn,
     implements,
     syntactic_eq,
     syntactic_hash,
 )
-from effectful.ops.types import (
-    Expr,
-    Interpretation,
-    NotHandled,
-    Operation,
-    Term,
-)
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 type Stream[T] = Iterable[T]
 
@@ -125,16 +113,21 @@ class Monoid[W]:
     def __hash__(self):
         return hash(id(self))
 
-    # the weak typing allows us to write monoid.plus(monoid.identity, <array>)
-    # and monoid.plus(monoid.identity, <float>)
     @Operation.define
-    def plus(self, *args: Any) -> Any:
+    def plus(self, *args: W) -> W:
         """Monoid addition. Handlers supply per-monoid and broadcasting
-        behavior; the default rule only handles empty / Term cases.
+        behavior; the default rule only handles identity and zero cases (for
+        monoids that have a zero).
+
         """
-        if not args:
-            return self.identity
-        raise NotHandled
+        if hasattr(self, "zero") and any(a is self.zero for a in args):
+            return self.zero
+
+        nonident_args = [a for a in args if a is not self.identity]
+        if len(nonident_args) != len(args):
+            return self.plus(*nonident_args)
+
+        return defdata(self.plus, *nonident_args)  # type: ignore[return-value]
 
     @Operation.define
     def reduce[A, B, U: Body](
@@ -146,24 +139,6 @@ class Monoid[W]:
         broadcasting behavior; the default rule only handles the empty-stream
         case.
         """
-        for stream_key, stream_body, streams_tail in outer_stream(streams):
-            if isinstance(stream_body, Term):
-                continue
-            stream_values_iter = iter(stream_body)
-
-            # if we iterate and get a term instead of a real iterator, skip
-            if isinstance(stream_values_iter, Term):
-                continue
-
-            new_reduces = []
-            for stream_val in stream_values_iter:
-                with handler({stream_key: deffn(stream_val)}):
-                    eval_args = evaluate((body, streams_tail))
-                    assert isinstance(eval_args, tuple)
-                    new_reduces.append(
-                        self.reduce(*eval_args) if streams_tail else eval_args[0]
-                    )
-            return self.plus(*new_reduces)
         raise NotHandled
 
     @Operation.define
@@ -268,16 +243,6 @@ class PlusSingle(ObjectInterpretation):
         return fwd()
 
 
-class PlusIdentity(ObjectInterpretation):
-    """x₁ + ... + 0 + ... + xₙ = x₁ + ... + xₙ"""
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if any(x is monoid.identity for x in args):
-            return monoid.plus(*(x for x in args if x is not monoid.identity))
-        return fwd()
-
-
 class PlusAssoc(ObjectInterpretation):
     """x + (y + z) = (x + y) + z = x + y + z"""
 
@@ -338,18 +303,6 @@ class PlusDistr(ObjectInterpretation):
         return fwd()
 
 
-class PlusZero(ObjectInterpretation):
-    """x₁ * ... * 0 * ... * xₙ = 0"""
-
-    @implements(Monoid.plus)
-    def plus(self, monoid, *args):
-        if not (isinstance(monoid, MonoidWithZero)):
-            return fwd()
-        if any(x is monoid.zero for x in args):
-            return monoid.zero
-        return fwd()
-
-
 class PlusConsecutiveDups(ObjectInterpretation):
     """x ⊕ x ⊕ y = x ⊕ y"""
 
@@ -397,15 +350,30 @@ class PlusDups(ObjectInterpretation):
         return fwd()
 
 
-class ReduceNoStreams(ObjectInterpretation):
-    """Implements the identity
-    reduce(R, ∅, body) = 0
-    """
-
+class ReducePartial(ObjectInterpretation):
     @implements(Monoid.reduce)
-    def reduce(self, monoid, _, streams):
-        if len(streams) == 0:
+    def _(self, monoid, body, streams):
+        if not streams:
             return monoid.identity
+
+        for stream_key, stream_body, streams_tail in outer_stream(streams):
+            if isinstance(stream_body, Term):
+                continue
+            stream_values_iter = iter(stream_body)
+
+            # if we iterate and get a term instead of a real iterator, skip
+            if isinstance(stream_values_iter, Term):
+                continue
+
+            new_reduces = []
+            for stream_val in stream_values_iter:
+                with handler({stream_key: deffn(stream_val)}):
+                    eval_args = evaluate((body, streams_tail))
+                    assert isinstance(eval_args, tuple)
+                    new_reduces.append(
+                        monoid.reduce(*eval_args) if streams_tail else eval_args[0]
+                    )
+            return monoid.plus(*new_reduces)
         return fwd()
 
 
@@ -435,6 +403,30 @@ class ReduceSplit(ObjectInterpretation):
         return fwd()
 
 
+@Operation.define
+def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
+    """Used by `ReduceFactorization` to choose a contraction when there is
+    ambiguity. Takes the factors and streams that are eligible for contraction
+    (innermost and non-universal).
+
+    The default behavior is to return the first support-minimal stream in the
+    streams dictionary.
+
+    """
+    assert len(streams) > 0
+
+    factors = [(a, fvsof(a)) for a in factors]
+    support: dict = {
+        k: frozenset(i for i, (_, fvs) in enumerate(factors) if k in fvs)
+        for k in streams
+    }
+    for v, f_v in support.items():
+        if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
+            continue
+        return v
+    assert False, "expected at least one subset-minimal stream"
+
+
 class ReduceFactorization(ObjectInterpretation):
     """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
 
@@ -459,39 +451,40 @@ class ReduceFactorization(ObjectInterpretation):
 
         # candidates: innermost-eligible (no remaining stream depends on v),
         # non-universal (some factor doesn't mention v)
-        support: dict = {}
-        for v in streams:
-            if any(v in fvsof(s) for k, s in streams.items() if k is not v):
+        eligible = {}
+        for k, v in streams.items():
+            if any(k in fvsof(vv) for kk, vv in streams.items() if k is not kk):
                 continue
-            f_v = frozenset(i for i, (_, fvs) in enumerate(factors) if v in fvs)
-            if len(f_v) == len(factors):
+            if len({i for i, (_, fvs) in enumerate(factors) if k in fvs}) == len(
+                factors
+            ):
                 continue  # v is universal: leave it in the outer core
-            support[v] = f_v
+            eligible[k] = v
 
-        # eliminate a variable with subset-minimal factor support
-        # (leaves-first; canonical on hierarchical/laminar supports)
-        inner_stream = None
-        inner_factor_ids = None
-        for v, f_v in support.items():
-            if any(u_sup < f_v for u, u_sup in support.items() if u is not v):
-                continue
-            inner_stream = v
-            inner_factor_ids = f_v
-            break
-
-        if not inner_stream or not inner_factor_ids:
+        if not eligible:
             return fwd()
+        if len(eligible) == 1:
+            inner_stream = next(iter(eligible))
+        else:
+            inner_stream = choose_contraction(body.args, eligible)
+
+        inner_factor_ids = frozenset(
+            i for i, (_, fvs) in enumerate(factors) if inner_stream in fvs
+        )
 
         inner_factors = [factors[i][0] for i in sorted(inner_factor_ids)]
         inner_stream_keys = {inner_stream}
         inner_deps = set().union(
-            *(factors[i][1] for i in f_v), fvsof(streams[v]) & stream_keys
+            *(factors[i][1] for i in inner_factor_ids),
+            fvsof(streams[inner_stream]) & stream_keys,
         )
 
-        outer_factors = [a for i, (a, _) in enumerate(factors) if i not in f_v]
+        outer_factors = [
+            a for i, (a, _) in enumerate(factors) if i not in inner_factor_ids
+        ]
         outer_stream_keys = stream_keys - inner_stream_keys
         outer_factor_deps = set().union(
-            *(vars for i, (_, vars) in enumerate(factors) if i not in f_v)
+            *(vars for i, (_, vars) in enumerate(factors) if i not in inner_factor_ids)
         )
 
         # find all streams that are used in the inner factors/streams and are
@@ -857,6 +850,28 @@ class MonoidOverSequence(ObjectInterpretation):
         return result
 
 
+@Operation.define
+def as_float(x: int) -> float:
+    if isinstance(x, Term):
+        raise NotHandled
+    return float(x)
+
+
+class PlusCastFloat(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        typs = [typeof(a) for a in args]
+        if any(issubclass(t, float) for t in typs) and any(
+            issubclass(t, int) for t in typs
+        ):
+            args = [
+                as_float(a) if issubclass(t, int) else a
+                for (a, t) in zip(args, typs, strict=True)
+            ]
+            return monoid.plus(*args)
+        return fwd()
+
+
 class _ExtensibleInterpretation(UserDict, Interpretation):
     def extend(self, *intps: Interpretation) -> typing.Self:
         for intp in intps:
@@ -865,10 +880,10 @@ class _ExtensibleInterpretation(UserDict, Interpretation):
 
 
 NormalizeIntp = _ExtensibleInterpretation().extend(
+    ReducePartial(),
     MonoidOverSequence(),
     MonoidOverMapping(),
     MonoidOverCallable(),
-    ReduceNoStreams(),
     ReduceFusion(),
     ReduceSplit(),
     ReduceFactorization(),
@@ -877,10 +892,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceCartesianWeightedStream(),
     PlusEmpty(),
     PlusSingle(),
-    PlusIdentity(),
     PlusAssoc(),
     PlusDistr(),
-    PlusZero(),
     PlusConsecutiveDups(),
     PlusDups(),
     SumPlus(),
@@ -890,6 +903,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
+    PlusCastFloat(),
 )
 """``NormalizeIntp``applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.).
