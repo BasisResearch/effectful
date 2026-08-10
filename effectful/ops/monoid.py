@@ -16,7 +16,6 @@ from effectful.ops.syntax import (
     Scoped,
     deffn,
     implements,
-    iter_,
     syntactic_eq,
     syntactic_hash,
 )
@@ -96,8 +95,11 @@ class Monoid[T]:
             if isinstance(stream_body, Term):
                 continue
             stream_values_iter = iter(stream_body)
-            if isinstance(stream_values_iter, Term) and stream_values_iter.op is iter_:
+
+            # if we iterate and get a term instead of a real iterator, skip
+            if isinstance(stream_values_iter, Term):
                 continue
+
             new_reduces = []
             for stream_val in stream_values_iter:
                 with handler({stream_key: deffn(stream_val)}):
