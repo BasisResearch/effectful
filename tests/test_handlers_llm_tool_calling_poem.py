@@ -14,6 +14,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_assistant,
 )
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -106,6 +107,7 @@ class TestToolCalling:
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
             handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),
+            handler(HistoryBuilder()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),
         ):

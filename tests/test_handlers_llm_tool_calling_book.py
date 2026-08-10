@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from effectful.handlers.llm import Template, Tool
 from effectful.handlers.llm.harness.hooks import call_assistant
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -90,6 +91,7 @@ class TestPydanticBaseModelToolCalls:
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
             handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),
+            handler(HistoryBuilder()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(book_rec_ctx),
         ):
