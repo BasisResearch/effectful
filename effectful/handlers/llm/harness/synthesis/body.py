@@ -556,13 +556,11 @@ class FinalBodySynthesizer(ObjectInterpretation):
         tool = self._SynthesisFinalTool.define(template, bound_args)
 
         def _add_synthesis_tool(
-            env, response_type, tools=frozenset(), anchor=None, force_tool=False
+            env, response_type, tools=frozenset(), force_tool=False
         ):
             if any(isinstance(t, self._SynthesisFinalTool) for t in tools):
                 return fwd()
-            return fwd(
-                env, response_type, tools | {tool}, anchor=anchor, force_tool=force_tool
-            )
+            return fwd(env, response_type, tools | {tool}, force_tool=force_tool)
 
         with handler({call_assistant: _add_synthesis_tool}):
             return fwd()

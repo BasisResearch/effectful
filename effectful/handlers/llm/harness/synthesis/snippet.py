@@ -409,13 +409,11 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: "Template | None" = None,
         force_tool: bool = False,
     ) -> AssistantResult[T]:
         return fwd(
             env,
             response_type,
             tools | {self.exec_code, self.read_lexical_variable},
-            anchor=anchor,
             force_tool=force_tool,
         )

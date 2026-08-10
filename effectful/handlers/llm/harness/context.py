@@ -75,7 +75,6 @@ class LexicalReaders(ObjectInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
         tools: collections.abc.Set[Tool] = frozenset(),
-        anchor: "Template | None" = None,
         force_tool: bool = False,
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
@@ -93,7 +92,7 @@ class LexicalReaders(ObjectInterpretation):
                 taken.add(name)
             except Exception:
                 continue
-        return fwd(env, response_type, readers, anchor=anchor, force_tool=force_tool)
+        return fwd(env, response_type, readers, force_tool=force_tool)
 
 
 def _tools_in_scope(

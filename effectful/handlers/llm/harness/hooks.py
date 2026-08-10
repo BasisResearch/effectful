@@ -144,7 +144,6 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
     tools: collections.abc.Set[Tool] = frozenset(),
-    anchor: "Template | None" = None,
     force_tool: bool = False,
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
@@ -173,14 +172,12 @@ def call_assistant[T](
     """
     from effectful.handlers.llm.harness.transaction import HistoryBuilder
 
+    if _TYPE_CHECK_ANCHOR_KEY in env:
+        tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
+
     name2tool = {t.__name__: t for t in tools}
     assert len(tools) == len(name2tool), "Tool name collision detected"
-    env = {
-        _TOOLS_KEY: name2tool,
-        _IS_FINAL_KEY: False,
-        _TYPE_CHECK_ANCHOR_KEY: anchor,
-        **env,
-    }
+    env = {_TOOLS_KEY: name2tool, **env}
     tool_specs = []
     for name, t in sorted(name2tool.items()):
         spec = typing.cast(

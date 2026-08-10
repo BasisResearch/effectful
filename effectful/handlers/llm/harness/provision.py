@@ -14,6 +14,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_user,
     completion,
 )
+from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.types import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -100,7 +101,9 @@ class LiteLLMProvider(LiteLLMConfigurer):
 
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()
-        env = template.__context__.new_child(bound_args.arguments)
+        env = template.__context__.new_child(
+            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: template}
+        )
 
         header = f"{template.__name__}{template.__signature__}".replace(
             "{", "{{"
@@ -114,8 +117,7 @@ class LiteLLMProvider(LiteLLMConfigurer):
             message, tool_calls, result = call_assistant(
                 env,
                 template.__signature__.return_annotation,
-                _tools_in_scope(env) - {template},
-                anchor=template,
+                _tools_in_scope(env),
                 force_tool=self.config.get("tool_choice") == "required",
             )
             if tool_calls:
