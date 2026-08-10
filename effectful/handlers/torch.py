@@ -1,8 +1,6 @@
 import functools
-import itertools
 import typing
 from collections.abc import Callable, Mapping, Sequence
-from types import EllipsisType
 from typing import Annotated, Any
 
 try:
@@ -12,25 +10,27 @@ except ImportError:
 
 import torch.utils._pytree as pytree
 
-from effectful.internals.tensor_utils import _desugar_tensor_index
-from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
+from effectful.internals.tensor_utils import (
+    IndexElement,
+    _BaseSizesofIntp,
+    _desugar_tensor_index,
+    _sizesof,
+)
+from effectful.ops.semantics import evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
-    ConstructorOperation,
     Scoped,
     _BaseTerm,
     defdata,
     defop,
+    implements,
     syntactic_eq,
 )
-from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
-
-# + An element of a tensor index expression.
-IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 def _getitem_ellipsis_and_none(
-    x: torch.Tensor, key: tuple[IndexElement, ...]
-) -> tuple[torch.Tensor, tuple[IndexElement, ...]]:
+    x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]
+) -> tuple[torch.Tensor, tuple[IndexElement[torch.Tensor], ...]]:
     """Eliminate ellipses and None in an index expression x[key].
 
     Returns x1, key1 such that x1[key1] == x[key] nand key1 does not contain None or Ellipsis.
@@ -39,96 +39,6 @@ def _getitem_ellipsis_and_none(
 
     new_shape, new_key = _desugar_tensor_index(x.shape, key)
     return torch.reshape(x, new_shape), new_key
-
-
-@functools.cache
-def _sizesof_intp() -> tuple[Interpretation, Operation]:
-    """Construct the singleton interpretation used by ``sizesof``."""
-    from effectful.internals.product_n import argsof, productN
-
-    sizes = defop(object, name="sizes")
-    getitem_term = defop(object, name="getitem_args")
-
-    def _retain(op, *args, **kwargs):
-        # Non-getitem subterms are opaque to this analysis. Keeping their
-        # arguments would retain the entire input term unnecessarily.
-        return _BaseTerm(op)
-
-    def _retain_getitem(*args, **kwargs):
-        return defdata(torch_getitem, *args, **kwargs)
-
-    def _merge(s1, s2):
-        result = s1.copy()
-        for k, v in s2.items():
-            if k in result and result[k] != v:
-                raise ValueError(
-                    f"Named index {k} used in incompatible dimensions of size {result[k]} and {v}"
-                )
-            result[k] = v
-        return result
-
-    def _apply_sizes(op, *args, **kwargs):
-        analyses = (x for x in (*args, *kwargs.values()) if isinstance(x, dict))
-        return functools.reduce(_merge, analyses, {})
-
-    def _getitem(x, key):
-        # Inspect this getitem's arguments in the term projection without
-        # forcing that projection to retain the getitem result.
-        term_args, _ = argsof(getitem_term)
-        term_x, term_key = term_args
-
-        arg_sizes = (value for value in (x, key) if isinstance(value, dict))
-        if not isinstance(term_x, torch.Tensor):
-            return functools.reduce(_merge, arg_sizes, {})
-
-        shape, desugared_key = _desugar_tensor_index(term_x.shape, term_key)
-        index_sizes = (
-            {k.op: shape[i]}
-            for i, k in enumerate(desugared_key)
-            if isinstance(k, Term)
-            and not k.args
-            and not k.kwargs
-            and issubclass(typeof(k), torch.Tensor)
-        )
-        return functools.reduce(_merge, itertools.chain(arg_sizes, index_sizes), {})
-
-    return (
-        productN(
-            {
-                sizes: {apply: _apply_sizes, torch_getitem: _getitem},
-                getitem_term: {
-                    apply: _retain,
-                    torch_getitem: _retain_getitem,
-                    ConstructorOperation.__apply__: apply.__default_rule__,
-                },
-            }
-        ),
-        sizes,
-    )
-
-
-def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
-    """Return the sizes of named dimensions in a tensor expression.
-
-    Sizes are inferred from the tensor shape.
-
-    :param value: A tensor expression.
-    :return: A mapping from named dimensions to their sizes.
-
-    **Example usage**:
-
-    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
-    >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
-    >>> assert sizes[a] == 2 and sizes[b] == 3
-    """
-    from effectful.internals.product_n import _unpack
-
-    intp, prompt = _sizesof_intp()
-    result = evaluate(value, intp=intp)
-    sizes = _unpack(result, prompt)
-    if not isinstance(sizes, dict):
-        return {}
-    return sizes
 
 
 def _partial_eval(t: Expr[torch.Tensor]) -> Expr[torch.Tensor]:
@@ -316,7 +226,9 @@ def _register_torch_op[**P, T](torch_fn: Callable[P, T]):
 
 
 @_register_torch_op
-def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tensor:
+def torch_getitem(
+    x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]
+) -> torch.Tensor:
     """Operation for indexing a tensor.
 
     .. note::
@@ -369,14 +281,48 @@ def torch_getitem(x: torch.Tensor, key: tuple[IndexElement, ...]) -> torch.Tenso
     return torch.ops.aten.index(x, tuple(key_l))
 
 
+class _SizesofIntp(_BaseSizesofIntp[torch.Tensor]):
+    arr_type: typing.ClassVar[type] = torch.Tensor
+
+    # Restates the one condition ``_embed_tensor`` imposes that its jax
+    # counterpart does not. It has to keep agreeing with it.
+
+    @classmethod
+    def _names_dim(cls, op: Operation) -> bool:
+        return issubclass(typeof(_BaseTerm(op)), cls.arr_type)
+
+    @implements(torch_getitem)
+    def _torch_getitem(self, x, key):
+        return self._getitem(x, key)
+
+
+_SIZESOF_INTP = _SizesofIntp()
+
+
+def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
+    """Return the sizes of named dimensions in a tensor expression.
+
+    Sizes are inferred from the tensor shape.
+
+    :param value: A tensor expression.
+    :return: A mapping from named dimensions to their sizes.
+
+    **Example usage**:
+
+    >>> a, b = defop(torch.Tensor, name='a'), defop(torch.Tensor, name='b')
+    >>> sizes = sizesof(torch.ones(2, 3)[a(), b()])
+    >>> assert sizes[a] == 2 and sizes[b] == 3
+    """
+    return _sizesof(value, analysis=_SIZESOF_INTP)
+
+
 @defdata.register(torch.Tensor)
 def _embed_tensor(ty, op, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)
-        and len(args[1]) > 0
         and all(
-            typeof(k) is torch.Tensor and not k.args and not k.kwargs
+            issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
             for k in args[1]
             if isinstance(k, Term)
         )
@@ -422,7 +368,9 @@ class _TensorTerm(Term[torch.Tensor]):
         return self._kwargs
 
     def __getitem__(
-        self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
+        self,
+        key: Expr[IndexElement[torch.Tensor]]
+        | tuple[Expr[IndexElement[torch.Tensor]], ...],
     ) -> Expr[torch.Tensor]:
         return torch_getitem(self, key if isinstance(key, tuple) else (key,))
 
@@ -546,17 +494,19 @@ class _TensorTerm(Term[torch.Tensor]):
 
 @Term.register
 class _EagerTensorTerm(torch.Tensor):
-    args: tuple[torch.Tensor, tuple[IndexElement, ...]]
+    args: tuple[torch.Tensor, tuple[IndexElement[torch.Tensor], ...]]
     kwargs: Mapping[str, object] = {}
 
     __match_args__ = ("op", "args", "kwargs")
 
-    def __new__(cls, x: torch.Tensor, key: tuple[IndexElement, ...]):
+    def __new__(cls, x: torch.Tensor, key: tuple[IndexElement[torch.Tensor], ...]):
         assert not isinstance(x, Term)
 
         for k in key:
             if isinstance(k, Term):
-                assert typeof(k) is torch.Tensor and not k.args and not k.kwargs
+                assert (
+                    issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
+                )
 
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)

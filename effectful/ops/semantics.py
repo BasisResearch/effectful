@@ -11,7 +11,7 @@ from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
-    _BaseTerm,
+    Scoped,
     _CustomSingleDispatchCallable,
     defop,
     implements,
@@ -322,11 +322,6 @@ class _TypeofIntp(ObjectInterpretation):
 _TYPEOF_INTP = _TypeofIntp()
 
 
-def _typeof(term: Expr):
-    """Evaluate the cached type analysis without unwrapping its result."""
-    return evaluate(term, intp=_TYPEOF_INTP)
-
-
 def typeof[T](term: Expr[T]) -> type[T]:
     """Return the type of an expression.
 
@@ -351,82 +346,49 @@ def typeof[T](term: Expr[T]) -> type[T]:
     """
     from effectful.internals.unification import Box
 
-    type_or_value = _typeof(term)
+    type_or_value = evaluate(term, intp=_TYPEOF_INTP)
     if isinstance(type_or_value, Box):
         return _simple_type(type_or_value.value)
     return typing.cast(type[T], type(type_or_value))
 
 
-@functools.cache
-def _fvsof_intp() -> tuple[Interpretation, Operation]:
-    """Construct the singleton interpretation used by ``fvsof``."""
-    from effectful.internals.product_n import argsof, productN
+class _FvsAnalysis(typing.NamedTuple):
+    ops: frozenset[Operation] = frozenset()
+    fvs: frozenset[Operation] = frozenset()
 
-    def _apply_collection_binders(op, *args, **kwargs):
-        return frozenset().union(
-            *(
-                {x}
-                if isinstance(x, Operation)
-                else x
-                if isinstance(x, frozenset)
-                else set()
-                for x in (*args, *kwargs.values())
-            )
+
+class _FvsofIntp(ObjectInterpretation):
+    @staticmethod
+    def _analysis(value) -> _FvsAnalysis:
+        if isinstance(value, _FvsAnalysis):
+            return value
+        else:
+            return _FvsAnalysis(Scoped.extract_operations(value))
+
+    @implements(ConstructorOperation.__apply__)
+    def _apply_collection_binders(self, op, *args, **kwargs):
+        analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
+        return _FvsAnalysis(
+            frozenset().union(frozenset(), *(a.ops for a in analyses)),
+            frozenset().union(frozenset(), *(a.fvs for a in analyses)),
         )
 
-    def _apply_binders(op, *args, **kwargs):
-        # Parent operations only need to know that this child is a term. Its
-        # arguments are available through argsof while this node is analyzed.
-        return _BaseTerm(op)
-
-    def _apply_passthrough_fvs(op, *args, **kwargs):
-        return frozenset().union(
-            *(x for x in (*args, *kwargs.values()) if isinstance(x, frozenset))
+    @implements(apply)
+    def _apply_fvs(self, op, *args, **kwargs):
+        arg_analyses = tuple(self._analysis(a) for a in args)
+        kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
+        bindings = op.__fvs_rule__(
+            *(a.ops for a in arg_analyses),
+            **{k: a.ops for k, a in kwarg_analyses.items()},
         )
-
-    def _apply_fvs(op, *args, **kwargs):
-        binder_args, binder_kwargs = argsof(_fvsof_binders)
-        # This rule handles Operation.__apply__ directly, so its first argument
-        # is the operation being applied rather than an argument to that
-        # operation.
-        binder_args = tuple(
-            frozenset() if isinstance(x, Term) else x for x in binder_args[1:]
-        )
-        binder_kwargs = {
-            k: frozenset() if isinstance(v, Term) else v
-            for k, v in binder_kwargs.items()
-        }
-        bindings = op.__fvs_rule__(*binder_args, **binder_kwargs)
         binders = frozenset().union(*(*bindings.args, *bindings.kwargs.values()))
-
         fvs = frozenset().union(
-            {op},
-            *(
-                x if isinstance(x, frozenset) else frozenset()
-                for x in (*args, *kwargs.values())
-            ),
+            {op}, *(a.fvs for a in (*arg_analyses, *kwarg_analyses.values()))
         )
-        fvs -= binders
-        return fvs
+        return _FvsAnalysis(fvs=fvs - binders)
 
-    _fvsof_fvs = defop(object, name="fvsof_fvs")
-    _fvsof_binders = defop(object, name="fvsof_binders")
 
-    return (
-        productN(
-            {
-                _fvsof_fvs: {
-                    apply: _apply_fvs,
-                    ConstructorOperation.__apply__: _apply_passthrough_fvs,
-                },
-                _fvsof_binders: {
-                    apply: _apply_binders,
-                    ConstructorOperation.__apply__: _apply_collection_binders,
-                },
-            }
-        ),
-        _fvsof_fvs,
-    )
+_FVSOF_INTP = _FvsofIntp()
 
 
 def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
@@ -455,11 +417,5 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     >>> assert fvs >= {f, a}
 
     """
-    from effectful.internals.product_n import _unpack
-
-    intp, prompt = _fvsof_intp()
-    result = evaluate(term, intp=intp)
-    fvs = _unpack(result, prompt)
-    if not isinstance(fvs, frozenset):
-        return frozenset()
-    return fvs
+    result = evaluate(term, intp=_FVSOF_INTP)
+    return result.fvs if isinstance(result, _FvsAnalysis) else frozenset()

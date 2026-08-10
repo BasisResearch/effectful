@@ -1,8 +1,25 @@
-def _desugar_tensor_index(shape, key):
-    new_shape = []
-    new_key = []
+import abc
+import collections.abc
+import functools
+import types
+import typing
 
-    def extra_dims(key):
+from effectful.ops.semantics import ConstructorOperation, apply, evaluate
+from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Operation
+
+type IndexElement[T] = (
+    None | int | slice | collections.abc.Sequence[int] | types.EllipsisType | T
+)
+
+
+def _desugar_tensor_index[T](
+    shape: tuple[int, ...], key: collections.abc.Sequence[IndexElement[T]]
+) -> tuple[tuple[int, ...], tuple[IndexElement[T], ...]]:
+    new_shape: list[int] = []
+    new_key: list[IndexElement[T]] = []
+
+    def extra_dims(key: collections.abc.Sequence[IndexElement[T]]) -> int:
         return sum(1 for k in key if k is None)
 
     # handle any missing dimensions by adding a trailing Ellipsis
@@ -29,4 +46,139 @@ def _desugar_tensor_index(shape, key):
             new_shape.append(shape[len(new_shape) - extra_dims(key[:i])])
             new_key.append(k)
 
-    return new_shape, new_key
+    return tuple(new_shape), tuple(new_key)
+
+
+class _Name[T]:
+    """An index entry that names a dimension: a bare call to ``op``.
+
+    Deliberately not a tuple, so that a key can be told apart from an entry.
+    """
+
+    __slots__ = ("op",)
+
+    def __init__(self, op: Operation[[], T]):
+        self.op = op
+
+
+#: An index entry that is a term but not a bare name, so it neither names a
+#: dimension nor leaves the indexed result with a shape this analysis can
+#: predict. Distinct from a concrete entry, which does neither but is harmless.
+_OPAQUE: typing.Any = object()
+
+
+class _SizeAnalysis[T](typing.NamedTuple):
+    """What the analysis of a single node carries.
+
+    ``sizes`` is the result. The rest is what a parent `__getitem__`
+    needs to finish its own analysis, which the sizes alone cannot supply:
+    ``shape`` when the node denotes an array whose shape is known, and
+    ``index`` for what the node looks like in a key -- the dimension it names,
+    or the value it already is.
+    """
+
+    sizes: dict[Operation[[], T], int]
+    index: typing.Any
+    shape: tuple[int, ...] | None = None
+
+
+class _BaseSizesofIntp[T](abc.ABC, ObjectInterpretation):
+    """Shared part of the analysis behind ``sizesof``.
+
+    The hook below is where the backends differ, and it has to answer exactly
+    as that backend's :func:`defdata` rule does. That rule decides whether an
+    indexed result is built eagerly, and so whether it has a shape at all; an
+    analysis that disagreed would predict a shape for a term that is never
+    built with one, or miss one that is. The default is the permissive answer,
+    which is what ``_embed_array`` gives; ``_embed_tensor`` is stricter about
+    what may name a dimension and overrides it.
+    """
+
+    arr_type: typing.ClassVar[type] = object
+
+    @classmethod
+    @abc.abstractmethod
+    def _names_dim(cls, op: Operation[[], T]) -> bool:
+        """Whether a bare call to ``op`` names a dimension of what it indexes."""
+        raise NotImplementedError
+
+    @classmethod
+    def _analysis(cls, value) -> _SizeAnalysis[T]:
+        """View a rule argument as an analysis. Leaves contribute no sizes.
+
+        A leaf stands for itself in a key, so that keys rebuild into real
+        tuples holding real slices and ``None`` and ``Ellipsis`` literals.
+        """
+        if isinstance(value, _SizeAnalysis):
+            return value
+        elif isinstance(value, cls.arr_type):
+            return _SizeAnalysis[T]({}, value, value.shape)  # type: ignore
+        else:
+            return _SizeAnalysis[T]({}, value)
+
+    @staticmethod
+    def _merge(
+        s1: dict[Operation[[], T], int], s2: dict[Operation[[], T], int]
+    ) -> dict[Operation[[], T], int]:
+        s3 = s1.copy()
+        for k, v in s2.items():
+            if k in s3 and s3[k] != v:
+                raise ValueError(
+                    f"Named index {k} used in incompatible dimensions of size {s3[k]} and {v}"
+                )
+            s3[k] = v
+        return s3
+
+    @implements(apply)
+    def _apply(self, op, *args, **kwargs):
+        analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
+        return _SizeAnalysis(
+            functools.reduce(self._merge, (a.sizes for a in analyses), {}),
+            _Name(op) if not (args or kwargs) and self._names_dim(op) else _OPAQUE,
+        )
+
+    @implements(ConstructorOperation.__apply__)
+    def _apply_constructor(self, op, *args, **kwargs):
+        arg_analyses = tuple(self._analysis(x) for x in args)
+        kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
+        analyses = (*arg_analyses, *kwarg_analyses.values())
+        return _SizeAnalysis(
+            functools.reduce(self._merge, (a.sizes for a in analyses), {}),
+            op.__default_rule__(
+                *(a.index for a in arg_analyses),
+                **{k: a.index for k, a in kwarg_analyses.items()},
+            ),
+        )
+
+    def _getitem(self, x, key):
+        is_concrete = isinstance(x, self.arr_type)
+        x, key = self._analysis(x), self._analysis(key)
+        sizes = self._merge(x.sizes, key.sizes)
+
+        if x.shape is None or not isinstance(key.index, tuple | list):
+            return _SizeAnalysis(sizes, _OPAQUE)
+
+        shape, entries = _desugar_tensor_index(x.shape, key.index)
+        for i, entry in enumerate(entries):
+            if isinstance(entry, _Name):
+                sizes = self._merge(sizes, {entry.op: shape[i]})
+
+        eager = is_concrete and not any(e is _OPAQUE for e in entries)
+        return _SizeAnalysis(
+            sizes,
+            _OPAQUE,
+            tuple(s for s, e in zip(shape, entries) if not isinstance(e, _Name))
+            if eager
+            else None,
+        )
+
+
+def _sizesof[T](
+    value, *, analysis: _BaseSizesofIntp[T]
+) -> collections.abc.Mapping[Operation[[], T], int]:
+    """Return a mapping from named dimensions to their sizes.
+
+    Raises a ValueError if the same name is used for different sizes.
+    """
+    result = evaluate(value, intp=analysis)
+    return result.sizes if isinstance(result, _SizeAnalysis) else {}
