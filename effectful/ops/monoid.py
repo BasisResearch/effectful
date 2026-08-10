@@ -1666,6 +1666,24 @@ class MinOptimumPlus(ObjectInterpretation):
             return fwd()
 
 
+class MaxOptimumPlus(ObjectInterpretation):
+    """Lift :data:`Max` to values carrying maximizing assignments."""
+
+    @implements(Max.plus)
+    def plus(self, *args):
+        if not args or not all(isinstance(a, Optimum) for a in args):
+            return fwd()
+        feasible = [a for a in args if a.feasible]
+        if not feasible:
+            return Optimum(Max.identity, None)
+        if any(isinstance(a.value, Term) for a in feasible):
+            return fwd()
+        try:
+            return max(feasible, key=lambda a: a.value)
+        except (TypeError, ValueError):
+            return fwd()
+
+
 class ArgMaxPlus(ObjectInterpretation):
     """Scalar score implementation of :data:`ArgMax`."""
 
@@ -2276,6 +2294,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     MinPlus(),
     MinOptimumPlus(),
     MaxPlus(),
+    MaxOptimumPlus(),
     ProductPlus(),
     AssignmentPlus(),
     ProductMonoidPlus(),
