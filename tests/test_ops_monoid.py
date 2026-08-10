@@ -21,15 +21,13 @@ from effectful.ops.monoid import (
     PlusDistr,
     PlusDups,
     PlusEmpty,
-    PlusIdentity,
     PlusSingle,
-    PlusZero,
     Product,
     ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
     ReduceFactorization,
     ReduceFusion,
-    ReduceNoStreams,
+    ReducePartial,
     ReduceSplit,
     ReduceWeightedStream,
     Sum,
@@ -172,7 +170,7 @@ def test_plus_identity_right(monoid, backend: Backend):
     lhs = monoid.plus(x(), monoid.identity)
     rhs = monoid.plus(x())
 
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -182,7 +180,7 @@ def test_plus_identity_left(monoid, backend: Backend):
     lhs = monoid.plus(monoid.identity, x())
     rhs = monoid.plus(x())
 
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -240,10 +238,10 @@ def test_plus_distributes(backend: Backend):
 
 
 def test_plus_distributes_constant(backend: Backend):
-    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
-    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
+    a, b, c, d, e = backend.define_vars("a", "b", "c", "d", "e", ret="scalar")
+    lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), e())
     rhs = Product.plus(
-        5,
+        e(),
         Sum.plus(
             Product.plus(a(), c()),
             Product.plus(a(), d()),
@@ -314,16 +312,16 @@ def test_plus_zero(monoid, backend: Backend):
     lhs_right = monoid.plus(a(), monoid.zero)
     lhs_left = monoid.plus(monoid.zero, a())
     rhs = monoid.zero
-    backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule=PlusZero())
-    backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule=PlusZero())
+    backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_partial_1(monoid, backend: Backend):
     x = backend.define_vars("x", ret="scalar")
     lhs = monoid.reduce(x(), {x: []})
-    rhs = monoid.identity
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    rhs = monoid.plus()
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -332,8 +330,8 @@ def test_partial_2(monoid, backend: Backend):
     Y = backend.define_vars("Y", ret="stream")
 
     lhs = monoid.reduce(x(), {y: Y(), x: []})
-    rhs = monoid.identity
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    rhs = monoid.plus()
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -343,7 +341,7 @@ def test_partial_3(monoid, backend: Backend):
 
     lhs = monoid.reduce(x(), {y: Y(), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: Y()}), monoid.reduce(b(), {y: Y()}))
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -353,7 +351,7 @@ def test_partial_4(monoid, backend: Backend):
 
     lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -401,7 +399,7 @@ def test_reduce_no_streams(monoid, backend: Backend):
 
     lhs = monoid.reduce(a(), {})
     rhs = monoid.identity
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceNoStreams())
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReducePartial())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
@@ -482,15 +480,15 @@ def test_reduce_independent_3_negative(backend: Backend):
 
 
 def test_reduce_independent_4(backend: Backend):
-    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     A, B, C = backend.define_vars("A", "B", "C", ret="stream")
     f = backend.define_vars(
         "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
     )
 
-    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), 7), {a: A(), b: B(), c: C()})
+    lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), d()), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
-        7,
+        d(),
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(
             Product.plus(b(), Sum.reduce(Product.plus(f(b(), c())), {c: C()})),
