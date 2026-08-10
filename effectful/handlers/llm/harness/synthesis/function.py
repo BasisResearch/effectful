@@ -1,6 +1,7 @@
 import ast
 import collections.abc
 import inspect
+import json
 import linecache
 import logging
 import textwrap
@@ -347,7 +348,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         value: SynthesizedFunction | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate_json(value)
+            value = typed_enc.model_validate({"module_code": value})
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
 

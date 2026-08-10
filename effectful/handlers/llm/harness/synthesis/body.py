@@ -2,6 +2,7 @@ import ast
 import collections.abc
 import functools
 import inspect
+import json
 import textwrap
 import types
 import typing
@@ -182,7 +183,7 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
         value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate_json(value)
+            value = typed_enc.model_validate({"module_code": value})
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
@@ -344,7 +345,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
         value: SynthesizedMethodTemplateBody | dict | str, info: pydantic.ValidationInfo
     ) -> Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate_json(value)
+            value = typed_enc.model_validate({"module_code": value})
         if isinstance(value, dict):
             value = typed_enc.model_validate(value)
         ctx = info.context or {}
