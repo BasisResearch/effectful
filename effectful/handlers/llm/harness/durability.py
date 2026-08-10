@@ -31,8 +31,6 @@ class TenacityRetryer(ObjectInterpretation):
     captured and returned as tool response messages.
 
     Args:
-        include_traceback: If True, include full traceback in error feedback
-            for better debugging context (default: True).
         catch_tool_errors: Exception type(s) to catch during tool execution.
             Can be a single exception class or a tuple of exception classes.
             Defaults to Exception (catches all exceptions).
