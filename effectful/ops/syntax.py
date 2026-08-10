@@ -11,7 +11,6 @@ from typing import Annotated, Any
 from effectful.ops.types import (
     Annotation,
     Expr,
-    Interpretation,
     NotHandled,
     Operation,
     Term,
@@ -445,12 +444,17 @@ def _build_term[T](
     type from the types of its arguments and dispatches on that type to pick a
     constructor.
     """
-    from effectful.ops.semantics import _simple_type, _typeof
+    from effectful.internals.runtime import copy_cache_entries
+    from effectful.ops.semantics import typeof
 
-    typed_args = tuple(_typeof(arg) for arg in args)
-    typed_kwargs = {k: _typeof(v) for k, v in kwargs.items()}
-    dispatch_type = _simple_type(op.__type_rule__(*typed_args, **typed_kwargs))
-    return __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    # Compute the type on a throwaway node so that the analysis is cached against
+    # something, then move that cache onto the node actually returned: a parent's
+    # later typeof on this child is then a hit rather than a fresh traversal.
+    raw_term: Expr[T] = _BaseTerm(op, *args, **kwargs)
+    dispatch_type: type = typeof(raw_term)
+    result = __dispatch(dispatch_type)(dispatch_type, op, *args, **kwargs)
+    copy_cache_entries(raw_term, result)
+    return result
 
 
 @_CustomSingleDispatchCallable
@@ -978,25 +982,6 @@ class ObjectInterpretation[T, V](collections.abc.Mapping):
 
     def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
         return self.implementations[item].__get__(self, type(self))
-
-
-class PureInterpretation[T, V](Mapping[Operation[..., T], Callable[..., V]]):
-    """Mark an interpretation as pure so its evaluation results can be cached."""
-
-    def __init__(self, intp: Interpretation[T, V]):
-        self.intp = intp
-
-    def __iter__(self):
-        return iter(self.intp)
-
-    def __len__(self):
-        return len(self.intp)
-
-    def __getitem__(self, item: Operation[..., T]) -> Callable[..., V]:
-        return self.intp[item]
-
-    __hash__ = object.__hash__
-    __eq__ = object.__eq__
 
 
 class _ImplementedOperation[**P, **Q, T, V]:

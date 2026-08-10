@@ -16,14 +16,13 @@ from effectful.internals.tensor_utils import _desugar_tensor_index
 from effectful.ops.semantics import apply, evaluate, fvsof, handler, typeof
 from effectful.ops.syntax import (
     ConstructorOperation,
-    PureInterpretation,
     Scoped,
     _BaseTerm,
     defdata,
     defop,
     syntactic_eq,
 )
-from effectful.ops.types import Expr, NotHandled, Operation, Term
+from effectful.ops.types import Expr, Interpretation, NotHandled, Operation, Term
 
 # + An element of a tensor index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | torch.Tensor
@@ -43,7 +42,7 @@ def _getitem_ellipsis_and_none(
 
 
 @functools.cache
-def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
+def _sizesof_intp() -> tuple[Interpretation, Operation]:
     """Construct the singleton interpretation used by ``sizesof``."""
     from effectful.internals.product_n import argsof, productN
 
@@ -94,17 +93,15 @@ def _sizesof_intp() -> tuple[PureInterpretation, Operation]:
         return functools.reduce(_merge, itertools.chain(arg_sizes, index_sizes), {})
 
     return (
-        PureInterpretation(
-            productN(
-                {
-                    sizes: {apply: _apply_sizes, torch_getitem: _getitem},
-                    getitem_term: {
-                        apply: _retain,
-                        torch_getitem: _retain_getitem,
-                        ConstructorOperation.__apply__: apply.__default_rule__,
-                    },
-                }
-            )
+        productN(
+            {
+                sizes: {apply: _apply_sizes, torch_getitem: _getitem},
+                getitem_term: {
+                    apply: _retain,
+                    torch_getitem: _retain_getitem,
+                    ConstructorOperation.__apply__: apply.__default_rule__,
+                },
+            }
         ),
         sizes,
     )

@@ -5,15 +5,12 @@ import functools
 import operator
 import types
 import typing
-import weakref
-from collections.abc import Callable
-from typing import Any
 
+from effectful.internals.runtime import cache
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
-    PureInterpretation,
     _BaseTerm,
     _CustomSingleDispatchCallable,
     defop,
@@ -31,7 +28,7 @@ apply = Operation.__apply__
 
 
 @defop
-def fwd(*args, **kwargs) -> Any:
+def fwd(*args, **kwargs) -> typing.Any:
     """Forward execution to the next most enclosing handler.
 
     :func:`fwd` should only be called in the context of a handler.
@@ -92,8 +89,8 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
     """
     from effectful.internals.runtime import (
         _get_args,
-        _restore_args,
         _save_args,
+        _save_then_restore_args,
         _set_prompt,
     )
 
@@ -105,7 +102,7 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
             # calling fwd in the right handler should dispatch to the left handler
             i1 = intp.get(op)
             res[op] = (
-                _set_prompt(fwd, _restore_args(_save_args(i1)), _save_args(i2))
+                _set_prompt(fwd, _save_then_restore_args(i1), _save_args(i2))
                 if i1 is not None
                 else _save_args(i2)
             )
@@ -130,9 +127,14 @@ def as_tuple(*args) -> tuple:
     return tuple(args)
 
 
+_MISSING: typing.Any = object()
+
+
 @_CustomSingleDispatchCallable
 def evaluate[T](
-    __dispatch: Callable[[type], Callable[..., Expr[T]]],
+    __dispatch: collections.abc.Callable[
+        [type], collections.abc.Callable[..., Expr[T]]
+    ],
     expr: Expr[T],
     *,
     intp: Interpretation | None = None,
@@ -155,18 +157,30 @@ def evaluate[T](
     6
 
     """
-    from effectful.internals.runtime import get_runtime, interpreter
+    from effectful.internals.runtime import (
+        EVAL_CACHE,
+        cache_get,
+        cache_put,
+        get_interpretation,
+        interpreter,
+    )
 
-    with interpreter(intp if intp is not None else get_runtime().interpretation):
-        cache = get_runtime().cache
-        assert cache is not None, "Cache should be initialized by interpreter"
-        key = id(expr)
-        if key in cache:
-            ref, result = cache[key]
-            if ref is expr:
-                return result
+    with interpreter(intp if intp is not None else get_interpretation()) as current:
+        store = EVAL_CACHE.get()
+        if store is None:
+            # No cache installed. Open one for the duration of this call and start
+            # over. Without it, an expression that reaches a subexpression along
+            # several paths re-evaluates it once per path, which is exponential in
+            # the depth of a DAG. Only the outermost call takes this branch, so the
+            # extra re-entry is paid once.
+            with cache():
+                return evaluate(expr, intp=current)
+
+        result = cache_get(store, expr, current, _MISSING)
+        if result is not _MISSING:
+            return result
         result = __dispatch(type(expr))(expr)
-        cache[key] = (expr, result)
+        cache_put(store, expr, current, result)
         return result
 
 
@@ -190,44 +204,11 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
     )
 
 
-_EVALUATION_CACHE_ATTR = "__effectful_evaluation_cache__"
-
-
-def _term_cache(
-    expr: Term,
-) -> weakref.WeakKeyDictionary[PureInterpretation, Any] | None:
-    """Return the cache owned by ``expr``, or ``None`` if it cannot store one."""
-    try:
-        return getattr(expr, _EVALUATION_CACHE_ATTR)
-    except AttributeError:
-        cache: weakref.WeakKeyDictionary[PureInterpretation, Any] = (
-            weakref.WeakKeyDictionary()
-        )
-        try:
-            setattr(expr, _EVALUATION_CACHE_ATTR, cache)
-        except (AttributeError, TypeError):
-            return None
-        return cache
-
-
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    from effectful.internals.runtime import get_interpretation
-
-    current_intp = get_interpretation()
-    if isinstance(current_intp, PureInterpretation):
-        cache = _term_cache(expr)
-        if cache is not None and current_intp in cache:
-            return cache[current_intp]
-    else:
-        cache = None
-
     args = tuple(evaluate(arg) for arg in expr.args)
     kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    result = expr.op(*args, **kwargs)
-    if cache is not None:
-        cache[current_intp] = result
-    return result
+    return expr.op(*args, **kwargs)
 
 
 @evaluate.register(Operation)
@@ -338,7 +319,7 @@ class _TypeofIntp(ObjectInterpretation):
         return Box(op.__type_rule__(*args, **kwargs))
 
 
-_TYPEOF_INTP = PureInterpretation(_TypeofIntp())
+_TYPEOF_INTP = _TypeofIntp()
 
 
 def _typeof(term: Expr):
@@ -377,7 +358,7 @@ def typeof[T](term: Expr[T]) -> type[T]:
 
 
 @functools.cache
-def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
+def _fvsof_intp() -> tuple[Interpretation, Operation]:
     """Construct the singleton interpretation used by ``fvsof``."""
     from effectful.internals.product_n import argsof, productN
 
@@ -432,19 +413,17 @@ def _fvsof_intp() -> tuple[PureInterpretation, Operation]:
     _fvsof_binders = defop(object, name="fvsof_binders")
 
     return (
-        PureInterpretation(
-            productN(
-                {
-                    _fvsof_fvs: {
-                        apply: _apply_fvs,
-                        ConstructorOperation.__apply__: _apply_passthrough_fvs,
-                    },
-                    _fvsof_binders: {
-                        apply: _apply_binders,
-                        ConstructorOperation.__apply__: _apply_collection_binders,
-                    },
-                }
-            )
+        productN(
+            {
+                _fvsof_fvs: {
+                    apply: _apply_fvs,
+                    ConstructorOperation.__apply__: _apply_passthrough_fvs,
+                },
+                _fvsof_binders: {
+                    apply: _apply_binders,
+                    ConstructorOperation.__apply__: _apply_collection_binders,
+                },
+            }
         ),
         _fvsof_fvs,
     )
