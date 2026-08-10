@@ -1,10 +1,13 @@
+import math
 import typing
+from collections.abc import Iterable
 
 import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 import effectful.handlers.jax.monoid  # noqa: F401
+import effectful.handlers.jax.numpy as jnp
 from effectful.ops.monoid import (
     CartesianProduct,
     Max,
@@ -22,29 +25,25 @@ from effectful.ops.monoid import (
     PlusSingle,
     PlusZero,
     Product,
+    ReduceCartesianWeightedStream,
     ReduceDistributeCartesianProduct,
     ReduceFactorization,
     ReduceFusion,
     ReduceNoStreams,
     ReduceSplit,
+    ReduceWeightedStream,
     Sum,
     distributes_over,
 )
-from effectful.ops.semantics import fvsof, handler
-from effectful.ops.types import Operation
-from tests._monoid_helpers import (
-    INT_BACKEND,
-    JAX_BACKEND,
-    Backend,
-    check_rewrite,
-    define_vars,
-    syntactic_eq_alpha,
-)
+from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
+from effectful.ops.syntax import deffn
+from effectful.ops.types import NotHandled, Operation, Term
+from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
 
-@pytest.fixture(params=[INT_BACKEND, JAX_BACKEND], ids=["int", "jax"])
+@pytest.fixture(params=[IntBackend, JaxBackend], ids=["int", "jax"])
 def backend(request) -> Backend:
-    return request.param
+    return request.param()
 
 
 ALL_MONOIDS = [
@@ -90,10 +89,10 @@ MONOID_PAIRS = [
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-def test_associativity(monoid, backend, data):
-    a = data.draw(backend.scalar_strategy)
-    b = data.draw(backend.scalar_strategy)
-    c = data.draw(backend.scalar_strategy)
+def test_associativity(monoid, backend: Backend, data):
+    a = data.draw(backend.strategy(ret="scalar"))()
+    b = data.draw(backend.strategy(ret="scalar"))()
+    c = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
         left = monoid.plus(monoid.plus(a, b), c)
         right = monoid.plus(a, monoid.plus(b, c))
@@ -107,8 +106,8 @@ def test_associativity(monoid, backend, data):
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-def test_identity(monoid, backend, data):
-    a = data.draw(backend.scalar_strategy)
+def test_identity(monoid, backend: Backend, data):
+    a = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
         assert backend.eq(monoid.plus(monoid.identity, a), a)
         assert backend.eq(monoid.plus(a, monoid.identity), a)
@@ -121,9 +120,9 @@ def test_identity(monoid, backend, data):
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-def test_commutativity(monoid, backend, data):
-    a = data.draw(backend.scalar_strategy)
-    b = data.draw(backend.scalar_strategy)
+def test_commutativity(monoid, backend: Backend, data):
+    a = data.draw(backend.strategy(ret="scalar"))()
+    b = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
         assert backend.eq(monoid.plus(a, b), monoid.plus(b, a))
 
@@ -135,8 +134,8 @@ def test_commutativity(monoid, backend, data):
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-def test_idempotence(monoid, backend, data):
-    a = data.draw(backend.scalar_strategy)
+def test_idempotence(monoid, backend: Backend, data):
+    a = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
         assert backend.eq(monoid.plus(a, a), a)
 
@@ -148,102 +147,86 @@ def test_idempotence(monoid, backend, data):
     deadline=None,
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
-def test_zero_absorbs(monoid, backend, data):
-    a = data.draw(backend.scalar_strategy)
+def test_zero_absorbs(monoid, backend: Backend, data):
+    a = data.draw(backend.strategy(ret="scalar"))()
     with handler(NormalizeIntp):
         assert backend.eq(monoid.plus(monoid.zero, a), monoid.zero)
         assert backend.eq(monoid.plus(a, monoid.zero), monoid.zero)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_empty(monoid, backend):
-    check_rewrite(
-        lhs=monoid.plus(), rhs=monoid.identity, rule=PlusEmpty(), backend=backend
-    )
+def test_plus_empty(monoid, backend: Backend):
+    backend.check_rewrite(lhs=monoid.plus(), rhs=monoid.identity, rule=PlusEmpty())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_single(monoid, backend):
-    x = define_vars("x", typ=backend.scalar_typ)
-    check_rewrite(
-        lhs=monoid.plus(x()), rhs=x(), rule=PlusSingle(), backend=backend, free_vars=[x]
-    )
+def test_plus_single(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
+    backend.check_rewrite(lhs=monoid.plus(x()), rhs=x(), rule=PlusSingle())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_identity_right(monoid, backend):
-    x = define_vars("x", typ=backend.scalar_typ)
+def test_plus_identity_right(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
 
     lhs = monoid.plus(x(), monoid.identity)
     rhs = monoid.plus(x())
 
-    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_identity_left(monoid, backend):
-    x = define_vars("x", typ=backend.scalar_typ)
+def test_plus_identity_left(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
 
     lhs = monoid.plus(monoid.identity, x())
     rhs = monoid.plus(x())
 
-    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity(), backend=backend, free_vars=[x])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusIdentity())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_assoc_right(monoid, backend):
-    x, y, z = define_vars("x", "y", "z", typ=backend.scalar_typ)
-    check_rewrite(
+def test_plus_assoc_right(monoid, backend: Backend):
+    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
+    backend.check_rewrite(
         lhs=monoid.plus(x(), monoid.plus(y(), z())),
         rhs=monoid.plus(x(), y(), z()),
         rule=PlusAssoc(),
-        backend=backend,
-        free_vars=[x, y, z],
     )
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_assoc_left(monoid, backend):
-    x, y, z = define_vars("x", "y", "z", typ=backend.scalar_typ)
-    check_rewrite(
+def test_plus_assoc_left(monoid, backend: Backend):
+    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
+    backend.check_rewrite(
         lhs=monoid.plus(monoid.plus(x(), y()), z()),
         rhs=monoid.plus(x(), y(), z()),
         rule=PlusAssoc(),
-        backend=backend,
-        free_vars=[x, y, z],
     )
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_sequence(monoid, backend):
-    a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
-    check_rewrite(
+def test_plus_sequence(monoid, backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    backend.check_rewrite(
         lhs=monoid.plus((a(), b()), (c(), d())),
         rhs=(monoid.plus(a(), c()), monoid.plus(b(), d())),
         rule=MonoidOverSequence(),
-        backend=backend,
-        free_vars=[a, b, c, d],
     )
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_plus_mapping(monoid, backend):
-    a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
+def test_plus_mapping(monoid, backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
 
     lhs = monoid.plus({0: a(), 1: b()}, {0: c(), 2: d()})
     rhs = {0: monoid.plus(a(), c()), 1: monoid.plus(b()), 2: monoid.plus(d())}
 
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=MonoidOverMapping(),
-        backend=backend,
-        free_vars=[a, b, c, d],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MonoidOverMapping())
 
 
-def test_plus_distributes(backend):
-    a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
+def test_plus_distributes(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()))
     rhs = Product.plus(
         Sum.plus(
@@ -253,13 +236,11 @@ def test_plus_distributes(backend):
             Product.plus(b(), d()),
         )
     )
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
 
 
-def test_plus_distributes_constant(backend):
-    a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
+def test_plus_distributes_constant(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     lhs = Product.plus(Sum.plus(a(), b()), Sum.plus(c(), d()), 5)
     rhs = Product.plus(
         5,
@@ -270,13 +251,11 @@ def test_plus_distributes_constant(backend):
             Product.plus(b(), d()),
         ),
     )
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
 
 
-def test_plus_distributes_multiple(backend):
-    a, b, c, d = define_vars("a", "b", "c", "d", typ=backend.scalar_typ)
+def test_plus_distributes_multiple(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
     lhs = Sum.plus(
         Min.plus(a(), b()),
         Min.plus(c(), d()),
@@ -297,238 +276,195 @@ def test_plus_distributes_multiple(backend):
             Sum.plus(b(), d()),
         ),
     )
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=PlusDistr(), backend=backend, free_vars=[a, b, c, d]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDistr())
 
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
-def test_plus_idempotent_consecutive(monoid, backend):
+def test_plus_idempotent_consecutive(monoid, backend: Backend):
     """``a, a, b → a, b`` — only consecutive duplicates collapse."""
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
+    a, b = backend.define_vars("a", "b", ret="scalar")
     lhs = monoid.plus(a(), a(), b())
-    return check_rewrite(
-        lhs=lhs,
-        rhs=monoid.plus(a(), b()),
-        rule=PlusConsecutiveDups(),
-        backend=backend,
-        free_vars=[a, b],
+    return backend.check_rewrite(
+        lhs=lhs, rhs=monoid.plus(a(), b()), rule=PlusConsecutiveDups()
     )
 
 
 @pytest.mark.parametrize("monoid", IDEMPOTENT)
-def test_plus_idempotent_non_consecutive(monoid, backend):
+def test_plus_idempotent_non_consecutive(monoid, backend: Backend):
     """``a, b, a`` — Semilattice (Min/Max) collapses via commutative
     PlusDups."""
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
+    a, b = backend.define_vars("a", "b", ret="scalar")
     lhs = monoid.plus(a(), b(), a())
     rhs = monoid.plus(a(), b())
-    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups())
 
 
 @pytest.mark.parametrize("monoid", [Min, Max])
-def test_plus_commutative_idempotent_long(monoid, backend):
+def test_plus_commutative_idempotent_long(monoid, backend: Backend):
     """Long alternation collapses via commutative dedup (Min/Max only)."""
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
+    a, b = backend.define_vars("a", "b", ret="scalar")
     lhs = monoid.plus(a(), b(), a(), b(), b(), a(), a())
     rhs = monoid.plus(a(), b())
-    check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups(), backend=backend, free_vars=[a, b])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=PlusDups())
 
 
 @pytest.mark.parametrize("monoid", WITH_ZERO)
-def test_plus_zero(monoid, backend):
-    a = define_vars("a", typ=backend.scalar_typ)
+def test_plus_zero(monoid, backend: Backend):
+    a = backend.define_vars("a", ret="scalar")
     lhs_right = monoid.plus(a(), monoid.zero)
     lhs_left = monoid.plus(monoid.zero, a())
     rhs = monoid.zero
-    check_rewrite(
-        lhs=lhs_right, rhs=rhs, rule=PlusZero(), backend=backend, free_vars=[a]
-    )
-    check_rewrite(
-        lhs=lhs_left, rhs=rhs, rule=PlusZero(), backend=backend, free_vars=[a]
-    )
+    backend.check_rewrite(lhs=lhs_right, rhs=rhs, rule=PlusZero())
+    backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule=PlusZero())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_partial_1(monoid, backend):
-    x, y = define_vars("x", "y", typ=backend.scalar_typ)
+def test_partial_1(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
     lhs = monoid.reduce(x(), {x: []})
     rhs = monoid.identity
-    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_partial_2(monoid, backend):
-    x, y = define_vars("x", "y", typ=backend.scalar_typ)
-    Y = define_vars("Y", typ=backend.stream_typ)
+def test_partial_2(monoid, backend: Backend):
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    Y = backend.define_vars("Y", ret="stream")
 
     lhs = monoid.reduce(x(), {y: Y(), x: []})
     rhs = monoid.identity
-
-    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, Y])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_partial_3(monoid, backend):
-    x, y, a, b = define_vars("x", "y", "a", "b", typ=backend.scalar_typ)
-    Y = define_vars("Y", typ=backend.stream_typ)
+def test_partial_3(monoid, backend: Backend):
+    x, y, a, b = backend.define_vars("x", "y", "a", "b", ret="scalar")
+    Y = backend.define_vars("Y", ret="stream")
 
     lhs = monoid.reduce(x(), {y: Y(), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: Y()}), monoid.reduce(b(), {y: Y()}))
-
-    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, Y])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_partial_4(monoid, backend):
-    x, y, a, b = define_vars("x", "y", "a", "b", typ=backend.scalar_typ)
-    f = backend.fresh_op("f", n_args=1, ret="stream")
+def test_partial_4(monoid, backend: Backend):
+    x, y, a, b = backend.define_vars("x", "y", "a", "b", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="stream")
 
     lhs = monoid.reduce(x(), {y: f(x()), x: [a(), b()]})
     rhs = monoid.plus(monoid.reduce(a(), {y: f(a())}), monoid.reduce(b(), {y: f(b())}))
-
-    check_rewrite(lhs=lhs, rhs=rhs, rule={}, backend=backend, free_vars=[x, y, a, b, f])
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule={})
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_body_sequence(monoid, backend):
-    x = Operation.define(backend.scalar_typ, name="x")
-    X = Operation.define(backend.stream_typ, name="X")
-    f = backend.fresh_op("f", n_args=1, ret="scalar")
-    g = Operation.define(f, name="g")
+def test_reduce_body_sequence(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
+    X = backend.define_vars("X", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = monoid.reduce((f(x()), g(x())), {x: X()})
     rhs = (monoid.reduce(f(x()), {x: X()}), monoid.reduce(g(x()), {x: X()}))
-
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=MonoidOverSequence(),
-        backend=backend,
-        free_vars=[X, f, g],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MonoidOverSequence())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_body_sequence_2(monoid, backend):
-    x, y = define_vars("x", "y", typ=backend.scalar_typ)
-    X, Y = define_vars("X", "Y", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=1, ret="scalar")
-    g = Operation.define(f, name="g")
+def test_reduce_body_sequence_2(monoid, backend: Backend):
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = monoid.reduce((f(x()), g(y())), {x: X(), y: Y()})
     rhs = (
         monoid.reduce(f(x()), {x: X(), y: Y()}),
         monoid.reduce(g(y()), {x: X(), y: Y()}),
     )
-
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=MonoidOverSequence(),
-        backend=backend,
-        free_vars=[X, Y, f, g],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MonoidOverSequence())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_body_mapping(monoid, backend):
-    x = Operation.define(backend.scalar_typ, name="x")
-    X = Operation.define(backend.stream_typ, name="X")
-    f = backend.fresh_op("f", n_args=1, ret="scalar")
-    g = Operation.define(f, name="g")
+def test_reduce_body_mapping(monoid, backend: Backend):
+    x = backend.define_vars("x", ret="scalar")
+    X = backend.define_vars("X", ret="stream")
+    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
 
     lhs = monoid.reduce({0: f(x()), 1: g(x())}, {x: X()})
     rhs = {
         0: monoid.reduce(f(x()), {x: X()}),
         1: monoid.reduce(g(x()), {x: X()}),
     }
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=MonoidOverMapping(),
-        backend=backend,
-        free_vars=[X, f, g],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=MonoidOverMapping())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_no_streams(monoid, backend):
-    a = define_vars("a", typ=backend.scalar_typ)
+def test_reduce_no_streams(monoid, backend: Backend):
+    a = backend.define_vars("a", ret="scalar")
+
     lhs = monoid.reduce(a(), {})
     rhs = monoid.identity
-
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=ReduceNoStreams(), backend=backend, free_vars=[a]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceNoStreams())
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_reduce(monoid, backend):
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
-    A, B = define_vars("A", "B", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=2, ret="scalar")
+def test_reduce_reduce(monoid, backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+    f = backend.define_vars(
+        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
 
     lhs = monoid.reduce(monoid.reduce(f(a(), b()), {a: A()}), {b: B()})
     rhs = monoid.reduce(f(a(), b()), {a: A(), b: B()})
-
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=ReduceFusion(), backend=backend, free_vars=[A, B, f]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFusion())
 
 
 @pytest.mark.parametrize("monoid", COMMUTATIVE)
-def test_reduce_plus(monoid, backend):
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
-    A, B = define_vars("A", "B", typ=backend.stream_typ)
+def test_reduce_plus(monoid, backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
     lhs = monoid.reduce(monoid.plus(a(), b()), {a: A(), b: B()})
     rhs = monoid.plus(
         monoid.reduce(a(), {a: A(), b: B()}),
         monoid.reduce(b(), {a: A(), b: B()}),
     )
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=ReduceSplit(), backend=backend, free_vars=[A, B]
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceSplit())
 
 
-def test_reduce_independent_1(backend):
-    a, b = define_vars("a", "b", typ=backend.scalar_typ)
-    A, B = define_vars("A", "B", typ=backend.stream_typ)
+def test_reduce_independent_1(backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
     lhs = Sum.reduce(Product.plus(a(), b()), {a: A(), b: B()})
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}), Sum.reduce(Product.plus(b()), {b: B()})
     )
-    check_rewrite(
-        lhs=lhs, rhs=rhs, rule=ReduceFactorization(), backend=backend, free_vars=[A, B]
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+def test_reduce_independent_2(backend: Backend):
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    f = backend.define_vars(
+        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
     )
-
-
-def test_reduce_independent_2(backend):
-    a, b, c = define_vars("a", "b", "c", typ=backend.scalar_typ)
-    A, B, C = define_vars("A", "B", "C", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=2, ret="scalar")
 
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c())), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=ReduceFactorization(),
-        backend=backend,
-        free_vars=[A, B, C, f],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
 
 
-def test_reduce_independent_3_negative(backend):
+def test_reduce_independent_3_negative(backend: Backend):
     """Stream `b` depends on `a` (b: g(a())), so the proposed factorization
     is unsound — the normalizer must NOT apply it."""
-    a, b, c = define_vars("a", "b", "c", typ=backend.scalar_typ)
-    A, C = define_vars("A", "C", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=2, ret="scalar")
-    g = backend.fresh_op("g", n_args=1, ret="stream")
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    A, C = backend.define_vars("A", "C", ret="stream")
+    f = backend.define_vars(
+        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+    g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="stream")
 
     with handler(ReduceFactorization()):  # ty:ignore[invalid-argument-type]
         lhs = Sum.reduce(
@@ -542,10 +478,12 @@ def test_reduce_independent_3_negative(backend):
     assert not syntactic_eq_alpha(lhs, bogus_rhs)
 
 
-def test_reduce_independent_4(backend):
-    a, b, c = define_vars("a", "b", "c", typ=backend.scalar_typ)
-    A, B, C = define_vars("A", "B", "C", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=2, ret="scalar")
+def test_reduce_independent_4(backend: Backend):
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    A, B, C = backend.define_vars("A", "B", "C", ret="stream")
+    f = backend.define_vars(
+        "f", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
 
     lhs = Sum.reduce(Product.plus(a(), b(), f(b(), c()), 7), {a: A(), b: B(), c: C()})
     rhs = Product.plus(
@@ -553,39 +491,44 @@ def test_reduce_independent_4(backend):
         Sum.reduce(Product.plus(a()), {a: A()}),
         Sum.reduce(Product.plus(b(), f(b(), c())), {b: B(), c: C()}),
     )
-    check_rewrite(
-        lhs=lhs,
-        rhs=rhs,
-        rule=ReduceFactorization(),
-        backend=backend,
-        free_vars=[A, B, C, f],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceFactorization())
+
+
+def test_reduce_cartesian_3():
+    backend = JaxBackend()
+    i = backend.define_vars("i", ret="scalar")
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(3)})
+    assert value.shape == (2**3, 3)
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(2), {i: jnp.arange(1)})
+    assert value.shape == (2**1, 1)
+
+    with handler(NormalizeIntp):
+        value = CartesianProduct.reduce(jnp.zeros(1), {i: jnp.arange(3)})
+    assert value.shape == (1**3, 3)
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
-def test_reduce_lifted_1(outer, inner, backend):
-    a, i = define_vars("a", "i", typ=backend.scalar_typ)
-    A, N, A_domain = define_vars("A", "N", "A_domain", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=1, ret="scalar")
+def test_reduce_lifted_1(outer, inner, backend: Backend):
+    a, i = backend.define_vars("a", "i", ret="scalar")
+    A, N, A_domain = backend.define_vars("A", "N", "A_domain", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    term1 = outer.reduce(
+    lhs = outer.reduce(
         inner.reduce(f(a()), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(), {i: N()})},
     )
-    term2 = inner.reduce(outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N()})
-
-    check_rewrite(
-        lhs=term1,
-        rhs=term2,
-        rule=ReduceDistributeCartesianProduct(),
-        backend=backend,
-        free_vars=[N, A_domain, f],
-    )
+    rhs = inner.reduce(outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N()})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
 
 
 def test_reduce_cartesian_1():
-    a, i = define_vars("a", "i", typ=int)
-    A = define_vars("A", typ=tuple[int])
+    backend = IntBackend()
+    a, i = backend.define_vars("a", "i", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
 
     with handler(NormalizeIntp):
         term1 = Sum.reduce(
@@ -597,8 +540,9 @@ def test_reduce_cartesian_1():
 
 
 def test_reduce_cartesian_2():
-    a, i = define_vars("a", "i", typ=int)
-    A = define_vars("A", typ=tuple[int])
+    backend = IntBackend()
+    a, i = backend.define_vars("a", "i", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
 
     with handler(NormalizeIntp):
         term1 = Sum.reduce(
@@ -610,46 +554,41 @@ def test_reduce_cartesian_2():
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
-def test_reduce_lifted_multi_index(outer, inner, backend):
-    a, i, j = define_vars("a", "i", "j", typ=backend.scalar_typ)
-    A, N, M, A_domain = define_vars("A", "N", "M", "A_domain", typ=backend.stream_typ)
-    f = backend.fresh_op("f", n_args=1, ret="scalar")
+def test_reduce_lifted_multi_index(outer, inner, backend: Backend):
+    a, i, j = backend.define_vars("a", "i", "j", ret="scalar")
+    A, N, M, A_domain = backend.define_vars("A", "N", "M", "A_domain", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    term1 = outer.reduce(
+    lhs = outer.reduce(
         inner.reduce(f(a()), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(), {i: N(), j: M()})},
     )
-    term2 = inner.reduce(
-        outer.reduce(inner.plus(f(a())), {a: A_domain()}),
-        {i: N(), j: M()},
+    rhs = inner.reduce(
+        outer.reduce(inner.plus(f(a())), {a: A_domain()}), {i: N(), j: M()}
     )
-    check_rewrite(
-        lhs=term1,
-        rhs=term2,
-        rule=ReduceDistributeCartesianProduct(),
-        backend=backend,
-        free_vars=[N, M, A_domain, f],
-    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
-def test_reduce_lifted_2(outer, inner, backend):
+def test_reduce_lifted_2(outer, inner, backend: Backend):
     """The worked example on page 396 of 'Lifted Variable Elimination:
     Decoupling the Operators from the Constraint Language'.
 
     """
-    a, i, s, t = define_vars("a", "i", "s", "t", typ=backend.scalar_typ)
-    A, N, T = define_vars("A", "N", "T", typ=backend.stream_typ)
-    A_domain = backend.fresh_op("A_domain", n_args=1, ret="stream")
-    f1 = backend.fresh_op("f1", n_args=2, ret="scalar")
-    f2 = backend.fresh_op("f2", n_args=2, ret="scalar")
+    a, i, s, t = backend.define_vars("a", "i", "s", "t", ret="scalar")
+    A, N, T = backend.define_vars("A", "N", "T", ret="stream")
+    A_domain = backend.define_vars(
+        "A_domain", arg_types=(backend.scalar_typ,), ret="stream"
+    )
+    f1, f2 = backend.define_vars(
+        "f1", "f2", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
 
-    term1 = outer.reduce(
+    lhs = outer.reduce(
         inner.reduce(inner.plus(f1(a(), s()), f2(t(), a())), {a: A()}),
         {A: CartesianProduct.reduce(A_domain(i()), {i: N()}), t: T()},
     )
-
-    term2 = outer.reduce(
+    rhs = outer.reduce(
         inner.reduce(
             outer.reduce(
                 inner.plus(inner.plus(f1(a(), s()), f2(t(), a()))), {a: A_domain(i())}
@@ -658,11 +597,143 @@ def test_reduce_lifted_2(outer, inner, backend):
         ),
         {t: T()},
     )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceDistributeCartesianProduct())
 
-    check_rewrite(
-        lhs=term1,
-        rhs=term2,
-        rule=ReduceDistributeCartesianProduct(),
-        backend=backend,
-        free_vars=[a, i, s, t, A, N, T, A_domain, f1, f2],
+
+# ---------------------------------------------------------------------------
+# Weighted streams
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_single_weighted_stream(backend: Backend):
+    """Single weighted stream desugars:
+    Sum.reduce(body, {a: WS(A, w, Product)})
+      = Sum.reduce(Product.plus(w(a), body), {a: A})
+    """
+    a = backend.define_vars("a", ret="scalar")
+    A = backend.define_vars("A", ret="stream")
+    body, w = backend.define_vars(
+        "body", "w", arg_types=(backend.scalar_typ,), ret="scalar"
     )
+
+    lhs = Sum.reduce(body(a()), {a: Product.weighted(A(), w)})
+    rhs = Sum.reduce(Product.plus(w(a()), body(a())), {a: A()})
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceWeightedStream())
+
+
+def test_reduce_weighted_factorization(backend: Backend):
+    """Two independent weighted streams under Sum with Product weights factor:
+        Sum.reduce(f(a)*g(b), {a: Product.weighted(A, a, w_a), b: Product.weighted(B, b, w_b)})
+          = (Sum.reduce(w_a(a)*f(a), {a: A})) * (Sum.reduce(w_b(b)*g(b), {b: B}))
+
+    Exercises chaining of ``ReduceWeightedStream`` with ``ReduceFactorization``
+    inside ``NormalizeIntp``.
+    """
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+    f, g, w_a, w_b = backend.define_vars(
+        "f", "g", "w_a", "w_b", arg_types=(backend.scalar_typ,), ret="scalar"
+    )
+
+    lhs = Sum.reduce(
+        Product.plus(f(a()), g(b())),
+        {a: Product.weighted(A(), w_a), b: Product.weighted(B(), w_b)},
+    )
+    rhs = Product.plus(
+        Sum.reduce(Product.plus(w_a(a()), Product.plus(f(a()))), {a: A()}),
+        Sum.reduce(Product.plus(w_b(b()), Product.plus(g(b()))), {b: B()}),
+    )
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), ReduceFactorization())
+    )
+
+
+def test_reduce_cartesian_weighted_stream(backend: Backend):
+    """``CartesianProduct.reduce`` over a ``WeightedStream`` body whose weight
+    is independent of the plate var rewrites to a single joint
+    ``WeightedStream``:
+
+        CartesianProduct.reduce(M.weighted(s, e, w(e)), {p: P})
+          = M.weighted(CartesianProduct.reduce(s, {p: P}), row, M.reduce(w(e), {e: row()}))
+    """
+    p, e_var = backend.define_vars("p", "e_var", ret="scalar")
+    S, P = backend.define_vars("S", "P", ret="stream")
+    w = backend.define_vars("w", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})
+    row_var = Operation.define(Iterable[backend.scalar_typ], name="row")  # type: ignore[name-defined]
+    rhs = Product.weighted(
+        CartesianProduct.reduce(S(), {p: P()}),
+        deffn(Product.reduce(w(e_var()), {e_var: row_var()}), row_var),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceCartesianWeightedStream())
+
+
+def test_lift_weighted_cartesian(backend: Backend):
+    """Compose ``ReduceCartesianWeightedStream`` + ``ReduceWeightedStream`` +
+    ``ReduceDistributeCartesianProduct`` on a Sum-of-Product-of-weighted shape:
+
+        Sum.reduce(
+            Product.reduce(body(a()), {a: A()}),
+            {A: CartesianProduct.reduce(Product.weighted(S, e, w(e)), {p: P})},
+        )
+
+    The inner ``weighted`` becomes a joint ``weighted`` (rule 1), lifts its
+    per-element weight into the outer Sum body (rule 2), and the lifted form
+    matches the inversion pattern (rule 3), yielding::
+
+        Product.reduce(
+            Sum.reduce(Product.plus(w(a()), body(a())), {a: S}),
+            {p: P},
+        )
+    """
+    a, p = backend.define_vars("a", "p", ret="scalar")
+    A, S, P = backend.define_vars("A", "S", "P", ret="stream")
+    body, w = backend.define_vars(
+        "body", "w", arg_types=(backend.scalar_typ,), ret="scalar"
+    )
+
+    lhs = Sum.reduce(
+        Product.reduce(body(a()), {a: A()}),
+        {A: CartesianProduct.reduce(Product.weighted(S(), w), {p: P()})},
+    )
+    rhs = Product.reduce(
+        Sum.reduce(Product.plus(w(a()), body(a())), {a: S()}), {p: P()}
+    )
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(
+            coproduct(ReduceWeightedStream(), ReduceCartesianWeightedStream()),
+            ReduceDistributeCartesianProduct(),
+        ),
+    )
+
+
+def test_weighted_expectation_demo():
+    """Demo: compute E[f(X)] = Σ_x w(x)·f(x) via a weighted reduce.
+
+    X ranges over [1, 2, 3, 4] with weights w(x) = x/10 (a valid distribution
+    since the weights sum to 1) and f(x) = x*x. Expected value:
+        0.1·1 + 0.2·4 + 0.3·9 + 0.4·16 = 10.0
+    """
+    weights = {1: 0.1, 2: 0.2, 3: 0.3, 4: 0.4}
+
+    def _w(v: int) -> float:
+        if isinstance(v, Term):
+            raise NotHandled
+        return weights[v]
+
+    def _f(v: int) -> float:
+        if isinstance(v, Term):
+            raise NotHandled
+        return float(v * v)
+
+    a = Operation.define(int, name="a")
+    w = Operation.define(_w, name="w")
+    f = Operation.define(_f, name="f")
+
+    with handler(NormalizeIntp):
+        result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
+
+    assert math.isclose(result, 10.0)
