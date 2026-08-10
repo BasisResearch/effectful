@@ -101,13 +101,6 @@ class WeakIdRef[T](weakref.ref[T]):
         self._id = id(key)
         super().__init__(key, callback)  # type: ignore[call-arg]
 
-    def __call__(self) -> T | None:
-        r = super().__call__()
-        # Special logic for Tensor PyObject resurrection
-        if r is not None and hasattr(r, "_fix_weakref"):
-            r._fix_weakref()
-        return r
-
     def __hash__(self) -> int:
         return self._id
 
