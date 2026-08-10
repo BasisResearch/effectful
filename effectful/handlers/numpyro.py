@@ -1,6 +1,7 @@
 try:
     import numpyro
     import numpyro.distributions as dist
+    import numpyro.optim
 except ImportError:
     raise ImportError("Numpyro is required to use effectful.handlers.numpyro")
 
@@ -16,14 +17,16 @@ from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.monoid import (
     LogSumExp,
+    Min,
     Monoid,
     NormalizeIntp,
+    Optimum,
     Product,
     Stream,
     Streams,
     Sum,
 )
-from effectful.ops.semantics import evaluate, fwd, typeof
+from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, defop, implements
 from effectful.ops.types import NotHandled, Operation, Term
 
@@ -1194,7 +1197,6 @@ def _embed_independent(d: dist.Independent) -> Term[dist.Independent]:
     return Independent(d.base_dist, d.reinterpreted_batch_ndims)
 
 
-@Operation.define
 def distribution_stream(
     distribution: numpyro.distributions.Distribution,
 ) -> Stream[jax.Array]:
@@ -1235,6 +1237,137 @@ class ReduceEnumerableDistribution(ObjectInterpretation):
             return monoid.reduce(body, new_streams)
 
         return fwd()
+
+
+@Operation.define
+def constraint_stream(
+    constraint: numpyro.distributions.constraints.Constraint, prototype: jax.Array
+) -> Stream[jax.Array]:
+    raise NotHandled
+
+
+class NestConstraintMinReduce(ObjectInterpretation):
+    """Move constraint streams into an inner :data:`~effectful.ops.monoid.Min`.
+
+    This rewrites::
+
+        Min.reduce(body, constraint_streams | other_streams)
+
+    to::
+
+        Min.reduce(Min.reduce(body, constraint_streams), other_streams)
+
+    when both partitions are nonempty. A constraint stream may depend on an
+    outer stream, but an outer stream may not depend on a constraint variable;
+    the latter ordering would move the variable outside its scope and is left
+    for another handler.
+    """
+
+    @implements(Min.reduce)
+    def reduce(self, body, streams):
+        constraint_streams = {
+            key: stream
+            for key, stream in streams.items()
+            if isinstance(stream, Term) and stream.op is constraint_stream
+        }
+        if not constraint_streams or len(constraint_streams) == len(streams):
+            return fwd()
+
+        other_streams = {
+            key: stream
+            for key, stream in streams.items()
+            if key not in constraint_streams
+        }
+        if fvsof(other_streams) & set(constraint_streams):
+            return fwd()
+
+        return Min.reduce(Min.reduce(body, constraint_streams), other_streams)
+
+
+class AdamConstraintMinReduce(ObjectInterpretation):
+    """Minimize an all-continuous constraint-stream bundle with Adam.
+
+    Optimization takes place in unconstrained coordinates using NumPyro's
+    ``biject_to`` transforms. The prototypes carried by
+    :func:`constraint_stream` determine shape and dtype; each constraint's
+    :meth:`~numpyro.distributions.constraints.Constraint.feasible_like` method
+    constructs the constrained initial value.
+    """
+
+    def __init__(
+        self,
+        step_size=1e-2,
+        *,
+        num_steps: int = 1_000,
+        b1: float = 0.9,
+        b2: float = 0.999,
+        eps: float = 1e-8,
+    ):
+        if num_steps < 0:
+            raise ValueError("num_steps must be nonnegative")
+        self.num_steps = num_steps
+        self.optimizer = numpyro.optim.Adam(step_size=step_size, b1=b1, b2=b2, eps=eps)
+
+    @implements(Min.reduce)
+    def reduce(self, body, streams):
+        if not streams or not all(
+            isinstance(stream, Term) and stream.op is constraint_stream
+            for stream in streams.values()
+        ):
+            return fwd()
+
+        constraints = tuple(stream.args[0] for stream in streams.values())
+        if any(constraint.is_discrete for constraint in constraints):
+            return fwd()
+
+        score = body.value if isinstance(body, Optimum) else body
+        stream_keys = tuple(streams)
+
+        transforms = tuple(
+            numpyro.distributions.transforms.biject_to(constraint)
+            for constraint in constraints
+        )
+        prototypes = tuple(stream.args[1] for stream in streams.values())
+        constrained_initial = tuple(
+            constraint.feasible_like(prototype)
+            for constraint, prototype in zip(constraints, prototypes, strict=True)
+        )
+        unconstrained_initial = tuple(
+            transform.inv(value)
+            for transform, value in zip(transforms, constrained_initial, strict=True)
+        )
+
+        def substitute(value, unconstrained):
+            constrained = tuple(
+                transform(x)
+                for transform, x in zip(transforms, unconstrained, strict=True)
+            )
+            substitutions = {
+                key: (lambda value=value: value)
+                for key, value in zip(stream_keys, constrained, strict=True)
+            }
+            with handler(substitutions):
+                return evaluate(value)
+
+        def objective(unconstrained):
+            return substitute(score, unconstrained)
+
+        initial_score = objective(unconstrained_initial)
+        if isinstance(initial_score, Term):
+            return fwd()
+        if jnp.ndim(initial_score) != 0:
+            raise ValueError("Min objective must be scalar")
+
+        state = self.optimizer.init(unconstrained_initial)
+
+        def step(_, state):
+            (_, _), state = self.optimizer.eval_and_stable_update(
+                lambda params: (objective(params), None), state
+            )
+            return state
+
+        state = jax.lax.fori_loop(0, self.num_steps, step, state)
+        return substitute(body, self.optimizer.get_params(state))
 
 
 NormalizeIntp.extend(ReduceEnumerableDistribution())
