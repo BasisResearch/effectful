@@ -16,10 +16,9 @@ from effectful.internals.tensor_utils import (
     _desugar_tensor_index,
     _sizesof,
 )
-from effectful.ops.semantics import evaluate, fvsof, handler, typeof
+from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import (
     Scoped,
-    _BaseTerm,
     defdata,
     defop,
     implements,
@@ -284,13 +283,6 @@ def torch_getitem(
 class _SizesofIntp(_BaseSizesofIntp[torch.Tensor]):
     arr_type: typing.ClassVar[type] = torch.Tensor
 
-    # Restates the one condition ``_embed_tensor`` imposes that its jax
-    # counterpart does not. It has to keep agreeing with it.
-
-    @classmethod
-    def _names_dim(cls, op: Operation) -> bool:
-        return issubclass(typeof(_BaseTerm(op)), cls.arr_type)
-
     @implements(torch_getitem)
     def _torch_getitem(self, x, key):
         return self._getitem(x, key)
@@ -321,11 +313,7 @@ def _embed_tensor(ty, op, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)
-        and all(
-            issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
-            for k in args[1]
-            if isinstance(k, Term)
-        )
+        and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
     ):
         return _EagerTensorTerm(args[0], args[1])
     else:
@@ -504,9 +492,7 @@ class _EagerTensorTerm(torch.Tensor):
 
         for k in key:
             if isinstance(k, Term):
-                assert (
-                    issubclass(typeof(k), torch.Tensor) and not k.args and not k.kwargs
-                )
+                assert not k.args and not k.kwargs
 
         x, key = _getitem_ellipsis_and_none(x, key)
         ret = x.as_subclass(cls)
