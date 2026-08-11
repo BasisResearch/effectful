@@ -427,3 +427,37 @@ def fvsof[S](term: Expr[S]) -> collections.abc.Set[Operation]:
     """
     result = evaluate(term, intp=_FVSOF_INTP)
     return result.fvs if isinstance(result, _FvsAnalysis) else frozenset()
+
+
+class _SizeofAnalysisValue:
+    value: int
+
+    def __init__(self, value: int | typing.Self):
+        self.value = value.value if isinstance(value, _SizeofAnalysisValue) else value
+
+    def __add__(self, other):
+        if isinstance(other, _SizeofAnalysisValue):
+            return _SizeofAnalysisValue(self.value + other.value)
+        return NotImplemented
+
+    __radd__ = __add__
+
+
+@functools.cache
+def _sizeof_intp():
+    def _apply(_, *args, **kwargs):
+        s_args = [
+            x if isinstance(x, _SizeofAnalysisValue) else _SizeofAnalysisValue(1)
+            for x in (*args, *kwargs.values())
+        ]
+        size = sum(s_args, start=_SizeofAnalysisValue(1))
+        return size
+
+    return {apply: _apply}
+
+
+def sizeof(term: Expr) -> int:
+    result = evaluate(term, intp=_sizeof_intp())
+    if not isinstance(result, _SizeofAnalysisValue):
+        return 1
+    return result.value
