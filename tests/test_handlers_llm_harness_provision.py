@@ -4,7 +4,6 @@ breaking down individual components like LiteLLMProvider,
 ProgramSynthesis, and sampling strategies.
 """
 
-import collections
 import functools
 import inspect
 import json
@@ -454,9 +453,7 @@ class MockCompletionHandler(ObjectInterpretation):
 
 @pytest.fixture
 def message_sequence_provider():
-    message_sequence = collections.OrderedDict(
-        id1={"id": "id1", "role": "user", "content": "test"},
-    )
+    message_sequence = [{"role": "user", "content": "test"}]
     return message_sequence, {HistoryBuilder.get_history: lambda: message_sequence}
 
 
@@ -526,9 +523,7 @@ class TestRetryLLMHandler:
 
         mock_handler = MockCompletionHandler(responses)
 
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -540,7 +535,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={},
                 response_type=str,
             )
@@ -559,9 +554,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -573,7 +566,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -595,9 +588,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -609,7 +600,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -626,9 +617,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -640,7 +629,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -656,9 +645,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -671,7 +658,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -684,9 +671,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -698,7 +683,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -762,9 +747,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -776,7 +759,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={},
                 response_type=int,
             )
@@ -796,9 +779,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -811,7 +792,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={},
                     response_type=int,
                 )
@@ -826,9 +807,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -841,7 +820,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={"add_numbers": add_numbers},
                     response_type=str,
                     tools={add_numbers},
@@ -860,9 +839,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -875,7 +852,7 @@ class TestRetryLLMHandler:
                 handler(message_sequence_provider),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={},
                     response_type=int,
                 )
@@ -892,9 +869,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -906,7 +881,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -926,9 +901,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -940,7 +913,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -960,9 +933,7 @@ class TestRetryLLMHandler:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -974,7 +945,7 @@ class TestRetryLLMHandler:
             handler(message_sequence_provider),
         ):
             call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"add_numbers": add_numbers},
                 response_type=str,
                 tools={add_numbers},
@@ -1069,9 +1040,7 @@ class TestToolExecutionErrorHandling:
         ]
 
         mock_handler = MockCompletionHandler(responses)
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "test"},
-        )
+        message_sequence = [{"role": "user", "content": "test"}]
         message_sequence_provider = {
             HistoryBuilder.get_history: lambda: message_sequence
         }
@@ -1091,7 +1060,7 @@ class TestToolExecutionErrorHandling:
             handler(message_sequence_provider),
         ):
             message, tool_calls, result = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={"failing_tool": failing_tool},
                 response_type=str,
                 tools={failing_tool},
@@ -1594,7 +1563,7 @@ class TestSynthesizeAndCall:
             result = agent.double(21)
 
         assert result == 42
-        messages = list(agent.__history__.values())
+        messages = list(agent.__history__)
         tool_messages = [m for m in messages if m["role"] == "tool"]
         assert tool_messages, "computed value should be recorded as a tool result"
         assert "42" in str(tool_messages[-1]["content"])
@@ -1886,28 +1855,23 @@ class TestMessageSequence:
 
     def test_call_tool_sees_outer_message_sequence(self):
         """call_tool should not isolate; the tool sees the outer message sequence."""
-        message_sequence = collections.OrderedDict()
-
         # Pre-populate the current frame with existing messages
-        message_sequence["msg_1"] = {
-            "id": "msg_1",
-            "role": "user",
-            "content": "hello",
-        }
-        # The assistant turn must actually request `tc_1`: HistoryBuilder
-        # rejects a tool message that answers no outstanding tool call.
-        message_sequence["msg_2"] = {
-            "id": "msg_2",
-            "role": "assistant",
-            "content": "hi",
-            "tool_calls": [
-                {
-                    "id": "tc_1",
-                    "type": "function",
-                    "function": {"name": "add_numbers", "arguments": "{}"},
-                }
-            ],
-        }
+        message_sequence = [
+            {"role": "user", "content": "hello"},
+            # The assistant turn must actually request `tc_1`: HistoryBuilder
+            # rejects a tool message that answers no outstanding tool call.
+            {
+                "role": "assistant",
+                "content": "hi",
+                "tool_calls": [
+                    {
+                        "id": "tc_1",
+                        "type": "function",
+                        "function": {"name": "add_numbers", "arguments": "{}"},
+                    }
+                ],
+            },
+        ]
 
         captured_frame = None
 
@@ -1916,7 +1880,7 @@ class TestMessageSequence:
             def _add_numbers(self, *args, **kwargs):
                 # Capture the state of the message sequence during execution
                 nonlocal captured_frame
-                captured_frame = dict(HistoryBuilder.get_history())
+                captured_frame = list(HistoryBuilder.get_history())
                 return 42
 
         mock_tool_call = DecodedToolCall(
@@ -1940,13 +1904,11 @@ class TestMessageSequence:
 
     def test_call_assistant_no_duplicate_messages(self):
         """call_assistant should send its `messages` argument on verbatim."""
-        message_sequence = collections.OrderedDict()
-
         # Pre-populate frame with two messages
-        msg_a = {"id": "msg_a", "role": "user", "content": "hello"}
-        msg_b = {"id": "msg_b", "role": "assistant", "content": "hi"}
-        message_sequence["msg_a"] = msg_a
-        message_sequence["msg_b"] = msg_b
+        message_sequence = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
 
         captured_messages = []
 
@@ -1955,7 +1917,6 @@ class TestMessageSequence:
             def _completion(self_, messages=None, *args, **kwargs):
                 captured_messages.extend(list(messages))
                 response = {
-                    "id": "response_1",
                     "role": "assistant",
                     "content": json.dumps({"value": "result"}),
                 }
@@ -1968,21 +1929,21 @@ class TestMessageSequence:
             handler({HistoryBuilder.get_history: lambda: message_sequence}),
         ):
             call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={},
                 response_type=str,
             )
 
         # Forwarded messages are exactly the ones passed in — no duplicates
-        ids = [m["id"] for m in captured_messages]
-        assert ids == ["msg_a", "msg_b"]
-        assert len(ids) == len(set(ids))
+        assert captured_messages == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
 
     def test_call_assistant_no_duplicates_across_multiple_calls(self):
         """Calling call_assistant multiple times should never produce duplicate messages."""
 
-        msg_user = {"id": "msg_user", "role": "user", "content": "hello"}
-        message_sequence = collections.OrderedDict(msg_user=msg_user)
+        message_sequence = [{"role": "user", "content": "hello"}]
 
         call_log = []
 
@@ -1991,10 +1952,9 @@ class TestMessageSequence:
 
             @implements(completion)
             def _completion(self_, messages=None, *args, **kwargs):
-                call_log.append([m["id"] for m in messages])
+                call_log.append([m["content"] for m in messages])
                 self_.call_count += 1
                 response = {
-                    "id": "response_1",
                     "role": "assistant",
                     "content": json.dumps({"value": "result"}),
                 }
@@ -2010,32 +1970,32 @@ class TestMessageSequence:
             handler({HistoryBuilder.get_history: lambda: message_sequence}),
         ):
             resp1, _, _ = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={},
                 response_type=str,
             )
             # HistoryBuilder appended the first response, so the second call
             # sends it along with the message that preceded it.
             resp2, _, _ = call_assistant(
-                list(message_sequence.values()),
+                list(message_sequence),
                 env={},
                 response_type=str,
             )
 
-        assert call_log[0] == ["msg_user"]
-        assert call_log[1] == ["msg_user", "response_1"]
-        assert len(call_log[1]) == len(set(call_log[1]))
+        answer = json.dumps({"value": "result"})
+        assert call_log[0] == ["hello"]
+        assert call_log[1] == ["hello", answer]
 
     def test_call_assistant_saves_only_on_successful_fwd(self):
         """call_assistant should only save the response message to the frame when fwd() succeeds."""
-        message_sequence = collections.OrderedDict()
+        message_sequence = []
 
         class FailingAssistantHandler(ObjectInterpretation):
             @implements(call_assistant)
             def _call_assistant(self_, *args, **kwargs):
                 raise RuntimeError("LLM call failed")
 
-        frame_snapshot = dict(message_sequence)
+        frame_snapshot = list(message_sequence)
 
         with pytest.raises(RuntimeError, match="LLM call failed"):
             with (
@@ -2044,84 +2004,13 @@ class TestMessageSequence:
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
                 call_assistant(
-                    list(message_sequence.values()),
+                    list(message_sequence),
                     env={},
                     response_type=str,
                 )
 
         # Frame should be unchanged — no response message was saved
-        assert dict(message_sequence) == frame_snapshot
-
-
-@Template.define
-def compute_sum(a: int, b: int) -> int:
-    """Compute the sum of {a} and {b}.
-
-    You MUST use the add_numbers tool to compute the result.
-    Do NOT compute the sum yourself.
-    After getting the result from add_numbers, return it.
-    """
-    raise NotHandled
-
-
-class MessageSequenceTracker(ObjectInterpretation):
-    """Intercepts call_assistant to record message IDs forwarded by the provider."""
-
-    def __init__(self):
-        self.call_log: list[list[str]] = []
-
-    @implements(call_assistant)
-    def _call_assistant(self, messages, *args, **kwargs):
-        self.call_log.append([m["id"] for m in messages])
-        return fwd()
-
-
-class TestMessageSequenceReplay:
-    """Fixture-based tests verifying message sequence invariants through the full provider stack."""
-
-    def test_simple_prompt_unique_message_ids(self, request):
-        """A no-tool prompt should produce a single call_assistant with unique message IDs."""
-        tracker = MessageSequenceTracker()
-        with (
-            handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(HistoryBuilder()),
-            handler(LimitLLMCallsHandler(max_calls=1)),
-        ):
-            result = simple_prompt("testing")
-
-        assert isinstance(result, str)
-        assert len(tracker.call_log) == 1
-        ids = tracker.call_log[0]
-        assert len(ids) == len(set(ids)), "message IDs should be unique"
-
-    def test_tool_calling_no_duplicate_message_ids(self, request):
-        """Tool-calling prompts should accumulate messages without duplicates across calls."""
-        tracker = MessageSequenceTracker()
-
-        with (
-            handler(tracker),
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(HistoryBuilder()),
-            handler(LimitLLMCallsHandler(max_calls=4)),
-        ):
-            result = compute_sum(3, 5)
-
-        assert result == 8
-        assert len(tracker.call_log) >= 2  # at least: tool call round + final answer
-
-        for i, ids in enumerate(tracker.call_log):
-            assert len(ids) == len(set(ids)), (
-                f"call_assistant invocation {i} has duplicate message IDs: {ids}"
-            )
-
-        # Each successive call should include all previous messages plus new ones
-        for i in range(1, len(tracker.call_log)):
-            prev_set = set(tracker.call_log[i - 1])
-            curr_set = set(tracker.call_log[i])
-            assert prev_set < curr_set, (
-                f"call {i} messages should be a strict superset of call {i - 1}"
-            )
+        assert list(message_sequence) == frame_snapshot
 
 
 # ============================================================================
@@ -2305,7 +2194,7 @@ class TestLiteLLMProviderMessagePruning:
         ]
         mock_handler = MockCompletionHandler(responses)
 
-        message_sequence = collections.OrderedDict()
+        message_sequence = []
 
         @Template.define
         def task_with_flaky_tool(instruction: str) -> str:
@@ -2330,7 +2219,7 @@ class TestLiteLLMProviderMessagePruning:
         ]
         mock_handler = MockCompletionHandler(responses)
 
-        message_sequence = collections.OrderedDict()
+        message_sequence = []
 
         @Template.define
         def task_with_tools(instruction: str) -> str:
@@ -2354,9 +2243,7 @@ class TestLiteLLMProviderMessagePruning:
         ]
         mock_handler = MockCompletionHandler(responses)
 
-        message_sequence = collections.OrderedDict(
-            existing={"id": "existing", "role": "user", "content": "hello"},
-        )
+        message_sequence = [{"role": "user", "content": "hello"}]
 
         @Template.define
         def task_with_flaky_tool(instruction: str) -> str:
@@ -2372,8 +2259,7 @@ class TestLiteLLMProviderMessagePruning:
                 task_with_flaky_tool("go")
 
         # Pre-existing message should still be there
-        assert len(message_sequence) == 1
-        assert "existing" in message_sequence
+        assert message_sequence == [{"role": "user", "content": "hello"}]
 
     def test_successful_call_preserves_messages(self):
         """A successful top-level template call should write messages back to Agent history."""
@@ -2471,7 +2357,7 @@ class TestAgentCrossTemplateRecovery:
         assert result == "summary result"
         # Verify history doesn't contain messages from the failed call
         history = agent.__history__
-        for msg in history.values():
+        for msg in history:
             tool_calls = msg.get("tool_calls")
             if tool_calls:
                 # If there's an assistant message with tool_calls, there must be
@@ -2480,7 +2366,7 @@ class TestAgentCrossTemplateRecovery:
                     tc_id = tc["id"] if isinstance(tc, dict) else tc.id
                     has_response = any(
                         m.get("tool_call_id") == tc_id
-                        for m in history.values()
+                        for m in history
                         if m.get("role") == "tool"
                     )
                     assert has_response, (
@@ -2735,7 +2621,7 @@ class TestAgentSystemMessageDeduplication:
             agent.do("c")
             agent.do("d")
 
-        system_msgs = [m for m in agent.__history__.values() if m["role"] == "system"]
+        system_msgs = [m for m in agent.__history__ if m["role"] == "system"]
         assert len(system_msgs) == 1, (
             f"Expected exactly 1 system message, got {len(system_msgs)}"
         )
@@ -2782,7 +2668,7 @@ class TestAgentSystemMessageDeduplication:
 
         # History should have: 1 system + 3 user + 3 assistant = 7
         assert len(agent.__history__) == 7
-        roles = [m["role"] for m in agent.__history__.values()]
+        roles = [m["role"] for m in agent.__history__]
         assert roles.count("system") == 1
         assert roles.count("user") == 3
         assert roles.count("assistant") == 3
@@ -2820,7 +2706,7 @@ class TestAgentSystemMessageDeduplication:
             agent.step(2)
             agent.step(3)
 
-        messages = list(agent.__history__.values())
+        messages = list(agent.__history__)
         assert messages[0]["role"] == "system", (
             "System message should be the first message in history"
         )
@@ -3001,8 +2887,8 @@ class TestPromptCaching:
         assert any(_has_cache_control(m) for m in sent), (
             "sanity: the outgoing request should carry a breakpoint"
         )
-        assert not [m for m in agent.__history__.values() if _has_cache_control(m)], (
-            f"cache_control leaked into stored history: {list(agent.__history__.values())}"
+        assert not [m for m in agent.__history__ if _has_cache_control(m)], (
+            f"cache_control leaked into stored history: {list(agent.__history__)}"
         )
 
     def test_cache_control_format_is_ephemeral(self):

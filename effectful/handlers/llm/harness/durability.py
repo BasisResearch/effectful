@@ -16,7 +16,6 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.handlers.llm.harness.transaction import (
     HistoryBuilder,
-    as_history,
     transaction,
 )
 from effectful.handlers.llm.types import Tool
@@ -80,9 +79,9 @@ class TenacityRetryer(ObjectInterpretation):
         # response and its error feedback there, and the next attempt sends them
         # to the model. `write_back=False` then discards that scratch work, and
         # only the response that finally succeeded joins the real history.
-        with transaction(as_history(messages), write_back=False) as buffer:
+        with transaction(list(messages), write_back=False) as buffer:
             result = self.call_assistant_retryer(
-                lambda: fwd(list(buffer.values()), env, response_type, tools)
+                lambda: fwd(list(buffer), env, response_type, tools)
             )
         HistoryBuilder.append_message(result[0])
         return result

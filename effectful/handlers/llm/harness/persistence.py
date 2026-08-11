@@ -78,7 +78,8 @@ class SQLitePersister(ObjectInterpretation):
         with sqlite3.connect(str(self.db_path)) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=NORMAL")
-            # Kept in sync with the SELECT in `Agent.__history__` (template.py)
+            # `history` is the message sequence as a JSON array, in order.
+            # Kept in sync with the SELECT in `Agent.__history__` (types.py)
             # and the INSERT below.
             conn.execute(
                 """
@@ -136,7 +137,7 @@ class SQLitePersister(ObjectInterpretation):
             agent: Agent = template.__self__  # type: ignore
             agent_id = agent.__agent_id__
             state_blob = pickle.dumps(self._checkpoint_state(agent))
-            history_json = json.dumps(list(template.__history__.values()), default=str)
+            history_json = json.dumps(list(template.__history__), default=str)
             with self._checkpoint_connection() as conn:
                 conn.execute(
                     """

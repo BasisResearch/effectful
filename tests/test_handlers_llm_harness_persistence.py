@@ -145,16 +145,10 @@ class _FakeAgentCalls(ObjectInterpretation):
         user_content, assistant_content, result = turn
         if hasattr(template, "__history__"):
             agent = template.__self__
-            agent.__history__[f"u{n}"] = {
-                "id": f"u{n}",
-                "role": "user",
-                "content": user_content,
-            }
-            agent.__history__[f"a{n}"] = {
-                "id": f"a{n}",
-                "role": "assistant",
-                "content": assistant_content,
-            }
+            agent.__history__.append({"role": "user", "content": user_content})
+            agent.__history__.append(
+                {"role": "assistant", "content": assistant_content}
+            )
         return result
 
 
@@ -248,7 +242,7 @@ class TestAgentPersistenceOptIn:
         # explicit agent_id) never touches the database and never raises,
         # regardless of whether a handler is active.
         bot = _Bot("no-handler")
-        assert dict(bot.__history__) == {}
+        assert list(bot.__history__) == []
 
     def test_agent_id_is_stable_across_instances(self):
         a, b = _Bot("shared"), _Bot("shared")
@@ -338,7 +332,7 @@ class TestCheckpointPersistence:
 
         row = _load_row(db_path, "f1")
         assert row is not None
-        assert json.loads(row[1]) == list(bot.__history__.values())
+        assert json.loads(row[1]) == list(bot.__history__)
 
     def test_checkpoint_upsert_is_idempotent_across_calls(self, tmp_path):
         """Two successful calls on the same agent still leave exactly one row."""
@@ -397,7 +391,7 @@ class TestCheckpointPersistence:
 
         with handler(SQLitePersister(db_path)):
             fresh = _Bot(__agent_id__="restart1")
-            assert fresh.__history__["u0"]["content"] == "before restart"
+            assert fresh.__history__[0]["content"] == "before restart"
 
     def test_history_access_outside_handler_scope_does_not_load(self, tmp_path):
         """Checkpoint loading is gated on whether a handler is active *when*
@@ -412,7 +406,7 @@ class TestCheckpointPersistence:
             _Bot(__agent_id__="scoped1").ask("hi")
 
         fresh = _Bot(__agent_id__="scoped1")
-        assert dict(fresh.__history__) == {}
+        assert list(fresh.__history__) == []
 
 
 class TestAutomaticCheckpointing:
@@ -502,17 +496,14 @@ class TestNestingAndPersistence:
         db_path = tmp_path / "checkpoints.db"
 
         def _outer(template, args, kwargs):
-            bot.__history__["u-outer"] = {
-                "id": "u-outer",
-                "role": "user",
-                "content": "outer",
-            }
+            bot.__history__.append({"role": "user", "content": "outer"})
             inner_result = bot.inner("nested")
-            bot.__history__["a-outer"] = {
-                "id": "a-outer",
-                "role": "assistant",
-                "content": f"outer done, inner said {inner_result}",
-            }
+            bot.__history__.append(
+                {
+                    "role": "assistant",
+                    "content": f"outer done, inner said {inner_result}",
+                }
+            )
             return "outer result"
 
         fake = _FakeAgentCalls([_outer, ("nested q", "inner reply", "inner reply")])

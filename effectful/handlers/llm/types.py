@@ -10,7 +10,7 @@ import string
 import types
 import typing
 import uuid
-from collections.abc import Callable, Mapping, MutableMapping
+from collections.abc import Callable, Mapping, MutableMapping, MutableSequence
 
 from effectful.ops.types import Operation
 
@@ -437,10 +437,8 @@ class Agent(abc.ABC):
         )
 
     @functools.cached_property
-    def __history__(self) -> collections.OrderedDict[str, Mapping[str, typing.Any]]:
-        history: collections.OrderedDict[str, Mapping[str, typing.Any]] = (
-            collections.OrderedDict()
-        )
+    def __history__(self) -> MutableSequence[Mapping[str, typing.Any]]:
+        history: MutableSequence[Mapping[str, typing.Any]] = []
         if self.__is_persistent__:
             # Deferred import: completions.py imports Agent/Template from this
             # module, so this can only be resolved at call time, not at module
@@ -459,9 +457,7 @@ class Agent(abc.ABC):
                     state_blob, history_json = row
                     for key, value in pickle.loads(state_blob).items():
                         setattr(self, key, value)
-                    history = collections.OrderedDict(
-                        (msg["id"], msg) for msg in json.loads(history_json)
-                    )
+                    history = list(json.loads(history_json))
         return history
 
 
@@ -488,8 +484,7 @@ else:
             already has the declared type.
 
         Custom types register their JSON representation with
-        `TypeToPydanticType`; see
-        `effectful.handlers.llm.encoding.type_to_encodable_type`. Because the
+        `TypeToPydanticType`. Because the
         encoding is derived from the *type*, it is the single source of truth
         for both the schema shown to the model and the validation applied to
         its output.

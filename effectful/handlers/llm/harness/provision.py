@@ -227,7 +227,7 @@ class LiteLLMProvider(LiteLLMConfigurer):
         is_final: bool = False
         while not is_final:
             message, tool_calls, result = call_assistant(
-                list(HistoryBuilder.get_history().values()),
+                list(HistoryBuilder.get_history()),
                 env,
                 template.__signature__.return_annotation,
             )

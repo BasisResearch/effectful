@@ -1,6 +1,6 @@
 """Tests for Agent mixin message sequence semantics."""
 
-import collections
+import collections.abc
 import dataclasses
 import inspect
 import re
@@ -358,22 +358,6 @@ class TestAgentHistoryAccumulation:
         #   call 2: system, user, assistant  (3)
         assert len(bot.__history__) >= 4
 
-    def test_message_ids_are_unique(self):
-        mock = MockCompletionHandler(
-            [
-                make_text_response("r1"),
-                make_text_response("r2"),
-            ]
-        )
-        bot = ChatBot()
-
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
-            bot.send("a")
-            bot.send("b")
-
-        ids = list(bot.__history__.keys())
-        assert len(ids) == len(set(ids)), "message IDs must be unique"
-
 
 class TestAgentIsolation:
     """Each agent instance has independent history; non-agent templates are unaffected."""
@@ -397,9 +381,6 @@ class TestAgentIsolation:
 
         # Each bot made exactly one call, so their histories should be equal in size
         assert len(bot1.__history__) == len(bot2.__history__)
-
-        # Histories share no message IDs
-        assert set(bot1.__history__.keys()).isdisjoint(set(bot2.__history__.keys()))
 
     def test_non_agent_template_gets_fresh_sequence(self):
         @Template.define
@@ -703,8 +684,8 @@ class TestAgentCachedProperty:
                 raise NotHandled
 
         agent = MinimalAgent()
-        # Should be an OrderedDict, created on first access
-        assert isinstance(agent.__history__, collections.OrderedDict)
+        # Should be an empty message sequence, created on first access
+        assert isinstance(agent.__history__, collections.abc.MutableSequence)
         assert len(agent.__history__) == 0
 
     def test_subclass_with_own_init(self):
@@ -723,13 +704,13 @@ class TestAgentCachedProperty:
 
         agent = CustomAgent("Alice")
         assert agent.name == "Alice"
-        assert isinstance(agent.__history__, collections.OrderedDict)
+        assert isinstance(agent.__history__, collections.abc.MutableSequence)
 
     def test_history_is_per_instance(self):
         a = ChatBot()
         b = ChatBot()
-        a.__history__["fake"] = {"id": "fake", "role": "user", "content": "x"}
-        assert "fake" not in b.__history__
+        a.__history__.append({"role": "user", "content": "x"})
+        assert len(b.__history__) == 0
 
 
 class TestAgentWithToolCalls:
@@ -766,7 +747,7 @@ class TestAgentWithToolCalls:
 
         # History should contain: system, user, assistant (tool_call),
         # tool (result), assistant (final)
-        roles = [m["role"] for m in agent.__history__.values()]
+        roles = [m["role"] for m in agent.__history__]
         assert "tool" in roles
         assert roles.count("assistant") == 2
 
@@ -809,7 +790,7 @@ class TestAgentWithRetryHandler:
         # The malformed assistant message and error feedback from the retry
         # should NOT appear in the agent's history. Only the final successful
         # assistant message should be there.
-        roles = {m["role"] for m in agent.__history__.values()}
+        roles = {m["role"] for m in agent.__history__}
         assert {"user", "assistant"} == roles - {"system"}
 
 
@@ -853,7 +834,7 @@ class TestNestedTemplateCalling:
         with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
             agent.outer("demo")
 
-        roles = [m["role"] for m in agent.__history__.values()]
+        roles = [m["role"] for m in agent.__history__]
         # Outer call produces: user, assistant(tool_call), tool, assistant(final)
         # Inner call's user + assistant are NOT written back
         assert set(roles) <= {"system", "user", "assistant", "tool"}
@@ -995,26 +976,9 @@ class TestCrossAgentNestedTemplateCalling:
 
         assert result == "final answer"
         assert len(helper.__history__) > 0
-        helper_roles = [m["role"] for m in helper.__history__.values()]
+        helper_roles = [m["role"] for m in helper.__history__]
         assert helper_roles.count("user") == 1
         assert helper_roles.count("assistant") == 1
-
-    def test_orchestrator_and_helper_histories_are_disjoint(self):
-        """Each agent's history contains only its own messages."""
-        mock = MockCompletionHandler(
-            [
-                make_tool_call_response("ask_helper", '{"q": "demo"}'),
-                make_text_response("helper's answer"),
-                make_text_response("final answer"),
-            ]
-        )
-        helper = _HelperAgent()
-        orch = _OrchestratorAgent(helper)
-
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
-            orch.run("do the thing")
-
-        assert set(orch.__history__.keys()).isdisjoint(set(helper.__history__.keys()))
 
     def test_followup_call_on_delegate_sees_only_its_own_history(self):
         """A later top-level call on the helper sees its own accumulated
