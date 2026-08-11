@@ -109,8 +109,6 @@ class SumPlusJax(ObjectInterpretation):
             return fwd()
         return functools.reduce(jnp.add, args)
 
-
-class SumInverseJax(ObjectInterpretation):
     @implements(Sum.inverse)
     def inverse(self, value):
         if not _jax_args((value,)):
@@ -803,7 +801,6 @@ def einsum(
 
 EvaluateIntp.extend(
     SumPlusJax(),
-    SumInverseJax(),
     ProductPlusJax(),
     MinPlusJax(),
     MaxPlusJax(),
