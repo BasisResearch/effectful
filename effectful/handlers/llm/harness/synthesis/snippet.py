@@ -417,13 +417,13 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     def _call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
-        env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
+        env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
         return fwd(
             messages,
-            {**env, **self.repl_env()},
             response_type,
+            {**env, **self.repl_env()},
             tools | {self.exec_code, self.read_lexical_variable},
         )

@@ -228,8 +228,8 @@ class LiteLLMProvider(LiteLLMConfigurer):
         while not is_final:
             message, tool_calls, result = call_assistant(
                 list(HistoryBuilder.get_history()),
-                env,
                 template.__signature__.return_annotation,
+                env,
             )
             if tool_calls:
                 for tool_call in tool_calls:

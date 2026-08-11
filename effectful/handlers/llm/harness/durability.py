@@ -70,8 +70,8 @@ class TenacityRetryer(ObjectInterpretation):
     def _call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
-        env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
+        env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
         # Each attempt re-reads `buffer`: the transaction makes it the ambient
@@ -81,7 +81,7 @@ class TenacityRetryer(ObjectInterpretation):
         # only the response that finally succeeded joins the real history.
         with transaction(list(messages), write_back=False) as buffer:
             result = self.call_assistant_retryer(
-                lambda: fwd(list(buffer), env, response_type, tools)
+                lambda: fwd(list(buffer), response_type, env, tools)
             )
         HistoryBuilder.append_message(result[0])
         return result

@@ -604,10 +604,10 @@ class FinalBodySynthesizer(ObjectInterpretation):
         bound_args.apply_defaults()
         tool = self._SubmitSolutionTool.define(template, bound_args)
 
-        def _add_synthesis_tool(messages, env, response_type, tools=frozenset()):
+        def _add_synthesis_tool(messages, response_type, env, tools=frozenset()):
             if any(isinstance(t, self._SubmitSolutionTool) for t in tools):
                 return fwd()
-            return fwd(messages, env, response_type, tools | {tool})
+            return fwd(messages, response_type, env, tools | {tool})
 
         with handler({call_assistant: _add_synthesis_tool}):
             return fwd()

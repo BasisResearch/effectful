@@ -91,8 +91,8 @@ class LexicalReaders(ObjectInterpretation):
     def _call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
-        env: collections.abc.Mapping[str, typing.Any],
         response_type: type[T],
+        env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
         readers: set[Tool] = set(tools)
@@ -110,7 +110,7 @@ class LexicalReaders(ObjectInterpretation):
                 taken.add(name)
             except Exception:
                 continue
-        return fwd(messages, env, response_type, readers)
+        return fwd(messages, response_type, env, readers)
 
 
 def _get_qualname(cls) -> str:

@@ -175,8 +175,8 @@ def _tools_in_scope(
 @Operation.define
 def call_assistant[T](
     messages: collections.abc.Sequence[Message],
-    env: collections.abc.Mapping[str, typing.Any],
     response_type: type[T],
+    env: collections.abc.Mapping[str, typing.Any],
     tools: collections.abc.Set[Tool] = frozenset(),
 ) -> AssistantResult[T]:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().

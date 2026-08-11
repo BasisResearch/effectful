@@ -536,8 +536,8 @@ class TestRetryLLMHandler:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={},
                 response_type=str,
+                env={},
             )
 
         assert mock_handler.call_count == 1
@@ -567,8 +567,8 @@ class TestRetryLLMHandler:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -601,8 +601,8 @@ class TestRetryLLMHandler:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -630,8 +630,8 @@ class TestRetryLLMHandler:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={"add_numbers": add_numbers},
                     response_type=str,
+                    env={"add_numbers": add_numbers},
                     tools={add_numbers},
                 )
 
@@ -659,8 +659,8 @@ class TestRetryLLMHandler:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={"add_numbers": add_numbers},
                     response_type=str,
+                    env={"add_numbers": add_numbers},
                     tools={add_numbers},
                 )
 
@@ -684,8 +684,8 @@ class TestRetryLLMHandler:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -760,8 +760,8 @@ class TestRetryLLMHandler:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={},
                 response_type=int,
+                env={},
             )
 
         assert mock_handler.call_count == 2
@@ -793,8 +793,8 @@ class TestRetryLLMHandler:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={},
                     response_type=int,
+                    env={},
                 )
 
         # Should have attempted 3 times (1 initial + 2 retries)
@@ -821,8 +821,8 @@ class TestRetryLLMHandler:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={"add_numbers": add_numbers},
                     response_type=str,
+                    env={"add_numbers": add_numbers},
                     tools={add_numbers},
                 )
 
@@ -853,8 +853,8 @@ class TestRetryLLMHandler:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={},
                     response_type=int,
+                    env={},
                 )
 
         error = exc_info.value
@@ -882,8 +882,8 @@ class TestRetryLLMHandler:
         ):
             call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -914,8 +914,8 @@ class TestRetryLLMHandler:
         ):
             call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -946,8 +946,8 @@ class TestRetryLLMHandler:
         ):
             call_assistant(
                 list(message_sequence),
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -1049,9 +1049,9 @@ class TestToolExecutionErrorHandling:
         class TestProvider(ObjectInterpretation):
             @implements(call_assistant)
             def _call_assistant(
-                self, messages, env, response_type, tools=frozenset(), **kwargs
+                self, messages, response_type, env, tools=frozenset(), **kwargs
             ):
-                return fwd(messages, env, response_type, tools, **kwargs)
+                return fwd(messages, response_type, env, tools, **kwargs)
 
         with (
             handler(TenacityRetryer()),
@@ -1061,8 +1061,8 @@ class TestToolExecutionErrorHandling:
         ):
             message, tool_calls, result = call_assistant(
                 list(message_sequence),
-                env={"failing_tool": failing_tool},
                 response_type=str,
+                env={"failing_tool": failing_tool},
                 tools={failing_tool},
             )
 
@@ -1116,7 +1116,7 @@ class TestForcedToolChoice:
             handler(LiteLLMProvider(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
-            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
+            call_assistant([], response_type=str, env={"add_numbers": add_numbers})
 
     def test_tool_call_is_accepted(self):
         response = make_tool_call_response("add_numbers", '{"a": 1, "b": 2}')
@@ -1126,8 +1126,8 @@ class TestForcedToolChoice:
         ):
             _, tool_calls, _ = call_assistant(
                 [],
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
         assert len(tool_calls) == 1
@@ -1141,8 +1141,8 @@ class TestForcedToolChoice:
         ):
             call_assistant(
                 [],
-                env={"add_numbers": add_numbers},
                 response_type=str,
+                env={"add_numbers": add_numbers},
                 tools={add_numbers},
             )
 
@@ -1152,7 +1152,7 @@ class TestForcedToolChoice:
             handler(LiteLLMProvider(model="test-model", tool_choice="none")),
         ):
             _, tool_calls, result = call_assistant(
-                [], env={"add_numbers": add_numbers}, response_type=str
+                [], response_type=str, env={"add_numbers": add_numbers}
             )
         assert not tool_calls
         assert result == "just prose"
@@ -1170,7 +1170,7 @@ class TestForcedToolChoice:
             handler(LiteLLMProvider(model="test-model", tool_choice="required")),
             handler(LiteLLMProvider(model="test-model", tool_choice="auto")),
         ):
-            _, _, result = call_assistant([], env={}, response_type=str)
+            _, _, result = call_assistant([], response_type=str, env={})
         assert result == "just prose"
 
     def test_enclosed_required_is_enforced(self):
@@ -1182,7 +1182,7 @@ class TestForcedToolChoice:
             handler(LiteLLMProvider(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
-            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
+            call_assistant([], response_type=str, env={"add_numbers": add_numbers})
 
     def test_prose_answer_is_rejected_while_streaming(self):
         """The check must survive `RichTerminalRenderer` sitting between the
@@ -1195,7 +1195,7 @@ class TestForcedToolChoice:
             handler(RichTerminalRenderer()),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
-            call_assistant([], env={"add_numbers": add_numbers}, response_type=str)
+            call_assistant([], response_type=str, env={"add_numbers": add_numbers})
 
 
 # ============================================================================
@@ -1930,8 +1930,8 @@ class TestMessageSequence:
         ):
             call_assistant(
                 list(message_sequence),
-                env={},
                 response_type=str,
+                env={},
             )
 
         # Forwarded messages are exactly the ones passed in — no duplicates
@@ -1971,15 +1971,15 @@ class TestMessageSequence:
         ):
             resp1, _, _ = call_assistant(
                 list(message_sequence),
-                env={},
                 response_type=str,
+                env={},
             )
             # HistoryBuilder appended the first response, so the second call
             # sends it along with the message that preceded it.
             resp2, _, _ = call_assistant(
                 list(message_sequence),
-                env={},
                 response_type=str,
+                env={},
             )
 
         answer = json.dumps({"value": "result"})
@@ -2005,8 +2005,8 @@ class TestMessageSequence:
             ):
                 call_assistant(
                     list(message_sequence),
-                    env={},
                     response_type=str,
+                    env={},
                 )
 
         # Frame should be unchanged — no response message was saved
