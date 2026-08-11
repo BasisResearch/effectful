@@ -35,6 +35,7 @@ from effectful.ops.monoid import (
     _is_simple_range,
     complement,
     is_equality,
+    is_ready,
 )
 from effectful.ops.monoid import Union as UnionM
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
@@ -100,6 +101,12 @@ class PlusCastArray(ObjectInterpretation):
             )
 
         return fwd()
+
+
+class ReadyEager(ObjectInterpretation):
+    @implements(is_ready)
+    def is_ready(self, expr):
+        return is_eager_array(expr) or fwd()
 
 
 class SumPlusJax(ObjectInterpretation):
@@ -808,14 +815,6 @@ def einsum(
 
 
 EvaluateIntp.extend(
-    SumPlusJax(),
-    SumInverseJax(),
-    ProductPlusJax(),
-    MinPlusJax(),
-    MaxPlusJax(),
-    LogSumExpPlusJax(),
-    AndPlusJax(),
-    OrPlusJax(),
     IteJax(),
     MaskJax(),
     ReduceSumProductContraction(),
@@ -825,4 +824,14 @@ EvaluateIntp.extend(
     PlusCastArray(),
 )
 
-NormalizeIntp.extend(ReduceArrayGather())
+NormalizeIntp.extend(
+    ReduceArrayGather(),
+    ReadyEager(),
+    SumPlusJax(),
+    ProductPlusJax(),
+    MinPlusJax(),
+    MaxPlusJax(),
+    LogSumExpPlusJax(),
+    AndPlusJax(),
+    OrPlusJax(),
+)
