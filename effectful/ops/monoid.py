@@ -19,7 +19,15 @@ from typing import Annotated, Any
 
 import effectful.ops.syntax
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import (
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    sizeof,
+    typeof,
+)
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
