@@ -258,10 +258,8 @@ class _ExtensiblePredicate[T]:
         return t in self.elems
 
 
-is_commutative = _ExtensiblePredicate(
-    {Max, Min, Sum, Product, And, Or, Union, Intersection}
-)
-is_idempotent = _ExtensiblePredicate({Max, Min, And, Or, Intersection})
+is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or, Union})
+is_idempotent = _ExtensiblePredicate({Max, Min, And, Or})
 
 
 @dataclass
@@ -539,18 +537,26 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
     checks. A separate :class:`ReduceIntersectionSingletonRange` rule lowers
     intersections with simple ranges to singleton gathers guarded by bounds
     masks.
-
-    When the reduce body is a ``plus`` of the same monoid, the rule distributes
-    the reduce over the plus -- but only when doing so exposes an eliminable
-    equality mask in some summand. This is a *targeted* split (it leaves
-    ``ReduceSplit`` conservative): summands whose reduced index appears in an
-    equality get restricted domains, while the rest stay as ordinary masked
-    reduces.
     """
 
     @staticmethod
     def _rhs_cost(expr) -> tuple[float, ...]:
         return (len(fvsof(expr)), sizeof(expr))
+
+    @staticmethod
+    def _can_restrict(stream) -> bool:
+        """Whether an equality may add the first restriction to ``stream``.
+
+        A stream already represented by an intersection, or by the singleton
+        produced when lowering one, has already had a substitution variable
+        selected. Leaving further equalities in the mask allows singleton
+        substitution to turn them into residual conditions instead of building
+        nested intersections.
+        """
+        stream = _unwrap_as_iterable(stream)
+        if isinstance(stream, Term) and stream.op is Intersection.plus:
+            return False
+        return not (isinstance(stream, Sequence) and len(stream) == 1)
 
     @classmethod
     def _eliminate(cls, monoid, value, mask, streams):
@@ -559,13 +565,15 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             (i, solution.stream_op, solution.rhs)
             for i, cond in enumerate(conds)
             for solution in _solve_stream_equality(cond, streams)
+            if cls._can_restrict(streams[solution.stream_op])
         ]
         ranked_conds = sorted(matched_conds, key=lambda c: (*cls._rhs_cost(c[2]), c[0]))
 
         # Build a compatible batch greedily. A conjunct and lhs may each occur
         # only once in the batch, and none of the batch's lhs variables may
         # occur in any of its rhs expressions. Other equalities remain in the
-        # mask for a later elimination pass.
+        # mask; once a selected stream becomes an intersection or singleton,
+        # they are retained until substitution turns them into residual masks.
         selected = []
         selected_indices = set()
         selected_lhs = set()
@@ -1561,6 +1569,28 @@ class UnionPlus(ObjectInterpretation):
         return list(itertools.chain(*args))
 
 
+class IntersectionPlus(ObjectInterpretation):
+    """Pure-Python implementation of :data:`Intersection`.
+
+    The result preserves the order and multiplicity of the first iterable and
+    retains each of its elements that occurs in every subsequent iterable.
+    """
+
+    @implements(Intersection.plus)
+    def plus(self, *args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if (
+            not args
+            or any(isinstance(arg, Term) for arg in args)
+            or any(fvsof(arg) for arg in args)
+        ):
+            return fwd()
+
+        first, *rest = args
+        rest = [tuple(values) for values in rest]
+        return [value for value in first if all(value in values for values in rest)]
+
+
 class PlusCastIterable(ObjectInterpretation):
     """Cast heterogeneous iterable arguments to a common iterable type."""
 
@@ -2044,6 +2074,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
+    IntersectionPlus(),
     ReduceEqualityMaskRange(),
     ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
