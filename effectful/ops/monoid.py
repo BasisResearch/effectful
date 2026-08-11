@@ -2088,8 +2088,6 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     CartesianProductPlus(),
     UnionPlus(),
     IntersectionPlus(),
-    ReduceEqualityMask(),
-    ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
 )
 
@@ -2122,6 +2120,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFusion(),
     ReduceUnion(),
     ReduceSplit(),
+    ReduceEqualityMask(),
+    ReduceIntersectionSingletonRange(),
     Factor(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
