@@ -42,7 +42,7 @@ from effectful.ops.monoid import (
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
     ReduceEmpty,
-    ReduceEqualityMaskRange,
+    ReduceEqualityMask,
     ReduceFusion,
     ReduceIntersectionSingletonRange,
     ReduceMaskHoist,
@@ -756,7 +756,7 @@ def test_reduce_equality_mask_range_simple(backend: Backend, monoid):
         {a: Intersection.plus(as_iterable(range(3)), as_iterable([c()]))},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -774,7 +774,7 @@ def test_reduce_equality_mask_range_residual_conjuncts(backend: Backend, monoid)
         {a: Intersection.plus(as_iterable(range(4)), as_iterable([c()]))},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -799,7 +799,7 @@ def test_reduce_equality_mask_dependent_intersection():
     )
 
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -817,7 +817,7 @@ def test_reduce_equality_mask_dependent_intersection_nonidempotent():
         {x: Intersection.plus(as_iterable(X()), as_iterable([f(y())])), y: Y()},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -837,7 +837,7 @@ def test_reduce_equality_mask_dependent_intersection_retains_source_uses():
         {x: Intersection.plus(as_iterable(X()), as_iterable([f(y())])), y: Y()},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -850,7 +850,7 @@ def test_reduce_equality_mask_image_domain_symbol_side_noop():
 
     lhs = Min.reduce(Min.mask(g(x()), x() == y()), {x: X(), y: Y()})
     backend.check_rewrite(
-        lhs=lhs, rhs=lhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=lhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
@@ -865,7 +865,7 @@ def test_reduce_equality_mask_noncanonical_range(backend: Backend, monoid):
         {a: Intersection.plus(as_iterable(range(1, 4)), as_iterable([c()]))},
     )
     backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
 
 
