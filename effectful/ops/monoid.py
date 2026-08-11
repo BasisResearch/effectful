@@ -367,12 +367,21 @@ class MaskFusion(ObjectInterpretation):
 is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
 
 
-def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
+def solve_group_equality(
+    equality: Term[bool],
+    index: int,
+    *,
+    side: typing.Literal["left", "right"] | None = None,
+) -> Term[bool]:
     """Isolate one argument of a group ``plus`` in an equality.
 
     Given ``G.plus(a0, ..., an) == b``, isolate the argument at ``index``.
-    Negative indices follow normal Python indexing. The group expression may
-    occur on either side of the equality.
+    Negative indices follow normal Python indexing. ``side`` selects which
+    side to isolate when both sides are group expressions; when omitted, the
+    leftmost side that is a group expression is selected.
+
+    The result preserves operand order and is therefore valid for
+    noncommutative groups.
     """
     if not (
         isinstance(equality, Term)
@@ -383,6 +392,8 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
         raise TypeError("expected an equality Term")
     if not isinstance(index, int):
         raise TypeError("argument index must be an integer")
+    if side not in (None, "left", "right"):
+        raise ValueError("side must be 'left' or 'right'")
 
     left, right = equality.args
 
@@ -392,13 +403,23 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
         monoid = value.op.__self__
         return monoid if isinstance(monoid, Group) else None
 
-    monoid = group_plus(left)
-    if monoid is not None:
-        plus_term, other = left, right
-    elif (monoid := group_plus(right)) is not None:
-        plus_term, other = right, left
+    left_group = group_plus(left)
+    right_group = group_plus(right)
+    if (
+        left_group is not None
+        and right_group is not None
+        and left_group is not right_group
+    ):
+        raise TypeError("equality sides must use the same Group.plus")
+
+    if side == "left" or (side is None and left_group is not None):
+        monoid, plus_term, other = left_group, left, right
+    elif side == "right" or (side is None and right_group is not None):
+        monoid, plus_term, other = right_group, right, left
     else:
         raise TypeError("expected an equality containing a Group.plus Term")
+    if monoid is None:
+        raise TypeError(f"expected {side} side to be a Group.plus Term")
 
     assert isinstance(plus_term, Term)
     try:
@@ -416,8 +437,84 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
     return equality.op(target, isolated)
 
 
+@dataclass(frozen=True)
+class _EqualitySolution:
+    stream_op: Operation
+    rhs: Expr
+
+
+def _solve_stream_equality(
+    equality: Expr[bool], streams: Streams
+) -> tuple[_EqualitySolution, ...]:
+    """Return all group-law solutions for bare stream operands in an equality."""
+    if not (
+        isinstance(equality, Term)
+        and is_equality(equality.op)
+        and len(equality.args) == 2
+        and not equality.kwargs
+    ):
+        return ()
+
+    def stream_symbol(value):
+        if (
+            isinstance(value, Term)
+            and not value.args
+            and not value.kwargs
+            and value.op in streams
+        ):
+            return value.op
+        return None
+
+    left, right = equality.args
+    solutions: list[_EqualitySolution] = []
+
+    # Direct equalities do not need a group. Preserve the existing behavior of
+    # leaving equalities between two bare stream symbols for a separate rule.
+    for stream_term, expr in ((left, right), (right, left)):
+        stream_op = stream_symbol(stream_term)
+        if (
+            stream_op is not None
+            and stream_symbol(expr) is None
+            and stream_op not in fvsof(expr)
+        ):
+            solutions.append(_EqualitySolution(stream_op, expr))
+
+    def group_of(value):
+        if not (isinstance(value, Term) and _is_monoid_plus(value.op)):
+            return None
+        monoid = value.op.__self__
+        return monoid if isinstance(monoid, Group) else None
+
+    left_group, right_group = group_of(left), group_of(right)
+    if (
+        left_group is not None
+        and right_group is not None
+        and left_group is not right_group
+    ):
+        return tuple(solutions)
+
+    sides: tuple[tuple[typing.Literal["left", "right"], Expr], ...] = (
+        ("left", left),
+        ("right", right),
+    )
+    for side, value in sides:
+        if group_of(value) is None:
+            continue
+        assert isinstance(value, Term)
+        for index, operand in enumerate(value.args):
+            stream_op = stream_symbol(operand)
+            if stream_op is None:
+                continue
+            solved = solve_group_equality(equality, index, side=side)
+            rhs = solved.args[1]
+            if stream_op not in fvsof(rhs):
+                solutions.append(_EqualitySolution(stream_op, rhs))
+
+    return tuple(solutions)
+
+
 class ReduceEqualityMaskRange(ObjectInterpretation):
-    """Eliminate an equality by intersecting a stream with a singleton.
+    """Eliminate a batch of equalities by intersecting streams with singletons.
 
     For either orientation of an equality between a reduced variable and an
     expression that is not another reduced-variable symbol::
@@ -426,11 +523,14 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
           == M.reduce(M.mask(v, And.plus(*m)),
                       {i: Intersection.plus(I, [x])} | S)
 
-    The expression ``x`` may depend on streams in ``S``. Keeping those streams
-    in the outer bundle makes the intersection pointwise, so this rewrite does
-    not require idempotence or source-variable liveness checks. A separate
-    :class:`ReduceIntersectionSingletonRange` rule lowers intersections with
-    simple ranges to singleton gathers guarded by bounds masks.
+    The expression ``x`` may also be isolated from an equality between two
+    ``Group.plus`` expressions. Group inverses are applied in order, so this is
+    valid for noncommutative groups. ``x`` may depend on streams in ``S``.
+    Keeping those streams in the outer bundle makes the intersection pointwise,
+    so this rewrite does not require idempotence or source-variable liveness
+    checks. A separate :class:`ReduceIntersectionSingletonRange` rule lowers
+    intersections with simple ranges to singleton gathers guarded by bounds
+    masks.
 
     When the reduce body is a ``plus`` of the same monoid, the rule distributes
     the reduce over the plus -- but only when doing so exposes an eliminable
@@ -441,76 +541,70 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
     """
 
     @staticmethod
-    def _match_eq(cond, streams):
-        """Match ``stream_op == expr`` in either orientation.
+    def _rhs_cost(expr) -> tuple[float, ...]:
+        return (len(fvsof(expr)), sizeof(expr))
 
-        Equalities between two bare reduced-variable symbols are left alone;
-        choosing which domain should represent their intersection requires a
-        separate rule.
-        """
+    @classmethod
+    def _eliminate(cls, monoid, value, mask, streams):
+        conds = _conjuncts(mask)
+        matched_conds = [
+            (i, solution.stream_op, solution.rhs)
+            for i, cond in enumerate(conds)
+            for solution in _solve_stream_equality(cond, streams)
+        ]
+        ranked_conds = sorted(matched_conds, key=lambda c: (*cls._rhs_cost(c[2]), c[0]))
 
-        def is_stream_symbol(term):
-            return (
-                isinstance(term, Term)
-                and not term.args
-                and not term.kwargs
-                and term.op in streams
-            )
+        # Build a compatible batch greedily. A conjunct and lhs may each occur
+        # only once in the batch, and none of the batch's lhs variables may
+        # occur in any of its rhs expressions. Other equalities remain in the
+        # mask for a later elimination pass.
+        selected = []
+        selected_indices = set()
+        selected_lhs = set()
+        selected_rhs_fvs = set()
+        for candidate in ranked_conds:
+            index, stream_op, expr = candidate
+            expr_fvs = fvsof(expr)
+            if (
+                index in selected_indices
+                or stream_op in selected_lhs
+                or stream_op in selected_rhs_fvs
+                or selected_lhs & expr_fvs
+            ):
+                continue
+            selected.append(candidate)
+            selected_indices.add(index)
+            selected_lhs.add(stream_op)
+            selected_rhs_fvs.update(expr_fvs)
 
-        if not (isinstance(cond, Term) and is_equality(cond.op)):
+        if not selected:
             return None
 
-        lhs, rhs = cond.args
-        for stream_term, expr in ((lhs, rhs), (rhs, lhs)):
-            if is_stream_symbol(stream_term) and not is_stream_symbol(expr):
-                return stream_term.op, expr
-        return None
-
-    def _eliminate(self, monoid, value, mask, streams):
-        """Discharge one eliminable equality constraint, or return ``None``."""
-        conds = _conjuncts(mask)
-        for i, cond in enumerate(conds):
-            matched = self._match_eq(cond, streams)
-            if matched is None:
-                continue
-            stream_op, expr = matched
-
-            new_mask = monoid.mask(
-                value,
-                And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
-            )
-            new_streams = {
-                stream_op: Intersection.plus(streams[stream_op], [expr]),
-            } | {k: v for (k, v) in streams.items() if k is not stream_op}
-            return monoid.reduce(new_mask, new_streams)
-        return None
-
-    def _summand_eliminable(self, monoid, summand, streams):
-        return (
-            isinstance(summand, Term)
-            and _is_monoid_mask(summand.op)
-            and summand.op.__self__ == monoid
-            and self._eliminate(monoid, summand.args[0], summand.args[1], streams)
-            is not None
+        new_mask = monoid.mask(
+            value,
+            And.plus(*(c for i, c in enumerate(conds) if i not in selected_indices)),
         )
+        replacements = {
+            stream_op: Intersection.plus(streams[stream_op], [expr])
+            for _, stream_op, expr in selected
+        }
+        new_streams = {
+            stream_op: replacements.get(stream_op, stream)
+            for stream_op, stream in streams.items()
+        }
+        return monoid.reduce(new_mask, new_streams)
 
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams):
-        if not isinstance(body, Term):
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_mask(body.op)
+            and body.op.__self__ == monoid
+        ):
             return fwd()
 
-        # single mask body: discharge an equality constraint directly
-        if _is_monoid_mask(body.op) and body.op.__self__ == monoid:
-            result = self._eliminate(monoid, body.args[0], body.args[1], streams)
-            return result if result is not None else fwd()
-
-        # plus body: distribute the reduce only when it exposes an eliminable
-        # equality mask in some summand
-        if _is_monoid_plus(body.op) and body.op.__self__ == monoid:
-            if any(self._summand_eliminable(monoid, s, streams) for s in body.args):
-                return monoid.plus(*(monoid.reduce(s, streams) for s in body.args))
-
-        return fwd()
+        result = self._eliminate(monoid, body.args[0], body.args[1], streams)
+        return result if result is not None else fwd()
 
 
 class ReduceIntersectionSingletonRange(ObjectInterpretation):
