@@ -1008,6 +1008,38 @@ def test_reduce_lift_shared(outer, inner, backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
 
 
+def test_reduce_factor_mask(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
+    lhs = Sum.reduce(
+        Sum.mask(Product.plus(a(), b()), And.plus(a() == c(), b() == d())),
+        {a: A(), b: B()},
+    )
+    rhs = Product.plus(
+        Sum.reduce(Sum.mask(Product.plus(a()), And.plus(a() == c())), {a: A()}),
+        Sum.reduce(Sum.mask(Product.plus(b()), And.plus(b() == d())), {b: B()}),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
+
+
+def test_reduce_factor_mask_2(backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
+    lhs = Sum.reduce(
+        Sum.mask(Product.plus(a(), b()), And.plus(a() == b())),
+        {a: A(), b: B()},
+    )
+    lhs = Sum.reduce(
+        Product.plus(
+            b(), Sum.reduce(Sum.mask(Product.plus(a()), And.plus(a() == b())), {a: A()})
+        ),
+        {b: B()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=lhs, rule=Factor())
+
+
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
 def test_reduce_lift_shared_deps(outer, inner, backend: Backend):
     """A shared stream is lifted together with its dependencies: both ``c``
