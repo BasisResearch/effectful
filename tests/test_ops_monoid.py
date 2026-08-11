@@ -19,6 +19,7 @@ from effectful.ops.monoid import (
     Factor,
     Group,
     Intersection,
+    IntersectionPlus,
     InverseInverse,
     InversePlus,
     Max,
@@ -58,6 +59,7 @@ from effectful.ops.monoid import (
     as_iterable,
     distributes_over,
     is_commutative,
+    is_idempotent,
     solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
@@ -867,6 +869,20 @@ def test_reduce_equality_mask_noncanonical_range(backend: Backend, monoid):
     )
 
 
+def test_reduce_equality_mask_repeated_constraints_eliminate_intersections():
+    """Repeated equalities for one stream still normalize to supported domains."""
+    x, a, b = IntBackend().define_vars("x", "a", "b", ret=int)
+    lhs = Sum.reduce(
+        Sum.mask(x(), And.plus(x() == a(), x() == b())),
+        {x: range(3)},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(lhs)
+
+    assert Intersection.plus not in fvsof(result)
+
+
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_reduce_intersection_singleton_range(backend: Backend, monoid):
     """A simple-range intersection lowers to a bounds-guarded singleton."""
@@ -1330,6 +1346,35 @@ def test_weighted_expectation_demo():
         result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
 
     assert math.isclose(result, 10.0)
+
+
+def test_intersection_plus_preserves_left_order_and_multiplicity():
+    with handler(IntersectionPlus()):
+        result = Intersection.plus(
+            as_iterable([3, 1, 1, 2, 4]),
+            as_iterable([1, 2, 3]),
+            as_iterable([1, 3]),
+        )
+
+    assert result == [3, 1, 1]
+
+
+def test_intersection_is_not_registered_commutative_or_idempotent():
+    assert not is_commutative(Intersection)
+    assert not is_idempotent(Intersection)
+
+    with handler(IntersectionPlus()):
+        assert Intersection.plus([1, 1], [1]) == [1, 1]
+        assert Intersection.plus([1], [1, 1]) == [1]
+
+
+def test_equality_intersection_preserves_stream_multiplicity():
+    x = Operation.define(int, name="x")
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(Sum.reduce(Sum.mask(x(), x() == 1), {x: [1, 1, 2]}))
+
+    assert result == 2
 
 
 # ---------------------------------------------------------------------------
