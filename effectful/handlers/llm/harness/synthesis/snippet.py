@@ -385,7 +385,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
                 prompt,
                 PromptSection(
                     type="prompt_section",
-                    title="Python REPL",
+                    title=type(self).__name__,
                     content=to_content_blocks(inspect.getdoc(type(self)) or ""),
                 ),
                 under=HARNESS_SECTION,

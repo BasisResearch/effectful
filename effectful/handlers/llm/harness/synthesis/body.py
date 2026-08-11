@@ -504,7 +504,6 @@ class FinalBodySynthesizer(ObjectInterpretation):
     # `RestrictedPythonExecutor`) to be installed so the synthesized code can be
     # compiled and executed.
 
-    @typing.final
     class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
         """The `FinalTool` a synthesized Template body is submitted through.
 
@@ -558,7 +557,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 prompt,
                 PromptSection(
                     type="prompt_section",
-                    title="Code synthesis",
+                    title=type(self).__name__,
                     content=to_content_blocks(inspect.getdoc(type(self)) or ""),
                 ),
                 under=HARNESS_SECTION,
