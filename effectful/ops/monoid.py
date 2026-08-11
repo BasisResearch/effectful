@@ -15,7 +15,7 @@ from collections.abc import (
 )
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import effectful.ops.syntax
 from effectful.internals.runtime import interpreter
@@ -99,7 +99,7 @@ def inner_stream(
     )
 
 
-def inner_streams_first(streams: dict[Operation, Expr]) -> Iterable[Operation]:
+def inner_streams_first(streams: Streams) -> Iterable[Operation]:
     """Iterable over streams where dependent streams precede their dependencies."""
     stream_vars = set(streams.keys())
 
@@ -917,7 +917,7 @@ class ReduceSplit(ObjectInterpretation):
 
 @Operation.define
 def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
-    """Used by `ReduceFactorization` to choose a contraction when there is
+    """Used by `Factor` to choose a contraction when there is
     ambiguity. Takes the factors and streams that are eligible for contraction
     (innermost and non-universal).
 
@@ -940,8 +940,20 @@ def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
 
 
 class Factor(ObjectInterpretation):
+    def mask_plus(
+        self,
+        outer_monoid: Monoid,
+        inner_monoid: Monoid,
+        *factors: tuple[Literal["factor", "mask"], Expr],
+    ) -> Expr:
+        """Turn a flat list of factors and masks into a masked plus."""
+        return outer_monoid.mask(
+            inner_monoid.plus(*(f for (k, f) in factors if k == "factor")),
+            And.plus(*(f for (k, f) in factors if k == "mask")),
+        )
+
     @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
+    def reduce(self, monoid: Monoid, body, streams: Streams):
         """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
 
         where F_v = factors mentioning v, F_rest = the others. Fires only when
@@ -969,6 +981,7 @@ class Factor(ObjectInterpretation):
         plus_term = body
         if _is_monoid_mask(body.op) and body.op.__self__ is monoid:
             plus_term, cond = body.args
+        conds = _conjuncts(cond)
 
         if not (
             isinstance(plus_term, Term)
@@ -979,8 +992,9 @@ class Factor(ObjectInterpretation):
 
         inner = plus_term.op.__self__
         stream_keys = set(streams)
-        cond_fvs = fvsof(cond) if cond is not None else set()
-        factors = [(a, fvsof(a) | cond_fvs) for a in plus_term.args]
+        factors: list[tuple[Literal["factor", "mask"], Expr]] = [
+            ("factor", a) for a in plus_term.args
+        ] + [("mask", c) for c in conds]
 
         # candidates: innermost-eligible (no remaining stream depends on v),
         # non-universal (some factor doesn't mention v)
@@ -988,9 +1002,7 @@ class Factor(ObjectInterpretation):
         for k, v in streams.items():
             if any(k in fvsof(vv) for kk, vv in streams.items() if k is not kk):
                 continue
-            if len({i for i, (_, fvs) in enumerate(factors) if k in fvs}) == len(
-                factors
-            ):
+            if all(k in fvsof(factor) for (_, factor) in factors):
                 continue  # v is universal: leave it in the outer core
             eligible[k] = v
 
@@ -1002,22 +1014,20 @@ class Factor(ObjectInterpretation):
             inner_stream = choose_contraction(plus_term.args, eligible)
 
         inner_factor_ids = frozenset(
-            i for i, (_, fvs) in enumerate(factors) if inner_stream in fvs
+            i for i, (_, factor) in enumerate(factors) if inner_stream in fvsof(factor)
         )
 
-        inner_factors = [factors[i][0] for i in sorted(inner_factor_ids)]
+        inner_factors = [factors[i] for i in sorted(inner_factor_ids)]
         inner_stream_keys = {inner_stream}
         inner_deps = set().union(
-            *(factors[i][1] for i in inner_factor_ids),
+            *(fvsof(factors[i][1]) for i in inner_factor_ids),
             fvsof(streams[inner_stream]) & stream_keys,
         )
 
-        outer_factors = [
-            a for i, (a, _) in enumerate(factors) if i not in inner_factor_ids
-        ]
+        outer_factors = [a for i, a in enumerate(factors) if i not in inner_factor_ids]
         outer_stream_keys = stream_keys - inner_stream_keys
         outer_factor_deps = set().union(
-            *(vars for i, (_, vars) in enumerate(factors) if i not in inner_factor_ids)
+            *(fvsof(f) for i, (_, f) in enumerate(factors) if i not in inner_factor_ids)
         )
 
         # find all streams that are used in the inner factors/streams and are
@@ -1038,13 +1048,13 @@ class Factor(ObjectInterpretation):
                 outer_stream_keys -= {s}
 
         inner_streams = {k: v for (k, v) in streams.items() if k in inner_stream_keys}
-        inner_red = monoid.reduce(inner.plus(*inner_factors), inner_streams)
+        inner_red = monoid.reduce(
+            self.mask_plus(monoid, inner, *inner_factors), inner_streams
+        )
 
         rest_streams = {k: s for k, s in streams.items() if k in outer_stream_keys}
-        new_body = inner.plus(*outer_factors, inner_red)
-        if cond is not None:
-            new_body = monoid.mask(new_body, cond)
-        return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
+        new_body = self.mask_plus(monoid, inner, *outer_factors, ("factor", inner_red))
+        return monoid.reduce(new_body, rest_streams)
 
 
 class ReduceUnfactor(ObjectInterpretation):
