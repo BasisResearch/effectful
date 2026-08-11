@@ -2,6 +2,7 @@ import collections
 import collections.abc
 import contextlib
 import copy
+import typing
 import uuid
 
 from effectful.handlers.llm.harness.hooks import (
@@ -29,7 +30,7 @@ def _with_id(message: Message) -> Message:
     """
     if "id" not in message:
         message = {**message, "id": str(uuid.uuid4())}  # type: ignore
-    return message
+    return typing.cast(Message, message)
 
 
 def as_history(
