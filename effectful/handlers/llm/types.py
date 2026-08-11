@@ -135,21 +135,21 @@ class Template[**P, T](Tool[P, T]):
     ## Prompt assembly
 
     A call produces two messages. The **system message** is assembled once per
-    conversation, ordered most-constant-first so it caches well. Each section is a
-    top-level `#` heading whose contents nest beneath it; in order:
+    conversation, in two `#` halves — the harness the call runs under, then the
+    task itself — each ordered most-constant-first so the document caches well:
 
     | # | Section heading | Content | Constant over |
     | - | --------------- | ------- | ------------- |
-    | 1 | `# The effectful LLM framework` | Framework concepts — the package overview plus a `##` subsection per concept (`Template`, `Tool`, `Agent`, `Encodable`), sourced from these docstrings | the process |
-    | 2 | `# Harness` | A `##` subsection per installed handler that adds a capability to the harness (a Python REPL, code synthesis, readers for lexically scoped values), sourced from that handler's own docstring | the handler stack |
-    | 3 | `# Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
-    | 4 | `# Agent <cls>` (or `# Template`) | Agent docstring, then a `## <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
-    | 5 | `# Imported modules` | Table of in-scope imports (name → module) | the scope |
-    | 6 | `# Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
+    | 1 | `# Harness` | What the installed handlers provide, a `##` subsection each: the framework concepts (the package overview plus a `###` per concept — `Template`, `Tool`, `Agent`, `Encodable`) followed by one per capability handler (a Python REPL, code synthesis, readers for lexically scoped values), every one of them sourced from a real docstring | the handler stack |
+    | 2 | `# <name><signature>` | The call, introspected from this template, as the `##` subsections below | the call |
+    | 2.1 | `## Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
+    | 2.2 | `## Agent <cls>` (or `## Template`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
+    | 2.3 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
+    | 2.4 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
 
-    Sections 1 and 2 are contributed by handlers, so a stack that installs none
-    of them simply omits both; any section that ends up empty is left out of the
-    document entirely.
+    Section 1 is contributed entirely by handlers, so a stack that installs none
+    of them omits it; any section that ends up empty is left out of the document
+    entirely.
 
     The **user message** is the per-call part — only its changing values are
     re-sent each turn; everything constant lives in the system message above. It

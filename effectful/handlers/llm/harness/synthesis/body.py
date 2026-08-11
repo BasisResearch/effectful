@@ -10,7 +10,6 @@ from collections.abc import Callable
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
-from effectful.handlers.llm.harness.context import HARNESS_SECTION
 from effectful.handlers.llm.harness.hooks import (
     ToolCallExecutionError,
     call_assistant,
@@ -22,11 +21,9 @@ from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     EncodedFunction,
     PromptSection,
-    SystemPrompt,
     TypeToPydanticType,
     _inline_refs,
     _serialize_callable,
-    add_prompt_content,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -562,17 +559,23 @@ class FinalBodySynthesizer(ObjectInterpretation):
             return super().define(submit_solution, name=cls.__toolname__)
 
     @implements(call_system)
-    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+    def _call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
         return fwd(
-            add_prompt_content(
-                prompt,
-                PromptSection(
-                    type="prompt_section",
-                    title=type(self).__name__,
-                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                ),
-                under=HARNESS_SECTION,
-            )
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[
+                    *harness_prompt["content"],
+                    PromptSection(
+                        type="prompt_section",
+                        title=type(self).__name__,
+                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                    ),
+                ],
+            ),
+            agent_prompt,
         )
 
     @implements(call_tool)

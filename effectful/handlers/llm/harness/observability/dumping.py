@@ -19,7 +19,7 @@ class SystemPromptDumper(ObjectInterpretation):
     path: pathlib.Path
 
     @implements(call_system)
-    def _call_system(self, prompt):
+    def _call_system(self, harness_prompt, agent_prompt):
         message = fwd()
         self.path.write_text(_message_text(message.get("content")))
         return message

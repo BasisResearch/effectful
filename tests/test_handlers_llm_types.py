@@ -15,7 +15,6 @@ from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
 from effectful.handlers.llm.harness.context import (
-    HARNESS_SECTION,
     LexicalReaders,
     template_system_prompt,
 )
@@ -32,9 +31,8 @@ from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     DecodedToolCall,
     PromptSection,
-    SystemPrompt,
+    _rebase_headings,
     _render_system_prompt,
-    add_prompt_content,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
@@ -212,6 +210,27 @@ class MockCompletionHandler(ObjectInterpretation):
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
         return response
+
+
+def _document_headings(md: str) -> list[str]:
+    """The ATX headings of `md`, ignoring fenced code blocks.
+
+    The system prompt embeds the Template's module -- this very file, for a
+    Template defined in a test -- as a fenced block, so a plain substring check
+    for a heading matches the assertion literal in that embedded source rather
+    than the assembled document.  Skipping fences asserts on the real outline.
+    """
+    headings: list[str] = []
+    fence: str | None = None
+    for line in md.splitlines():
+        stripped = line.lstrip()
+        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
+            fence = stripped[:3]
+        elif fence is not None and stripped.startswith(fence):
+            fence = None
+        elif fence is None and re.match(r"^#{1,6}\s", line):
+            headings.append(line.rstrip())
+    return headings
 
 
 def assert_single_system_message_first(messages):
@@ -517,17 +536,20 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[0])
         content = _message_text(mock.received_messages[0][0]["content"])
         # The content is a Markdown document introspected from the Template and
-        # rendered from the assembled `SystemPrompt`, not a stored attribute.
-        assert "### `standalone(topic: str) -> str`" in content
+        # rendered from the assembled prompt, not a stored attribute: the task
+        # half is a `#` section and the Template's spec a `###` subsection of it.
+        headings = _document_headings(content)
+        assert "# `standalone(topic: str) -> str`" in headings
+        assert "### `standalone(topic: str) -> str`" in headings
         assert "Write about {topic}." in content
 
 
 class TestSystemPromptDocument:
-    """The system prompt is a `SystemPrompt` document that handlers rewrite on
+    """The system prompt is a `PromptSection` document that handlers rewrite on
     the way down, and that `call_system` renders to content blocks."""
 
-    def _prompt(self, *content) -> SystemPrompt:
-        return SystemPrompt(type="system_prompt", title="doc", content=list(content))
+    def _prompt(self, *content) -> PromptSection:
+        return self._section("doc", list(content))
 
     def _section(self, title, content) -> PromptSection:
         return PromptSection(
@@ -552,7 +574,7 @@ class TestSystemPromptDocument:
         """An unfilled section -- `Harness` under a stack that installs no
         capability handlers -- leaves no stray heading behind."""
         prompt = self._prompt(
-            self._section(HARNESS_SECTION, []),
+            self._section("Harness", []),
             self._section("Blank", ""),
             self._section("Kept", "body"),
         )
@@ -577,29 +599,10 @@ class TestSystemPromptDocument:
         assert blocks[1] == image
         assert blocks[2]["text"] == "after"
 
-    def test_add_prompt_content_leaves_the_caller_s_prompt_alone(self):
-        prompt = self._prompt(self._section(HARNESS_SECTION, []))
-        added = add_prompt_content(
-            prompt, self._section("Python REPL", "run code"), under=HARNESS_SECTION
-        )
-        assert _message_text(_render_system_prompt(prompt)) == ""
-        assert (
-            _message_text(_render_system_prompt(added))
-            == "# Harness\n\n## Python REPL\n\nrun code"
-        )
-
-    def test_add_prompt_content_creates_a_missing_section(self):
-        added = add_prompt_content(
-            self._prompt(),
-            self._section("Python REPL", "run code"),
-            under=HARNESS_SECTION,
-        )
-        assert (
-            _message_text(_render_system_prompt(added))
-            == "# Harness\n\n## Python REPL\n\nrun code"
-        )
-
     def test_a_handler_documents_itself_with_its_own_docstring(self):
+        """A handler adds the section describing itself to `harness_prompt` and
+        forwards, leaving the section it was handed untouched."""
+
         @Template.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
@@ -609,33 +612,47 @@ class TestSystemPromptDocument:
             """A capability of the harness, described for the model."""
 
             @implements(call_system)
-            def _call_system(self, prompt):
+            def _call_system(self, harness_prompt, agent_prompt):
                 return fwd(
-                    add_prompt_content(
-                        prompt,
-                        PromptSection(
-                            type="prompt_section",
-                            title="Documented",
-                            content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                        ),
-                        under=HARNESS_SECTION,
-                    )
+                    PromptSection(
+                        type="prompt_section",
+                        title=harness_prompt["title"],
+                        content=[
+                            *harness_prompt["content"],
+                            PromptSection(
+                                type="prompt_section",
+                                title="Documented",
+                                content=to_content_blocks(
+                                    inspect.getdoc(type(self)) or ""
+                                ),
+                            ),
+                        ],
+                    ),
+                    agent_prompt,
                 )
 
+        harness_prompt = self._section("Harness", [])
         with handler(Documented()):
             content = _message_text(
-                call_system(template_system_prompt(standalone))["content"]
+                call_system(harness_prompt, template_system_prompt(standalone))[
+                    "content"
+                ]
             )
 
         assert "# Harness\n\n## Documented" in content
         assert "A capability of the harness, described for the model." in content
+        assert harness_prompt["content"] == []
 
 
 class TestAgentDocstringFallback:
     """Agent subclasses' class docstrings flow into the assembled system message."""
 
     def _system_content(self, template):
-        return _message_text(call_system(template_system_prompt(template))["content"])
+        message = call_system(
+            PromptSection(type="prompt_section", title="Harness", content=[]),
+            template_system_prompt(template),
+        )
+        return _message_text(message["content"])
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):
@@ -647,11 +664,13 @@ class TestAgentDocstringFallback:
         assert MissingDocAgent.__doc__ is None
         content = self._system_content(MissingDocAgent().act)
         # No subclass docstring -> the Agent base-class docstring is used as the
-        # tier-3 "# Agent" section (inspect.getdoc walks the MRO).
+        # "## Agent" section's prose (inspect.getdoc walks the MRO).
         agent_doc = inspect.getdoc(Agent)
         assert agent_doc is not None
-        assert "# Agent `MissingDocAgent`" in content
-        assert agent_doc in content
+        assert "## Agent `MissingDocAgent`" in content
+        # It arrives whole, but with its own headings rebased to sit below that
+        # section -- which is at `##`, so its subsections land at `###`.
+        assert _rebase_headings(agent_doc, 3) in content
 
     def test_non_empty_docstring_overrides_inherited_doc(self):
         class ValidDocAgent(Agent):

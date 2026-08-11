@@ -15,16 +15,12 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.serialization import (
     PromptSection,
-    SystemPrompt,
-    add_prompt_content,
     to_content_blocks,
 )
 from effectful.handlers.llm.types import Agent, Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
-
-HARNESS_SECTION: typing.Final[str] = "Harness"
 
 
 class LexicalReaders(ObjectInterpretation):
@@ -72,17 +68,23 @@ class LexicalReaders(ObjectInterpretation):
             return super().define(tool_fn)
 
     @implements(call_system)
-    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+    def _call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
         return fwd(
-            add_prompt_content(
-                prompt,
-                PromptSection(
-                    type="prompt_section",
-                    title=type(self).__name__,
-                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                ),
-                under=HARNESS_SECTION,
-            )
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[
+                    *harness_prompt["content"],
+                    PromptSection(
+                        type="prompt_section",
+                        title=type(self).__name__,
+                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                    ),
+                ],
+            ),
+            agent_prompt,
         )
 
     @implements(call_assistant)
@@ -255,28 +257,25 @@ def _module_section(mod: types.ModuleType | None) -> PromptSection | None:
     )
 
 
-def template_system_prompt(template: Template) -> SystemPrompt:
-    """The initial system prompt for a call to `template`, before any handler
-    has added to it.
+def template_system_prompt(template: Template) -> PromptSection:
+    """The half of the system prompt describing a call to `template`.
 
-    The document is laid out most-constant-first, so that it caches well as the
-    conversation grows: the two sections handlers contribute to come first and
-    start empty, followed by the sections introspected
-    here, which vary per module, per instance and per scope.
+    Everything here is introspected from the Template, and its subsections are
+    laid out most-constant-first so that the document caches well as the
+    conversation grows: the module, then the agent and its templates, then the
+    names in scope.  `call_system` puts this after the harness half, which is
+    constant over the whole process.
     """
     sections = (
-        PromptSection(type="prompt_section", title=HARNESS_SECTION, content=[]),
         _module_section(inspect.getmodule(template)),
         _agent_section(template),
         _imports_section(template.__context__),
         _vars_section(template.__context__),
     )
-    return SystemPrompt(
-        type="system_prompt",
+    return PromptSection(
+        type="prompt_section",
         title=f"`{template.__name__}{template.__signature__}`",
-        content=[
-            *(s for s in sections if s is not None),
-        ],
+        content=[s for s in sections if s is not None],
     )
 
 
@@ -293,7 +292,9 @@ class FrameworkDocumenter(ObjectInterpretation):
     title: typing.ClassVar[str] = "The effectful LLM framework"
 
     @implements(call_system)
-    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+    def _call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
         import effectful.handlers.llm as _llm
 
         content: list[typing.Any] = list(to_content_blocks(inspect.getdoc(_llm) or ""))
@@ -312,9 +313,14 @@ class FrameworkDocumenter(ObjectInterpretation):
             title=self.title,
             content=content,
         )
-        new_prompt = SystemPrompt(
-            type=prompt["type"],
-            title=prompt["title"],
-            content=[section, *prompt["content"]],
+        # Prepended, where the capability handlers append: the concepts hold
+        # still for the whole process, so they belong at the front of the
+        # cached prefix whatever the handler stack around them looks like.
+        return fwd(
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[section, *harness_prompt["content"]],
+            ),
+            agent_prompt,
         )
-        return fwd(new_prompt)

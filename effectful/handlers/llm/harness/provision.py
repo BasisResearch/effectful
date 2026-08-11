@@ -16,7 +16,10 @@ from effectful.handlers.llm.harness.hooks import (
     call_user,
     completion,
 )
-from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
+from effectful.handlers.llm.harness.serialization import (
+    _TYPE_CHECK_ANCHOR_KEY,
+    PromptSection,
+)
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.handlers.llm.types import Template
 from effectful.ops.semantics import fwd
@@ -200,7 +203,12 @@ class LiteLLMProvider(LiteLLMConfigurer):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        message: Message = call_system(template_system_prompt(template))
+        # The harness half starts empty and is filled in by whichever handlers
+        # are installed; with none of them it renders as nothing at all.
+        message: Message = call_system(
+            PromptSection(type="prompt_section", title="Harness", content=[]),
+            template_system_prompt(template),
+        )
 
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()

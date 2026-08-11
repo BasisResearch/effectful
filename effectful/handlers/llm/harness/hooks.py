@@ -15,7 +15,7 @@ from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    SystemPrompt,
+    PromptSection,
     _render_system_prompt,
     format_as_content_blocks,
     to_content_blocks,
@@ -261,15 +261,9 @@ def call_assistant[T](
             if response_type is str:
                 result = typing.cast(T, serialized_result)
             else:
-                # Add the type-check anchor to the decode context only (not `env`,
-                # which is exposed as tools), so a synthesized result is checked
-                # against the Template's source.
                 result = response_format.model_validate(
                     json.loads(serialized_result),
-                    context={
-                        **env,
-                        _IS_FINAL_KEY: True,
-                    },
+                    context={**env, _IS_FINAL_KEY: True},
                 ).value
         except Exception as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
@@ -337,19 +331,34 @@ def call_user(
 
 
 @Operation.define
-def call_system(prompt: SystemPrompt) -> litellm.ChatCompletionSystemMessage:
-    """Render an assembled `SystemPrompt` as the system message.
+def call_system(
+    harness_prompt: PromptSection, agent_prompt: PromptSection
+) -> litellm.ChatCompletionSystemMessage:
+    """Assemble the system message from the two halves of the system prompt.
 
-    The document is the argument: a caller (`LiteLLMProvider._call`) builds one
-    from the `Template` being called, and every handler with something to say
-    about the harness rewrites that structure on the way down -- adding a section
-    for the capability it provides -- so this rule only has to flatten what
-    reaches it.
+    `agent_prompt` describes the task: the caller (`LiteLLMProvider._call`)
+    introspects it from the `Template` being called.  `harness_prompt` describes
+    the machinery the task runs under, and arrives empty: each installed handler
+    with something to say about the harness intercepts this operation and adds the
+    section documenting the capability it provides.  This rule only has to put the
+    two together and flatten the result.
+
+    Handing the handlers their own argument is what keeps them independent.  A
+    handler appends to `harness_prompt` and forwards; it never looks a section up
+    by title, never has to create one that isn't there, and cannot disturb the
+    other half of the document.  Installation order therefore decides only the
+    order the sections appear in -- innermost first, since it intercepts first --
+    and never whether one of them lands.
 
     The outgoing request's prompt-caching breakpoints are added by the provider
     (`LiteLLMConfigurer._add_cache_control`), so the message assembled here is
     exactly what is stored in the history, with no transport-level annotation.
     """
+    document = PromptSection(
+        type="prompt_section",
+        title=f"System Prompt: {agent_prompt['title']}",
+        content=[harness_prompt, agent_prompt],
+    )
     return litellm.ChatCompletionSystemMessage(
-        role="system", content=list(_render_system_prompt(prompt))
+        role="system", content=list(_render_system_prompt(document))
     )

@@ -160,50 +160,6 @@ class PromptSection(typing.TypedDict):
     ]
 
 
-class SystemPrompt(typing.TypedDict):
-    type: typing.Literal["system_prompt"]
-    title: str
-    content: collections.abc.Sequence[
-        litellm.OpenAIMessageContentListBlock | PromptSection
-    ]
-
-
-def add_prompt_content(
-    prompt: SystemPrompt,
-    *content: litellm.OpenAIMessageContentListBlock | PromptSection,
-    under: str | None = None,
-) -> SystemPrompt:
-    """`prompt`, with `content` appended to the section titled `under`.
-
-    Returns a new `SystemPrompt`, leaving the caller's untouched, so a handler can
-    add its own section and forward the result without disturbing the document any
-    enclosing handler still holds.
-
-    With no `under`, `content` is appended at top level.  A named section that is
-    not present is created at the end.
-    """
-    if under is None:
-        return {**prompt, "content": [*prompt["content"], *content]}
-
-    out: list[litellm.OpenAIMessageContentListBlock | PromptSection] = []
-    found = False
-    for item in prompt["content"]:
-        if item.get("type") == "prompt_section" and item.get("title") == under:
-            section = typing.cast(PromptSection, item)
-            item = PromptSection(
-                type="prompt_section",
-                title=under,
-                content=[*section["content"], *content],
-            )
-            found = True
-        out.append(item)
-    if not found:
-        out.append(
-            PromptSection(type="prompt_section", title=under, content=list(content))
-        )
-    return {**prompt, "content": out}
-
-
 # Matches an ATX heading's leading ``#``s (1-6, followed by whitespace) at the
 # start of a line, e.g. ``## Foo``. The lookahead avoids matching ``#!`` or a
 # ``#tag`` that is not a heading.
@@ -263,9 +219,9 @@ def _rebase_headings(md: str, top: int) -> str:
 
 
 def _render_system_prompt(
-    prompt: SystemPrompt | PromptSection, level: int = 0
+    prompt: PromptSection, level: int = 0
 ) -> list[OpenAIMessageContentListBlock]:
-    """Flatten an assembled `SystemPrompt` into content blocks.
+    """Flatten an assembled prompt into content blocks.
 
     Top-level sections are rendered as ``#`` headings and nest from there, with
     each block of text rebased below the section carrying it, so a docstring
@@ -276,9 +232,10 @@ def _render_system_prompt(
 
     Recurs on each `PromptSection` at `level`, whose `title` becomes its heading.
     A section that renders to nothing -- an unfilled harness section, say --
-    leaves no stray heading behind.  The document itself (`level` 0) contributes
-    no heading: its `title` identifies it to a `SystemPromptDumper` or a trace,
-    and is not part of what the model reads.
+    leaves no stray heading behind.  At `level` 0 sits the whole document, the
+    section `call_system` assembles from its two arguments; its `title` names the
+    document for a `SystemPromptDumper` or a trace and is not rendered, so the
+    arguments themselves are the document's ``#`` headings.
     """
     blocks: list[OpenAIMessageContentListBlock] = []
 

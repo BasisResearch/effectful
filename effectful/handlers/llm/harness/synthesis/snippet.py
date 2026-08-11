@@ -15,7 +15,6 @@ import uuid
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
-from effectful.handlers.llm.harness.context import HARNESS_SECTION
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
@@ -26,9 +25,7 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     PromptSection,
-    SystemPrompt,
     TypeToPydanticType,
-    add_prompt_content,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -379,17 +376,23 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         return {}
 
     @implements(call_system)
-    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+    def _call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
         return fwd(
-            add_prompt_content(
-                prompt,
-                PromptSection(
-                    type="prompt_section",
-                    title=type(self).__name__,
-                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                ),
-                under=HARNESS_SECTION,
-            )
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[
+                    *harness_prompt["content"],
+                    PromptSection(
+                        type="prompt_section",
+                        title=type(self).__name__,
+                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                    ),
+                ],
+            ),
+            agent_prompt,
         )
 
     @implements(Template.__apply__)
