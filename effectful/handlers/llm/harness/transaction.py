@@ -29,8 +29,8 @@ def _with_id(message: Message) -> Message:
     key before it can be stored.
     """
     if "id" not in message:
-        message = {**message, "id": str(uuid.uuid4())}  # type: ignore
-    return typing.cast(Message, message)
+        message = typing.cast(Message, {**message, "id": str(uuid.uuid4())})
+    return message
 
 
 def as_history(
