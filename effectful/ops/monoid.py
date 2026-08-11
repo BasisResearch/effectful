@@ -224,7 +224,7 @@ Or = Monoid(name="Or", identity=False)
 
 
 @Operation.define
-def as_iterable[T](value: Iterable[T]) -> Iterable[T]:
+def as_iterable(value: Iterable) -> Iterable:
     raise NotHandled
 
 
