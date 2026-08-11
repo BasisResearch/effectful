@@ -97,8 +97,10 @@ class PlusCastArray(ObjectInterpretation):
             return issubclass(t, jax.Array | jax.core.Tracer)
 
         # exists array valued and non-array-valued args
-        if any(_is_jax(t) for t in arg_types) and any(
-            not _is_jax(t) for t in arg_types
+        if (
+            any(_is_jax(t) for t in arg_types)
+            and any(not _is_jax(t) for t in arg_types)
+            and all(issubclass(t, jax.typing.ArrayLike) for t in arg_types)
         ):
             return monoid.plus(
                 *(
