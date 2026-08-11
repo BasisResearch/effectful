@@ -2246,8 +2246,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
-    ArgMinPlus(),
-    ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
     AndPlus(),
