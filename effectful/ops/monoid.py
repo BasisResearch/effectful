@@ -188,6 +188,12 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+@Operation.define
+def as_relation(value: Any) -> Iterable[Any]:
+    """Cast a domain representation to the common relation carrier type."""
+    raise NotHandled
+
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
@@ -199,6 +205,11 @@ CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
     name="CartesianProduct", identity=[{}], zero=[]
 )
 Union: Monoid[Sequence[Mapping]] = Monoid(name="Union", identity=[])
+Intersection: MonoidWithZero[Iterable[Any]] = MonoidWithZero(
+    name="Intersection",
+    identity=Operation.define(Iterable[Any], name="universal")(),
+    zero=[],
+)
 And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
 
@@ -228,7 +239,7 @@ class _ExtensiblePredicate[T]:
 
 
 is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or})
-is_idempotent = _ExtensiblePredicate({Max, Min, And, Or})
+is_idempotent = _ExtensiblePredicate({Max, Min, And, Or, Intersection})
 
 
 @dataclass
@@ -273,6 +284,7 @@ distributes_over: _ExtensibleBinaryRelation[Monoid, Monoid] = _ExtensibleBinaryR
     (Product, Sum),
     (CartesianProduct, Union),
     (And, Or),
+    (Intersection, Union),
 )
 
 
@@ -391,66 +403,74 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
 
 
 class ReduceEqualityMaskRange(ObjectInterpretation):
-    """M.reduce(M.mask(v, And.plus(i = x, *m)), {i: range(N)} ∪ S) ≡
-    M.mask(M.reduce(M.mask(v, *m), {i: [x]} ∪ S), And.plus(0 <= x, x < N))
+    """Eliminate an equality by intersecting a stream with a singleton.
 
-    The equality constraint ``i = x`` on a range-stream reduce is discharged by
-    a gather (the stream becomes the singleton ``[x]``) guarded by a bounds
-    check.
+    For either orientation of an equality between a reduced variable and an
+    expression that is not another reduced-variable symbol::
+
+        M.reduce(M.mask(v, And.plus(i == x, *m)), {i: I} | S)
+          == M.reduce(M.mask(v, And.plus(*m)),
+                      {i: Intersection.plus(I, [x])} | S)
+
+    The expression ``x`` may depend on streams in ``S``. Keeping those streams
+    in the outer bundle makes the intersection pointwise, so this rewrite does
+    not require idempotence or source-variable liveness checks. A separate
+    :class:`ReduceIntersectionSingletonRange` rule lowers intersections with
+    simple ranges to singleton gathers guarded by bounds masks.
 
     When the reduce body is a ``plus`` of the same monoid, the rule distributes
     the reduce over the plus -- but only when doing so exposes an eliminable
     equality mask in some summand. This is a *targeted* split (it leaves
     ``ReduceSplit`` conservative): summands whose reduced index appears in an
-    equality become gathers, while the rest stay as ordinary masked reduces.
+    equality get restricted domains, while the rest stay as ordinary masked
+    reduces.
     """
 
     @staticmethod
     def _match_eq(cond, streams):
-        """If ``cond`` is ``stream_op == key`` (either order) where ``stream_op``
-        is a ``range(0, N)`` stream and ``key`` is stream-independent, return
-        ``(stream_op, key)``; otherwise ``None``."""
+        """Match ``stream_op == expr`` in either orientation.
 
-        def test(op, stream_op, mask_key):
+        Equalities between two bare reduced-variable symbols are left alone;
+        choosing which domain should represent their intersection requires a
+        separate rule.
+        """
+
+        def is_stream_symbol(term):
             return (
-                is_equality(op)
-                and stream_op in streams
-                and _is_simple_range(streams[stream_op])
-                and not (fvsof(mask_key) & set(streams))
+                isinstance(term, Term)
+                and not term.args
+                and not term.kwargs
+                and term.op in streams
             )
 
-        match cond:
-            case Term(op, (Term(stream_op, (), {}), mask_key), {}) if test(
-                op, stream_op, mask_key
-            ):
-                return (stream_op, mask_key)
-            case Term(op, (mask_key, Term(stream_op, (), {})), {}) if test(
-                op, stream_op, mask_key
-            ):
-                return (stream_op, mask_key)
-            case _:
-                return None
+        if not (isinstance(cond, Term) and is_equality(cond.op)):
+            return None
+
+        lhs, rhs = cond.args
+        for stream_term, expr in ((lhs, rhs), (rhs, lhs)):
+            if is_stream_symbol(stream_term) and not is_stream_symbol(expr):
+                return stream_term.op, expr
+        return None
 
     def _eliminate(self, monoid, value, mask, streams):
-        """Discharge one eliminable equality constraint via a gather, or return
-        ``None`` if no constraint is eliminable."""
+        """Discharge one eliminable equality constraint, or return ``None``."""
         conds = _conjuncts(mask)
         for i, cond in enumerate(conds):
             matched = self._match_eq(cond, streams)
             if matched is None:
                 continue
-            stream_op, mask_key = matched
-            stream = streams[stream_op]
+            stream_op, expr = matched
             return monoid.reduce(
                 monoid.mask(
-                    monoid.mask(
-                        value,
-                        And.plus(stream.start <= mask_key, mask_key < stream.stop),
-                    ),
+                    value,
                     And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
                 ),
-                {stream_op: (mask_key,)}
-                | {k: v for (k, v) in streams.items() if k != stream_op},
+                {
+                    stream_op: Intersection.plus(
+                        as_relation(streams[stream_op]), as_relation([expr])
+                    ),
+                }
+                | {k: v for (k, v) in streams.items() if k is not stream_op},
             )
         return None
 
@@ -479,6 +499,54 @@ class ReduceEqualityMaskRange(ObjectInterpretation):
             if any(self._summand_eliminable(monoid, s, streams) for s in body.args):
                 return monoid.plus(*(monoid.reduce(s, streams) for s in body.args))
 
+        return fwd()
+
+
+class ReduceIntersectionSingletonRange(ObjectInterpretation):
+    """Lower the intersection of a simple range and a singleton stream.
+
+    M.reduce(v, {i: Intersection.plus(range(N), [x])} | S)
+      == M.reduce(M.mask(v, 0 <= x < N), {i: (x,)} | S)
+
+    The singleton expression may depend on streams in ``S``; the resulting
+    dependent singleton is eliminated later by :class:`EliminateSingletonStreams`.
+    """
+
+    @staticmethod
+    def _match(stream):
+        match stream:
+            case Term(op, (lhs, rhs), {}) if op is Intersection.plus:
+                pass
+            case _:
+                return None
+
+        def uncast(arg):
+            if isinstance(arg, Term) and arg.op is as_relation:
+                return arg.args[0]
+            return arg
+
+        lhs, rhs = uncast(lhs), uncast(rhs)
+        if _is_simple_range(lhs) and isinstance(rhs, list) and len(rhs) == 1:
+            return lhs, rhs[0]
+        if _is_simple_range(rhs) and isinstance(lhs, list) and len(lhs) == 1:
+            return rhs, lhs[0]
+        return None
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        for stream_op, stream in streams.items():
+            matched = self._match(stream)
+            if matched is None:
+                continue
+            range_stream, value = matched
+            return monoid.reduce(
+                monoid.mask(
+                    body,
+                    And.plus(range_stream.start <= value, value < range_stream.stop),
+                ),
+                {stream_op: (value,)}
+                | {k: v for k, v in streams.items() if k is not stream_op},
+            )
         return fwd()
 
 
@@ -1391,6 +1459,58 @@ class UnionPlus(ObjectInterpretation):
         return list(itertools.chain(*args))
 
 
+class PlusCastIntersection(ObjectInterpretation):
+    """Cast heterogeneous intersection arguments to a common relation type."""
+
+    @implements(Intersection.plus)
+    def plus(self, *args):
+        typs = [typeof(arg) for arg in args]
+        if not args or all(typ == typs[0] for typ in typs[1:]):
+            return fwd()
+        return Intersection.plus(*(defdata(as_relation, arg) for arg in args))
+
+
+class IntersectionPlus(ObjectInterpretation):
+    """Pure-Python filtering implementation of :data:`Intersection`.
+
+    This preserves occurrences from the leftmost stream. Array-valued elements
+    remain symbolic so backend-specific, pointwise intersection lowering can
+    handle them.
+    """
+
+    @staticmethod
+    def _unwrap(arg):
+        if isinstance(arg, Term) and arg.op is as_relation:
+            return arg.args[0]
+        return arg
+
+    @staticmethod
+    def _concrete_value(value):
+        if isinstance(value, tuple):
+            return all(IntersectionPlus._concrete_value(v) for v in value)
+        return isinstance(value, bool | int | float | complex | str | bytes)
+
+    @implements(Intersection.plus)
+    def plus(self, *args):
+        args = tuple(self._unwrap(arg) for arg in args)
+        if not args or any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        if not all(isinstance(arg, Iterable) for arg in args):
+            return fwd()
+
+        values = list(args[0])
+        tails = [list(arg) for arg in args[1:]]
+        if not all(
+            self._concrete_value(value) for value in itertools.chain(values, *tails)
+        ):
+            return fwd()
+        return [
+            value
+            for value in values
+            if all(any(syntactic_eq(value, other) for other in tail) for tail in tails)
+        ]
+
+
 is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product, And, Or})
 
 
@@ -1860,7 +1980,10 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
+    PlusCastIntersection(),
+    IntersectionPlus(),
     ReduceEqualityMaskRange(),
+    ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
 )
 
