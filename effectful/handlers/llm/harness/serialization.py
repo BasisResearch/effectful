@@ -313,6 +313,25 @@ class DecodedToolCall[T]:
         return inspect.signature(self.tool).return_annotation
 
 
+class _NameAndTool(typing.NamedTuple):
+    """A `Tool` together with the name it is advertised to the model under.
+
+    A name is a property of the advertisement, not of the tool: the same `Tool`
+    can be offered to two different requests under two different names, and two
+    tools sharing a ``__name__`` (an `Agent` method bound to two instances, say)
+    must still be told apart.  `call_assistant` assigns the names and pairs each
+    one with its tool here, immediately before encoding; nothing else constructs
+    or consumes a `_NameAndTool`.
+
+    This exists so that the `ChatCompletionToolParam` encoding below can hang off
+    a type that actually *is* a tool advertisement, leaving `Tool` itself free to
+    encode as what it is -- a callable.
+    """
+
+    name: str
+    tool: Tool
+
+
 class TypeToPydanticType(TypeEvaluator):
     """Substitute custom types with their Pydantic Annotated equivalents.
 
@@ -589,23 +608,61 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     ]
 
 
-def _validate_tool_lookup_only(
+def _validate_tool_identity(value: typing.Any) -> Tool:
+    """Accept a `Tool` that is already a `Tool`.
+
+    Nothing decodes a tool from JSON -- doing so would be a synthesis path, like
+    `Callable`'s -- so this only makes the type's own membership test explicit,
+    as Pydantic's `callable()` check does for a `Callable`.
+    """
+    if not isinstance(value, Tool):
+        raise ValueError(f"expected a Tool, got {type(value).__name__}")
+    return value
+
+
+@TypeToPydanticType.register(Tool)
+def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
+    """Encode a `Tool` (or `Template`) *value* as the callable it is.
+
+    A tool arriving here is a value like any other -- returned by another tool,
+    spliced into a prompt -- so it encodes as its source, exactly as
+    `_pydantic_callable_serialize_only` encodes a `Callable`.  What a tool looks
+    like when it is *offered* to the model is the encoding of `_NameAndTool`
+    below: a different thing, which needs a name a bare `Tool` does not carry.
+
+    Registering this is required, not decorative: `Tool` inherits from
+    `Operation`, whose registration raises, and singledispatch prefers a base
+    class over the `Callable` ABC.  The validator is here because Pydantic
+    cannot build a core schema for the `Tool` class on its own, and a
+    `PlainValidator` supplies one.
+    """
+    return typing.Annotated[
+        ty,
+        pydantic.PlainValidator(_validate_tool_identity),
+        pydantic.PlainSerializer(_serialize_callable),
+        pydantic.WithJsonSchema(
+            EncodedFunction.model_json_schema(), mode="serialization"
+        ),
+    ]
+
+
+def _validate_name_and_tool(
     value: ChatCompletionToolParam, info: pydantic.ValidationInfo
-) -> Tool:
+) -> _NameAndTool:
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
+    name = value["function"]["name"]
     try:
-        return info.context[_NAME2TOOL_KEY][value["function"]["name"]]
+        return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
     except KeyError as e:
-        raise NotImplementedError(f"Unknown tool: {value['function']['name']}") from e
+        raise NotImplementedError(f"Unknown tool: {name}") from e
 
 
-def _serialize_tool(
-    value: Tool, info: pydantic.SerializationInfo
-) -> ChatCompletionToolParam:
+def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
+    name, tool = value
     fields: dict[str, typing.Any] = {
-        name: TypeToPydanticType().evaluate(param.annotation)
-        for name, param in inspect.signature(value).parameters.items()
+        param_name: TypeToPydanticType().evaluate(param.annotation)
+        for param_name, param in inspect.signature(tool).parameters.items()
     }
     sig_model = pydantic.create_model(
         "Params",
@@ -614,27 +671,21 @@ def _serialize_tool(
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
-    # Advertise under the context key, since decode (`_validate_tool`) resolves the call by that name.
-    tool_name = value.__name__
-    context = info.context
-    if isinstance(context, Mapping):
-        for key, tool in context.items():
-            if tool is value:
-                tool_name = key
-                break
     ret_schema = pydantic.TypeAdapter(
-        Encodable[value.__signature__.return_annotation]  # type: ignore[name-defined]
+        Encodable[tool.__signature__.return_annotation]  # type: ignore[name-defined]
     ).json_schema(mode="serialization")
     description = (
-        f"{getattr(value, '__qualname__', value.__name__)} : {value.__signature__}"
+        f"{getattr(tool, '__qualname__', tool.__name__)} : {tool.__signature__}"
     )
-    description += f"\n\n{textwrap.dedent(value.__doc__ or '')}"
+    description += f"\n\n{textwrap.dedent(tool.__doc__ or '')}"
     description += f"\n\nAnnotated JSON schema of return type: {json.dumps(ret_schema)}"
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
+            # Advertise under the assigned name, which is the name decoding
+            # (`_validate_tool_call`) resolves the call back by.
             "function": {
-                "name": tool_name,
+                "name": name,
                 "description": description,
                 "parameters": response_format["json_schema"]["schema"],
                 "strict": True,
@@ -643,14 +694,21 @@ def _serialize_tool(
     )
 
 
-@TypeToPydanticType.register(Tool)
-def _pydantic_type_tool(ty: type[Tool]):
+@TypeToPydanticType.register(_NameAndTool)
+def _pydantic_type_name_and_tool(ty: type[_NameAndTool]):
+    """Encode a named tool as the `ChatCompletionToolParam` advertising it.
+
+    Registered on the exact `_NameAndTool` class, which singledispatch prefers
+    over any base: a `NamedTuple` has `tuple` in its MRO, so without this it
+    would route to `_pydantic_type_tuple`'s NamedTuple branch, which would try
+    to build a `TypeAdapter` for the `Tool` field and fail.
+    """
     schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
     schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_tool_lookup_only),
-        pydantic.PlainSerializer(_serialize_tool),
+        pydantic.PlainValidator(_validate_name_and_tool),
+        pydantic.PlainSerializer(_serialize_name_and_tool),
         pydantic.WithJsonSchema(schema),
     ]
 
@@ -721,3 +779,54 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(schema),
     ]
+
+
+def _advertised_names(
+    tools: collections.abc.Set[Tool],
+    _TOOL_NAME_MAX: int = 64,
+    _NOT_IN_TOOL_NAME: re.Pattern = re.compile(r"[^0-9a-zA-Z_-]+"),
+) -> dict[str, Tool]:
+    """Assign each tool the name the model calls it by.
+
+    A tool's `__name__` is the obvious name and the one almost every tool gets,
+    but it guarantees nothing: two `Agent` instances contribute the same bound
+    method under the same `__name__`, and nothing stops two modules from naming
+    a tool alike.  So the name is *assigned* here -- unique by construction, and
+    provider-legal -- rather than assumed to be unique and asserted.  The result
+    is the single naming scheme the request and its response agree on: tools are
+    advertised under these keys and `DecodedToolCall` resolves a call back
+    through the same mapping (`_NAME2TOOL_KEY`).
+
+    Ties are broken by a numeric suffix, so a collision costs the *later*
+    claimants a ``_2``/``_3`` and leaves the first with the name it wanted.
+    Which one is first is decided by a sort, so the assignment is stable across
+    the turns of a conversation -- a name keeps pointing at the tool the earlier
+    turns in the history called by it.  Genuinely indistinguishable tools (that
+    same bound method, twice) fall through to `id`, which orders them stably
+    within the process but not across runs; nothing outlives the process.
+    """
+
+    def base(tool: Tool) -> str:
+        name = _NOT_IN_TOOL_NAME.sub("_", tool.__name__)
+        # Leave room for a suffix, so disambiguation cannot push a long name
+        # over the limit (or, worse, truncate two names into a fresh collision).
+        return name[: _TOOL_NAME_MAX - 4] or "tool"
+
+    result: dict[str, Tool] = {}
+    for tool in sorted(
+        tools,
+        # A synthetic tool need not carry a `__qualname__`; it is only a
+        # tiebreaker, so fall back rather than insist on one.
+        key=lambda t: (base(t), getattr(t, "__qualname__", ""), t.__module__, id(t)),
+    ):
+        name = base(tool)
+        suffix = 1
+        while name in result:
+            suffix += 1
+            name = f"{base(tool)}_{suffix}"
+        result[name] = tool
+    return result
+
+
+class _BoxedResponse[T](pydantic.BaseModel):
+    value: T

@@ -31,6 +31,8 @@ from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     DecodedToolCall,
     PromptSection,
+    _advertised_names,
+    _NameAndTool,
     _rebase_headings,
     _render_system_prompt,
     to_content_blocks,
@@ -284,33 +286,54 @@ class _DesignerAgent(Agent):
 # ---------------------------------------------------------------------------
 
 
+def _decode_call(name2tool, advertised, arguments='{"payload": "x"}'):
+    """Decode a tool call naming `advertised`, against the map that advertised it."""
+    return pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
+        {
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": advertised, "arguments": arguments},
+        },
+        context={_NAME2TOOL_KEY: name2tool},
+    )
+
+
 def test_agent_method_tool_advertised_name_matches_decode_key():
     """A tool is advertised to the LLM under the same name that tool-call decoding
     resolves it by, so the serialize->advertise->decode round-trip is self-consistent.
-    `call_assistant` keys tools by `__name__` (its ``name2tool`` map); this checks that
-    an Agent method tool advertises and decodes under that key, no LLM required."""
+    `call_assistant` assigns the names (`_advertised_names`) and decodes through the
+    same map; this checks an Agent method tool makes that round trip, no LLM required."""
     agent = _DesignerAgent()
-    # The map `call_assistant` builds from the tools in scope (keyed by `__name__`).
-    name2tool = {t.__name__: t for t in offered_tools({"self": agent})}
+    # The map `call_assistant` builds from the tools in scope.
+    name2tool = _advertised_names(offered_tools({"self": agent}))
     tool = name2tool["nested_tool"]
 
-    # Serialize exactly as `call_assistant` advertises it: a {name: tool} context.
-    spec = pydantic.TypeAdapter(Encodable[type(tool)]).dump_python(
-        tool, mode="json", context={tool.__name__: tool}
+    # Serialize exactly as `call_assistant` advertises it.
+    spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool("nested_tool", tool), mode="json"
     )
     advertised = spec["function"]["name"]
-    assert advertised == tool.__name__  # advertised under the key decode resolves by
+    assert advertised == "nested_tool"  # advertised under the key decode resolves by
 
     # A tool call using the advertised name decodes back to the same tool object.
-    raw_tool_call = {
-        "id": "call_1",
-        "type": "function",
-        "function": {"name": advertised, "arguments": '{"payload": "x"}'},
-    }
-    decoded = pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
-        raw_tool_call, context={_NAME2TOOL_KEY: name2tool}
+    assert _decode_call(name2tool, advertised).tool is tool
+
+
+def test_same_agent_method_on_two_instances_gets_two_names():
+    """Two instances of an Agent contribute the same method under one `__name__`.
+    `_advertised_names` still gives each a name of its own, and each decodes back to
+    the tool bound to *its* instance -- the case the old ``__name__``-keyed map could
+    only assert its way out of."""
+    first, second = _DesignerAgent(), _DesignerAgent()
+    name2tool = _advertised_names(
+        offered_tools({"first": first, "second": second}),
     )
-    assert decoded.tool is tool
+
+    names = sorted(n for n, t in name2tool.items() if t.__name__ == "nested_tool")
+    assert names == ["nested_tool", "nested_tool_2"]
+
+    bound = {_decode_call(name2tool, n).tool for n in names}
+    assert bound == {first.nested_tool, second.nested_tool}
 
 
 class TestAgentHistoryAccumulation:

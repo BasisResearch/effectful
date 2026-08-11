@@ -18,9 +18,9 @@ import rich.text
 
 from effectful.handlers.llm.harness.hooks import (
     Message,
-    _BoxedResponse,
     completion,
 )
+from effectful.handlers.llm.harness.serialization import _BoxedResponse
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 

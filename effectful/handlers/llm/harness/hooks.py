@@ -16,6 +16,9 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     PromptSection,
+    _advertised_names,
+    _BoxedResponse,
+    _NameAndTool,
     _render_system_prompt,
     format_as_content_blocks,
     to_content_blocks,
@@ -129,10 +132,6 @@ def completion(*args, **kwargs) -> typing.Any:
     return litellm.completion(*args, **kwargs)
 
 
-class _BoxedResponse[T](pydantic.BaseModel):
-    value: T
-
-
 type AssistantResult[T] = tuple[
     litellm.ChatCompletionAssistantMessage,
     typing.Sequence[DecodedToolCall],
@@ -152,8 +151,8 @@ def _tools_in_scope(
     `Agent` instance in `env`.
 
     Tools are identified by object, so the same `Tool` visible under
-    several bindings appears once.  Names are derived from each tool's
-    `__name__` by :func:`call_assistant`, not from the binding name.
+    several bindings appears once.  The name each one is offered under is
+    assigned by :func:`_advertised_names`, not taken from the binding name.
     """
     result: set[Tool] = set()
 
@@ -191,9 +190,7 @@ def call_assistant[T](
 
     The available `tools` are passed explicitly as a set; handlers that expose
     additional tools (synthetic readers, REPL access, synthesis) intercept this
-    operation and union them into `tools` before forwarding.  Each tool's
-    model-visible name is derived from its `__name__`, so collection and
-    decoding agree on a single naming scheme.
+    operation and union them into `tools` before forwarding.
 
     Raises:
         ToolCallDecodingError: If a tool call cannot be decoded. The error
@@ -206,16 +203,15 @@ def call_assistant[T](
     if _TYPE_CHECK_ANCHOR_KEY in env:
         tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
 
-    name2tool = {t.__name__: t for t in tools}
-    assert len(tools) == len(name2tool), "Tool name collision detected"
+    name2tool = _advertised_names(tools)
     env = {_NAME2TOOL_KEY: name2tool, **env}
-    tool_specs = []
-    for name, t in sorted(name2tool.items()):
-        spec = typing.cast(
-            pydantic.TypeAdapter[typing.Any],
-            pydantic.TypeAdapter(Encodable[type(t)]),  # type: ignore[misc]
-        ).dump_python(t, mode="json", context={name: t})
-        tool_specs.append(spec)
+    spec_encoding: pydantic.TypeAdapter[_NameAndTool] = pydantic.TypeAdapter(
+        Encodable[_NameAndTool]
+    )
+    tool_specs = [
+        spec_encoding.dump_python(_NameAndTool(name, t), mode="json")
+        for name, t in sorted(name2tool.items())
+    ]
 
     # The OpenAI API requires a wrapper object for non-object structured output types,
     # so we create one on the fly here. Using a Pydantic model offloads JSON schema
@@ -352,10 +348,6 @@ def call_system(
     other half of the document.  Installation order therefore decides only the
     order the sections appear in -- innermost first, since it intercepts first --
     and never whether one of them lands.
-
-    The outgoing request's prompt-caching breakpoints are added by the provider
-    (`LiteLLMConfigurer._add_cache_control`), so the message assembled here is
-    exactly what is stored in the history, with no transport-level annotation.
     """
     document = PromptSection(
         type="prompt_section",

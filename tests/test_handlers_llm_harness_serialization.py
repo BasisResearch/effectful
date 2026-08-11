@@ -29,9 +29,10 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
+    _NameAndTool,
     to_content_blocks,
 )
-from effectful.handlers.llm.types import Encodable, Tool
+from effectful.handlers.llm.types import Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
@@ -377,42 +378,50 @@ ROUNDTRIP_CASES = [
         None,
         id="list-tuple-str-img",
     ),
-    # --- Tool ---
+    # --- _NameAndTool (the tool advertisement `call_assistant` sends) ---
     pytest.param(
-        type(_tool_add),
-        _tool_add,
+        _NameAndTool,
+        _NameAndTool("_tool_add", _tool_add),
         {_NAME2TOOL_KEY: {"_tool_add": _tool_add}},
         id="tool-add",
     ),
     pytest.param(
-        type(_tool_greet),
-        _tool_greet,
+        _NameAndTool,
+        _NameAndTool("_tool_greet", _tool_greet),
         {_NAME2TOOL_KEY: {"_tool_greet": _tool_greet}},
         id="tool-greet",
     ),
     pytest.param(
-        type(_tool_process),
-        _tool_process,
+        _NameAndTool,
+        _NameAndTool("_tool_process", _tool_process),
         {_NAME2TOOL_KEY: {"_tool_process": _tool_process}},
         id="tool-process",
     ),
     pytest.param(
-        type(_tool_get_value),
-        _tool_get_value,
+        _NameAndTool,
+        _NameAndTool("_tool_get_value", _tool_get_value),
         {_NAME2TOOL_KEY: {"_tool_get_value": _tool_get_value}},
         id="tool-no-params",
     ),
     pytest.param(
-        type(_tool_distance),
-        _tool_distance,
+        _NameAndTool,
+        _NameAndTool("_tool_distance", _tool_distance),
         {_NAME2TOOL_KEY: {"_tool_distance": _tool_distance}},
         id="tool-pydantic-param",
     ),
     pytest.param(
-        type(_tool_style),
-        _tool_style,
+        _NameAndTool,
+        _NameAndTool("_tool_style", _tool_style),
         {_NAME2TOOL_KEY: {"_tool_style": _tool_style}},
         id="tool-literal-param",
+    ),
+    # A tool advertised under a name that is not its `__name__` -- what
+    # `call_assistant` does when two tools in scope share one.
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_add_2", _tool_add),
+        {_NAME2TOOL_KEY: {"_tool_add_2": _tool_add}},
+        id="tool-renamed",
     ),
     # --- DecodedToolCall ---
     pytest.param(
@@ -970,10 +979,10 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     _fn.__annotations__ = {"value": ty, "return": None}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
-        Encodable[type(tool)]  # type: ignore[misc]
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[_NameAndTool])
+    tool_spec = enc.dump_python(
+        _NameAndTool(tool.__name__, tool), mode="json", context=ctx or {}
     )
-    tool_spec = enc.dump_python(tool, mode="json", context=ctx or {})
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
@@ -999,10 +1008,10 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     _fn.__annotations__ = {"return": ty}
 
     tool: Tool[..., Any] = Tool.define(_fn)
-    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(
-        Encodable[type(tool)]  # type: ignore[misc]
+    enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[_NameAndTool])
+    tool_spec = enc.dump_python(
+        _NameAndTool(tool.__name__, tool), mode="json", context=ctx or {}
     )
-    tool_spec = enc.dump_python(tool, mode="json", context=ctx or {})
     response = litellm.completion(
         model=EFFECTFUL_LLM_MODEL,
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
@@ -1112,3 +1121,19 @@ def test_serialize_callable_matches_its_declared_schema():
         _outer_returning_unannotated(), mode="json", context={}
     )
     assert set(encoded) <= set(schema["properties"])
+
+
+@pytest.mark.parametrize(
+    "ty", [Tool, Template], ids=["tool", "template"]
+)  # `Template` reaches the same encoding through its base
+def test_serialize_tool_value_encodes_the_callable_it_is(ty):
+    """A `Tool` arriving as a *value* -- returned by another tool, spliced into a
+    prompt -- encodes as its source, like any other callable.
+
+    The `ChatCompletionToolParam` advertisement is the encoding of `_NameAndTool`
+    (above), not of `Tool`: it needs a name, which a bare `Tool` does not carry.
+    """
+    encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        _tool_add, mode="json", context={}
+    )
+    assert "def _tool_add" in encoded["module_code"]
