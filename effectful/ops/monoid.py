@@ -250,7 +250,9 @@ class _ExtensiblePredicate[T]:
         return t in self.elems
 
 
-is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or})
+is_commutative = _ExtensiblePredicate(
+    {Max, Min, Sum, Product, And, Or, Union, Intersection}
+)
 is_idempotent = _ExtensiblePredicate({Max, Min, And, Or, Intersection})
 
 
@@ -1442,13 +1444,19 @@ class CartesianProductPlus(ObjectInterpretation):
 
     @implements(CartesianProduct.plus)
     def plus(self, *args):
-        if not args:
-            return fwd()
-        if any(isinstance(x, Term) for x in args):
-            return fwd()
-        if not all(isinstance(x, Iterable) for x in args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if not args or any(isinstance(x, Term) for x in args):
             return fwd()
         return [_disjoint_merge(*vals) for vals in itertools.product(*args)]
+
+
+class UnionPlus(ObjectInterpretation):
+    @implements(Union.plus)
+    def plus(self, *args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if not args or any(isinstance(x, Term) for x in args):
+            return fwd()
+        return list(itertools.chain(*args))
 
 
 class PlusCastIterable(ObjectInterpretation):
@@ -1463,30 +1471,6 @@ class PlusCastIterable(ObjectInterpretation):
             return fwd()
 
         return monoid.plus(*(as_iterable(arg) for arg in args))
-
-
-class IterablePlus(ObjectInterpretation):
-    """Pure-Python filtering implementation of :data:`Intersection`.
-
-    This preserves occurrences from the leftmost stream. Array-valued elements
-    remain symbolic so backend-specific, pointwise intersection lowering can
-    handle them.
-    """
-
-    @implements(Intersection.plus)
-    def _intersection_plus(self, *args):
-        args = tuple(_unwrap_as_iterable(arg) for arg in args)
-        if not args or any(isinstance(x, Term) for x in args):
-            return fwd()
-
-        values = list(args[0])
-        tails = [list(arg) for arg in args[1:]]
-        if not all(
-            self._concrete_value(value) for value in itertools.chain(values, *tails)
-        ):
-            return fwd()
-
-        return list(itertools.chain(*args))
 
 
 is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product, And, Or})
@@ -1957,7 +1941,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMinPlus(),
     ArgMaxPlus(),
     CartesianProductPlus(),
-    IterablePlus(),
+    UnionPlus(),
     ReduceEqualityMaskRange(),
     ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
