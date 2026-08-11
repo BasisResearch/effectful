@@ -2232,7 +2232,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusOrder(),
     PlusCastFloat(),
     PlusCastIterable(),
-    OptimumPlus(),
+    PlusOptimum(),
     PlusCastOptimum(),
     MaskFusion(),
     MaskBool(),
