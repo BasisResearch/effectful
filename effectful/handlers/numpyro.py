@@ -1198,6 +1198,7 @@ def _embed_independent(d: dist.Independent) -> Term[dist.Independent]:
     return Independent(d.base_dist, d.reinterpreted_batch_ndims)
 
 
+@Operation.define
 def distribution_stream(
     distribution: numpyro.distributions.Distribution,
 ) -> Stream[jax.Array]:
