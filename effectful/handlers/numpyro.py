@@ -1264,7 +1264,7 @@ class ReduceDistribution(ObjectInterpretation):
 
     @implements(Sum.reduce)
     def _reduce_sum(self, body, streams: Streams):
-        return self._reduce(Sum, body, streams, Product, jnp.exp)
+        return self._reduce(Sum, body, streams, Product, jnp.exp)  # type:ignore[arg-type]
 
 
 @Operation.define
