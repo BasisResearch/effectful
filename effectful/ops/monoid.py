@@ -944,13 +944,16 @@ class Factor(ObjectInterpretation):
         self,
         outer_monoid: Monoid,
         inner_monoid: Monoid,
-        *factors: tuple[Literal["factor", "mask"], Expr],
+        *factor_conds: tuple[Literal["factor", "mask"], Expr],
     ) -> Expr:
         """Turn a flat list of factors and masks into a masked plus."""
-        return outer_monoid.mask(
-            inner_monoid.plus(*(f for (k, f) in factors if k == "factor")),
-            And.plus(*(f for (k, f) in factors if k == "mask")),
-        )
+        factors, conds = [], []
+        for k, f in factor_conds:
+            (factors if k == "factor" else conds).append(f)
+
+        term = inner_monoid.plus(*factors)
+        term = term if not conds else outer_monoid.mask(term, And.plus(*conds))
+        return term
 
     @implements(Monoid.reduce)
     def reduce(self, monoid: Monoid, body, streams: Streams):
@@ -977,11 +980,11 @@ class Factor(ObjectInterpretation):
             return fwd()
 
         # Optionally peel an outer mask of the reduce monoid.
-        cond = None
         plus_term = body
+        conds = ()
         if _is_monoid_mask(body.op) and body.op.__self__ is monoid:
             plus_term, cond = body.args
-        conds = _conjuncts(cond)
+            conds = _conjuncts(cond)
 
         if not (
             isinstance(plus_term, Term)
@@ -1054,7 +1057,7 @@ class Factor(ObjectInterpretation):
 
         rest_streams = {k: s for k, s in streams.items() if k in outer_stream_keys}
         new_body = self.mask_plus(monoid, inner, *outer_factors, ("factor", inner_red))
-        return monoid.reduce(new_body, rest_streams)
+        return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
 
 
 class ReduceUnfactor(ObjectInterpretation):
