@@ -589,7 +589,7 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     ]
 
 
-def _validate_tool(
+def _validate_tool_lookup_only(
     value: ChatCompletionToolParam, info: pydantic.ValidationInfo
 ) -> Tool:
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
@@ -649,7 +649,7 @@ def _pydantic_type_tool(ty: type[Tool]):
     schema = _ensure_strict_json_schema(schema, path=(), root={})
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_tool),
+        pydantic.PlainValidator(_validate_tool_lookup_only),
         pydantic.PlainSerializer(_serialize_tool),
         pydantic.WithJsonSchema(schema),
     ]
