@@ -519,7 +519,7 @@ def _solve_stream_equality(
     return tuple(solutions)
 
 
-class ReduceEqualityMaskRange(ObjectInterpretation):
+class ReduceEqualityMask(ObjectInterpretation):
     """Eliminate a batch of equalities by intersecting streams with singletons.
 
     For either orientation of an equality between a reduced variable and an
@@ -2088,7 +2088,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     CartesianProductPlus(),
     UnionPlus(),
     IntersectionPlus(),
-    ReduceEqualityMaskRange(),
+    ReduceEqualityMask(),
     ReduceIntersectionSingletonRange(),
     ReduceWhereToMasks(),
 )
