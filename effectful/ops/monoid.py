@@ -234,7 +234,7 @@ def _unwrap_as_iterable[T](arg: Iterable[T]) -> Iterable[T]:
     return arg
 
 
-def _conjuncts(mask) -> Sequence[Term]:
+def _conjuncts(mask) -> Sequence[Expr]:
     """Return the conjuncts of an ``And`` mask as a flat tuple."""
     match mask:
         case Term(And.plus, elems, {}):
@@ -947,7 +947,8 @@ class Factor(ObjectInterpretation):
         *factor_conds: tuple[Literal["factor", "mask"], Expr],
     ) -> Expr:
         """Turn a flat list of factors and masks into a masked plus."""
-        factors, conds = [], []
+        factors: list[Expr] = []
+        conds: list[Expr] = []
         for k, f in factor_conds:
             (factors if k == "factor" else conds).append(f)
 
@@ -981,7 +982,7 @@ class Factor(ObjectInterpretation):
 
         # Optionally peel an outer mask of the reduce monoid.
         plus_term = body
-        conds = ()
+        conds: Sequence[Term] = ()
         if _is_monoid_mask(body.op) and body.op.__self__ is monoid:
             plus_term, cond = body.args
             conds = _conjuncts(cond)
