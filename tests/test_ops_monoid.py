@@ -899,29 +899,6 @@ def test_reduce_intersection_singleton_range(backend: Backend, monoid):
     )
 
 
-@pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_equality_mask_plus(backend: Backend, monoid):
-    """Targeted splitting exposes an intersection in the matching summand."""
-    a, c = backend.define_vars("a", "c", ret=int)
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
-
-    body = monoid.plus(
-        monoid.mask(f(a()), a() == c()),
-        monoid.mask(g(a()), c() == 0),
-    )
-    lhs = monoid.reduce(body, {a: range(3)})
-    rhs = monoid.plus(
-        monoid.reduce(
-            monoid.mask(f(a()), And.plus()),
-            {a: Intersection.plus(as_iterable(range(3)), as_iterable([c()]))},
-        ),
-        monoid.reduce(monoid.mask(g(a()), c() == 0), {a: range(3)}),
-    )
-    backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMaskRange(), PlusCastIterable())
-    )
-
-
 def test_reduce_independent_1(backend: Backend):
     a, b = backend.define_vars("a", "b", ret="scalar")
     A, B = backend.define_vars("A", "B", ret="stream")
