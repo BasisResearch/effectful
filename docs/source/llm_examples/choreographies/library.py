@@ -377,12 +377,14 @@ class EndpointProjection(ObjectInterpretation):
         The item already is a step, with its own ID and its own place in the
         log, so there is nothing left to coordinate -- just run the call.
         """
-        agent = getattr(template, "__agent__", None)
-        if agent is not None and agent.__agent_id__ != self._agent_id:
+        if (
+            hasattr(template, "__history__")
+            and (agent_id := template.__self__.__agent_id__) != self._agent_id  # type: ignore
+        ):
             raise RuntimeError(
                 f"a scatter item taken on by {self._agent_id!r} called "
                 f"{template.__name__}(), which belongs to "
-                f"{agent.__agent_id__!r}. A scatter item is work one agent "
+                f"{agent_id!r}. A scatter item is work one agent "
                 f"does alone; step across agents outside the scatter."
             )
         return self._in_thread(template, *args, **kwargs)
@@ -402,12 +404,12 @@ class EndpointProjection(ObjectInterpretation):
     async def _run_step(
         self, step_id: str, template: Callable, args: tuple, kwargs: dict
     ) -> Any:
-        agent = getattr(template, "__agent__", None)
 
-        if agent is None:
+        if not hasattr(template, "__history__"):
             # Unbound template: not owned by anyone, so every agent runs it.
             return await self._in_thread(template, *args, **kwargs)
 
+        agent: Agent = template.__self__  # type: ignore
         if self._agent_ids is not None and agent.__agent_id__ not in self._agent_ids:
             raise ChoreographyError(
                 f"{template.__name__}() belongs to agent "

@@ -143,8 +143,8 @@ class _FakeAgentCalls(ObjectInterpretation):
         if callable(turn):
             return turn(template, args, kwargs)
         user_content, assistant_content, result = turn
-        agent = getattr(template, "__agent__", None)
-        if agent is not None:
+        if hasattr(template, "__history__"):
+            agent = template.__self__
             agent.__history__[f"u{n}"] = {
                 "id": f"u{n}",
                 "role": "user",
@@ -260,10 +260,6 @@ class TestAgentPersistenceOptIn:
         p1, p2 = _PlainHelper(), _PlainHelper()
         assert not p1.__is_persistent__ and not p2.__is_persistent__
         assert p1.__agent_id__ != p2.__agent_id__
-
-    def test_bound_template_exposes_agent_instance(self):
-        bot = _Bot(__agent_id__="x")
-        assert bot.ask.__agent__ is bot
 
 
 class TestCheckpointStateDefaults:

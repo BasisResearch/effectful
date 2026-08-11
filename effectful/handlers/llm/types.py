@@ -264,9 +264,7 @@ class Template[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Template) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
-            result.__is_persistent__ = instance.__is_persistent__  # type: ignore[attr-defined]
-            result.__agent_id__ = instance.__agent_id__  # type: ignore[attr-defined]
-            result.__agent__ = instance  # type: ignore[attr-defined]
+            result.__self__ = instance  # type: ignore[attr-defined]
         return result
 
     @classmethod

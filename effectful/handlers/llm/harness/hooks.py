@@ -142,6 +142,8 @@ type AssistantResult[T] = tuple[
 
 def _tools_in_scope(
     env: collections.abc.Mapping[str, typing.Any],
+    *,
+    seen: frozenset[int] = frozenset(),
 ) -> collections.abc.Set[Tool]:
     """Return the tools available to a Template given its lexical context.
 
@@ -160,12 +162,13 @@ def _tools_in_scope(
             continue
         if isinstance(obj, Tool | Template):
             result.add(obj)
-        elif isinstance(obj, Agent):
-            for cls in type(obj).__mro__:
-                for attr_name in vars(cls):
-                    attr = getattr(obj, attr_name)
-                    if isinstance(attr, Tool):
-                        result.add(attr)
+        elif isinstance(obj, Agent) and id(obj) not in seen:
+            seen |= {id(obj)}
+            result |= _tools_in_scope(
+                vars(obj)
+                | {k: getattr(obj, k) for cls in type(obj).__mro__ for k in vars(cls)},
+                seen=seen,
+            )
 
     return frozenset(result)
 

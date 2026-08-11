@@ -50,7 +50,7 @@ def run(coro, timeout: float = TIMEOUT) -> Any:
 
 def _key(template) -> str:
     """``agent-id.template-name`` for a bound template, else its name."""
-    agent = getattr(template, "__agent__", None)
+    agent = getattr(template, "__self__", None)
     name = template.__name__
     return f"{agent.__agent_id__}.{name}" if agent is not None else name
 

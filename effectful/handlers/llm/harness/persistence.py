@@ -132,8 +132,8 @@ class SQLitePersister(ObjectInterpretation):
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         result = fwd()
-        if hasattr(template, "__history__") and template.__agent__.__is_persistent__:  # type: ignore
-            agent: Agent = template.__agent__  # type: ignore
+        if hasattr(template, "__history__") and template.__self__.__is_persistent__:  # type: ignore
+            agent: Agent = template.__self__  # type: ignore
             agent_id = agent.__agent_id__
             state_blob = pickle.dumps(self._checkpoint_state(agent))
             history_json = json.dumps(list(template.__history__.values()), default=str)
