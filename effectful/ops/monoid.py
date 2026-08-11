@@ -1579,42 +1579,6 @@ class LogSumExpPlus(ObjectInterpretation):
         )
 
 
-class MinOptimumPlus(ObjectInterpretation):
-    """Lift :data:`Min` to values carrying minimizing assignments."""
-
-    @implements(Min.plus)
-    def plus(self, *args):
-        if not args or not all(isinstance(a, Optimum) for a in args):
-            return fwd()
-        feasible = [a for a in args if a.feasible]
-        if not feasible:
-            return Optimum(Min.identity, None)
-        if any(isinstance(a.value, Term) for a in feasible):
-            return fwd()
-        try:
-            return min(feasible, key=lambda a: a.value)
-        except (TypeError, ValueError):
-            return fwd()
-
-
-class MaxOptimumPlus(ObjectInterpretation):
-    """Lift :data:`Max` to values carrying maximizing assignments."""
-
-    @implements(Max.plus)
-    def plus(self, *args):
-        if not args or not all(isinstance(a, Optimum) for a in args):
-            return fwd()
-        feasible = [a for a in args if a.feasible]
-        if not feasible:
-            return Optimum(Max.identity, None)
-        if any(isinstance(a.value, Term) for a in feasible):
-            return fwd()
-        try:
-            return max(feasible, key=lambda a: a.value)
-        except (TypeError, ValueError):
-            return fwd()
-
-
 def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
     merged = {}
     for d in dicts:
@@ -1627,17 +1591,22 @@ def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
     return merged
 
 
-class OptimumPlus(ObjectInterpretation):
-    @staticmethod
-    def _optimum_min_max(func, *args):
-        if (
-            not args
-            or not any(isinstance(a, Optimum) for a in args)
-            or any(isinstance(a, Optimum) and isinstance(a.value, Term) for a in args)
-        ):
-            return fwd()
+class PlusOptimum(ObjectInterpretation):
+    """Sum values that are annotated with a minimizing (or maximizing) assignment."""
 
-        return func(args, key=lambda a: a.value if isinstance(a, Optimum) else a)
+    def _is_reducible(self, args):
+        return (
+            args
+            and any(isinstance(a, Optimum) for a in args)
+            and all(not fvsof(a.value if isinstance(a, Optimum) else a) for a in args)
+        )
+
+    def _optimum_min_max(self, func, *args):
+        return (
+            func(args, key=lambda a: a.value if isinstance(a, Optimum) else a)
+            if self._is_reducible(args)
+            else fwd()
+        )
 
     @implements(Min.plus)
     def _min_plus(self, *args):
@@ -1649,20 +1618,43 @@ class OptimumPlus(ObjectInterpretation):
 
     @implements(Sum.plus)
     def _sum_plus(self, *args):
-        if not args or not any(isinstance(arg, Optimum) for arg in args):
-            return fwd()
-        return Optimum(
-            Sum.plus(*(arg.value if isinstance(arg, Optimum) else arg for arg in args)),
-            _disjoint_merge(
-                *(arg.assignment if isinstance(arg, Optimum) else {} for arg in args)
-            ),
+        return (
+            Optimum(
+                Sum.plus(
+                    *(arg.value if isinstance(arg, Optimum) else arg for arg in args)
+                ),
+                _disjoint_merge(
+                    *(
+                        arg.assignment if isinstance(arg, Optimum) else {}
+                        for arg in args
+                    )
+                ),
+            )
+            if self._is_reducible(args)
+            else fwd()
         )
 
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
-        if not args or not any(isinstance(arg, Optimum) for arg in args):
-            return fwd()
-        return monoid.plus(*(a.value if isinstance(a, Optimum) else a for a in args))
+        return (
+            monoid.plus(*(a.value if isinstance(a, Optimum) else a for a in args))
+            if self._is_reducible(args)
+            else fwd()
+        )
+
+
+class PlusCastOptimum(ObjectInterpretation):
+    """Upcast non-Optimum arguments to Monoid.plus."""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        num_optimum = sum(isinstance(a, Optimum) for a in args)
+        if 0 < num_optimum < len(args):
+            new_args = (
+                Optimum(a, {}) if not isinstance(a, Optimum) else a for a in args
+            )
+            return monoid.plus(*new_args)
+        return fwd()
 
 
 class CartesianProductPlus(ObjectInterpretation):
@@ -2188,7 +2180,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     CartesianProductPlus(),
     UnionPlus(),
     IntersectionPlus(),
-    OptimumPlus(),
+    PlusOptimum(),
     ReduceWhereToMasks(),
 )
 
