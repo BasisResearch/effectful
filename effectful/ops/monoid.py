@@ -892,32 +892,34 @@ class ReducePartial(ObjectInterpretation):
         return fwd()
 
 
+@Operation.define
+def is_ready(expr: Expr) -> bool:
+    return not fvsof(expr)
+
+
 class PlusPartial(ObjectInterpretation):
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         """Evaluate maximal concrete runs without reordering symbolic operands."""
-        n_concrete = sum(len(fvsof(arg)) == 0 for arg in args)
-        if n_concrete <= 0 or n_concrete >= len(args):
+        n_concrete = sum(is_ready(arg) for arg in args)
+        if not (0 < n_concrete < len(args)):
             return fwd()
 
         progress = False
         new_args = []
-        run = []
-        for arg in args:
-            if fvsof(arg):
-                if run:
-                    new_args.append(monoid.plus(*run) if len(run) > 1 else run[0])
-                    progress |= len(run) > 1
-                    run = []
-                new_args.append(arg)
+        for ready, group in itertools.groupby(args, key=is_ready):
+            run = tuple(group)
+            if not ready or len(run) < 2:
+                new_args.extend(run)
+                continue
+
+            result = monoid.plus(*run)
+            if isinstance(result, Term) and _is_monoid_plus(result.op):
+                new_args.extend(run)
             else:
-                run.append(arg)
-        if run:
-            progress |= len(run) > 1
-            new_args.append(monoid.plus(*run) if len(run) > 1 else run[0])
-        if not progress:
-            return fwd()
-        return monoid.plus(*new_args)
+                new_args.append(result)
+                progress = True
+        return monoid.plus(*new_args) if progress else fwd()
 
 
 class ReduceFusion(ObjectInterpretation):
@@ -1535,6 +1537,26 @@ class ProductPlus(ObjectInterpretation):
         if not _scalar_args(args):
             return fwd()
         return functools.reduce(operator.mul, args)
+
+
+class AndPlus(ObjectInterpretation):
+    """Scalar implementation of :data:`And`."""
+
+    @implements(And.plus)
+    def plus(self, *args):
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        return all(args)
+
+
+class OrPlus(ObjectInterpretation):
+    """Scalar implementation of :data:`Or`."""
+
+    @implements(Or.plus)
+    def plus(self, *args):
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        return any(args)
 
 
 class LogSumExpPlus(ObjectInterpretation):
@@ -2156,6 +2178,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWeightedStream(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),
+    PlusPartial(),
     PlusEmpty(),
     PlusSingle(),
     PlusAssoc(),
@@ -2175,7 +2198,16 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceDependentRangeMask(),
     ReduceDisequalityMask(),
     ContractLongestStream(),
-    PlusPartial(),
+    SumPlus(),
+    MinPlus(),
+    MaxPlus(),
+    ProductPlus(),
+    ArgMinPlus(),
+    ArgMaxPlus(),
+    CartesianProductPlus(),
+    UnionPlus(),
+    AndPlus(),
+    OrPlus(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce

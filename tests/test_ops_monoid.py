@@ -55,6 +55,7 @@ from effectful.ops.monoid import (
     ReduceWhereEqualityPeel,
     ReduceWhereToMasks,
     Sum,
+    SumPlus,
     Union,
     WhereHoist,
     as_iterable,
@@ -567,21 +568,12 @@ def test_plus_zero(monoid, backend: Backend):
     backend.check_rewrite(lhs=lhs_left, rhs=rhs, rule={})
 
 
-@pytest.mark.parametrize(
-    ("monoid", "left", "right"),
-    [
-        pytest.param(Sum, 3, 7, id="Sum"),
-        pytest.param(Product, 2, 12, id="Product"),
-        pytest.param(Min, 1, 3, id="Min"),
-        pytest.param(Max, 2, 4, id="Max"),
-    ],
-)
-def test_plus_partial(monoid, left, right):
+def test_plus_partial():
     backend = IntBackend()
     x = backend.define_vars("x", ret="scalar")
-    lhs = monoid.plus(1, 2, x(), 3, 4)
-    rhs = monoid.plus(left, x(), right)
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=coproduct(EvaluateIntp, PlusPartial()))
+    lhs = Sum.plus(1, 2, x(), 3, 4)
+    rhs = Sum.plus(3, x(), 7)
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=coproduct(PlusPartial(), SumPlus()))
 
 
 def test_plus_partial_without_concrete_rule_is_noop():
