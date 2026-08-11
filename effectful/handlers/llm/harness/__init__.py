@@ -41,6 +41,7 @@ import typing
 import litellm
 import tenacity
 
+from effectful.handlers.llm.harness.context import FrameworkDocumenter
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
@@ -79,16 +80,19 @@ class harness(contextlib.ContextDecorator):
     exiting removes them. The handlers, in installation order, are:
 
     1. `LiteLLMProvider` -- the model backend.
-    2. `TerminalRenderer` -- live-render the streaming history (if ``render``).
-    3. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
-    4. The ``eval_provider`` (`EVAL_PROVIDERS`) and `PythonRepl` -- run
-       model-authored Python.
-    5. `SynthesizeAndCall` -- synthesize a function and call it.
-    6. `RetryLLMHandler` -- retry malformed/failing model output.
-    7. `LexicalReaders` -- expose lexically-scoped tools to the model.
-    8. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
-       SQLite after each successful call (if ``persist_db``).
-    9. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+    2. `FrameworkDocumenter` -- describe the framework's concepts in the system
+       prompt.
+    3. `HistoryBuilder` -- accumulate the message history of a call.
+    4. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
+    5. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
+    6. The ``eval_provider`` (`EVAL_PROVIDERS`) and `StatefulReplSynthesizer` --
+       run model-authored Python.
+    7. `FinalBodySynthesizer` -- synthesize a function and call it.
+    8. `TenacityRetryer` -- retry malformed/failing model output.
+    9. `LexicalReaders` -- expose lexically-scoped tools to the model.
+    10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
+        SQLite after each successful call (if ``persist_db``).
+    11. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
     Args:
         model: LLM model to use.
@@ -155,6 +159,7 @@ class harness(contextlib.ContextDecorator):
                 )
             )
         )
+        stack.enter_context(handler(FrameworkDocumenter()))
         stack.enter_context(handler(HistoryBuilder()))
         if self.render:
             stack.enter_context(handler(RichTerminalRenderer()))

@@ -3,7 +3,6 @@ import collections
 import collections.abc
 import dataclasses
 import functools
-import inspect
 import json
 import traceback
 import typing
@@ -16,6 +15,8 @@ from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
+    SystemPrompt,
+    _render_system_prompt,
     format_as_content_blocks,
     to_content_blocks,
 )
@@ -340,27 +341,19 @@ def call_user(
 
 
 @Operation.define
-def call_system(
-    template: Template, *, tool_types: collections.abc.Set[type[Tool]] = frozenset()
-) -> litellm.ChatCompletionSystemMessage:
-    """Assemble and install the system message (a Markdown document)."""
-    from effectful.handlers.llm.harness.context import (
-        _system_agent_block,
-        _system_global_block,
-        _system_imports_block,
-        _system_module_block,
-        _system_vars_block,
-    )
+def call_system(prompt: SystemPrompt) -> litellm.ChatCompletionSystemMessage:
+    """Render an assembled `SystemPrompt` as the system message.
 
-    sections = [
-        _system_global_block(tool_types),
-        _system_module_block(inspect.getmodule(template)),
-        _system_agent_block(template),
-        _system_imports_block(template.__context__),
-        _system_vars_block(template.__context__),
-    ]
-    content = "\n\n".join(s for s in sections if s)
-    message = litellm.ChatCompletionSystemMessage(
-        role="system", content=content, cache_control={"type": "ephemeral"}
+    The document is the argument: a caller (`LiteLLMProvider._call`) builds one
+    from the `Template` being called, and every handler with something to say
+    about the harness rewrites that structure on the way down -- adding a section
+    for the capability it provides -- so this rule only has to flatten what
+    reaches it.
+
+    The outgoing request's prompt-caching breakpoints are added by the provider
+    (`LiteLLMConfigurer._add_cache_control`), so the message assembled here is
+    exactly what is stored in the history, with no transport-level annotation.
+    """
+    return litellm.ChatCompletionSystemMessage(
+        role="system", content=list(_render_system_prompt(prompt))
     )
-    return message

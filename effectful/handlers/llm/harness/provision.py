@@ -6,6 +6,7 @@ import typing
 import litellm
 from litellm.types.llms.openai import ChatCompletionToolChoiceValues
 
+from effectful.handlers.llm.harness.context import template_system_prompt
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
@@ -34,53 +35,70 @@ class LiteLLMConfigurer(ObjectInterpretation):
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
 
+    @staticmethod
+    def _mark(msg: Message) -> Message:
+        """`msg`, with a `cache_control` breakpoint on its last content block.
+
+        A message whose content is a plain string -- which the assembled system
+        prompt is not, but a hand-written or externally supplied message may be
+        -- takes the message-level key instead, the only form litellm reads a
+        breakpoint from for string content.
+        """
+        content = msg.get("content")
+        if isinstance(content, str):
+            return typing.cast(Message, {**msg, "cache_control": {"type": "ephemeral"}})
+        if not isinstance(content, list) or not content:
+            return msg
+        last_block = content[-1]
+        if not isinstance(last_block, dict) or "cache_control" in last_block:
+            return msg
+        return typing.cast(
+            Message,
+            {
+                **msg,
+                "content": [
+                    *content[:-1],
+                    {**last_block, "cache_control": {"type": "ephemeral"}},
+                ],
+            },
+        )
+
     def _add_cache_control(
         self,
         messages: collections.abc.Sequence[Message],
     ) -> list[Message]:
-        """Mark the last user/tool message of a request for prompt caching.
+        """Mark the system message and the last user/tool message of a request
+        for prompt caching.
 
         A `cache_control` breakpoint caches the request prefix -- tools, system,
         and messages, in that order -- up to and including the block it sits on,
         and a later request that shares that prefix reads it back at a fraction
-        of the input price. Putting the breakpoint on the *last* input message
+        of the input price. Putting a breakpoint on the *last* input message
         therefore caches as much of a growing conversation as possible: an
         agent's accumulated history, or the rounds of a single tool-use loop.
+        The system prompt gets one of its own because it is the largest constant
+        part of every request and is worth caching even on the first round of a
+        conversation, before there is any history to extend.
 
-        Exactly one breakpoint is added, and it moves to the newest message on
-        every request. That matters in both directions: providers cap how many
-        breakpoints a request may carry (Anthropic allows four), and a
+        Exactly two breakpoints are added, and the second moves to the newest
+        message on every request. That matters in both directions: providers cap
+        how many breakpoints a request may carry (Anthropic allows four), and a
         breakpoint pinned to an old position stops extending the cached prefix
-        as the conversation grows. The assembled system prompt carries its own,
-        separately (see `call_system`).
+        as the conversation grows.
 
-        Returns a new list, leaving the caller's messages untouched, so this
-        transport-level annotation never reaches the stored history -- and so
-        never reaches an `Agent`'s checkpointed transcript.
+        Returns a new list, leaving the caller's messages untouched, so these
+        transport-level annotations never reach the stored history -- and so
+        never reach an `Agent`'s checkpointed transcript.
         """
         out = list(messages)
         for i in reversed(range(len(out))):
-            msg = out[i]
-            if msg["role"] not in ("user", "tool"):
-                continue
-            content = msg.get("content")
-            if not isinstance(content, list) or not content:
-                continue
-            last_block = content[-1]
-            if not isinstance(last_block, dict):
-                continue
-            if "cache_control" not in last_block:
-                out[i] = typing.cast(
-                    Message,
-                    {
-                        **msg,
-                        "content": [
-                            *content[:-1],
-                            {**last_block, "cache_control": {"type": "ephemeral"}},
-                        ],
-                    },
-                )
-            break
+            if out[i]["role"] in ("user", "tool"):
+                out[i] = self._mark(out[i])
+                break
+        for i in range(len(out)):
+            if out[i]["role"] == "system":
+                out[i] = self._mark(out[i])
+                break
         return out
 
     @staticmethod
@@ -182,7 +200,7 @@ class LiteLLMProvider(LiteLLMConfigurer):
     def _call[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        message: Message = call_system(template)
+        message: Message = call_system(template_system_prompt(template))
 
         bound_args = inspect.signature(template).bind(*args, **kwargs)
         bound_args.apply_defaults()

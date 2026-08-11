@@ -5,6 +5,7 @@ import collections
 import collections.abc
 import contextlib
 import functools
+import inspect
 import io
 import linecache
 import types
@@ -14,6 +15,7 @@ import uuid
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
+from effectful.handlers.llm.harness.context import HARNESS_SECTION
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
@@ -23,7 +25,11 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
+    PromptSection,
+    SystemPrompt,
     TypeToPydanticType,
+    add_prompt_content,
+    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
@@ -304,51 +310,46 @@ def _pydantic_type_code(ty):
 
 
 class StatefulReplSynthesizer(ObjectInterpretation):
-    """Expose a persistent Python session to the LLM as an `exec_code` Tool.
+    """You may run arbitrary Python code in a persistent session. The code is
+    executed in the context of this Template's lexical scope (see the *Lexical
+    scope* table for the available names and their types). The session persists
+    across turns, so you may define variables, functions, and classes that are
+    used in later turns. The return value of the code is returned to you as the
+    result of the tool call.
 
-    Off by default; install it where the LLM should be able to run code whose
-    state (variables, imports, definitions) survives across tool calls within a
-    single Template invocation.
-
-    Scoping mirrors how `__history__` is managed for Template calls: `PythonRepl`
-    handles `Template.__apply__` to introduce fresh session-bound handlers (`exec_code`,
-    `read_lexical_variable`, `repl_history`) for the duration of the call, and intercepts
-    `call_assistant` to inject an `exec_code` Tool routed to that session.  The session is
-    therefore introduced and
-    eliminated by its own handler, bounded to the Template call by construction --
-    there is no global registry of sessions, and nested Template calls get their
-    own isolated sessions.
-
-    The session is seeded from the Template's lexical context and routes execution
-    through the `parse`/`compile`/`exec` effect operations, so it works under any
-    installed eval provider (`UnsafeEvalProvider` or `RestrictedEvalProvider`).
+    Use the REPL only when running code actually helps — computing or verifying
+    a result, exploring data, or calling a tool. If you can answer directly, just
+    answer; do not route a plain text answer through `print(...)`.
     """
 
+    # Off by default; install it where the LLM should be able to run code whose
+    # state (variables, imports, definitions) survives across tool calls within a
+    # single Template invocation.  The docstring above is model-facing: it is the
+    # `Harness` section this handler adds to the system prompt (see
+    # `_call_system`), so implementation notes belong in comments like this one.
+    #
+    # Scoping mirrors how `__history__` is managed for Template calls: `_apply`
+    # handles `Template.__apply__` to introduce fresh session-bound handlers
+    # (`exec_code`, `read_lexical_variable`, `repl_history`) for the duration of
+    # the call, and `_call_assistant` injects an `exec_code` Tool routed to that
+    # session.  The session is therefore introduced and eliminated by its own
+    # handler, bounded to the Template call by construction -- there is no global
+    # registry of sessions, and nested Template calls get their own isolated ones.
+    #
+    # The session is seeded from the Template's lexical context and routes
+    # execution through the `parse`/`compile`/`exec` effect operations, so it
+    # works under any installed eval provider (`BuiltinExecutor` or
+    # `RestrictedPythonExecutor`).
+
     @typing.final
-    class _ReplInteractionTool[**P, T](Tool[P, T]):
-        """## Python REPL
-
-        You may run arbitrary Python code in a persistent session. The code is
-        executed in the context of this Template's lexical scope (see the *Lexical
-        scope* table for the available names and their types). The session persists
-        across turns, so you may define variables, functions, and classes that are
-        used in later turns. The return value of the code is returned to you as the
-        result of the tool call.
-
-        Use the REPL only when running code actually helps — computing or verifying
-        a result, exploring data, or calling a tool. If you can answer directly, just
-        answer; do not route a plain text answer through `print(...)`.
-        """
-
-    @typing.final
-    @_ReplInteractionTool.define
+    @Tool.define
     @classmethod
     @functools.wraps(ReplSession.exec_code)
     def exec_code(cls, code: types.CodeType) -> str:
         raise NotImplementedError("No handler")
 
     @typing.final
-    @_ReplInteractionTool.define
+    @Tool.define
     @classmethod
     def read_lexical_variable(cls, name: str) -> typing.Any:
         """
@@ -378,8 +379,18 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         return {}
 
     @implements(call_system)
-    def _call_system(self, template, tool_types=frozenset()):
-        return fwd(template, tool_types=tool_types | {self._ReplInteractionTool})
+    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+        return fwd(
+            add_prompt_content(
+                prompt,
+                PromptSection(
+                    type="prompt_section",
+                    title="Python REPL",
+                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                ),
+                under=HARNESS_SECTION,
+            )
+        )
 
     @implements(Template.__apply__)
     def _apply[**P, T](

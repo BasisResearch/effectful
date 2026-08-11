@@ -3049,16 +3049,14 @@ class TestPromptCaching:
         with handler(capture), handler(provider), handler(HistoryBuilder()):
             agent.ask("What is 2+2?")
 
-        # The system message carries its own message-level key from
-        # `call_system`; what must not appear is a block-level breakpoint, which
-        # is the only thing `_add_cache_control` adds.
+        # Every breakpoint in the request -- on the system message and on the
+        # last input message alike -- is added by `_add_cache_control`, so the
+        # transcript should carry none of them, in either form.
         sent = capture.received_messages[0]
-        assert any(_has_block_cache_control(m) for m in sent), (
-            "sanity: the outgoing request should carry a block-level breakpoint"
+        assert any(_has_cache_control(m) for m in sent), (
+            "sanity: the outgoing request should carry a breakpoint"
         )
-        assert not [
-            m for m in agent.__history__.values() if _has_block_cache_control(m)
-        ], (
+        assert not [m for m in agent.__history__.values() if _has_cache_control(m)], (
             f"cache_control leaked into stored history: {list(agent.__history__.values())}"
         )
 
@@ -3082,18 +3080,24 @@ class TestPromptCaching:
                     if isinstance(block, dict) and "cache_control" in block:
                         assert block["cache_control"] == {"type": "ephemeral"}
 
-    def test_anthropic_receives_cache_control_from_message_level_key(self):
-        """The system message carries `cache_control` as a message-level key, since
-        `call_system` assembles its content as one Markdown string rather than a list
-        of blocks. Verify litellm still forwards it to Anthropic as a cached system
-        block -- the message-level form is what makes that shape cacheable."""
+    def test_anthropic_receives_cache_control_from_last_system_block(self):
+        """The system message's breakpoint sits on its last content block, since
+        `call_system` renders the assembled prompt as a list of blocks rather than one
+        Markdown string. Verify litellm forwards it to Anthropic as a cached system
+        block -- for list content the block-level form is the *only* one it reads, so
+        a message-level key would silently stop caching the system prompt."""
         from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
         msgs = [
             {
                 "role": "system",
-                "content": "Hi.",
-                "cache_control": {"type": "ephemeral"},
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Hi.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
             },
             {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
         ]

@@ -14,7 +14,11 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
-from effectful.handlers.llm.harness.context import LexicalReaders
+from effectful.handlers.llm.harness.context import (
+    HARNESS_SECTION,
+    LexicalReaders,
+    template_system_prompt,
+)
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
@@ -22,11 +26,20 @@ from effectful.handlers.llm.harness.hooks import (
     call_user,
     completion,
 )
+from effectful.handlers.llm.harness.observability.rendering import _message_text
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.harness.serialization import _NAME2TOOL_KEY, DecodedToolCall
+from effectful.handlers.llm.harness.serialization import (
+    _NAME2TOOL_KEY,
+    DecodedToolCall,
+    PromptSection,
+    SystemPrompt,
+    _render_system_prompt,
+    add_prompt_content,
+    to_content_blocks,
+)
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 from tests.conftest import offered_tools, template_tools
@@ -502,18 +515,127 @@ class TestSystemPromptInvariant:
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
-        content = mock.received_messages[0][0]["content"]
-        # call_system is now the sole assembler: the content is a Markdown
-        # document introspected from the Template, not a stored attribute.
+        content = _message_text(mock.received_messages[0][0]["content"])
+        # The content is a Markdown document introspected from the Template and
+        # rendered from the assembled `SystemPrompt`, not a stored attribute.
         assert "### `standalone(topic: str) -> str`" in content
         assert "Write about {topic}." in content
+
+
+class TestSystemPromptDocument:
+    """The system prompt is a `SystemPrompt` document that handlers rewrite on
+    the way down, and that `call_system` renders to content blocks."""
+
+    def _prompt(self, *content) -> SystemPrompt:
+        return SystemPrompt(type="system_prompt", title="doc", content=list(content))
+
+    def _section(self, title, content) -> PromptSection:
+        return PromptSection(
+            type="prompt_section",
+            title=title,
+            content=to_content_blocks(content) if isinstance(content, str) else content,
+        )
+
+    def test_sections_nest_and_text_rebases_below_its_section(self):
+        """A docstring authored with its own `##`-rooted headings nests beneath
+        whatever section ends up carrying it, so the document has one outline."""
+        inner = self._section("Inner", "## Own heading\n\nbody")
+        prompt = self._prompt(
+            self._section("Outer", [*to_content_blocks("intro"), inner])
+        )
+        assert (
+            _message_text(_render_system_prompt(prompt))
+            == "# Outer\n\nintro\n\n## Inner\n\n### Own heading\n\nbody"
+        )
+
+    def test_empty_sections_are_omitted(self):
+        """An unfilled section -- `Harness` under a stack that installs no
+        capability handlers -- leaves no stray heading behind."""
+        prompt = self._prompt(
+            self._section(HARNESS_SECTION, []),
+            self._section("Blank", ""),
+            self._section("Kept", "body"),
+        )
+        assert _message_text(_render_system_prompt(prompt)) == "# Kept\n\nbody"
+
+    def test_non_text_blocks_reach_the_system_prompt(self):
+        """The document is a block list, not a Markdown string, so a section may
+        carry an image."""
+        image = {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64,AAAA"},
+        }
+        prompt = self._prompt(
+            self._section(
+                "Figure",
+                [*to_content_blocks("before"), image, *to_content_blocks("after")],
+            )
+        )
+        blocks = _render_system_prompt(prompt)
+        assert [b["type"] for b in blocks] == ["text", "image_url", "text"]
+        assert blocks[0]["text"] == "# Figure\n\nbefore"
+        assert blocks[1] == image
+        assert blocks[2]["text"] == "after"
+
+    def test_add_prompt_content_leaves_the_caller_s_prompt_alone(self):
+        prompt = self._prompt(self._section(HARNESS_SECTION, []))
+        added = add_prompt_content(
+            prompt, self._section("Python REPL", "run code"), under=HARNESS_SECTION
+        )
+        assert _message_text(_render_system_prompt(prompt)) == ""
+        assert (
+            _message_text(_render_system_prompt(added))
+            == "# Harness\n\n## Python REPL\n\nrun code"
+        )
+
+    def test_add_prompt_content_creates_a_missing_section(self):
+        added = add_prompt_content(
+            self._prompt(),
+            self._section("Python REPL", "run code"),
+            under=HARNESS_SECTION,
+        )
+        assert (
+            _message_text(_render_system_prompt(added))
+            == "# Harness\n\n## Python REPL\n\nrun code"
+        )
+
+    def test_a_handler_documents_itself_with_its_own_docstring(self):
+        @Template.define
+        def standalone(topic: str) -> str:
+            """Write about {topic}."""
+            raise NotHandled
+
+        class Documented(ObjectInterpretation):
+            """A capability of the harness, described for the model."""
+
+            @implements(call_system)
+            def _call_system(self, prompt):
+                return fwd(
+                    add_prompt_content(
+                        prompt,
+                        PromptSection(
+                            type="prompt_section",
+                            title="Documented",
+                            content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                        ),
+                        under=HARNESS_SECTION,
+                    )
+                )
+
+        with handler(Documented()):
+            content = _message_text(
+                call_system(template_system_prompt(standalone))["content"]
+            )
+
+        assert "# Harness\n\n## Documented" in content
+        assert "A capability of the harness, described for the model." in content
 
 
 class TestAgentDocstringFallback:
     """Agent subclasses' class docstrings flow into the assembled system message."""
 
     def _system_content(self, template):
-        return call_system(template)["content"]
+        return _message_text(call_system(template_system_prompt(template))["content"])
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):

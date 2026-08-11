@@ -10,13 +10,21 @@ from collections.abc import Callable
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
-from effectful.handlers.llm.harness.hooks import call_assistant, call_system
+from effectful.handlers.llm.harness.context import HARNESS_SECTION
+from effectful.handlers.llm.harness.hooks import (
+    call_assistant,
+    call_system,
+)
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     EncodedFunction,
+    PromptSection,
+    SystemPrompt,
     TypeToPydanticType,
     _inline_refs,
     _serialize_callable,
+    add_prompt_content,
+    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
@@ -437,72 +445,72 @@ def _callable_type_from_signature(
 
 
 class FinalBodySynthesizer(ObjectInterpretation):
-    """Answer a Template by synthesizing a function and calling it.
+    """You may "answer" a Template by writing code instead of producing the value
+    directly. A final tool (typically `submit_solution`) accepts a single
+    argument: a Python function whose signature matches the Template's signature
+    (see its spec below). The harness applies that function to the original
+    inputs and its return value becomes the answer, so write the function body
+    as a drop-in implementation of the Template. The function may reference
+    names from the lexical scope (see the *Lexical scope* table).
 
-    Instead of asking the LLM to generate an instance of the Template's return
-    type directly, this handler exposes a :class:`FinalTool` that lets the model
-    "answer" by writing a Python function with the Template's signature.  The
-    harness applies that function to the original arguments and its return value
-    becomes the Template's result.  This is the declarative "CodeAdapt" workflow:
-    the LLM writes code implementing the body of the Template rather than
-    reasoning out the answer itself.
+    You do not need to write a docstring or doctests: on submission the harness
+    attaches the Template's own docstring to your function and runs *its*
+    doctests (with recursive calls to the Template routed to your
+    implementation). A solution whose doctests fail — or that errors when
+    applied — is rejected and fed back to you to revise, so the answer only
+    stands once the Template's doctests pass. Write just the implementation;
+    any docstring you add is replaced and ignored. Calling this tool terminates
+    the completion.
 
-    The synthesis tool is offered *alongside* the Template's normal completion
-    paths rather than replacing them: across turns the model may freely call any
-    other tool in scope (their results are fed back as usual), and it may still
-    answer the return type directly via structured output.  The loop terminates
-    when it either answers directly or calls the synthesis :class:`FinalTool`.
-    To force the synthesis path, pass ``tool_choice="required"`` (handler config
-    is forwarded to the model request).  The function is synthesized by reusing
-    the existing ``Callable`` synthesis machinery: the tool's argument is typed
-    as ``Callable[[params], ret]``, so :func:`call_assistant`'s tool-call
-    decoding parses, type-checks, compiles and executes the model's code into a
-    real function before it is applied.
-
-    Failures compose with :class:`RetryLLMHandler`: a function that fails to
-    synthesize surfaces as a :class:`ToolCallDecodingError`, and one that raises
-    when applied to the inputs as a :class:`ToolCallExecutionError`; both are fed
-    back to the model as a tool message and the loop continues so it can revise::
-
-        with (
-            handler(LiteLLMProvider(model="gpt-5-mini")),
-            handler(SynthesizeAndCall()),
-            handler(RetryLLMHandler()),
-        ):
-            ...
-
-    Requires an eval provider (e.g. :class:`UnsafeEvalProvider` or
-    :class:`RestrictedEvalProvider`) to be installed so the synthesized code can
-    be compiled and executed.
+    This answers the *current* call only. Each call is a fresh, independent
+    task: even if you already submitted a working solution earlier in this
+    conversation, a prior submission is not a standing answer — you must call
+    `submit_solution` again to answer the current call. Never end a turn with
+    a prose summary in place of the answer; a plain message is not a valid
+    response and will be rejected.
     """
+
+    # The docstring above is model-facing: it is the `Harness` section this
+    # handler adds to the system prompt (see `_call_system`), so notes for a
+    # reader of the code belong in comments like this one.
+    #
+    # This is the declarative "CodeAdapt" workflow: the LLM writes code
+    # implementing the body of the Template rather than reasoning out the answer
+    # itself.  The synthesis tool is offered *alongside* the Template's normal
+    # completion paths rather than replacing them: across turns the model may
+    # freely call any other tool in scope (their results are fed back as usual),
+    # and it may still answer the return type directly via structured output.
+    # The loop terminates when it either answers directly or calls the synthesis
+    # `FinalTool`.  To force the synthesis path, pass ``tool_choice="required"``
+    # (handler config is forwarded to the model request).  The function is
+    # synthesized by reusing the existing ``Callable`` synthesis machinery: the
+    # tool's argument is typed as ``Callable[[params], ret]``, so
+    # `call_assistant`'s tool-call decoding parses, type-checks, compiles and
+    # executes the model's code into a real function before it is applied.
+    #
+    # Failures compose with `TenacityRetryer`: a function that fails to
+    # synthesize surfaces as a `ToolCallDecodingError`, and one that raises when
+    # applied to the inputs as a `ToolCallExecutionError`; both are fed back to
+    # the model as a tool message and the loop continues so it can revise::
+    #
+    #     with (
+    #         handler(LiteLLMProvider(model="gpt-5-mini")),
+    #         handler(FinalBodySynthesizer()),
+    #         handler(TenacityRetryer()),
+    #     ):
+    #         ...
+    #
+    # Requires an eval provider (e.g. `BuiltinExecutor` or
+    # `RestrictedPythonExecutor`) to be installed so the synthesized code can be
+    # compiled and executed.
 
     @typing.final
     class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
-        """## Code synthesis
+        """The `FinalTool` a synthesized Template body is submitted through.
 
-        You may "answer" a Template by writing code instead of producing the value
-        directly. A final tool (typically `submit_solution`) accepts a single
-        argument: a Python function whose signature matches the Template's signature
-        (see its spec below). The harness applies that function to the original
-        inputs and its return value becomes the answer, so write the function body
-        as a drop-in implementation of the Template. The function may reference
-        names from the lexical scope (see the *Lexical scope* table).
-
-        You do not need to write a docstring or doctests: on submission the harness
-        attaches the Template's own docstring to your function and runs *its*
-        doctests (with recursive calls to the Template routed to your
-        implementation). A solution whose doctests fail — or that errors when
-        applied — is rejected and fed back to you to revise, so the answer only
-        stands once the Template's doctests pass. Write just the implementation;
-        any docstring you add is replaced and ignored. Calling this tool terminates
-        the completion.
-
-        This answers the *current* call only. Each call is a fresh, independent
-        task: even if you already submitted a working solution earlier in this
-        conversation, a prior submission is not a standing answer — you must call
-        `submit_solution` again to answer the current call. Never end a turn with
-        a prose summary in place of the answer; a plain message is not a valid
-        response and will be rejected.
+        A distinct type only so `_apply` can tell whether a request already
+        carries this handler's tool; the capability is described to the model by
+        the handler's docstring.
         """
 
         __toolname__: typing.ClassVar[typing.Literal["submit_solution"]] = (
@@ -544,8 +552,18 @@ class FinalBodySynthesizer(ObjectInterpretation):
             return super().define(submit_solution, name=cls.__toolname__)
 
     @implements(call_system)
-    def _call_system(self, template, tool_types=frozenset()):
-        return fwd(template, tool_types=tool_types | {self._SynthesisFinalTool})
+    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+        return fwd(
+            add_prompt_content(
+                prompt,
+                PromptSection(
+                    type="prompt_section",
+                    title="Code synthesis",
+                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                ),
+                under=HARNESS_SECTION,
+            )
+        )
 
     @implements(Template.__apply__)
     def _apply[**P, T](

@@ -5,6 +5,7 @@ import functools
 import inspect
 import io
 import json
+import re
 import string
 import textwrap
 import typing
@@ -149,6 +150,170 @@ def format_as_content_blocks(
     flush_text()
 
     return parts
+
+
+class PromptSection(typing.TypedDict):
+    type: typing.Literal["prompt_section"]
+    title: str
+    content: collections.abc.Sequence[
+        litellm.OpenAIMessageContentListBlock | "PromptSection"
+    ]
+
+
+class SystemPrompt(typing.TypedDict):
+    type: typing.Literal["system_prompt"]
+    title: str
+    content: collections.abc.Sequence[
+        litellm.OpenAIMessageContentListBlock | PromptSection
+    ]
+
+
+def add_prompt_content(
+    prompt: SystemPrompt,
+    *content: litellm.OpenAIMessageContentListBlock | PromptSection,
+    under: str | None = None,
+) -> SystemPrompt:
+    """`prompt`, with `content` appended to the section titled `under`.
+
+    Returns a new `SystemPrompt`, leaving the caller's untouched, so a handler can
+    add its own section and forward the result without disturbing the document any
+    enclosing handler still holds.
+
+    With no `under`, `content` is appended at top level.  A named section that is
+    not present is created at the end.
+    """
+    if under is None:
+        return {**prompt, "content": [*prompt["content"], *content]}
+
+    out: list[litellm.OpenAIMessageContentListBlock | PromptSection] = []
+    found = False
+    for item in prompt["content"]:
+        if item.get("type") == "prompt_section" and item.get("title") == under:
+            section = typing.cast(PromptSection, item)
+            item = PromptSection(
+                type="prompt_section",
+                title=under,
+                content=[*section["content"], *content],
+            )
+            found = True
+        out.append(item)
+    if not found:
+        out.append(
+            PromptSection(type="prompt_section", title=under, content=list(content))
+        )
+    return {**prompt, "content": out}
+
+
+# Matches an ATX heading's leading ``#``s (1-6, followed by whitespace) at the
+# start of a line, e.g. ``## Foo``. The lookahead avoids matching ``#!`` or a
+# ``#tag`` that is not a heading.
+_ATX_HEADING = re.compile(r"^(#{1,6})(?=\s)")
+
+
+def _shift_headings(md: str, by: int) -> str:
+    """Shift every ATX heading in `md` by `by` levels (clamped to 1..6).
+
+    Fenced code blocks (``` ``` ``` / ``` ~~~ ```) are skipped so ``#`` inside code --
+    Python comments, shell shebangs -- is left untouched.
+    """
+    if by == 0 or not md:
+        return md
+    out: list[str] = []
+    fence: str | None = None
+    for line in md.splitlines():
+        stripped = line.lstrip()
+        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
+            fence = stripped[:3]
+        elif fence is not None and stripped.startswith(fence):
+            fence = None
+        elif fence is None:
+            m = _ATX_HEADING.match(line)
+            if m:
+                level = max(1, min(6, len(m.group(1)) + by))
+                line = "#" * level + line[m.end(1) :]
+        out.append(line)
+    return "\n".join(out)
+
+
+def _rebase_headings(md: str, top: int) -> str:
+    """Renumber the headings in `md` so its shallowest one sits at level `top`,
+    preserving relative nesting; text with no headings is returned unchanged.
+
+    Applied to every text block as a prompt is rendered, so a docstring written
+    with its own heading hierarchy nests beneath the section that carries it and
+    the assembled document has a single coherent outline.
+    """
+    if not md:
+        return md
+    fence: str | None = None
+    levels: list[int] = []
+    for line in md.splitlines():
+        stripped = line.lstrip()
+        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
+            fence = stripped[:3]
+        elif fence is not None and stripped.startswith(fence):
+            fence = None
+        elif fence is None:
+            m = _ATX_HEADING.match(line)
+            if m:
+                levels.append(len(m.group(1)))
+    if not levels:
+        return md
+    return _shift_headings(md, top - min(levels))
+
+
+def _render_system_prompt(
+    prompt: SystemPrompt | PromptSection, level: int = 0
+) -> list[OpenAIMessageContentListBlock]:
+    """Flatten an assembled `SystemPrompt` into content blocks.
+
+    Top-level sections are rendered as ``#`` headings and nest from there, with
+    each block of text rebased below the section carrying it, so a docstring
+    written with its own heading hierarchy joins one coherent outline.  Runs of
+    text are coalesced, separated by blank lines: the result is a single Markdown
+    document, interrupted only by whatever non-text blocks it carries -- an image
+    in a section reaches the model as an image.
+
+    Recurs on each `PromptSection` at `level`, whose `title` becomes its heading.
+    A section that renders to nothing -- an unfilled harness section, say --
+    leaves no stray heading behind.  The document itself (`level` 0) contributes
+    no heading: its `title` identifies it to a `SystemPromptDumper` or a trace,
+    and is not part of what the model reads.
+    """
+    blocks: list[OpenAIMessageContentListBlock] = []
+
+    def emit(block: OpenAIMessageContentListBlock) -> None:
+        """Add `block`, running text into the text block before it, if any."""
+        if block["type"] == "text" and blocks and blocks[-1]["type"] == "text":
+            joined = f"{blocks[-1]['text']}\n\n{block['text']}"
+            blocks[-1] = {**blocks[-1], "text": joined}
+        else:
+            blocks.append(block)
+
+    for item in prompt["content"]:
+        if item.get("type") == "prompt_section":
+            for block in _render_system_prompt(
+                typing.cast(PromptSection, item), level + 1
+            ):
+                emit(block)
+        elif item.get("type") == "text":
+            text = _rebase_headings(
+                typing.cast(str, item.get("text") or ""), level + 1
+            ).strip()
+            if text:
+                emit(ChatCompletionTextObject(type="text", text=text))
+        else:
+            emit(typing.cast(OpenAIMessageContentListBlock, item))
+
+    if not level:
+        return blocks
+    if not blocks:
+        return []
+    heading = f"{'#' * min(level, 6)} {prompt['title']}"
+    if blocks[0]["type"] == "text":
+        joined = f"{heading}\n\n{blocks[0]['text']}"
+        return [{**blocks[0], "text": joined}, *blocks[1:]]
+    return [ChatCompletionTextObject(type="text", text=heading), *blocks]
 
 
 def _inline_refs(schema: dict) -> dict:

@@ -2,7 +2,6 @@ import builtins
 import collections.abc
 import inspect
 import json
-import re
 import types
 import typing
 
@@ -14,31 +13,37 @@ from effectful.handlers.llm.harness.hooks import (
     call_assistant,
     call_system,
 )
+from effectful.handlers.llm.harness.serialization import (
+    PromptSection,
+    SystemPrompt,
+    add_prompt_content,
+    to_content_blocks,
+)
 from effectful.handlers.llm.types import Agent, Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
+HARNESS_SECTION: typing.Final[str] = "Harness"
+
 
 class LexicalReaders(ObjectInterpretation):
-    """Intercept `call_assistant` to also expose plain values from the
-    lexical context as zero-argument read-only Tools.  Each non-Tool,
-    non-Template, non-Agent value bound to a valid identifier is
-    wrapped via `_LexicalVariableTool` if `Encodable[T]` accepts it;
-    schema-generation failures cause the symbol to be skipped.
+    """Some of the tools below take no arguments and simply return the current
+    value of a named variable from this Template's lexical scope (see the
+    *Lexical scope* table for the available names and their types). Call such a
+    reader when your answer depends on the concrete value of an in-scope
+    variable that has not already been spliced into the prompt — it lets you
+    fetch that value on demand instead of guessing it. Each reader's description
+    names the variable it reads.
     """
 
     @typing.final
     class _LexicalVariableTool[T](Tool[[], T]):
-        """## Reading lexical variables
+        """A synthetic zero-argument reader for one lexically scoped value.
 
-        Some of the tools below take no arguments and simply return the current
-        value of a named variable from this Template's lexical scope (see the
-        *Lexical scope* table for the available names and their types). Call such a
-        reader when your answer depends on the concrete value of an in-scope
-        variable that has not already been spliced into the prompt — it lets you
-        fetch that value on demand instead of guessing it. Each reader's description
-        names the variable it reads.
+        A distinct type only so `LexicalReaders` can recognize its own readers
+        among the tools in a request; the capability is described to the model by
+        the handler's docstring.
         """
 
         @classmethod
@@ -67,8 +72,18 @@ class LexicalReaders(ObjectInterpretation):
             return super().define(tool_fn)
 
     @implements(call_system)
-    def _call_system(self, template, tool_types=frozenset()):
-        return fwd(template, tool_types=tool_types | {self._LexicalVariableTool})
+    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+        return fwd(
+            add_prompt_content(
+                prompt,
+                PromptSection(
+                    type="prompt_section",
+                    title="Reading lexical variables",
+                    content=to_content_blocks(inspect.getdoc(type(self)) or ""),
+                ),
+                under=HARNESS_SECTION,
+            )
+        )
 
     @implements(call_assistant)
     def _call_assistant[T](
@@ -107,76 +122,9 @@ def _get_qualname(cls) -> str:
     return name if module in (None, "builtins") else f"{module}.{name}"
 
 
-# Matches an ATX heading's leading ``#``s (1-6, followed by whitespace) at the
-# start of a line, e.g. ``## Foo``. The lookahead avoids matching ``#!`` or a
-# ``#tag`` that is not a heading.
-_ATX_HEADING = re.compile(r"^(#{1,6})(?=\s)")
-
-
-def _shift_headings(md: str, by: int) -> str:
-    """Shift every ATX heading in `md` by `by` levels (clamped to 1..6).
-
-    Fenced code blocks (``` ``` ``` / ``` ~~~ ```) are skipped so ``#`` inside code --
-    Python comments, shell shebangs -- is left untouched.
-    """
-    if by == 0 or not md:
-        return md
-    out: list[str] = []
-    fence: str | None = None
-    for line in md.splitlines():
-        stripped = line.lstrip()
-        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
-            fence = stripped[:3]
-        elif fence is not None and stripped.startswith(fence):
-            fence = None
-        elif fence is None:
-            m = _ATX_HEADING.match(line)
-            if m:
-                level = max(1, min(6, len(m.group(1)) + by))
-                line = "#" * level + line[m.end(1) :]
-        out.append(line)
-    return "\n".join(out)
-
-
-def _rebase_headings(md: str, top: int) -> str:
-    """Renumber the headings in `md` so its shallowest one sits at level `top`,
-    preserving relative nesting; text with no headings is returned unchanged.
-
-    Used to nest a docstring that was authored with its own ``##``-rooted
-    heading hierarchy beneath a deeper section heading when the system prompt is
-    assembled, so the composed document has a single coherent outline.
-    """
-    if not md:
-        return md
-    fence: str | None = None
-    levels: list[int] = []
-    for line in md.splitlines():
-        stripped = line.lstrip()
-        if fence is None and (stripped.startswith("```") or stripped.startswith("~~~")):
-            fence = stripped[:3]
-        elif fence is not None and stripped.startswith(fence):
-            fence = None
-        elif fence is None:
-            m = _ATX_HEADING.match(line)
-            if m:
-                levels.append(len(m.group(1)))
-    if not levels:
-        return md
-    return _shift_headings(md, top - min(levels))
-
-
-def _section(title: str, body: str) -> str:
-    """Wrap `body` as a top-level ``# title`` section, or ``""`` if body is empty.
-
-    Callers pass a `body` whose own headings already start at ``##`` (rebasing
-    incorporated docstrings with `_rebase_headings` as needed), so every section
-    is a self-contained subtree rooted at its ``#`` heading.
-    """
-    body = body.strip()
-    return f"# {title}\n\n{body}" if body else ""
-
-
-def _system_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+def _vars_section(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> PromptSection | None:
     """Markdown table of the non-module bindings in scope (name -> type).
 
     Excludes dunder names (``__main__`` etc.) and names already bound to their
@@ -190,12 +138,18 @@ def _system_vars_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
         and not isinstance(value, types.ModuleType)
     }
     if not rows:
-        return ""
+        return None
     body = "\n".join(f"| `{n}` | `{t}` |" for n, t in sorted(rows.items()))
-    return _section("Lexical scope", f"| name | type |\n| --- | --- |\n{body}")
+    return PromptSection(
+        type="prompt_section",
+        title="Lexical scope",
+        content=to_content_blocks(f"| name | type |\n| --- | --- |\n{body}"),
+    )
 
 
-def _system_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
+def _imports_section(
+    env: collections.abc.Mapping[str, typing.Any],
+) -> PromptSection | None:
     """Markdown table of the imported modules in scope (name -> module name).
 
     Excludes dunder names and names already bound to their standard builtin.
@@ -208,18 +162,22 @@ def _system_imports_block(env: collections.abc.Mapping[str, typing.Any]) -> str:
         and isinstance(value, types.ModuleType)
     }
     if not rows:
-        return ""
+        return None
     body = "\n".join(f"| `{n}` | `{m}` |" for n, m in sorted(rows.items()))
-    return _section("Imported modules", f"| name | module |\n| --- | --- |\n{body}")
+    return PromptSection(
+        type="prompt_section",
+        title="Imported modules",
+        content=to_content_blocks(f"| name | module |\n| --- | --- |\n{body}"),
+    )
 
 
-def _system_template_block(template: Template) -> str:
-    """Markdown spec for a single `Template`: header, prompt, arg schemas.
+def _template_section(template: Template) -> PromptSection:
+    """Spec for a single `Template`: header, prompt, arg schemas.
 
-    Emitted at ``##`` so each template reads as a subsection of the enclosing
-    agent/template ``#`` section (see `_system_agent_block`).
+    A subsection of the enclosing agent/template section (see `_agent_section`),
+    so it renders at ``##`` and the prompt's own headings below that.
     """
-    parts = [f"## `{template.__name__}{template.__signature__}`"]
+    parts = []
     prompt = inspect.getdoc(template.__default__) or ""
     if prompt:
         parts.append(prompt)
@@ -230,12 +188,16 @@ def _system_template_block(template: Template) -> str:
     ]
     if args:
         parts.append("**Arguments**\n\n" + "\n".join(args))
-    return "\n\n".join(parts)
+    return PromptSection(
+        type="prompt_section",
+        title=f"`{template.__name__}{template.__signature__}`",
+        content=to_content_blocks("\n\n".join(parts)),
+    )
 
 
-def _system_agent_block(template: Template) -> str:
-    """The ``#`` section for the task: the Agent's docstring (if any) followed by
-    a ``##`` spec for every Template sharing the current history (an Agent's
+def _agent_section(template: Template) -> PromptSection:
+    """The section for the task: the Agent's docstring (if any) followed by a
+    subsection for every Template sharing the current history (an Agent's
     methods, or just ``template`` for a free-function template)."""
     inst = (
         template.__default__.__self__
@@ -259,51 +221,100 @@ def _system_agent_block(template: Template) -> str:
         title = "Template"
         templates = {template}
 
-    # Order by name so the prompt is stable across method reordering in source.
-    specs = "\n\n".join(
-        _system_template_block(t) for t in sorted(templates, key=lambda t: t.__name__)
+    # The agent docstring is intro prose for the section, ahead of the specs;
+    # order the specs by name so the prompt is stable across method reordering
+    # in source.
+    return PromptSection(
+        type="prompt_section",
+        title=title,
+        content=[
+            *to_content_blocks(agent_doc),
+            *(
+                _template_section(t)
+                for t in sorted(templates, key=lambda t: t.__name__)
+            ),
+        ],
     )
-    # The agent docstring is intro prose for the section; rebase its own headings
-    # to sit at ``##`` alongside the per-template specs.
-    body = "\n\n".join(p for p in [_rebase_headings(agent_doc, 2), specs] if p)
-    return _section(title, body)
 
 
-def _system_module_block(mod: types.ModuleType | None) -> str:
-    """The ``#`` section carrying the source (or docstring fallback) of a module."""
+def _module_section(mod: types.ModuleType | None) -> PromptSection | None:
+    """The section carrying the source (or docstring fallback) of a module."""
     if mod is None:
-        return ""
+        return None
     try:
         src = inspect.getsource(mod)
         body = f"```python\n{src}\n```"
     except (OSError, TypeError):
-        doc = inspect.getdoc(mod)
-        if not doc:
-            return ""
-        body = _rebase_headings(doc, 2)
-    return _section(f"Module `{mod.__name__}`", body)
+        body = inspect.getdoc(mod) or ""
+        if not body:
+            return None
+    return PromptSection(
+        type="prompt_section",
+        title=f"Module `{mod.__name__}`",
+        content=to_content_blocks(body),
+    )
 
 
-def _system_global_block(tool_types: collections.abc.Set[type[Tool]]) -> str:
-    """The constant ``#`` framework-concept section, sourced from real docstrings.
+def template_system_prompt(template: Template) -> SystemPrompt:
+    """The initial system prompt for a call to `template`, before any handler
+    has added to it.
 
-    The module overview and each concept nest as ``##`` subsections. Core
-    concept classes carry a synthesized ``## `Name``` heading and their own
-    docstring subsections are demoted to ``###``; the synthetic tool docstrings
-    already open with a descriptive ``##`` heading, so they are used verbatim
-    (rebased if needed) rather than labelled with their private class names.
+    The document is laid out most-constant-first, so that it caches well as the
+    conversation grows: the two sections handlers contribute to come first and
+    start empty, followed by the sections introspected
+    here, which vary per module, per instance and per scope.
     """
-    import effectful.handlers.llm as _llm
+    sections = (
+        PromptSection(type="prompt_section", title=HARNESS_SECTION, content=[]),
+        _module_section(inspect.getmodule(template)),
+        _agent_section(template),
+        _imports_section(template.__context__),
+        _vars_section(template.__context__),
+    )
+    return SystemPrompt(
+        type="system_prompt",
+        title=f"`{template.__name__}{template.__signature__}`",
+        content=[
+            *(s for s in sections if s is not None),
+        ],
+    )
 
-    assert all(issubclass(t, Tool) and t not in {Tool, Template} for t in tool_types)
-    parts = [_rebase_headings(inspect.getdoc(_llm) or "", 2)]
-    for typ in sorted(
-        map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname
-    ):
-        parts += [
-            f"## `{_get_qualname(typ)}`\n\n{_rebase_headings(inspect.getdoc(typ) or '', 3)}"
-        ]
-    for t in sorted(tool_types, key=_get_qualname):
-        parts += [_rebase_headings(inspect.getdoc(t) or "", 2)]
-    body = "\n\n".join(p for p in parts if p.strip())
-    return _section("The effectful LLM framework", body)
+
+class FrameworkDocumenter(ObjectInterpretation):
+    """Fill in the constant framework-concept section of the system prompt.
+
+    Its content is sourced from the real docstrings of
+    `effectful.handlers.llm` and the concepts it exports, so what the model is
+    told about `Template`, `Tool`, `Agent` and `Encodable` cannot drift from what
+    a reader of the package is told.  It is the same for every call in the
+    process, which is what makes it worth putting first.
+    """
+
+    title: typing.ClassVar[str] = "The effectful LLM framework"
+
+    @implements(call_system)
+    def _call_system(self, prompt: SystemPrompt) -> typing.Any:
+        import effectful.handlers.llm as _llm
+
+        content: list[typing.Any] = list(to_content_blocks(inspect.getdoc(_llm) or ""))
+        content.extend(
+            PromptSection(
+                type="prompt_section",
+                title=f"`{_get_qualname(typ)}`",
+                content=to_content_blocks(inspect.getdoc(typ) or ""),
+            )
+            for typ in sorted(
+                map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname
+            )
+        )
+        section = PromptSection(
+            type="prompt_section",
+            title=self.title,
+            content=content,
+        )
+        new_prompt = SystemPrompt(
+            type=prompt["type"],
+            title=prompt["title"],
+            content=[section, *prompt["content"]],
+        )
+        return fwd(new_prompt)
