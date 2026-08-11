@@ -23,7 +23,6 @@ from effectful.handlers.llm.harness.serialization import (
 from effectful.handlers.llm.types import (
     Agent,
     Encodable,
-    FinalTool,
     Template,
     Tool,
 )
@@ -247,20 +246,6 @@ def call_assistant[T](
     for raw_tool_call in raw_tool_calls:
         try:
             tool_calls += [encoding.validate_python(raw_tool_call, context=env)]
-            if isinstance(tool_calls[-1].tool, FinalTool):
-                if not (
-                    tool_calls[-1].result_type == response_type
-                    or issubclass(tool_calls[-1].result_type, response_type)
-                ):
-                    raise TypeError(
-                        f"FinalTool '{tool_calls[-1].name}' returns {tool_calls[-1].result_type!r}, "
-                        f"which does not match the Template's result type {response_type!r}."
-                    )
-                if len(raw_tool_calls) > 1:
-                    raise TypeError(
-                        f"A FinalTool call must be the only tool call in its turn, but "
-                        f"{len(raw_tool_calls)} tool calls were requested."
-                    )
         except Exception as e:
             raise ToolCallDecodingError(
                 raw_tool_call=raw_tool_call,
@@ -292,7 +277,9 @@ def call_assistant[T](
     return (raw_message, tool_calls, result)
 
 
-type ToolResult[T] = tuple[litellm.ChatCompletionToolMessage, T | None, bool]
+type ToolResult[T] = tuple[
+    litellm.ChatCompletionToolMessage, T | ToolCallExecutionError, bool
+]
 
 
 @Operation.define
@@ -302,8 +289,17 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     the serialised response to the model.
 
     Returns the appended tool message, the tool's return value, and whether the
-    call was a finalizing one (a :class:`FinalTool` call, whose value becomes the
-    Template's result and terminates the completion loop).
+    call finalizes the Template -- always ``False`` here. Finalization is a policy
+    a handler of this operation applies to its own tools, not a property of the
+    tool's type: see
+    `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`, which
+    marks its ``submit_solution`` call final so that value becomes the Template's
+    result and the completion loop stops.
+
+    The returned value is a :class:`ToolCallExecutionError` rather than the tool's
+    result when a handler captured a failed call (see
+    `effectful.handlers.llm.harness.durability.TenacityRetryer`); this rule itself
+    raises instead.
     """
     # call tool with python types
     try:
@@ -324,7 +320,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         content=encoded_result,  # type: ignore
         tool_call_id=tool_call.id,
     )
-    return (message, result, isinstance(tool_call.tool, FinalTool))
+    return (message, result, False)
 
 
 @Operation.define

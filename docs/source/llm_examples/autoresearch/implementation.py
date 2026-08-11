@@ -337,7 +337,7 @@ class Memory:
 
 # ---------------------------------------------------------------------------
 # The three agents. All are closed-book: no search tools -- the only "tool" is code
-# synthesis (the harness's FinalTool) and the deterministic evaluator. This is the
+# synthesis (the harness's `submit_solution` tool) and the deterministic evaluator. This is the
 # distinctive shape of a coding agent, versus the literature examples' search tools.
 # ---------------------------------------------------------------------------
 

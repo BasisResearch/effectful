@@ -226,6 +226,19 @@ class LiteLLMProvider(LiteLLMConfigurer):
             if tool_calls:
                 for tool_call in tool_calls:
                     message, result, is_final = call_tool(tool_call)
+                    if is_final:
+                        # Stop here rather than run the rest of the turn: a later
+                        # call would overwrite `result` and `is_final`, silently
+                        # discarding the answer. Which call in a mixed turn is the
+                        # answer is genuinely ambiguous, so say so instead of
+                        # picking one -- a finalizing tool tells the model to call
+                        # it alone (see `FinalBodySynthesizer`), and a turn that
+                        # ignores that is a defect worth surfacing.
+                        assert len(tool_calls) == 1, (
+                            f"a finalizing tool call must be the only call in its "
+                            f"turn, but {len(tool_calls)} were requested"
+                        )
+                        break
             else:
                 is_final = True
 

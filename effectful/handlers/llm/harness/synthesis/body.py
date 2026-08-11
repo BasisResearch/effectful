@@ -12,11 +12,14 @@ import pydantic
 import effectful.handlers.llm.harness.execution.hooks
 from effectful.handlers.llm.harness.context import HARNESS_SECTION
 from effectful.handlers.llm.harness.hooks import (
+    ToolCallExecutionError,
     call_assistant,
     call_system,
+    call_tool,
 )
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
+    DecodedToolCall,
     EncodedFunction,
     PromptSection,
     SystemPrompt,
@@ -32,7 +35,7 @@ from effectful.handlers.llm.harness.synthesis.function import (
     _def_nodes,
     _recover_template_def,
 )
-from effectful.handlers.llm.types import FinalTool, Template
+from effectful.handlers.llm.types import Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -446,12 +449,12 @@ def _callable_type_from_signature(
 
 class FinalBodySynthesizer(ObjectInterpretation):
     """You may "answer" a Template by writing code instead of producing the value
-    directly. A final tool (typically `submit_solution`) accepts a single
-    argument: a Python function whose signature matches the Template's signature
-    (see its spec below). The harness applies that function to the original
-    inputs and its return value becomes the answer, so write the function body
-    as a drop-in implementation of the Template. The function may reference
-    names from the lexical scope (see the *Lexical scope* table).
+    directly. The `submit_solution` tool accepts a single argument: a Python
+    function whose signature matches the Template's signature (see its spec
+    below). The harness applies that function to the original inputs and its
+    return value becomes the answer, so write the function body as a drop-in
+    implementation of the Template. The function may reference names from the
+    lexical scope (see the *Lexical scope* table).
 
     You do not need to write a docstring or doctests: on submission the harness
     attaches the Template's own docstring to your function and runs *its*
@@ -459,8 +462,14 @@ class FinalBodySynthesizer(ObjectInterpretation):
     implementation). A solution whose doctests fail — or that errors when
     applied — is rejected and fed back to you to revise, so the answer only
     stands once the Template's doctests pass. Write just the implementation;
-    any docstring you add is replaced and ignored. Calling this tool terminates
-    the completion.
+    any docstring you add is replaced and ignored.
+
+    A successful `submit_solution` call ends the conversation immediately: no
+    further turn is taken, and the value of applying your function to the
+    original arguments is the Template's answer. Because it terminates the
+    conversation, it must be the *only* tool call in its turn — call any other
+    tools you need on earlier turns, and call `submit_solution` by itself once
+    you are ready to answer.
 
     This answers the *current* call only. Each call is a fresh, independent
     task: even if you already submitted a working solution earlier in this
@@ -480,8 +489,9 @@ class FinalBodySynthesizer(ObjectInterpretation):
     # completion paths rather than replacing them: across turns the model may
     # freely call any other tool in scope (their results are fed back as usual),
     # and it may still answer the return type directly via structured output.
-    # The loop terminates when it either answers directly or calls the synthesis
-    # `FinalTool`.  To force the synthesis path, pass ``tool_choice="required"``
+    # The loop terminates when it either answers directly or calls
+    # ``submit_solution``, which this handler's `call_tool` rule marks final.
+    # To force the synthesis path, pass ``tool_choice="required"``
     # (handler config is forwarded to the model request).  The function is
     # synthesized by reusing the existing ``Callable`` synthesis machinery: the
     # tool's argument is typed as ``Callable[[params], ret]``, so
@@ -504,11 +514,12 @@ class FinalBodySynthesizer(ObjectInterpretation):
     # `RestrictedPythonExecutor`) to be installed so the synthesized code can be
     # compiled and executed.
 
-    class _SynthesisFinalTool[T](FinalTool[[collections.abc.Callable[..., T]], T]):
-        """The `FinalTool` a synthesized Template body is submitted through.
+    class _SubmitSolutionTool[T](Tool[[collections.abc.Callable[..., T]], T]):
+        """The `Tool` a synthesized Template body is submitted through.
 
-        A distinct type only so `_apply` can tell whether a request already
-        carries this handler's tool; the capability is described to the model by
+        A distinct type so `_apply` can tell whether a request already carries
+        this handler's tool, and so `_call_tool` can recognize a call to it as
+        the Template's answer; the capability itself is described to the model by
         the handler's docstring.
         """
 
@@ -521,7 +532,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
             cls,
             template: Template[..., T],
             bound_args: inspect.BoundArguments,
-        ) -> FinalTool[[collections.abc.Callable[..., T]], T]:
+        ) -> Tool[[collections.abc.Callable[..., T]], T]:
             if isinstance(template.__default__, types.MethodType):
                 signature = inspect.signature(template.__default__.__func__)
                 args, kwargs = (
@@ -564,16 +575,34 @@ class FinalBodySynthesizer(ObjectInterpretation):
             )
         )
 
+    @implements(call_tool)
+    def _call_tool(self, tool_call: DecodedToolCall) -> typing.Any:
+        """Mark a *successful* ``submit_solution`` call as the Template's answer.
+
+        Only a successful one: when `TenacityRetryer` captures a submission that
+        raised -- the synthesized function errored on the real arguments -- it
+        hands back the `ToolCallExecutionError` in place of a result, and that is
+        no answer to finalize on. Leaving `is_final` alone there is what gives the
+        model the next turn to revise.
+        """
+        message, result, is_final = fwd(tool_call)
+        if isinstance(tool_call.tool, self._SubmitSolutionTool) and not isinstance(
+            result, ToolCallExecutionError
+        ):
+            return message, result, True
+        else:
+            return message, result, is_final
+
     @implements(Template.__apply__)
     def _apply[**P, T](
         self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         bound_args = template.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
-        tool = self._SynthesisFinalTool.define(template, bound_args)
+        tool = self._SubmitSolutionTool.define(template, bound_args)
 
         def _add_synthesis_tool(messages, env, response_type, tools=frozenset()):
-            if any(isinstance(t, self._SynthesisFinalTool) for t in tools):
+            if any(isinstance(t, self._SubmitSolutionTool) for t in tools):
                 return fwd()
             return fwd(messages, env, response_type, tools | {tool})
 

@@ -34,7 +34,6 @@ from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
-    FinalTool,
     ResultDecodingError,
     Tool,
     ToolCallDecodingError,
@@ -487,37 +486,6 @@ def make_tool_call_response(
                             "type": "function",
                             "function": {"name": tool_name, "arguments": tool_args},
                         }
-                    ],
-                },
-                "finish_reason": "tool_calls",
-            }
-        ],
-        model="test-model",
-    )
-
-
-def make_multi_tool_call_response(
-    calls: list[tuple[str, str, str]],
-) -> ModelResponse:
-    """Create a ModelResponse with several tool calls in one assistant turn.
-
-    Each entry is ``(tool_name, arguments_json, tool_call_id)``.
-    """
-    return ModelResponse(
-        id="test",
-        choices=[
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": cid,
-                            "type": "function",
-                            "function": {"name": name, "arguments": args},
-                        }
-                        for name, args, cid in calls
                     ],
                 },
                 "finish_reason": "tool_calls",
@@ -1553,86 +1521,11 @@ class TestCallableSynthesis:
             assert multiply_three(5, 0, 10) == 0
 
 
-@FinalTool.define
-def final_int(x: int) -> int:
-    """Finalize the answer with an int."""
-    return x
-
-
-@FinalTool.define
-def final_str(x: int) -> str:
-    """Finalize the answer with a str (deliberately mismatched return type)."""
-    return str(x)
-
-
-class TestFinalToolInvariants:
-    """`call_assistant` enforces that a FinalTool call is unambiguous: it must be
-    the only call this turn and its return type must match `response_type`.
-    Violations fail like any malformed tool call (`ToolCallDecodingError`)."""
-
-    def _run(self, response: ModelResponse, env, response_type):
-        mock = MockCompletionHandler([response])
-        message_sequence = collections.OrderedDict(
-            id1={"id": "id1", "role": "user", "content": "go"},
-        )
-        with (
-            handler(mock),
-            handler({HistoryBuilder.get_history: lambda: message_sequence}),
-        ):
-            return call_assistant(
-                list(message_sequence.values()),
-                env=env,
-                response_type=response_type,
-                tools=_tools_in_scope(env),
-            )
-
-    def test_lone_matching_final_call_is_accepted(self):
-        _, tool_calls, result = self._run(
-            make_tool_call_response("final_int", '{"x": 5}', "c1"),
-            env={"final_int": final_int},
-            response_type=int,
-        )
-        assert len(tool_calls) == 1
-        assert isinstance(tool_calls[0].tool, FinalTool)
-        assert result is None  # call_assistant does not execute tools
-
-    def test_final_mixed_with_normal_is_rejected(self):
-        with pytest.raises(ToolCallDecodingError):
-            self._run(
-                make_multi_tool_call_response(
-                    [
-                        ("add_numbers", '{"a": 1, "b": 2}', "c1"),
-                        ("final_int", '{"x": 5}', "c2"),
-                    ]
-                ),
-                env={"add_numbers": add_numbers, "final_int": final_int},
-                response_type=int,
-            )
-
-    def test_multiple_final_calls_are_rejected(self):
-        with pytest.raises(ToolCallDecodingError):
-            self._run(
-                make_multi_tool_call_response(
-                    [("final_int", '{"x": 5}', "c1"), ("final_int", '{"x": 6}', "c2")]
-                ),
-                env={"final_int": final_int},
-                response_type=int,
-            )
-
-    def test_final_return_type_mismatch_is_rejected(self):
-        with pytest.raises(ToolCallDecodingError):
-            self._run(
-                make_tool_call_response("final_str", '{"x": 5}', "c1"),
-                env={"final_str": final_str},
-                response_type=int,
-            )
-
-
 def make_submit_solution_response(
     module_code: str, tool_call_id: str = "call_1"
 ) -> ModelResponse:
     """A tool-call response in which the model finalizes by calling the
-    synthesis ``submit_solution`` FinalTool with a function it wrote."""
+    synthesis ``submit_solution`` tool with a function it wrote."""
     return make_tool_call_response(
         "submit_solution",
         json.dumps({"implementation": {"module_code": module_code}}),
@@ -1655,8 +1548,9 @@ class _Doubler(Agent):
 
 class TestSynthesizeAndCall:
     """Tests for the SynthesizeAndCall handler, which answers a Template by
-    exposing a FinalTool that the model calls with a synthesized function; the
-    function is applied to the original arguments and its value is the result."""
+    exposing a ``submit_solution`` tool that the model calls with a synthesized
+    function; the function is applied to the original arguments, its value is the
+    result, and the handler's `call_tool` rule marks the call final."""
 
     def test_returns_called_result(self):
         """The Template result is the value of applying the synthesized function
@@ -1753,7 +1647,7 @@ class TestSynthesizeAndCall:
 
     def test_normal_tool_calls_do_not_terminate(self):
         """A non-final tool call is fed back and the loop continues; only the
-        FinalTool call terminates."""
+        ``submit_solution`` call terminates."""
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
@@ -1774,6 +1668,57 @@ class TestSynthesizeAndCall:
         assert result == 42
         assert mock.call_count == 2
 
+    def test_submit_solution_mixed_with_normal_call_is_rejected(self):
+        """A finalizing call must be the only call in its turn: which call in a
+        mixed turn is the answer is ambiguous, so the completion loop asserts
+        rather than letting the trailing call overwrite the answer."""
+        mixed = ModelResponse(
+            id="test",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_submit",
+                                "type": "function",
+                                "function": {
+                                    "name": "submit_solution",
+                                    "arguments": json.dumps(
+                                        {
+                                            "implementation": {
+                                                "module_code": "def double_it(x: int) -> int:\n    return x * 2\n"
+                                            }
+                                        }
+                                    ),
+                                },
+                            },
+                            {
+                                "id": "call_add",
+                                "type": "function",
+                                "function": {
+                                    "name": "add_numbers",
+                                    "arguments": '{"a": 1, "b": 2}',
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            model="test-model",
+        )
+        with (
+            handler(LiteLLMProvider(model="test-model")),
+            handler(FinalBodySynthesizer()),
+            handler(BuiltinExecutor()),
+            handler(MockCompletionHandler([mixed])),
+        ):
+            with pytest.raises(AssertionError, match="only call in its turn"):
+                double_it(21)
+
     def test_rejects_variadic_parameters(self):
         """A signature with *args/**kwargs cannot be expressed as a Callable type,
         so building the synthesis tool for it is rejected."""
@@ -1784,7 +1729,7 @@ class TestSynthesizeAndCall:
             raise NotHandled
 
         with pytest.raises(NotImplementedError, match="variadic"):
-            FinalBodySynthesizer._SynthesisFinalTool.define(
+            FinalBodySynthesizer._SubmitSolutionTool.define(
                 variadic, variadic.__signature__.bind()
             )
 

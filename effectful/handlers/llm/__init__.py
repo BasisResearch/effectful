@@ -33,9 +33,9 @@ During a template call the model may take multiple turns: on each turn it can
 call any `Tool` in scope (results are fed back and the loop continues) or
 produce a final answer. The final answer is decoded to the template's return
 type via constrained/structured generation, so non-`str` return types (ints,
-dataclasses, etc.) come back as real Python values. A `FinalTool` lets the model
-"answer" by calling a tool whose return value becomes the result and terminates
-the loop.
+dataclasses, etc.) come back as real Python values. A handler may also mark a
+tool call as *finalizing*, letting the model "answer" by calling a tool: its
+return value becomes the result and the loop terminates.
 """
 
 from .types import Agent, Encodable, Template, Tool

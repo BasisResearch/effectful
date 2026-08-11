@@ -95,14 +95,17 @@ class TenacityRetryer(ObjectInterpretation):
         error messages to the LLM. Only exceptions matching `catch_tool_errors`
         are caught; others propagate up.
 
-        A captured failure is reported as ``is_final=False`` so that the
-        completion loop continues even when a :class:`FinalTool` call raised:
-        the model sees the error message and gets another turn to retry.
+        A captured failure is reported as ``is_final=False``, and the error object
+        itself is returned in place of a result, so an enclosing handler can see
+        that the call failed and decline to finalize on it -- see
+        `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`. The
+        completion loop therefore continues: the model sees the error message and
+        gets another turn to retry.
         """
         try:
             return fwd(tool_call)
         except ToolCallExecutionError as e:
             if isinstance(e.original_error, self.catch_tool_errors):
-                return (e.to_feedback_message(include_traceback=True), None, False)
+                return (e.to_feedback_message(include_traceback=True), e, False)
             else:
                 raise
