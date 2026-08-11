@@ -7,7 +7,7 @@ except ImportError:
 
 
 import functools
-from collections.abc import Collection, Mapping
+from collections.abc import Callable, Collection, Mapping
 from typing import Any
 
 import jax
@@ -17,6 +17,7 @@ from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
 from effectful.ops.monoid import (
     LogSumExp,
+    Max,
     Min,
     Monoid,
     NormalizeIntp,
@@ -28,7 +29,7 @@ from effectful.ops.monoid import (
 )
 from effectful.ops.semantics import evaluate, fvsof, fwd, handler, typeof
 from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, defop, implements
-from effectful.ops.types import NotHandled, Operation, Term
+from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
 class Naming(dict[Operation[[], jax.Array], int]):
@@ -1203,40 +1204,67 @@ def distribution_stream(
     raise NotHandled
 
 
-class ReduceEnumerableDistribution(ObjectInterpretation):
+class ReduceDistribution(ObjectInterpretation):
     """Distributions with enumerable support turn into weighted reductions of
-    arrays. The weighting used depends on the reduction monoid.
+    arrays. Other distributions turn into weighted reductions over constraint
+    streams.
+
+    The weighting used depends on the reduction monoid.
 
     """
 
-    @implements(Monoid.reduce)
-    def _(self, monoid, body, streams: Streams):
+    def _dist_to_stream(self, d: dist.Distribution):
+        if d.has_enumerate_support:
+            return d.enumerate_support(expand=False)
+        return constraint_stream(d.support, jnp.zeros(d.shape()))
+
+    def _reduce[T](
+        self,
+        monoid: Monoid,
+        body: Expr[T],
+        streams: Streams,
+        weight_monoid: Monoid,
+        weight_of_log_prob: Callable[[Expr], Expr],
+    ) -> Expr[T]:
+        if not any(
+            isinstance(stream, Term) and stream.op == distribution_stream
+            for stream in streams.values()
+        ):
+            return fwd()
+
+        new_streams = {}
         for stream_id, stream in streams.items():
             if not (isinstance(stream, Term) and stream.op == distribution_stream):
+                new_streams[stream_id] = stream
                 continue
 
-            dist = stream.args[0]
-            assert isinstance(dist, numpyro.distributions.Distribution)
-            if not dist.has_enumerate_support:
-                continue
+            d = stream.args[0]
+            assert isinstance(d, dist.Distribution)
 
-            support = dist.enumerate_support(expand=False)
-            value = Operation.define(jax.Array)
-            if monoid == LogSumExp:
-                weighted = Sum.weighted(support, deffn(dist.log_prob(value()), value))
-            elif monoid == Sum:
-                weighted = Product.weighted(
-                    support, deffn(jnp.exp(dist.log_prob(value())), value)
-                )
-            else:
-                continue
+            support = self._dist_to_stream(d)
+            value = Operation.define(jax.Array, name="v")
+            weighted = weight_monoid.weighted(
+                support, deffn(weight_of_log_prob(d.log_prob(value())), value)
+            )
+            new_streams[stream_id] = weighted
 
-            new_streams = {k: v for k, v in streams.items() if k != stream_id} | {
-                stream_id: weighted
-            }
-            return monoid.reduce(body, new_streams)
+        return monoid.reduce(body, new_streams)
 
-        return fwd()
+    @implements(LogSumExp.reduce)
+    def _reduce_logsumexp(self, body, streams: Streams):
+        return self._reduce(LogSumExp, body, streams, Sum, lambda x: x)
+
+    @implements(Min.reduce)
+    def _reduce_min(self, body, streams: Streams):
+        return self._reduce(Min, body, streams, Sum, lambda x: x)
+
+    @implements(Max.reduce)
+    def _reduce_max(self, body, streams: Streams):
+        return self._reduce(Max, body, streams, Sum, lambda x: x)
+
+    @implements(Sum.reduce)
+    def _reduce_sum(self, body, streams: Streams):
+        return self._reduce(Sum, body, streams, Product, jnp.exp)
 
 
 @Operation.define
@@ -1370,4 +1398,4 @@ class AdamConstraintMinReduce(ObjectInterpretation):
         return substitute(body, self.optimizer.get_params(state))
 
 
-NormalizeIntp.extend(ReduceEnumerableDistribution())
+NormalizeIntp.extend(ReduceDistribution())
