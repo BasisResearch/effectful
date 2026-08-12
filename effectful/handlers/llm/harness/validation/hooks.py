@@ -14,7 +14,7 @@ def type_check(
     hi: int | None = None,
     *,
     lenient: bool = False,
-) -> bool:
+) -> None:
     """
     Type check a module source, reporting only diagnostics inside a line region.
 
@@ -30,8 +30,7 @@ def type_check(
         for a synthesized ``Callable`` or ``TemplateBody``, which must honor its
         signature and gets no redefinition slack.
 
-    Returns True if the source type-checks, raises TypeError on an in-region
-    failure.
+    Returns if the source type-checks, raises TypeError on an in-region failure.
 
     Unlike `parse`/`compile`/`exec`, which have no meaning without a provider,
     type checking is an optional layer over them: the default rule below passes
@@ -39,7 +38,7 @@ def type_check(
     unchecked rather than refusing to run it at all. `MypyTypeChecker` is the
     handler that makes the check real.
     """
-    return True
+    return None
 
 
 @Operation.define
