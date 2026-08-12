@@ -18,6 +18,8 @@ from effectful.ops.monoid import (
     EvaluateIntp,
     Factor,
     Group,
+    Intersection,
+    IntersectionPlus,
     InverseInverse,
     InversePlus,
     Max,
@@ -28,6 +30,7 @@ from effectful.ops.monoid import (
     NormalizeIntp,
     Or,
     PlusAssoc,
+    PlusCastIterable,
     PlusConsecutiveDups,
     PlusDistr,
     PlusEmpty,
@@ -39,8 +42,9 @@ from effectful.ops.monoid import (
     ReduceDisjunctiveDisequalityMask,
     ReduceDistributeCartesianProduct,
     ReduceEmpty,
-    ReduceEqualityMaskRange,
+    ReduceEqualityMask,
     ReduceFusion,
+    ReduceIntersectionSingletonRange,
     ReduceMaskHoist,
     ReducePartial,
     ReduceSplit,
@@ -52,8 +56,10 @@ from effectful.ops.monoid import (
     Sum,
     Union,
     WhereHoist,
+    as_iterable,
     distributes_over,
     is_commutative,
+    is_idempotent,
     solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
@@ -741,82 +747,156 @@ def test_reduce_mask_hoist_dependent_noop(monoid):
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_reduce_equality_mask_range_simple(backend: Backend, monoid):
-    """Best case: a single equality on the reduced range stream becomes a
-    singleton-stream gather guarded by the corresponding bounds check.
-    """
-    a, c = backend.define_vars("a", "c", ret="scalar")
-    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    """An equality restricts its stream to an intersection with a singleton."""
+    a, c = backend.define_vars("a", "c", ret=int)
 
-    lhs = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: range(3)})
+    lhs = monoid.reduce(monoid.mask(a(), a() == c()), {a: range(3)})
     rhs = monoid.reduce(
-        monoid.mask(
-            monoid.mask(f(a()), And.plus(0 <= c(), c() < 3)),
-            And.plus(),
-        ),
-        {a: (c(),)},
+        monoid.mask(a(), And.plus()),
+        {a: Intersection.plus(as_iterable(range(3)), as_iterable([c()]))},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_reduce_equality_mask_range_residual_conjuncts(backend: Backend, monoid):
-    """Non-equality conjuncts are preserved inside the gathered singleton
-    reduce; only the equality on the reduced range stream is discharged.
-    """
-    a, c, d, e = backend.define_vars("a", "c", "d", "e", ret="scalar")
-    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    """Only the equality is moved into the stream-domain intersection."""
+    a, c, d, e = backend.define_vars("a", "c", "d", "e", ret=int)
 
     lhs = monoid.reduce(
-        monoid.mask(f(a()), And.plus(d() < e(), a() == c(), c() < e())),
+        monoid.mask(a(), And.plus(d() < e(), a() == c(), c() < e())),
         {a: range(4)},
     )
     rhs = monoid.reduce(
-        monoid.mask(
-            monoid.mask(f(a()), And.plus(0 <= c(), c() < 4)),
-            And.plus(d() < e(), c() < e()),
-        ),
-        {a: (c(),)},
+        monoid.mask(a(), And.plus(d() < e(), c() < e())),
+        {a: Intersection.plus(as_iterable(range(4)), as_iterable([c()]))},
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
 
 
-@pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_equality_mask_range_noncanonical_range_noop(backend: Backend, monoid):
-    """The rule only handles ``range(0, N, 1)`` streams; for other ranges it
-    should leave the term unchanged.
-    """
-    a, c = backend.define_vars("a", "c", ret="scalar")
+def test_reduce_equality_mask_dependent_intersection():
+    """The singleton expression may depend on another retained stream."""
+    backend = IntBackend()
+    x, y, c, d = backend.define_vars("x", "y", "c", "d", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
     f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="scalar")
 
-    term = monoid.reduce(monoid.mask(f(a()), a() == c()), {a: range(1, 4)})
-    backend.check_rewrite(lhs=term, rhs=term, rule=ReduceEqualityMaskRange())
+    lhs = Min.reduce(
+        Min.mask(g(x()), And.plus(x() == f(y()), c() < d())),
+        {x: X(), y: Y()},
+    )
+    rhs = Min.reduce(
+        Min.mask(g(x()), And.plus(c() < d())),
+        {
+            x: Intersection.plus(as_iterable(X()), as_iterable([f(y())])),
+            y: Y(),
+        },
+    )
+
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
+
+
+def test_reduce_equality_mask_dependent_intersection_nonidempotent():
+    """Pointwise intersection does not require an idempotent outer monoid."""
+    backend = IntBackend()
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = Sum.reduce(Sum.mask(g(x()), x() == f(y())), {x: X(), y: Y()})
+    rhs = Sum.reduce(
+        Sum.mask(g(x()), And.plus()),
+        {x: Intersection.plus(as_iterable(X()), as_iterable([f(y())])), y: Y()},
+    )
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
+
+
+def test_reduce_equality_mask_dependent_intersection_retains_source_uses():
+    """Source variables remain available to the body after the rewrite."""
+    backend = IntBackend()
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="scalar")
+    g = backend.define_vars(
+        "g", arg_types=(backend.scalar_typ, backend.scalar_typ), ret="scalar"
+    )
+
+    lhs = Min.reduce(Min.mask(g(x(), y()), x() == f(y())), {x: X(), y: Y()})
+    rhs = Min.reduce(
+        Min.mask(g(x(), y()), And.plus()),
+        {x: Intersection.plus(as_iterable(X()), as_iterable([f(y())])), y: Y()},
+    )
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
+
+
+def test_reduce_equality_mask_image_domain_symbol_side_noop():
+    """Bare stream equalities require a separate domain-intersection rule."""
+    backend = IntBackend()
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    X, Y = backend.define_vars("X", "Y", ret="stream")
+    g = backend.define_vars("g", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    lhs = Min.reduce(Min.mask(g(x()), x() == y()), {x: X(), y: Y()})
+    backend.check_rewrite(
+        lhs=lhs, rhs=lhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
+    )
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
-def test_reduce_equality_mask_plus(backend: Backend, monoid):
-    """ReduceEqualityMaskRange distributes over a plus body, discharging an
-    equality on the reduced stream in one summand via a singleton-stream gather
-    while leaving the other summand as an ordinary masked reduce.
-    """
-    a, c = backend.define_vars("a", "c", ret="scalar")
-    f, g = backend.define_vars("f", "g", arg_types=(backend.scalar_typ,), ret="scalar")
+def test_reduce_equality_mask_noncanonical_range(backend: Backend, monoid):
+    """Equality elimination itself is independent of the domain representation."""
+    a, c = backend.define_vars("a", "c", ret=int)
 
-    body = monoid.plus(
-        monoid.mask(f(a()), a() == c()),  # eliminable: a == c over range
-        monoid.mask(g(a()), c() == 0),  # not eliminable (no reduced-stream eq)
+    lhs = monoid.reduce(monoid.mask(a(), a() == c()), {a: range(1, 4)})
+    rhs = monoid.reduce(
+        monoid.mask(a(), And.plus()),
+        {a: Intersection.plus(as_iterable(range(1, 4)), as_iterable([c()]))},
     )
-    lhs = monoid.reduce(body, {a: range(3)})
-    rhs = monoid.plus(
-        monoid.reduce(
-            monoid.mask(
-                monoid.mask(f(a()), And.plus(0 <= c(), c() < 3)),
-                And.plus(),
-            ),
-            {a: (c(),)},
-        ),
-        monoid.reduce(monoid.mask(g(a()), c() == 0), {a: range(3)}),
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceEqualityMask(), PlusCastIterable())
     )
-    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceEqualityMaskRange())
+
+
+def test_reduce_equality_mask_repeated_constraints_eliminate_intersections():
+    """Repeated equalities for one stream still normalize to supported domains."""
+    x, a, b = IntBackend().define_vars("x", "a", "b", ret=int)
+    lhs = Sum.reduce(
+        Sum.mask(x(), And.plus(x() == a(), x() == b())),
+        {x: range(3)},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(lhs)
+
+    assert Intersection.plus not in fvsof(result)
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_reduce_intersection_singleton_range(backend: Backend, monoid):
+    """A simple-range intersection lowers to a bounds-guarded singleton."""
+    x, y = backend.define_vars("x", "y", ret=int)
+
+    lhs = monoid.reduce(
+        x(), {x: Intersection.plus(as_iterable(range(3)), as_iterable([y()]))}
+    )
+    rhs = monoid.reduce(monoid.mask(x(), And.plus(0 <= y(), y() < 3)), {x: (y(),)})
+    backend.check_rewrite(
+        lhs=lhs,
+        rhs=rhs,
+        rule=coproduct(ReduceIntersectionSingletonRange(), PlusCastIterable()),
+    )
 
 
 def test_reduce_independent_1(backend: Backend):
@@ -926,6 +1006,38 @@ def test_reduce_lift_shared(outer, inner, backend: Backend):
         {c: C()},
     )
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
+
+
+def test_reduce_factor_mask(backend: Backend):
+    a, b, c, d = backend.define_vars("a", "b", "c", "d", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
+    lhs = Sum.reduce(
+        Sum.mask(Product.plus(a(), b()), And.plus(a() == c(), b() == d())),
+        {a: A(), b: B()},
+    )
+    rhs = Product.plus(
+        Sum.reduce(Sum.mask(Product.plus(a()), And.plus(a() == c())), {a: A()}),
+        Sum.reduce(Sum.mask(Product.plus(b()), And.plus(b() == d())), {b: B()}),
+    )
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=Factor())
+
+
+def test_reduce_factor_mask_2(backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    A, B = backend.define_vars("A", "B", ret="stream")
+
+    lhs = Sum.reduce(
+        Sum.mask(Product.plus(a(), b()), And.plus(a() == b())),
+        {a: A(), b: B()},
+    )
+    lhs = Sum.reduce(
+        Product.plus(
+            b(), Sum.reduce(Sum.mask(Product.plus(a()), And.plus(a() == b())), {a: A()})
+        ),
+        {b: B()},
+    )
+    backend.check_rewrite(lhs=lhs, rhs=lhs, rule=Factor())
 
 
 @pytest.mark.parametrize("outer,inner", MONOID_PAIRS)
@@ -1243,6 +1355,35 @@ def test_weighted_expectation_demo():
         result = evaluate(Sum.reduce(f(a()), {a: Product.weighted([1, 2, 3, 4], w)}))
 
     assert math.isclose(result, 10.0)
+
+
+def test_intersection_plus_preserves_left_order_and_multiplicity():
+    with handler(IntersectionPlus()):
+        result = Intersection.plus(
+            as_iterable([3, 1, 1, 2, 4]),
+            as_iterable([1, 2, 3]),
+            as_iterable([1, 3]),
+        )
+
+    assert result == [3, 1, 1]
+
+
+def test_intersection_is_not_registered_commutative_or_idempotent():
+    assert not is_commutative(Intersection)
+    assert not is_idempotent(Intersection)
+
+    with handler(IntersectionPlus()):
+        assert Intersection.plus([1, 1], [1]) == [1, 1]
+        assert Intersection.plus([1], [1, 1]) == [1]
+
+
+def test_equality_intersection_preserves_stream_multiplicity():
+    x = Operation.define(int, name="x")
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(Sum.reduce(Sum.mask(x(), x() == 1), {x: [1, 1, 2]}))
+
+    assert result == 2
 
 
 # ---------------------------------------------------------------------------
