@@ -14,16 +14,16 @@ import pytest
 from litellm import ModelResponse
 
 from effectful.handlers.llm import Agent, Encodable, Template, Tool
-from effectful.handlers.llm.harness.context import (
-    LexicalReaders,
-    template_system_prompt,
-)
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     call_system,
     call_user,
     completion,
+)
+from effectful.handlers.llm.harness.legibility.lexical import (
+    LexicalReaders,
+    template_system_prompt,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
 from effectful.handlers.llm.harness.provision import LiteLLMProvider

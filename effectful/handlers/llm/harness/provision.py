@@ -6,7 +6,6 @@ import typing
 import litellm
 from litellm.types.llms.openai import ChatCompletionToolChoiceValues
 
-from effectful.handlers.llm.harness.context import template_system_prompt
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
@@ -16,6 +15,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_user,
     completion,
 )
+from effectful.handlers.llm.harness.legibility.lexical import template_system_prompt
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     PromptSection,

@@ -41,12 +41,12 @@ import typing
 import litellm
 import tenacity
 
-from effectful.handlers.llm.harness.context import FrameworkDocumenter
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
+from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import (
     RichTerminalRenderer,

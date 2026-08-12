@@ -26,9 +26,6 @@ from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Template
-from effectful.handlers.llm.harness.context import (
-    LexicalReaders,
-)
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
@@ -41,6 +38,9 @@ from effectful.handlers.llm.harness.hooks import (
     call_assistant,
     call_tool,
     completion,
+)
+from effectful.handlers.llm.harness.legibility.lexical import (
+    LexicalReaders,
 )
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
