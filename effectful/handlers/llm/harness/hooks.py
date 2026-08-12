@@ -144,15 +144,23 @@ def _tools_in_scope(
     *,
     seen: frozenset[int] = frozenset(),
 ) -> collections.abc.Set[Tool]:
-    """Return the tools available to a Template given its lexical context.
+    """
+    Return the tools available to a Template given its lexical context.
 
-    Default rule: real `Tool` and `Template` values bound directly in
-    `env`, plus `Tool` methods discovered through the MRO of any
-    `Agent` instance in `env`.
+    Default rule: `Tool` and `Template` values bound directly in `env`, plus
+    those reachable through any `Agent` instance in `env` -- whatever is bound
+    on the instance or declared on its class, and, recursively, the tools of any
+    `Agent` those in turn hold.  `seen` guards that recursion against reference
+    cycles; it is internal, and callers pass only `env`.
 
-    Tools are identified by object, so the same `Tool` visible under
-    several bindings appears once.  The name each one is offered under is
-    assigned by :func:`_advertised_names`, not taken from the binding name.
+    Reaching through a nested `Agent` flattens its whole toolset into the result.
+    That is what makes holding one as an attribute a way to compose tools, and it
+    is why a specialised sub-agent is better left a bare `Template`, whose own
+    scope stays its own.
+
+    Tools are identified by object, so the same `Tool` visible under several
+    bindings appears once.  The name each one is offered under is assigned by
+    :func:`_advertised_names`, not taken from the binding name.
     """
     result: set[Tool] = set()
 
