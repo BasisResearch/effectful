@@ -25,12 +25,12 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from effectful.handlers.llm import Template
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import PromptSection, call_system, completion
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
-from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

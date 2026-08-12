@@ -3,6 +3,10 @@ import typing
 
 import tenacity
 
+from effectful.handlers.llm.harness.durability.transaction import (
+    HistoryBuilder,
+    transaction,
+)
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
@@ -14,10 +18,6 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
-from effectful.handlers.llm.harness.transaction import (
-    HistoryBuilder,
-    transaction,
-)
 from effectful.handlers.llm.types import Tool
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements

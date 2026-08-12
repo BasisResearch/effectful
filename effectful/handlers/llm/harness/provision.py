@@ -6,6 +6,7 @@ import typing
 import litellm
 from litellm.types.llms.openai import ChatCompletionToolChoiceValues
 
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
@@ -20,7 +21,6 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     PromptSection,
 )
-from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.handlers.llm.types import Template
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements

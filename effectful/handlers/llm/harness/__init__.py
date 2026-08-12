@@ -41,7 +41,9 @@ import typing
 import litellm
 import tenacity
 
-from effectful.handlers.llm.harness.durability import TenacityRetryer
+from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
@@ -52,7 +54,6 @@ from effectful.handlers.llm.harness.observability.rendering import (
     RichTerminalRenderer,
 )
 from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
-from effectful.handlers.llm.harness.persistence import SQLitePersister
 from effectful.handlers.llm.harness.provision import (
     LiteLLMProvider,
 )
@@ -60,7 +61,6 @@ from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.ops.semantics import handler
 
