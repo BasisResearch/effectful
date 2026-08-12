@@ -52,7 +52,7 @@ llm = [
   "rich",
   "tenacity",
   "mypy",
-  "autoflake",
+  "ty",
   "pillow",
   "pydantic",
   "typing_extensions",

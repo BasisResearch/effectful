@@ -62,6 +62,7 @@ from effectful.handlers.llm.harness.synthesis.body import (
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them
@@ -78,6 +79,7 @@ EVAL_PROVIDERS: dict[str, typing.Callable[[], typing.Any]] = {
 # the `type_check` operation's default rule, which passes everything.
 TYPE_CHECKERS: dict[str, typing.Callable[[], typing.Any] | None] = {
     "mypy": MypyTypeChecker,
+    "ty": TyTypeChecker,
     "none": None,
 }
 
@@ -291,7 +293,7 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--type-checker",
         type=str,
-        default="mypy",
+        default="ty",
         choices=sorted(TYPE_CHECKERS),
         help="Handler that type-checks model-authored Python before it runs",
     )

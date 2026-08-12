@@ -650,7 +650,8 @@ class RestrictedPythonExecutor(ObjectInterpretation):
     model cannot smuggle past the sandbox in a docstring.
 
     The sandbox says nothing about types: install
-    `~effectful.handlers.llm.harness.execution.mypy.MypyTypeChecker` alongside this
+    `~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
+    `~effectful.handlers.llm.harness.validation.ty.TyTypeChecker` alongside this
     handler to type-check generated code before it is compiled and run.
 
     policy : type[RestrictingNodeTransformer], optional

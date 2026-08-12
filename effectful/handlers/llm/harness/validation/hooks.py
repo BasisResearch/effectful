@@ -24,19 +24,21 @@ def type_check(
     lo, hi: Inclusive line range within ``source`` to report errors from; when
         omitted, the whole source is in scope. Errors outside the region are
         ignored so unrelated pre-existing code never blocks synthesis.
-    lenient: when True, relax mypy for incrementally-built REPL code spliced into a
-        Template body -- allow redefinition (a cell may rebind or redefine a name)
+    lenient: when True, relax the check for incrementally-built REPL code spliced into
+        a Template body -- allow redefinition (a cell may rebind or redefine a name)
         and don't require the body to satisfy the Template's return type. Off (strict)
         for a synthesized ``Callable`` or ``TemplateBody``, which must honor its
-        signature and gets no redefinition slack.
+        signature and gets no redefinition slack. How much slack this buys is up to
+        the handler: it is a list of disabled mypy error codes under `MypyTypeChecker`
+        and close to a no-op under `TyTypeChecker`, which is already this permissive.
 
     Returns if the source type-checks, raises TypeError on an in-region failure.
 
     Unlike `parse`/`compile`/`exec`, which have no meaning without a provider,
     type checking is an optional layer over them: the default rule below passes
     everything, so a stack with no type checker installed runs generated code
-    unchecked rather than refusing to run it at all. `MypyTypeChecker` is the
-    handler that makes the check real.
+    unchecked rather than refusing to run it at all. `MypyTypeChecker` and
+    `TyTypeChecker` are the handlers that make the check real.
     """
     return None
 

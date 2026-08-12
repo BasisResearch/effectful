@@ -17,7 +17,8 @@ class BuiltinExecutor(ObjectInterpretation):
     by shelling out to python *without* any further checks. Only use for testing.
 
     Runs whatever it is given: type checking is a separate handler
-    (`~effectful.handlers.llm.harness.execution.mypy.MypyTypeChecker`), installed
+    (`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
+    `~effectful.handlers.llm.harness.validation.ty.TyTypeChecker`), installed
     alongside this one when generated code should be checked before it runs."""
 
     @implements(parse)
