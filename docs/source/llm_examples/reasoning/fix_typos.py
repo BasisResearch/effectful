@@ -7,10 +7,10 @@ work out by hand are often easy to brute-force or verify with a short program.
 
 import argparse
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
-@Template.define
+@Skill.define
 def fix_typos(text: str) -> str:
     """Output the following text exactly, with no changes at all except for fixing
     the misspellings. Leave every other stylistic decision -- commas, US vs British

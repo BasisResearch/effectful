@@ -16,12 +16,12 @@ from effectful.handlers.llm.harness.hooks import (
     call_user,
     completion,
 )
-from effectful.handlers.llm.harness.legibility.lexical import template_system_prompt
+from effectful.handlers.llm.harness.legibility.lexical import skill_system_prompt
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     PromptSection,
 )
-from effectful.handlers.llm.types import Template
+from effectful.handlers.llm.types import Skill
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -197,30 +197,28 @@ class LiteLLMConfigurer(ObjectInterpretation):
 
 
 class LiteLLMProvider(LiteLLMConfigurer):
-    """Implements templates using the LiteLLM API."""
+    """Implements skills using the LiteLLM API."""
 
-    @implements(Template.__apply__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
+    @implements(Skill.__apply__)
+    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         # The harness half starts empty and is filled in by whichever handlers
         # are installed; with none of them it renders as nothing at all.
         message: Message = call_system(
             PromptSection(type="prompt_section", title="Harness", content=[]),
-            template_system_prompt(template),
+            skill_system_prompt(skill),
         )
 
-        bound_args = inspect.signature(template).bind(*args, **kwargs)
+        bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
-        env = template.__context__.new_child(
-            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: template}
+        env = skill.__context__.new_child(
+            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: skill}
         )
 
-        header = f"{template.__name__}{template.__signature__}".replace(
-            "{", "{{"
-        ).replace("}", "}}")
-        assert template.__doc__ is not None
-        prompt_template = header + "\n\n" + template.__doc__
+        header = f"{skill.__name__}{skill.__signature__}".replace("{", "{{").replace(
+            "}", "}}"
+        )
+        assert skill.__doc__ is not None
+        prompt_template = header + "\n\n" + skill.__doc__
         message = call_user(prompt_template, env)
 
         result: T | None = None
@@ -228,7 +226,7 @@ class LiteLLMProvider(LiteLLMConfigurer):
         while not is_final:
             message, tool_calls, result = call_assistant(
                 list(HistoryBuilder.get_history()),
-                template.__signature__.return_annotation,
+                skill.__signature__.return_annotation,
                 env,
             )
             if tool_calls:

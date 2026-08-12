@@ -111,7 +111,7 @@ import textwrap
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # The Lean compiler -- the ground truth every proof is certified against. This is
@@ -407,7 +407,7 @@ class NLProver(Agent):
     proof of a statement -- the mathematical argument, not Lean code -- for a
     formalizer to translate. Closed-book: you hold no compiler tool."""
 
-    @Template.define
+    @Skill.define
     def argue(self, goal: str, context: str) -> str:
         """Give a concise but rigorous informal proof of the following statement.
         State the key steps a formal proof would need (case splits, inductions,
@@ -428,7 +428,7 @@ class FormalProver(LeanAgent):
     real compiler. You prefer short, robust proofs (``simp``, ``omega``, ``ring``,
     ``induction``, ``exact?``) and you never leave a ``sorry``."""
 
-    @Template.define
+    @Skill.define
     def formalize(self, goal: str, informal: str, context: str) -> LeanProof:
         """Prove the goal below in Lean 4 with Mathlib by returning the tactic block
         (what follows ``:= by``). Translate the informal argument, then use ``check``
@@ -457,7 +457,7 @@ class BlueprintAgent(Agent):
     general than the goal, such that the goal follows easily once they hold. Closed-
     book: you plan in mathematics, not against the compiler."""
 
-    @Template.define
+    @Skill.define
     def draft(self, goal: str, context: str, feedback: str) -> Blueprint:
         """The goal below could not be proved directly within budget. Draft a proof
         blueprint: an informal plan plus a small set of intermediate lemmas that make
@@ -484,7 +484,7 @@ class SketchAgent(LeanAgent):
     the goal must reduce to the lemmas. Use ``check`` to compile against the real
     Lean, where the proposed lemmas are present as stubs."""
 
-    @Template.define
+    @Skill.define
     def sketch(self, goal: str, blueprint: str, context: str) -> LeanProof:
         """Prove the goal below assuming the blueprint's lemmas. Return the tactic
         block (what follows ``:= by``); you may reference each proposed lemma by its
@@ -509,7 +509,7 @@ class Reviewer(Agent):
     goal (e.g. one syntactically equivalent to it). You reject such non-simplifying
     decompositions so search does not waste effort on them."""
 
-    @Template.define
+    @Skill.define
     def review(self, goal: str, blueprint: str) -> ReviewVerdict:
         """Judge whether this decomposition genuinely simplifies proving the goal.
         Reject it if any proposed lemma merely restates the goal, is no easier than

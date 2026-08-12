@@ -5,7 +5,7 @@ import pickle
 import sqlite3
 import typing
 
-from effectful.handlers.llm.types import Agent, Template
+from effectful.handlers.llm.types import Agent, Skill
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -32,7 +32,7 @@ class SQLitePersister(ObjectInterpretation):
     **Automatic checkpointing**: after each outermost call for a given agent
     *returns successfully*, its state and history are saved.
 
-    **On an exception**, nothing is saved. A `Template` call's work happens
+    **On an exception**, nothing is saved. A `Skill` call's work happens
     against a private copy of the agent's history that is only written back
     on success (see `LiteLLMProvider._call`), so an interrupted call's partial
     exchange -- and any other in-process state not captured by `__history__`
@@ -41,7 +41,7 @@ class SQLitePersister(ObjectInterpretation):
     last successful checkpoint is already a complete, uncorrupted transcript,
     and the caller is expected to simply retry the request that didn't finish.
 
-    **Nested calls** (e.g. a tool invoking another template on the same
+    **Nested calls** (e.g. a tool invoking another skill on the same
     agent) are passed through without additional checkpointing -- only the
     outermost call per agent saves.
 
@@ -67,7 +67,7 @@ class SQLitePersister(ObjectInterpretation):
         checkpoint database, or `None` if no persistence handler is installed.
 
         Purely a resource hook -- the handler's implementation just hands
-        back a connection; `Agent.__history__` (see `template.py`) and
+        back a connection; `Agent.__history__` (see `types.py`) and
         `SQLitePersister` own all the query/serialisation logic around it.
         """
         return None
@@ -128,16 +128,14 @@ class SQLitePersister(ObjectInterpretation):
             if f.name != "__agent_id__" and f.metadata.get("persist", True)
         }
 
-    @implements(Template.__apply__)
-    def _call[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
+    @implements(Skill.__apply__)
+    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         result = fwd()
-        if hasattr(template, "__history__") and template.__self__.__is_persistent__:  # type: ignore
-            agent: Agent = template.__self__  # type: ignore
+        if hasattr(skill, "__history__") and skill.__self__.__is_persistent__:  # type: ignore
+            agent: Agent = skill.__self__  # type: ignore
             agent_id = agent.__agent_id__
             state_blob = pickle.dumps(self._checkpoint_state(agent))
-            history_json = json.dumps(list(template.__history__), default=str)
+            history_json = json.dumps(list(skill.__history__), default=str)
             with self._checkpoint_connection() as conn:
                 conn.execute(
                     """

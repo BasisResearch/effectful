@@ -1,12 +1,12 @@
-"""Composition via lexical scope: auto-captured sub-templates, invoked two ways.
+"""Composition via lexical scope: auto-captured sub-skills, invoked two ways.
 
 Demonstrates:
-- Module-level @Template.define sub-templates auto-captured into other templates'
+- Module-level @Skill.define sub-skills auto-captured into other skills'
   lexical scope, with no explicit registration
-- An Agent grouping @Tool.define tools with a @Template.define orchestrator that
-  calls those tools and the sub-templates directly (model-driven composition)
-- A template returning a Callable: the model synthesizes a function that calls the
-  same sub-templates when run (code-driven composition), via the eval provider
+- An Agent grouping @Tool.define tools with a @Skill.define orchestrator that
+  calls those tools and the sub-skills directly (model-driven composition)
+- A skill returning a Callable: the model synthesizes a function that calls the
+  same sub-skills when run (code-driven composition), via the eval provider
 - inspect.getsource on the synthesized function
 """
 
@@ -15,15 +15,15 @@ import inspect
 from collections.abc import Callable
 from typing import Literal
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 
-@Template.define
+@Skill.define
 def story_with_moral(topic: str) -> str:
     """Write a short story about {topic} and end with a moral lesson. Do not use any tools."""
 
 
-@Template.define
+@Skill.define
 def story_funny(topic: str) -> str:
     """Write a funny, humorous story about {topic}. Do not use any tools."""
 
@@ -42,7 +42,7 @@ class TripPlanner(Agent):
         status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
         return status.get(city, "unknown")
 
-    @Template.define
+    @Skill.define
     def plan_trip_story(self, style: str) -> str:
         """Use the relevant tools to identify a city that has good (sunny)
         weather. Then write a short story about visiting that city in the requested
@@ -74,20 +74,20 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.method == "model":
-        # (1) Model-driven: the orchestrator template calls tools and sub-templates.
-        print("=== Orchestrator template (model-driven composition) ===")
+        # (1) Model-driven: the orchestrator skill calls tools and sub-skills.
+        print("=== Orchestrator skill (model-driven composition) ===")
         planner = TripPlanner()
         print(planner.plan_trip_story(args.style))
 
     elif args.method == "code":
 
-        @Template.define
+        @Skill.define
         def write_story_fn(style: Literal["moral", "funny"]) -> Callable[[str], str]:
             """Generate a Python function that takes a topic string and returns a story
             about it in the {style} style. The function should delegate the writing to the
-            `story_funny` sub-template for humor, or `story_with_moral` for a lesson."""
+            `story_funny` sub-skill for humor, or `story_with_moral` for a lesson."""
 
-        # (2) Code-driven: the model synthesizes a function that calls the sub-templates.
+        # (2) Code-driven: the model synthesizes a function that calls the sub-skills.
         print(f"\n=== Synthesized higher-order function (style={args.style}) ===")
         story_fn = write_story_fn(args.style)
         print(inspect.getsource(story_fn))

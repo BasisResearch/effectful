@@ -10,7 +10,7 @@ import collections.abc
 import dataclasses
 import typing
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
 @dataclasses.dataclass(frozen=True)
@@ -33,7 +33,7 @@ class LineupClue:
     b: int
 
 
-@Template.define
+@Skill.define
 def solve_lineup(n: int, clues: collections.abc.Sequence[LineupClue]) -> list[int]:
     """Solve a 'zebra'-style ordering puzzle: place n={n} people, numbered 0 to
     n - 1, in a line in positions 1 to n (each position used once) so that every

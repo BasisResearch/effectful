@@ -4,7 +4,7 @@ import contextlib
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
-    Template,
+    Skill,
     ToolCallDecodingError,
     ToolCallExecutionError,
     call_assistant,
@@ -83,15 +83,15 @@ class HistoryBuilder(ObjectInterpretation):
         self.append_message(message)
         return (message, result, is_final)
 
-    @implements(Template.__apply__)
-    def call_template(self, template, *args, **kwargs):
+    @implements(Skill.__apply__)
+    def call_skill(self, skill, *args, **kwargs):
         history: collections.abc.MutableSequence[Message] = getattr(
-            template, "__history__", []
+            skill, "__history__", []
         )
         called = self.agents_called()
         with transaction(history, write_back=id(history) not in called):
             with handler({self.agents_called: lambda: called | {id(history)}}):
-                return fwd(template, *args, **kwargs)
+                return fwd(skill, *args, **kwargs)
 
 
 @contextlib.contextmanager

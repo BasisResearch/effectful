@@ -1,7 +1,7 @@
 """Natural language to SQL with LLM-powered debug loop.
 
 Demonstrates:
-- Generating SQL from natural language using ``@Template.define``
+- Generating SQL from natural language using ``@Skill.define``
 - Executing SQL against a real SQLite database
 - Feeding execution errors back to the LLM for iterative fixing
 - ``@Tool.define`` to expose the database schema as a tool
@@ -11,7 +11,7 @@ import argparse
 import sqlite3
 import textwrap
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 # ---------------------------------------------------------------------------
 # In-memory database setup
@@ -58,11 +58,11 @@ def get_schema(conn: sqlite3.Connection) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Templates
+# Skills
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def generate_sql(question: str, db_schema: str) -> str:
     """You are a SQL expert. Given this database schema:
 
@@ -74,7 +74,7 @@ def generate_sql(question: str, db_schema: str) -> str:
     """
 
 
-@Template.define
+@Skill.define
 def fix_sql(question: str, db_schema: str, bad_sql: str, error: str) -> str:
     """You are a SQL expert. Your previous query had an error.
 

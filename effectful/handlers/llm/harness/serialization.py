@@ -565,7 +565,7 @@ def _serialize_callable(value: Callable) -> dict:
     statement must be a function definition", "every parameter must be annotated")
     are demands on code a model is *writing*, and a value being serialized is under
     no such obligation. It is any callable that reached this point -- a class handed
-    back by a lexical-scope read, or an inner function a Template *body* returned,
+    back by a lexical-scope read, or an inner function a Skill *body* returned,
     which was never required to annotate anything -- and re-validating its recovered
     source rejected those with a `ValidationError` raised from inside pydantic's
     serializer, aborting the whole call rather than encoding the value.
@@ -622,7 +622,7 @@ def _validate_tool_identity(value: typing.Any) -> Tool:
 
 @TypeToPydanticType.register(Tool)
 def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
-    """Encode a `Tool` (or `Template`) *value* as the callable it is.
+    """Encode a `Tool` (or `Skill`) *value* as the callable it is.
 
     A tool arriving here is a value like any other -- returned by another tool,
     spliced into a prompt -- so it encodes as its source, exactly as

@@ -1,7 +1,7 @@
 """Map-reduce resume evaluation.
 
 Demonstrates:
-- Fan-out: evaluating multiple items independently with the same template
+- Fan-out: evaluating multiple items independently with the same skill
 - Reduce: aggregating individual results into a summary
 - ``asyncio.gather`` with ``asyncio.to_thread`` for parallel LLM calls
 - Structured output with dataclasses
@@ -14,7 +14,7 @@ import dataclasses
 import functools
 import typing
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -31,11 +31,11 @@ class Evaluation:
 
 
 # ---------------------------------------------------------------------------
-# Templates
+# Skills
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def evaluate_resume(resume: str, job_description: str) -> Evaluation:
     """You are a hiring manager. Evaluate this resume against the job
     description and produce a structured evaluation.
@@ -47,7 +47,7 @@ def evaluate_resume(resume: str, job_description: str) -> Evaluation:
     """
 
 
-@Template.define
+@Skill.define
 def summarize_evaluations(
     job_description: str,
     evaluations: collections.abc.Sequence[Evaluation],
@@ -97,7 +97,7 @@ async def map_reduce_evaluate(
 ) -> str:
     """Evaluate resumes in parallel (map), then summarize (reduce)."""
     # Map: fork/join -- evaluate each resume concurrently via asyncio.gather +
-    # asyncio.to_thread (sync template calls run in parallel threads).
+    # asyncio.to_thread (sync skill calls run in parallel threads).
     evaluate = functools.partial(asyncio.to_thread, evaluate_resume)
     evaluations: list[Evaluation] = list(
         await asyncio.gather(*(evaluate(resume, job_description) for resume in resumes))

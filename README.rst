@@ -131,7 +131,7 @@ Claude Code, Cursor, Copilot) to:
    https://basisresearch.github.io/effectful/llm.md
 
 This file is auto-generated from the `LLM tutorial notebook <https://basisresearch.github.io/effectful/llm.html>`_
-and contains complete API usage examples for templates, tool calling,
+and contains complete API usage examples for skills, tool calling,
 structured output, retries, and more.
 
 Learn More

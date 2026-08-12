@@ -32,9 +32,9 @@ from effectful.handlers.llm.harness.serialization import (
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
     _def_nodes,
-    _recover_template_def,
+    _recover_skill_def,
 )
-from effectful.handlers.llm.types import Template, Tool
+from effectful.handlers.llm.types import Skill, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -118,7 +118,7 @@ class ReplSession(code.InteractiveInterpreter):
         This is a long-lived REPL, not a one-shot sandbox: every call runs in the
         SAME namespace, so names you bind in one call stay available in later
         calls within the same task.  Imports, function/class definitions and
-        variable assignments all accumulate during the session of this template.
+        variable assignments all accumulate during the session of this skill.
         The namespace starts seeded with the in-scope variables of the surrounding context, which you may read and
         rebind.
 
@@ -137,7 +137,7 @@ class ReplSession(code.InteractiveInterpreter):
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
         # Record this snippet's source so the *next* snippet's decode-time type check can
-        # splice the accumulated session code into the Template body. The type check itself
+        # splice the accumulated session code into the Skill body. The type check itself
         # lives in the `Encodable[CodeType]` decoder (as it does for synthesized Callables),
         # not here -- this session only runs code.
         self._prior_snippets.append("".join(linecache.getlines(code.co_filename)))
@@ -182,25 +182,25 @@ def _scan_non_nestable(generated: ast.Module) -> None:
 def _splice_snippet(
     generated: ast.Module,
     module_ast: ast.Module,
-    template_def: ast.FunctionDef | ast.AsyncFunctionDef,
+    skill_def: ast.FunctionDef | ast.AsyncFunctionDef,
 ) -> SplicedRegion:
-    """Splice REPL code -- ``generated`` -- into the anchor Template's body, in its
+    """Splice REPL code -- ``generated`` -- into the anchor Skill's body, in its
     real module source, and return the modified source with the ``[lo, hi]`` line
     span of the spliced statements.
 
     ``generated`` is the cumulative session code (any already-run snippets followed
-    by the current one; the caller prepends them). It becomes the Template function's
-    body at its real (possibly nested) position, so the Template's parameters and
+    by the current one; the caller prepends them). It becomes the Skill function's
+    body at its real (possibly nested) position, so the Skill's parameters and
     enclosing scope -- i.e. the session's seed env -- are in scope and each statement
     sees the ones before it (they are function locals). No ``return`` is appended;
-    the REPL code doesn't produce the Template's declared type, and that contract is
+    the REPL code doesn't produce the Skill's declared type, and that contract is
     waived by ``lenient`` type checking. The whole spliced body is reported, but the
     already-run snippets are type-clean (they passed this same check when *they* were
     the current one), so only the new statements can raise.
 
-    Example. For the Template ::
+    Example. For the Skill ::
 
-        @Template.define
+        @Skill.define
         def analyze(data: list[int]) -> str:
             '''Analyze {data}.'''
 
@@ -209,28 +209,28 @@ def _splice_snippet(
         total = sum(data)
         print(total / len(data))
 
-    becomes the Template's body ::
+    becomes the Skill's body ::
 
-        @Template.define
+        @Skill.define
         def analyze(data: list[int]) -> str:
             total = sum(data)
             print(total / len(data))
 
-    so each statement sees the Template's ``data`` and the earlier statements'
+    so each statement sees the Skill's ``data`` and the earlier statements'
     bindings (here ``total``).
 
     Returns ``None`` when ``generated`` has no statements to check, or when the
-    Template's source can't be recovered -- a Template defined at a REPL, in a notebook, or
+    Skill's source can't be recovered -- a Skill defined at a REPL, in a notebook, or
     via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
     as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
     only on source *drift* (source recovered but the def no longer sits where it was
-    compiled from), which ``_recover_template_def`` surfaces.
+    compiled from), which ``_recover_skill_def`` surfaces.
     """
-    template_def.body = list(generated.body)
+    skill_def.body = list(generated.body)
 
-    # `template_def` is still a node in `module_ast` (only its body changed), so its
+    # `skill_def` is still a node in `module_ast` (only its body changed), so its
     # walk-order index is stable across the unparse round-trip.
-    def_index = _def_nodes(module_ast).index(template_def)
+    def_index = _def_nodes(module_ast).index(skill_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
     lo = spliced.body[0].lineno
@@ -269,28 +269,28 @@ def _pydantic_type_code(ty):
         module = effectful.handlers.llm.harness.execution.hooks.parse(value, filename)
 
         # Reject `__future__`/star imports: both are `SyntaxError` once nested in a
-        # function body, so such a snippet can't be spliced into the Template for
+        # function body, so such a snippet can't be spliced into the Skill for
         # type checking.
         _scan_non_nestable(module)
 
         # Type-check the snippet in its execution context, exactly as a synthesized
-        # `Callable` is (see `_pydantic_callable`): when the enclosing Template is the
+        # `Callable` is (see `_pydantic_callable`): when the enclosing Skill is the
         # type-check anchor in the decode context, splice the accumulated REPL session
         # (`PythonRepl.repl_history` returns the prior snippets of the session in scope)
-        # plus this snippet into the Template body and check it. A type error raises here
+        # plus this snippet into the Skill body and check it. A type error raises here
         # -> the tool-call decode fails -> `RetryLLMHandler` retries, so ill-typed code
         # never reaches `runcode`.
-        if anchor is not None and _recover_template_def(anchor) is not None:
+        if anchor is not None and _recover_skill_def(anchor) is not None:
             # Prepend the already-run (type-clean) session snippets so their bindings
             # resolve; `value` is the current snippet. The whole cumulative body is
             # spliced and checked.
-            anchor_asts = _recover_template_def(anchor)
+            anchor_asts = _recover_skill_def(anchor)
             assert anchor_asts is not None
-            module_ast, template_def = anchor_asts
+            module_ast, skill_def = anchor_asts
             prior = StatefulReplSynthesizer.repl_history()
             prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
             session = ast.parse(prior_src + value)
-            checked = _splice_snippet(session, module_ast, template_def)
+            checked = _splice_snippet(session, module_ast, skill_def)
             effectful.handlers.llm.harness.validation.hooks.type_check(
                 *checked, lenient=True
             )
@@ -309,7 +309,7 @@ def _pydantic_type_code(ty):
 
 class StatefulReplSynthesizer(ObjectInterpretation):
     """You may run arbitrary Python code in a persistent session. The code is
-    executed in the context of this Template's lexical scope (see the *Lexical
+    executed in the context of this Skill's lexical scope (see the *Lexical
     scope* table for the available names and their types). The session persists
     across turns, so you may define variables, functions, and classes that are
     used in later turns. The return value of the code is returned to you as the
@@ -322,19 +322,19 @@ class StatefulReplSynthesizer(ObjectInterpretation):
 
     # Off by default; install it where the LLM should be able to run code whose
     # state (variables, imports, definitions) survives across tool calls within a
-    # single Template invocation.  The docstring above is model-facing: it is the
+    # single Skill invocation.  The docstring above is model-facing: it is the
     # `Harness` section this handler adds to the system prompt (see
     # `_call_system`), so implementation notes belong in comments like this one.
     #
-    # Scoping mirrors how `__history__` is managed for Template calls: `_apply`
-    # handles `Template.__apply__` to introduce fresh session-bound handlers
+    # Scoping mirrors how `__history__` is managed for Skill calls: `_apply`
+    # handles `Skill.__apply__` to introduce fresh session-bound handlers
     # (`exec_code`, `read_lexical_variable`, `repl_history`) for the duration of
     # the call, and `_call_assistant` injects an `exec_code` Tool routed to that
     # session.  The session is therefore introduced and eliminated by its own
-    # handler, bounded to the Template call by construction -- there is no global
-    # registry of sessions, and nested Template calls get their own isolated ones.
+    # handler, bounded to the Skill call by construction -- there is no global
+    # registry of sessions, and nested Skill calls get their own isolated ones.
     #
-    # The session is seeded from the Template's lexical context and routes
+    # The session is seeded from the Skill's lexical context and routes
     # execution through the `parse`/`compile`/`exec` effect operations, so it
     # works under any installed eval provider (`BuiltinExecutor` or
     # `RestrictedPythonExecutor`).
@@ -396,13 +396,13 @@ class StatefulReplSynthesizer(ObjectInterpretation):
             agent_prompt,
         )
 
-    @implements(Template.__apply__)
+    @implements(Skill.__apply__)
     def _apply[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
+        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
-        bound_args = template.__signature__.bind(*args, **kwargs)
+        bound_args = skill.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
-        env = collections.ChainMap(bound_args.arguments, template.__context__)
+        env = collections.ChainMap(bound_args.arguments, skill.__context__)
         session = ReplSession(env=env)
         with handler(
             {

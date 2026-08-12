@@ -2,7 +2,7 @@
 
 Demonstrates:
 - Multi-agent delegation: a tool that internally calls a separate
-  ``@Template.define`` (agent-to-agent delegation)
+  ``@Skill.define`` (agent-to-agent delegation)
 - Programmatic validation of LLM output with retry
 - Interactive human-in-the-loop flow
 - ``Agent`` history for conversational seat selection
@@ -14,7 +14,7 @@ import datetime
 import enum
 from typing import Literal
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 # ---------------------------------------------------------------------------
 # Structured output types
@@ -77,11 +77,11 @@ FLIGHTS_PAGE = """\
 """
 
 # ---------------------------------------------------------------------------
-# Extraction template (inner "agent")
+# Extraction skill (inner "agent")
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def extract_flights(web_page_text: str) -> list[FlightDetails]:
     """Extract all flight details from the following text.
 
@@ -100,7 +100,7 @@ class FlightFinder(Agent):
 
     available_flights: list[FlightDetails]
 
-    @Template.define
+    @Skill.define
     def find_flight(
         self, origin: Airport, destination: Airport, date: datetime.date
     ) -> FlightDetails:
@@ -120,7 +120,7 @@ class FlightFinder(Agent):
 class SeatSelector(Agent):
     """Agent that extracts seat preferences from natural language."""
 
-    @Template.define
+    @Skill.define
     def select_seat(self, user_input: str) -> SeatPreference:
         """Extract the user's seat preference from their message.
 

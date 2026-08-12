@@ -1,6 +1,6 @@
 """Tests for LLM tool calling functionality - Poem evaluation.
 
-This module is separate to avoid lexical context pollution from other templates.
+This module is separate to avoid lexical context pollution from other skills.
 """
 
 from dataclasses import dataclass
@@ -9,7 +9,7 @@ from enum import StrEnum
 from pydantic import Field
 from pydantic.dataclasses import dataclass as pydantic_dataclass
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     call_assistant,
@@ -85,7 +85,7 @@ class LoggingPoemEvaluationInterpretation(ObjectInterpretation):
         return quality
 
 
-@Template.define
+@Skill.define
 def generate_good_poem(topic: str) -> Poem:
     """Generate a good poem about {topic}.
 
@@ -99,11 +99,11 @@ def generate_good_poem(topic: str) -> Poem:
 
 
 class TestToolCalling:
-    """Tests for templates with tool calling functionality."""
+    """Tests for skills with tool calling functionality."""
 
     @requires_llm
     def test_tool_calling(self):
-        """Test that templates with tools work with the configured model."""
+        """Test that skills with tools work with the configured model."""
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
             handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),

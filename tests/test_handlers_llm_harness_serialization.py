@@ -33,7 +33,7 @@ from effectful.handlers.llm.harness.serialization import (
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
-from effectful.handlers.llm.types import Encodable, Template, Tool
+from effectful.handlers.llm.types import Encodable, Skill, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler
 from effectful.ops.types import Operation, Term
@@ -787,9 +787,9 @@ def test_callable_full_pipeline_behavioral(
     assert decoded(*args) == expected
 
 
-# A Template-style anchor whose return type is the Callable being decoded.
+# A Skill-style anchor whose return type is the Callable being decoded.
 # Decoding only runs the (source-anchored) type check when an anchor is in scope
-# (bound by Template.__apply__); the result path has one, the argument path does
+# (bound by Skill.__apply__); the result path has one, the argument path does
 # not. The return-type case needs the body checked against the expected signature,
 # so it provides an anchor; the structural cases (param count, missing/last-stmt)
 # are caught without one.
@@ -1076,13 +1076,13 @@ def test_encodable_code_schema_is_a_string():
 # Validation decodes code the model *wrote*, and holds it to `SynthesizedFunction`'s
 # constraints. Serialization encodes a value that already exists, which was never
 # under those constraints -- a class read out of the lexical scope, or an inner
-# function a Template *body* returned. Conflating the two aborted the enclosing call
+# function a Skill *body* returned. Conflating the two aborted the enclosing call
 # with a `ValidationError` raised from inside pydantic's serializer.
 # ============================================================================
 
 
 def _outer_returning_unannotated():
-    """Stands in for a synthesized Template body: `TemplateBody` waives annotations,
+    """Stands in for a synthesized Skill body: `SkillBody` waives annotations,
     so the function it returns need not have any."""
 
     def step(state, action):
@@ -1125,8 +1125,8 @@ def test_serialize_callable_matches_its_declared_schema():
 
 
 @pytest.mark.parametrize(
-    "ty", [Tool, Template], ids=["tool", "template"]
-)  # `Template` reaches the same encoding through its base
+    "ty", [Tool, Skill], ids=["tool", "skill"]
+)  # `Skill` reaches the same encoding through its base
 def test_serialize_tool_value_encodes_the_callable_it_is(ty):
     """A `Tool` arriving as a *value* -- returned by another tool, spliced into a
     prompt -- encodes as its source, like any other callable.

@@ -1,7 +1,7 @@
 """Tests for ``docs/source/llm_examples/choreographies/library.py`` -- choreographic
 endpoint projection.
 
-No real LLM is involved: `MockLLM` and friends implement `Template.__apply__`
+No real LLM is involved: `MockLLM` and friends implement `Skill.__apply__`
 directly, so what is under test is the choreography -- step allocation, result
 sharing, scatter distribution -- rather than any completion logic.
 
@@ -27,7 +27,7 @@ from docs.source.llm_examples.choreographies.library import (
     scatter,
     step,
 )
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -48,18 +48,18 @@ def run(coro, timeout: float = TIMEOUT) -> Any:
 # ── Test doubles ──────────────────────────────────────────────────
 
 
-def _key(template) -> str:
-    """``agent-id.template-name`` for a bound template, else its name."""
-    agent = getattr(template, "__self__", None)
-    name = template.__name__
+def _key(skill) -> str:
+    """``agent-id.skill-name`` for a bound skill, else its name."""
+    agent = getattr(skill, "__self__", None)
+    name = skill.__name__
     return f"{agent.__agent_id__}.{name}" if agent is not None else name
 
 
 class MockLLM(ObjectInterpretation):
-    """Answers template calls from a canned mapping.
+    """Answers skill calls from a canned mapping.
 
-    Keys are matched most-specific first: ``agent-id.template-name``, then
-    ``template-name``. A value may be a callable ``(template, args) -> result``.
+    Keys are matched most-specific first: ``agent-id.skill-name``, then
+    ``skill-name``. A value may be a callable ``(skill, args) -> result``.
     """
 
     def __init__(self, responses: dict[str, Any]):
@@ -67,18 +67,18 @@ class MockLLM(ObjectInterpretation):
         self._lock = threading.Lock()
         self.calls: list[str] = []
 
-    @implements(Template.__apply__)
-    def _call(self, template, *args, **kwargs):
-        key = _key(template)
+    @implements(Skill.__apply__)
+    def _call(self, skill, *args, **kwargs):
+        key = _key(skill)
         with self._lock:
             self.calls.append(key)
         if key in self._responses:
             response = self._responses[key]
-        elif template.__name__ in self._responses:
-            response = self._responses[template.__name__]
+        elif skill.__name__ in self._responses:
+            response = self._responses[skill.__name__]
         else:
-            response = f"mock-{template.__name__}"
-        return response(template, args) if callable(response) else response
+            response = f"mock-{skill.__name__}"
+        return response(skill, args) if callable(response) else response
 
     def calls_for(self, agent_id: str) -> list[str]:
         with self._lock:
@@ -86,17 +86,17 @@ class MockLLM(ObjectInterpretation):
 
 
 class FailingMockLLM(MockLLM):
-    """A `MockLLM` that raises on specific ``agent-id.template-name`` keys."""
+    """A `MockLLM` that raises on specific ``agent-id.skill-name`` keys."""
 
     def __init__(self, responses: dict[str, Any], fail_on: set[str]):
         super().__init__(responses)
         self._fail_on = fail_on
 
-    @implements(Template.__apply__)
-    def _call(self, template, *args, **kwargs):
-        if _key(template) in self._fail_on:
-            raise RuntimeError(f"Simulated failure on {_key(template)}")
-        return super()._call(template, *args, **kwargs)
+    @implements(Skill.__apply__)
+    def _call(self, skill, *args, **kwargs):
+        if _key(skill) in self._fail_on:
+            raise RuntimeError(f"Simulated failure on {_key(skill)}")
+        return super()._call(skill, *args, **kwargs)
 
 
 # ── Agents ────────────────────────────────────────────────────────
@@ -105,7 +105,7 @@ class FailingMockLLM(MockLLM):
 class Architect(Agent):
     """Plans modules."""
 
-    @Template.define
+    @Skill.define
     def plan(self, spec: str) -> str:
         """Plan modules for: {spec}"""
         raise NotHandled
@@ -114,7 +114,7 @@ class Architect(Agent):
 class Coder(Agent):
     """Writes code."""
 
-    @Template.define
+    @Skill.define
     def implement(self, spec: str) -> str:
         """Implement: {spec}"""
         raise NotHandled
@@ -123,7 +123,7 @@ class Coder(Agent):
 class Reviewer(Agent):
     """Reviews code."""
 
-    @Template.define
+    @Skill.define
     def review(self, code: str) -> str:
         """Review: {code}"""
         raise NotHandled
@@ -132,13 +132,13 @@ class Reviewer(Agent):
 class Verifier(Agent):
     """Writes tests."""
 
-    @Template.define
+    @Skill.define
     def write_tests(self, spec: str) -> str:
         """Write tests for: {spec}"""
         raise NotHandled
 
 
-@Template.define
+@Skill.define
 def announce(text: str) -> str:
     """Announce: {text}"""
     raise NotHandled
@@ -244,7 +244,7 @@ class TestChoreography:
         reviews = iter(["RETRY", "RETRY", "PASS"])
         lock = threading.Lock()
 
-        def next_review(template, args):
+        def next_review(skill, args):
             with lock:
                 return next(reviews)
 
@@ -291,7 +291,7 @@ class TestChoreography:
         )
         assert result == "code"
 
-    def test_unbound_template_runs_on_every_agent(self):
+    def test_unbound_skill_runs_on_every_agent(self):
         architect, coder = Architect(__agent_id__="arch"), Coder(__agent_id__="coder")
 
         async def program(architect, coder):
@@ -393,7 +393,7 @@ class TestScatter:
         result, mock = choreograph(
             program,
             [architect, *coders],
-            {"plan": "P", "implement": lambda template, args: f"code({args[0]})"},
+            {"plan": "P", "implement": lambda skill, args: f"code({args[0]})"},
             architect=architect,
             coder=coders,
         )
@@ -412,7 +412,7 @@ class TestScatter:
         barrier = threading.Barrier(2, timeout=TIMEOUT / 2)
         coders = [Coder(__agent_id__="coder-1"), Coder(__agent_id__="coder-2")]
 
-        def implement(template, args):
+        def implement(skill, args):
             barrier.wait()
             return f"code({args[0]})"
 
@@ -447,7 +447,7 @@ class TestScatter:
         barrier = threading.Barrier(2, timeout=TIMEOUT / 2)
 
         def gated(prefix):
-            def _run(template, args):
+            def _run(skill, args):
                 barrier.wait()
                 return f"{prefix}({args[0]})"
 
@@ -488,7 +488,7 @@ class TestScatter:
         (scattered, after), mock = choreograph(
             program,
             [coder],
-            {"implement": lambda template, args: f"<{args[0]}>"},
+            {"implement": lambda skill, args: f"<{args[0]}>"},
             coder=coder,
         )
 
@@ -499,7 +499,7 @@ class TestScatter:
         assert len(mock.calls) == 5
 
     def test_an_item_may_not_step_on_another_agent(self):
-        """A scatter item is work one agent took on alone, so its templates
+        """A scatter item is work one agent took on alone, so its skills
         have to be its own -- nobody else is waiting to run them."""
         coder = Coder(__agent_id__="coder")
         reviewer = Reviewer(__agent_id__="rev")
@@ -564,7 +564,7 @@ class TestProjection:
         previous one. A waiting agent is a suspended coroutine, so it holds no
         thread -- run agent-per-thread instead and this deadlocks."""
         agents = [Coder(__agent_id__=f"coder-{i}") for i in range(4)]
-        mock = MockLLM({"implement": lambda template, args: args[0] + "!"})
+        mock = MockLLM({"implement": lambda skill, args: args[0] + "!"})
 
         async def go():
             with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
@@ -599,7 +599,7 @@ class _Verdict:
 class Judge(Agent):
     """Returns a dataclass."""
 
-    @Template.define
+    @Skill.define
     def rule(self, case: str) -> _Verdict:
         """Rule on: {case}"""
         raise NotHandled
@@ -707,7 +707,7 @@ class TestResume:
         result, mock = choreograph(
             program,
             coders,
-            {"implement": lambda template, args: f"code({args[0]})"},
+            {"implement": lambda skill, args: f"code({args[0]})"},
             log=log,
             coder=coders,
         )
@@ -739,7 +739,7 @@ class TestResume:
 
     def test_a_dataclass_result_survives_a_resume(self, tmp_path):
         """Results are pickled rather than JSON-encoded, so a step may return
-        anything a template can decode to."""
+        anything a skill can decode to."""
         judge = Judge(__agent_id__="judge")
         coder = Coder(__agent_id__="coder")
         log = tmp_path / "steps.db"
@@ -867,12 +867,12 @@ class TestPrimitivesAreOperations:
 
         class Tracer(ObjectInterpretation):
             @implements(step)
-            def _step(self, template, *args, **kwargs):
+            def _step(self, skill, *args, **kwargs):
                 pending = fwd()
 
                 async def traced():
                     result = await pending
-                    seen.append(f"{template.__name__} -> {result}")
+                    seen.append(f"{skill.__name__} -> {result}")
                     return result
 
                 return traced()

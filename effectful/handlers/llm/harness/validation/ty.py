@@ -121,7 +121,7 @@ class TyTypeChecker(ObjectInterpretation):
         grants most of that leniency unasked. A variable may be redefined with a new
         type across cells and ty narrows to the latest binding, and a def/class/import
         may be redefined -- no flag needed for either. A body that doesn't return the
-        Template's declared type is reported against the *signature* line, while a
+        Skill's declared type is reported against the *signature* line, while a
         body that returns the wrong type is reported against the ``return`` statement,
         so the region filter tells those two apart on its own; splitting them by
         position rather than by flag is what keeps ``lenient`` from also waiving a
@@ -151,7 +151,7 @@ class TyTypeChecker(ObjectInterpretation):
                     # Third-party imports resolve out of the environment this process
                     # runs in, as `sys.executable -m mypy` implicitly does; first-party
                     # ones out of its working directory, where mypy also finds them --
-                    # the source being checked is a Template's own module, so those are
+                    # the source being checked is a Skill's own module, so those are
                     # exactly the imports the check is *for*, and an editable install is
                     # not reachable through site-packages alone. Deliberately *not*
                     # `--extra-search-path` over all of `sys.path`: handing ty the

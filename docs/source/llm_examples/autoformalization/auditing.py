@@ -25,8 +25,8 @@ requirements``. Here it is enforced by the code's shape:
     appeared, and no ``Tool`` in scope can fetch one.
 
   * That is necessary and not sufficient. The harness puts the source of a
-    template's *defining module* into its system prompt (see the prompt-assembly
-    table in `effectful.handlers.llm.types.Template`), so anything sharing a file
+    skill's *defining module* into its system prompt (see the prompt-assembly
+    table in `effectful.handlers.llm.types.Skill`), so anything sharing a file
     with an ``Agent`` is shown to it verbatim. The corpora, the mapping and the
     expected verdicts therefore live here, in a module the agents never import,
     and each strategy owns its own module. **In this framework the unit of
@@ -194,8 +194,8 @@ import textwrap
 import typing
 
 # The agents live next door, and that is load-bearing rather than tidiness: the
-# harness builds a template's system prompt partly from the source of the module
-# the template is defined in, so anything sharing a file with an Agent is shown
+# harness builds a skill's system prompt partly from the source of the module
+# the skill is defined in, so anything sharing a file with an Agent is shown
 # to it. Everything below -- the corpora, the labelled mapping, the expected
 # verdicts and their rationales -- is exactly what the auditing agents must not
 # see. See the module docstring of `auditing_agents` for what happened when they
@@ -708,7 +708,7 @@ class Claim:
     """A requirement, the theorem said to formalize it, and the labelled truth.
 
     ``expected`` and ``why`` are the answer key. They are Python-side bookkeeping
-    and must stay that way: they are never passed to a template, and this module
+    and must stay that way: they are never passed to a skill, and this module
     is never imported by the one the agents are defined in.
     """
 

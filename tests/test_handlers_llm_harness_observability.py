@@ -24,7 +24,7 @@ import rich.text
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import PromptSection, call_system, completion
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
@@ -91,20 +91,20 @@ def by_type(spans):
     return grouped
 
 
-@Template.define
+@Skill.define
 def compute(x: int, y: int) -> str:
     """Add {x} and {y} using the tool, then report the result."""
     raise NotHandled
 
 
-# `compute` offers `add_numbers` because it is in scope where the template is
+# `compute` offers `add_numbers` because it is in scope where the skill is
 # defined -- the import is load-bearing even though the body never names it.
 
 
-def test_tracer_traces_template_completion_and_tool(langfuse_client):
+def test_tracer_traces_skill_completion_and_tool(langfuse_client):
     """One traced call covers all three operations `LangfuseTracer` implements.
 
-    A template that calls a tool produces an ``agent`` span (the `Template`), two
+    A skill that calls a tool produces an ``agent`` span (the `Skill`), two
     ``generation`` spans (the `completion` before and after the tool ran) and a
     ``tool`` span, all in one trace.
 
@@ -134,7 +134,7 @@ def test_tracer_traces_template_completion_and_tool(langfuse_client):
     spans = exporter.get_finished_spans()
     grouped = by_type(spans)
 
-    # A single trace, with every observation hanging off the template's span.
+    # A single trace, with every observation hanging off the skill's span.
     (agent,) = grouped["agent"]
     assert agent.name == "compute"
     assert agent.parent is None
@@ -170,7 +170,7 @@ def test_tracer_records_response_format_metadata(langfuse_client):
     """A pydantic ``response_format`` is traced as its JSON schema.
 
     The structured-output branch is unreachable from a plain string-returning
-    template, so `completion` is driven directly here.
+    skill, so `completion` is driven directly here.
     """
 
     class Answer(pydantic.BaseModel):

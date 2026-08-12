@@ -25,7 +25,7 @@ idioms:
   * The agentic tool-use loop *is* iterative retrieval expansion. The Historian
     calls ``search`` several times -- initial query, then temporal/concurrent
     expansion -- and compresses the hits into a chronological domain narrative,
-    all inside one Template call.
+    all inside one Skill call.
 
   * Grounded critique by construction. A ``MissingBaseline`` the Scout emits
     certifies at decode time that the omitted work it names is a paper ``search``
@@ -47,13 +47,13 @@ idioms:
     (ICLR emphasizes novelty, NeurIPS rigor) and only the final synthesis shifts.
 
 Demonstrates:
-- A shared Tool on a base ``Agent`` class, offered to subclass templates via the
+- A shared Tool on a base ``Agent`` class, offered to subclass skills via the
   MRO but invisible to the sibling toolless agents -- tool scoping as
-  encapsulation, so no template needs a "do not use tools" instruction
+  encapsulation, so no skill needs a "do not use tools" instruction
 - Decode-time certification of structured output against a ground-truth index,
   turning a fabricated finding into a retry (grounded critique)
 - Fan-out map over LLM calls with ``asyncio.gather`` + ``asyncio.to_thread``
-- An ``Agent`` whose instance field reshapes a Template prompt (venue guidelines)
+- An ``Agent`` whose instance field reshapes a Skill prompt (venue guidelines)
 - Structured, typed review output (an illustrative ICLR-style schema: per-dimension
   1-10 scores, a recommendation enum, and author-facing suggestions)
 - Per-field guidance carried on the types as ``field(metadata={"description": ...})``,
@@ -99,13 +99,13 @@ import typing
 import pydantic
 import requests
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
-# a template's argument (and structured-output) spec. So per-field guidance reaches
+# a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
 # don't already say it, so no prompt has to repeat it.
 
@@ -356,7 +356,7 @@ class Summarizer(Agent):
     "lost in the middle" effect by keeping claims, method, and evidence and
     dropping prose."""
 
-    @Template.define
+    @Skill.define
     def summarize(self, paper_text: str) -> PaperSummary:
         """Compress this submission into a structured summary: its core claims,
         its method, and the evidence it reports.
@@ -369,13 +369,13 @@ class Summarizer(Agent):
 
 # ---------------------------------------------------------------------------
 # Stream 1b -- context acquisition. The `search` tool lives on this base, so it
-# is offered to Scholar subclasses' templates and to no one else.
+# is offered to Scholar subclasses' skills and to no one else.
 # ---------------------------------------------------------------------------
 
 
 class Scholar(Agent):
     """Base for agents that read the literature. The ``search`` tool defined here
-    is inherited (via the Agent MRO) by every ``Scholar`` subclass's templates,
+    is inherited (via the Agent MRO) by every ``Scholar`` subclass's skills,
     and by nothing else: the closed-book agents hold no ``Scholar`` instance, so
     it never enters their lexical scope. One shared tool, scoped to exactly the
     agents that should search."""
@@ -399,7 +399,7 @@ class Historian(Scholar):
     its field, so significance can be judged against history rather than in a
     vacuum."""
 
-    @Template.define
+    @Skill.define
     def survey(self, summary: PaperSummary) -> str:
         """Using the search tool, retrieve the relevant prior work for this
         submission -- search more than once to widen coverage (the method, the
@@ -419,7 +419,7 @@ class BaselineScout(Scholar):
     state of the art on a submission's benchmarks and report the strong
     comparisons its authors left out."""
 
-    @Template.define
+    @Skill.define
     def audit(self, summary: PaperSummary) -> list[MissingBaseline]:
         """Identify the submission's task and benchmark, then use the search tool
         to find state-of-the-art methods on that benchmark and closely related
@@ -437,7 +437,7 @@ class QuestionGenerator(Agent):
     """You are the Question Generator. You turn the gathered context into a few
     sharp, specific probing questions aimed at a submission's weakest points."""
 
-    @Template.define
+    @Skill.define
     def generate(
         self, summary: PaperSummary, narrative: str, missing: list[MissingBaseline]
     ) -> list[Question]:
@@ -459,7 +459,7 @@ class AnswerGenerator(Agent):
     reviewer: self-answer from the paper, then check that answer against the
     external context and record where they diverge."""
 
-    @Template.define
+    @Skill.define
     def interrogate(
         self, question: Question, summary: PaperSummary, narrative: str
     ) -> Interrogation:
@@ -504,7 +504,7 @@ class Reviewer(Agent):
 
     guidelines: str
 
-    @Template.define
+    @Skill.define
     def write_review(
         self,
         summary: PaperSummary,

@@ -5,7 +5,7 @@ In-context learning to solve problems with code across a conversation.
 import argparse
 import collections.abc
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 class CountdownSolver(Agent):
@@ -15,7 +15,7 @@ class CountdownSolver(Agent):
     work out by hand are often easy to brute-force or verify with a short program.
     """
 
-    @Template.define
+    @Skill.define
     def solve(self, numbers: collections.abc.Sequence[int], target: int) -> bool:
         """In the Countdown numbers game, decide whether {target} can be made from
         {numbers}, using each number exactly once and combining them with + - * /

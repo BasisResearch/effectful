@@ -176,7 +176,7 @@ from docs.source.llm_examples.optimization.library import (
     source_of,
     worker,
 )
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 # A kernel is one list-to-list transform; every task in the family shares this
 # signature so a single instruction can drive all of them.
@@ -411,7 +411,7 @@ class Programmer(Agent):
     you are given, following the engineering instruction you are handed, and you
     answer with code rather than prose."""
 
-    @Template.define
+    @Skill.define
     def write_kernel(self, instruction: str, task: KernelTask) -> Kernel:
         """Write ``kernel(values)``: a function taking a ``list[float]`` and returning
         a ``list[float]``, implementing this specification exactly.
@@ -616,7 +616,7 @@ class Proposer(Agent):
     you first read the diagnostics to decide which failure mode is costing the most,
     then you write the guidance that addresses it."""
 
-    @Template.define
+    @Skill.define
     def propose_instruction(self, current: str, feedback: list[Rollout]) -> str:
         """You are optimizing the INSTRUCTION handed to a programmer model that
         implements small list-transform functions. The instruction below is the

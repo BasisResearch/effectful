@@ -32,7 +32,7 @@ The evaluator is deterministic Python throughout, so no model sits in the scorin
 and every number in the trace is measured.
 
 Demonstrates:
-- A ``Template`` returning a ``Callable`` whose *own* doctests are the decode-time
+- A ``Skill`` returning a ``Callable`` whose *own* doctests are the decode-time
   contract: a packer that does not return ``n`` feasible circles is fed its error by
   ``TenacityRetryer`` and never reaches the evaluator -- the paper's refiner stage,
   for free
@@ -216,7 +216,7 @@ from docs.source.llm_examples.optimization.library import (
     report,
     source_of,
 )
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -412,7 +412,7 @@ class Proposer(Agent):
     approach with a different one when the diagnostics say the current approach has
     saturated."""
 
-    @Template.define
+    @Skill.define
     def propose_packer(
         self, current: Packer, feedback: list[Rollout], n: int, toolbox: str
     ) -> Packer:
@@ -464,7 +464,7 @@ class Proposer(Agent):
         shown so that this instruction is not itself collected as a test).
 
         The doctest below certifies the same contract on the other decode path, where
-        the harness synthesizes this Template's body: it calls this Template
+        the harness synthesizes this Skill's body: it calls this Skill
         recursively -- routed to your own submission, so it costs nothing -- and runs
         the packer that comes back.
 
@@ -474,7 +474,7 @@ class Proposer(Agent):
         True
         """
 
-    @Template.define
+    @Skill.define
     def propose_packer_visual(
         self,
         current: Packer,
@@ -510,7 +510,7 @@ class Proposer(Agent):
         in scope.
         """
 
-    @Template.define
+    @Skill.define
     def refine_packer(
         self,
         current: Packer,
@@ -549,7 +549,7 @@ class Proposer(Agent):
         ``total_radius`` and ``worst_violation`` are in scope.
         """
 
-    @Template.define
+    @Skill.define
     def propose_refiner(
         self, current: str, packer: Packer, feedback: list[Rollout]
     ) -> str:
@@ -580,7 +580,7 @@ class Proposer(Agent):
         Return the instruction as plain text, nothing else.
         """
 
-    @Template.define
+    @Skill.define
     def bootstrap_packer(self, objective: str, n: int, toolbox: str) -> Packer:
         """Seedless mode: there is no artifact yet, only a goal.
 

@@ -22,7 +22,7 @@ from effectful.handlers.llm.harness.execution.restricted import RestrictedPython
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
     SynthesizedFunction,
-    _recover_template_def,
+    _recover_skill_def,
     _splice_function,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import (
@@ -58,14 +58,14 @@ def type_checker(request, monkeypatch):
 # Splice-based type checking (splice_into_source + type_check)
 #
 # The type checker splices LLM-generated code into the real source of the
-# Template's module -- at the template function's own (possibly nested)
+# Skill's module -- at the skill function's own (possibly nested)
 # position -- and runs the installed checker over the whole module, raising only
 # on diagnostics inside the spliced region. These tests exercise that contract
 # against real anchor functions, for every checker that implements `type_check`.
 # ============================================================================
 
 
-# Module-level "Template" anchors. Their bodies are placeholders; the type
+# Module-level "Skill" anchors. Their bodies are placeholders; the type
 # checker replaces them with the generated code. ``count_a`` deliberately shares
 # a name with the function the model is asked to synthesize (issue #542).
 count_a: Callable[[str], int] = lambda s: 0  # noqa: E731
@@ -99,12 +99,10 @@ def _raises(generated_src: str, anchor: Any) -> bool:
     # provider so the `type_check` op resolves.
     try:
         with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
-            anchor_asts = _recover_template_def(anchor)
+            anchor_asts = _recover_skill_def(anchor)
             assert anchor_asts is not None
-            module_ast, template_def = anchor_asts
-            spliced = _splice_function(
-                ast.parse(generated_src), module_ast, template_def
-            )
+            module_ast, skill_def = anchor_asts
+            spliced = _splice_function(ast.parse(generated_src), module_ast, skill_def)
             type_check(*spliced)
         return False
     except TypeError:
@@ -153,7 +151,7 @@ def test_helpers_alongside_target_are_checked():
     assert not _raises(src, _count_char)
 
 
-def test_closure_template_sees_enclosing_local():
+def test_closure_skill_sees_enclosing_local():
     anchor = _make_counter(5)  # nested ``templ``, whose factory binds helper_const
     assert not _raises("def f(z: int) -> int:\n    return z + helper_const\n", anchor)
 
@@ -202,13 +200,13 @@ def test_gate_unrelated_module_error_does_not_block(tmp_path):
     assert not _raises("def count_a(s: str) -> int:\n    return s.count('a')\n", anchor)
 
 
-def test_method_templates_all_flavors(tmp_path):
-    # staticmethod/classmethod/instance templates all type-check: the splice leaves
+def test_method_skills_all_flavors(tmp_path):
+    # staticmethod/classmethod/instance skills all type-check: the splice leaves
     # decorators untouched, so the method kind (self/cls semantics) is preserved and
-    # the checker never spuriously demands a missing ``self``. ``template.__default__``
+    # the checker never spuriously demands a missing ``self``. ``skill.__default__``
     # is
     # the static/classmethod *wrapper* (or the plain function for an instance
-    # method), exactly as ``Template.define`` stores it.
+    # method), exactly as ``Skill.define`` stores it.
     source = (
         "from collections.abc import Callable\n\n\n"
         "class C:\n"
@@ -231,7 +229,7 @@ def test_method_templates_all_flavors(tmp_path):
 
 
 def test_context_enum_and_dataclass_are_checked(tmp_path):
-    # The PR's headline value (issue #576): an Enum / dataclass in the template's
+    # The PR's headline value (issue #576): an Enum / dataclass in the skill's
     # module is reachable through its real import, where the old quotation
     # mechanism mishandled such types. A correct generated function passes; a
     # misuse is still caught -- all without synthesizing any type stub.
@@ -312,7 +310,7 @@ def test_decode_runtime_only_pydantic_model_issue_576():
 
 def test_generated_reference_to_unsourced_name_raises():
     # A name present only at runtime (injected into the env, absent from the
-    # template's source) is unrecoverable -> an unresolved-name diagnostic in-region ->
+    # skill's source) is unrecoverable -> an unresolved-name diagnostic in-region ->
     # raise. The fail-closed case-3 / injected-name narrowing.
     assert _raises(
         "def count_a(s: str) -> int:\n    return _definitely_not_in_scope(s)\n",
@@ -320,8 +318,8 @@ def test_generated_reference_to_unsourced_name_raises():
     )
 
 
-def test_linecache_backed_template_is_checked():
-    # REPL/``exec``-defined templates have no file; their source lives in
+def test_linecache_backed_skill_is_checked():
+    # REPL/``exec``-defined skills have no file; their source lives in
     # ``linecache`` (the #690 path). Recovery must read it, so the check runs.
     import linecache
 
@@ -383,7 +381,7 @@ def test_decode_without_anchor_skips_typecheck():
 
 def test_decode_with_anchor_rejects_non_nestable():
     # The non-nestable scan is a decode-time precondition of the splice: with an
-    # anchor, a star import (illegal once nested in the Template body) is rejected
+    # anchor, a star import (illegal once nested in the Skill body) is rejected
     # before type checking.
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
@@ -1136,7 +1134,7 @@ class TestRunDoctestsThroughCallableDecode:
 # REPL code type-checking (issue #690)
 #
 # `exec_code` type-checks the cumulative session code -- prior snippets plus the
-# current one -- spliced into the enclosing Template's body (`splice_repl_code_into_body`
+# current one -- spliced into the enclosing Skill's body (`splice_repl_code_into_body`
 # + the `type_check` op, `lenient=True`), so names resolve in their real execution
 # context. These tests drive that pipeline against a real anchor and assert the
 # contract by exception type / runtime effect -- never by matching a checker's message
@@ -1145,7 +1143,7 @@ class TestRunDoctestsThroughCallableDecode:
 
 
 def _repl_anchor(readings: list[int]) -> int:
-    """A module-level stand-in for a Template function: the REPL splice target. Its
+    """A module-level stand-in for a Skill function: the REPL splice target. Its
     real source is recoverable (it lives in this test module) and its parameter
     `readings` stands in for a name from the session's seed env."""
     raise NotImplementedError
@@ -1157,10 +1155,10 @@ def _repl_raises(prior: list[str], snippet: str) -> bool:
     # Prepend the already-run snippets to the current one (as the production caller
     # does) and splice the whole cumulative module.
     prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
-    anchor_asts = _recover_template_def(_repl_anchor)
+    anchor_asts = _recover_skill_def(_repl_anchor)
     assert anchor_asts is not None
-    module_ast, template_def = anchor_asts
-    checked = _splice_snippet(ast.parse(prior_src + snippet), module_ast, template_def)
+    module_ast, skill_def = anchor_asts
+    checked = _splice_snippet(ast.parse(prior_src + snippet), module_ast, skill_def)
     assert checked is not None
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         try:
@@ -1170,11 +1168,11 @@ def _repl_raises(prior: list[str], snippet: str) -> bool:
             return True
 
 
-# --- Type-check semantics: checked in the Template body, leniently ---
+# --- Type-check semantics: checked in the Skill body, leniently ---
 
 
 def test_repl_seed_env_read_is_checked():
-    """A snippet reading a seed name (a Template parameter) resolves in the spliced
+    """A snippet reading a seed name (a Skill parameter) resolves in the spliced
     body and is checked -- the case the old module-scope gate could only decline.
     A correct use is clean; misusing the seed's type is a real error."""
     assert not _repl_raises([], "total = sum(readings)\nprint(total)")
@@ -1195,15 +1193,15 @@ def test_repl_rebind_across_cells_is_lenient():
     assert not _repl_raises(["x = 1"], "x = 'now a string'\nprint(x.upper())")
 
 
-def test_repl_body_need_not_return_template_type():
-    """REPL code isn't a function returning the Template's declared type; the return
+def test_repl_body_need_not_return_skill_type():
+    """REPL code isn't a function returning the Skill's declared type; the return
     contract is waived (``--disable-error-code=return``), so a body with no matching
     return is clean."""
     assert not _repl_raises([], "y = sum(readings)\nprint(y)")
 
 
 def test_repl_global_and_nonlocal_are_not_false_positives():
-    """`global`/`nonlocal` are legal REPL code; spliced into the Template body they do
+    """`global`/`nonlocal` are legal REPL code; spliced into the Skill body they do
     not produce a spurious diagnostic."""
     assert not _repl_raises(
         ["counter = 0"], "def bump():\n    global counter\n    counter += 1\nbump()"
@@ -1237,12 +1235,12 @@ def test_repl_checks_the_cumulative_body():
 
 
 def test_repl_splice_skips_sourceless_anchor():
-    """A Template with no recoverable source (defined via exec/REPL/notebook) skips the
+    """A Skill with no recoverable source (defined via exec/REPL/notebook) skips the
     check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
     Callable anchor. Only source *drift* raises."""
     ns: dict[str, Any] = {}
     exec("def t(readings):\n    raise NotImplementedError", ns)
-    anchor_asts = _recover_template_def(ns["t"])
+    anchor_asts = _recover_skill_def(ns["t"])
     assert anchor_asts is None
 
 
@@ -1251,8 +1249,8 @@ def test_repl_splice_skips_sourceless_anchor():
 
 def _decode(source: str, *, anchor: bool) -> types.CodeType:
     """Decode `source` to a code object the way the `exec_code` tool argument does -- with
-    the Template type-check anchor in the decode context (``anchor=True``, as a managed
-    Template call supplies) or without it."""
+    the Skill type-check anchor in the decode context (``anchor=True``, as a managed
+    Skill call supplies) or without it."""
     ctx = {_TYPE_CHECK_ANCHOR_KEY: _repl_anchor} if anchor else None
     return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
         source, context=ctx
@@ -1260,7 +1258,7 @@ def _decode(source: str, *, anchor: bool) -> types.CodeType:
 
 
 def test_repl_decode_rejects_illtyped_snippet():
-    """With the Template anchor in the decode context, an ill-typed-but-runnable snippet is
+    """With the Skill anchor in the decode context, an ill-typed-but-runnable snippet is
     type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
     fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
     to a code object."""
@@ -1273,7 +1271,7 @@ def test_repl_decode_rejects_illtyped_snippet():
 
 
 def test_repl_decode_without_anchor_skips_typecheck():
-    """Outside a managed Template call there is no anchor in the decode context, so an
+    """Outside a managed Skill call there is no anchor in the decode context, so an
     ill-typed snippet decodes without a type check (it can still run)."""
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)

@@ -18,7 +18,7 @@ from pathlib import Path
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
@@ -41,7 +41,7 @@ class _Bot(Agent):
     def __init__(self, __agent_id__: str = "") -> None:
         self.__agent_id__ = __agent_id__
 
-    @Template.define
+    @Skill.define
     def ask(self, q: str) -> str:
         """Answer: {q}"""
         raise NotHandled
@@ -61,7 +61,7 @@ class _StatefulBot(Agent):
     counter: int = 0
     label: str = "x"
 
-    @Template.define
+    @Skill.define
     def ask(self, q: str) -> str:
         """Answer: {q}"""
         raise NotHandled
@@ -69,16 +69,16 @@ class _StatefulBot(Agent):
 
 @dataclasses.dataclass
 class _NestingBot(Agent):
-    """A test bot with two templates, for nested-call tests."""
+    """A test bot with two skills, for nested-call tests."""
 
     __agent_id__: str = ""
 
-    @Template.define
+    @Skill.define
     def outer(self, task: str) -> str:
         """Do: {task}"""
         raise NotHandled
 
-    @Template.define
+    @Skill.define
     def inner(self, q: str) -> str:
         """Answer: {q}"""
         raise NotHandled
@@ -87,7 +87,7 @@ class _NestingBot(Agent):
 class _PlainHelper(Agent):
     """A helper agent, always constructed without `agent_id` -- never persisted."""
 
-    @Template.define
+    @Skill.define
     def answer(self, q: str) -> str:
         """Answer: {q}"""
         raise NotHandled
@@ -106,7 +106,7 @@ class _DelegatingBot(Agent):
     __agent_id__: str
     helper: Agent = dataclasses.field(metadata={"persist": False})
 
-    @Template.define
+    @Skill.define
     def run(self, task: str) -> str:
         """Do: {task}"""
         raise NotHandled
@@ -121,9 +121,9 @@ class _FakeAgentCalls(ObjectInterpretation):
       history and returns the configured result, if the turn is a
       ``(user_content, assistant_content, result)`` tuple, or
     - delegates entirely to it, if the turn is a plain callable
-      ``(template, args, kwargs) -> result`` -- letting a test simulate "the
-      model called a tool that invoked another template" by just calling
-      that template directly from Python.
+      ``(skill, args, kwargs) -> result`` -- letting a test simulate "the
+      model called a tool that invoked another skill" by just calling
+      that skill directly from Python.
 
     This lets persistence tests control the exact shape and timing of an
     agent's history without exercising the real completion loop.
@@ -134,17 +134,17 @@ class _FakeAgentCalls(ObjectInterpretation):
         self.call_count = 0
         self.calls: list[tuple[str, tuple, dict]] = []
 
-    @implements(Template.__apply__)
-    def _call(self, template, *args, **kwargs):
-        self.calls.append((template.__name__, args, kwargs))
+    @implements(Skill.__apply__)
+    def _call(self, skill, *args, **kwargs):
+        self.calls.append((skill.__name__, args, kwargs))
         n = self.call_count
         turn = self._turns[min(n, len(self._turns) - 1)]
         self.call_count += 1
         if callable(turn):
-            return turn(template, args, kwargs)
+            return turn(skill, args, kwargs)
         user_content, assistant_content, result = turn
-        if hasattr(template, "__history__"):
-            agent = template.__self__
+        if hasattr(skill, "__history__"):
+            agent = skill.__self__
             agent.__history__.append({"role": "user", "content": user_content})
             agent.__history__.append(
                 {"role": "assistant", "content": assistant_content}
@@ -285,7 +285,7 @@ class TestCheckpointStateDefaults:
             __agent_id__: str
             handle: threading.Lock = dataclasses.field(default_factory=threading.Lock)
 
-            @Template.define
+            @Skill.define
             def ask(self, q: str) -> str:
                 """Answer: {q}"""
                 raise NotHandled
@@ -303,7 +303,7 @@ class TestCheckpointStateDefaults:
 class TestCheckpointPersistence:
     """DB-level checkpoint behavior. There's no manual `save()` entry point --
     checkpointing only happens as a side effect of a successful outermost
-    `Template` call -- so these go through `_FakeAgentCalls` rather than
+    `Skill` call -- so these go through `_FakeAgentCalls` rather than
     poking the database directly."""
 
     def test_checkpoint_creates_db_with_wal_mode(self, tmp_path):
@@ -430,7 +430,7 @@ class TestAutomaticCheckpointing:
         checkpoint taken at that point would just be an empty/stale row."""
         db_path = tmp_path / "checkpoints.db"
 
-        def _boom(template, args, kwargs):
+        def _boom(skill, args, kwargs):
             raise RuntimeError("simulated failure")
 
         with pytest.raises(RuntimeError):
@@ -446,7 +446,7 @@ class TestAutomaticCheckpointing:
     def test_failed_call_does_not_prevent_subsequent_checkpoint(self, tmp_path):
         db_path = tmp_path / "checkpoints.db"
 
-        def _boom(template, args, kwargs):
+        def _boom(skill, args, kwargs):
             raise RuntimeError("boom")
 
         with pytest.raises(RuntimeError):
@@ -495,7 +495,7 @@ class TestNestingAndPersistence:
     def test_same_agent_nested_call_checkpoints_exactly_once(self, tmp_path):
         db_path = tmp_path / "checkpoints.db"
 
-        def _outer(template, args, kwargs):
+        def _outer(skill, args, kwargs):
             bot.__history__.append({"role": "user", "content": "outer"})
             inner_result = bot.inner("nested")
             bot.__history__.append(
@@ -513,7 +513,7 @@ class TestNestingAndPersistence:
         # There's no separate `save()` to spy on (checkpoint-writing is
         # inlined into `_call`), so count checkpoint-connection opens
         # instead: one to lazily load history on the very first access (via
-        # `Template.__get__`, when `bot.outer` is first bound), and one to
+        # `Skill.__get__`, when `bot.outer` is first bound), and one to
         # write the checkpoint after the outermost call returns -- the
         # nested call must not trigger a third, independent open.
         connection_opens = 0
@@ -543,14 +543,14 @@ class TestNestingAndPersistence:
     def test_nested_failure_saves_nothing(self, tmp_path):
         """A failure anywhere in the call -- nested or not -- means the
         outermost call never returns successfully, so nothing is checkpointed
-        at all, for either the inner or outer template."""
+        at all, for either the inner or outer skill."""
         db_path = tmp_path / "checkpoints.db"
 
-        def _outer(template, args, kwargs):
+        def _outer(skill, args, kwargs):
             bot.inner("boom")
             return "unreachable"
 
-        def _inner_boom(template, args, kwargs):
+        def _inner_boom(skill, args, kwargs):
             raise RuntimeError("inner tool failed")
 
         fake = _FakeAgentCalls([_outer, _inner_boom])
@@ -567,7 +567,7 @@ class TestNestingAndPersistence:
         db_path = tmp_path / "checkpoints.db"
         helper = _PlainHelper()
 
-        def _run(template, args, kwargs):
+        def _run(skill, args, kwargs):
             result = orch.helper.answer("sub-question")
             return f"orchestrated: {result}"
 
@@ -586,7 +586,7 @@ class TestNestingAndPersistence:
         assert [r[0] for r in rows] == ["orch1"]
         # But the helper's own in-memory history was still correctly
         # populated -- SQLitePersister passing straight through for
-        # non-persistent-agent templates must not interfere with that.
+        # non-persistent-agent skills must not interfere with that.
         assert len(helper.__history__) == 2
 
     def test_two_persistent_agents_cooperate_each_checkpoints_independently(
@@ -596,7 +596,7 @@ class TestNestingAndPersistence:
         helper = _Bot(__agent_id__="helper1")
         orch = _DelegatingBot(__agent_id__="orch3", helper=helper)
 
-        def _run(template, args, kwargs):
+        def _run(skill, args, kwargs):
             return f"orchestrated: {helper.ask('sub-question')}"
 
         fake = _FakeAgentCalls([_run, ("sub-question", "sub-answer", "sub-answer")])

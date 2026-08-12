@@ -1,20 +1,20 @@
 """Travel advisor with input guardrails.
 
 Demonstrates:
-- Using one template to validate/guard input before passing it to another
+- Using one skill to validate/guard input before passing it to another
 - Simple control-flow gating based on LLM classification
 """
 
 import argparse
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 # ---------------------------------------------------------------------------
-# Templates
+# Skills
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def travel_query(user_query: str) -> str:
     """
     Produce a concise (<100 word) answer to: {user_query}
@@ -29,7 +29,7 @@ def travel_query(user_query: str) -> str:
 def answer_travel_query(user_query: str) -> str:
     """Only answer travel-related queries; reject everything else."""
 
-    @Template.define
+    @Skill.define
     def is_safe_query(user_query: str) -> bool:
         """
         Determine whether the user's query is purely related to travel advice: {user_query}

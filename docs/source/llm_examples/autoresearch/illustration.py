@@ -34,7 +34,7 @@ GPT-Image) and is out of scope. Each agent falls out of an ordinary effectful id
     bundling the data-bearing description with G), exactly the typed-plan-as-
     orchestration shape of ``paper_orchestra.py``'s Outline.
 
-  * Visualizer -- code synthesis that must actually render. Its Template returns a
+  * Visualizer -- code synthesis that must actually render. Its Skill returns a
     ``Plot`` (a ``Callable`` the harness compiles, as in ``scientist_one``'s
     ``Solver -> Solution``): a pure nullary closure that builds and returns a fresh
     ``Figure`` via matplotlib's object-oriented API. A render-doctest in its docstring
@@ -48,7 +48,7 @@ GPT-Image) and is out of scope. Each agent falls out of an ordinary effectful id
     ``PIL.Image.Image`` (the image-input idiom of ``image_input.py``), inspects it
     against S and C for factual misalignments and visual glitches, and returns a
     refined ``StyledPlot`` plus the concrete issues it saw. The Visualizer<->Critic
-    loop is a plain Python ``for`` loop over these two Templates.
+    loop is a plain Python ``for`` loop over these two Skills.
 
   * Judge -- referenced, multimodal, hierarchical. It compares two rendered PNGs
     (round-0 P* vs the final round-T render -- the paper's Critic-on/off ablation)
@@ -99,11 +99,11 @@ import pydantic
 from matplotlib.figure import Figure
 from PIL import Image
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
-# a template's argument (and structured-output) spec. So per-field guidance reaches
+# a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
 # don't already say it, so no prompt has to repeat it.
 
@@ -401,7 +401,7 @@ class Retriever(Agent):
         selecting."""
         return list(REFERENCES.values())
 
-    @Template.define
+    @Skill.define
     def retrieve(self, task: IllustrationTask) -> Retrieval:
         """Inspect the reference set via ``reference_catalog``, then select the two or
         three exemplars whose visual structure and domain best fit the task. Weight
@@ -424,7 +424,7 @@ class Planner(Agent):
     structured description of the target plot -- transcribing the data exactly so the
     figure will be faithful."""
 
-    @Template.define
+    @Skill.define
     def plan(
         self, task: IllustrationTask, exemplars: list[PlotExemplar]
     ) -> PlotDescription:
@@ -450,7 +450,7 @@ class Stylist(Agent):
     aesthetic guideline from the reference set, then apply it to restyle the planner's
     description into a publication-quality, stylistically optimized plan."""
 
-    @Template.define
+    @Skill.define
     def synthesize_guideline(self, exemplars: list[PlotExemplar]) -> AestheticGuideline:
         """Traverse the reference exemplars' style notes and synthesize one reusable
         ``AestheticGuideline`` for academic statistical plots.
@@ -458,7 +458,7 @@ class Stylist(Agent):
         <reference_exemplars>{exemplars}</reference_exemplars>
         """
 
-    @Template.define
+    @Skill.define
     def restyle(
         self, description: PlotDescription, guideline: AestheticGuideline
     ) -> StyledPlot:
@@ -484,7 +484,7 @@ class Visualizer(Agent):
     writing code: you turn a plan into a function that draws the plot, and the harness
     renders it. You never reason the figure out in prose -- you draw it."""
 
-    @Template.define
+    @Skill.define
     def visualize(self, plan: StyledPlot) -> PlottingFn:
         """Write ``plot``: a nullary function that BUILDS and RETURNS a fresh
         matplotlib ``Figure`` via the object-oriented API. Inside, do:
@@ -531,7 +531,7 @@ class Visualizer(Agent):
 
 # ---------------------------------------------------------------------------
 # Agent 5 -- the Critic. Sees the rendered PNG and refines the plan. A stateless
-# Agent method (a fresh instance per loop iteration), never a module-level Template.
+# Agent method (a fresh instance per loop iteration), never a module-level Skill.
 # ---------------------------------------------------------------------------
 
 
@@ -540,7 +540,7 @@ class Critic(Agent):
     actually-rendered plot, judge it against the source context and caption, and hand
     the Visualizer a refined plan that fixes what you saw."""
 
-    @Template.define
+    @Skill.define
     def critique(
         self, image: Image.Image, task: IllustrationTask, plan: StyledPlot
     ) -> Critique:

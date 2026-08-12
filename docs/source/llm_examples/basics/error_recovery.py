@@ -13,7 +13,7 @@ import argparse
 import dataclasses
 import typing
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Flaky tool (auto-captured into rate_movie's lexical scope)
@@ -60,11 +60,11 @@ class Rating:
 
 
 # ---------------------------------------------------------------------------
-# Template: uses the flaky tool, returns validated structured output
+# Skill: uses the flaky tool, returns validated structured output
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def rate_movie(movie_name: str) -> Rating:
     """Look up the movie {movie_name}, then give it a rating."""
 

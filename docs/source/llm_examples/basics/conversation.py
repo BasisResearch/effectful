@@ -10,7 +10,7 @@ Demonstrates:
 import argparse
 import dataclasses
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 @dataclasses.dataclass
@@ -19,7 +19,7 @@ class ChatBot(Agent):
 
     bot_name: str
 
-    @Template.define
+    @Skill.define
     def send(self, user_input: str) -> str:
         """
         You are a friendly and helpful AI assistant named {self.bot_name}.

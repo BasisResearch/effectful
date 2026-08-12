@@ -11,14 +11,14 @@ selected with ``--mode``:
 
   - A static ``Step`` model for structured output
   - ``@Tool.define`` inside a closure to expose game-state validation as a tool
-  - Templates defined inside a function that auto-capture closure-scoped tools
+  - Skills defined inside a function that auto-capture closure-scoped tools
 """
 
 import argparse
 import dataclasses
 import itertools
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Skill, Tool
 
 
 @dataclasses.dataclass
@@ -117,7 +117,7 @@ def validate_solution(size: int, steps: list[Step]) -> bool:
 
 def solve_recursive(state: GameState) -> None:
 
-    @Template.define
+    @Skill.define
     def solve(n_disks: int, source: int, target: int, auxiliary: int) -> list[Step]:
         """Solve Tower of Hanoi using recursion: move {n_disks} disks from tower {source} to
         tower {target}, using tower {auxiliary} as temporary storage.
@@ -138,7 +138,7 @@ def solve_recursive(state: GameState) -> None:
 def predict_next_step(state: GameState) -> Step:
     """Ask the LLM to predict the next move.
 
-    A ``get_valid_moves`` tool is defined in the closure so the template
+    A ``get_valid_moves`` tool is defined in the closure so the skill
     can query which moves are legal for the current game state.  A
     ``validate_move`` tool checks whether a proposed move is legal and
     raises ``ValueError`` if not — when wrapped by ``RetryLLMHandler``,
@@ -156,7 +156,7 @@ def predict_next_step(state: GameState) -> Step:
         """Check whether moving from tower ``start`` to tower ``end`` is legal."""
         return proposed in state.valid_steps()
 
-    @Template.define
+    @Skill.define
     def predict(game_state: GameState) -> Step:
         """Given the state of the game of Towers of Hanoi:
 

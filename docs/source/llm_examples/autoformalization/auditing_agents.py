@@ -5,9 +5,9 @@ natural-language requirement, plus the typed values that cross the model
 boundary.
 
 **This module is deliberately small, and that is the point.** The harness builds
-a template's system prompt partly from the source of the module the template is
+a skill's system prompt partly from the source of the module the skill is
 defined in (see the prompt-assembly table in
-`effectful.handlers.llm.types.Template`), so everything sharing a file with an
+`effectful.handlers.llm.types.Skill`), so everything sharing a file with an
 `Agent` is shown to it verbatim. Keeping these two agents in a module of their
 own is what makes it true that the informalizer sees a Lean statement and nothing
 else. Nothing here knows anything about the material being audited; `auditing.py`
@@ -21,7 +21,7 @@ import enum
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 class Verdict(enum.StrEnum):
@@ -174,7 +174,7 @@ class Informalizer(Agent):
     what the statement says, never what you imagine it was for. You are not shown
     why any theorem was written, and you should not speculate about it."""
 
-    @Template.define
+    @Skill.define
     def informalize(self, statement: str) -> Informalization:
         """Translate this Lean 4 theorem statement into English, as literally as
         you can.
@@ -208,7 +208,7 @@ class Comparator(Agent):
     true, proved, and beside the point is a finding -- but not pedantic about
     wording, since only the meaning has to survive."""
 
-    @Template.define
+    @Skill.define
     def compare(
         self, requirement: str, statement: str, back_translation: Informalization
     ) -> Comparison:

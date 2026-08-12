@@ -7,10 +7,10 @@ work out by hand are often easy to brute-force or verify with a short program.
 
 import argparse
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
-@Template.define
+@Skill.define
 def constrained_paragraph(endings: list[str]) -> str:
     r"""Write a short paragraph whose sentences end, in order, with the words in
     {endings}: one sentence per word, each ending with that exact word.

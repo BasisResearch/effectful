@@ -15,7 +15,7 @@ idioms:
 
   * The outline *is* the orchestration. The Outline Agent emits a typed ``Outline``
     -- a visualization plan, a targeted literature-search strategy, and a
-    section-level writing plan -- and every downstream Template is parameterized by
+    section-level writing plan -- and every downstream Skill is parameterized by
     it. Coordination lives in a piece of structured data passed between agents, not
     in prose instructions or a control-flow-heavy conductor; the pipeline is a
     handful of ordinary calls threading that plan through.
@@ -44,13 +44,13 @@ idioms:
     an ``AgentReview`` LLM judge under the paper's exact rule: keep a revision only
     if it raises the overall score, or ties it with a non-negative net sub-axis
     gain; otherwise revert to the previous version and halt. Monotone improvement
-    as a plain Python loop over Template calls -- distinct from the boolean-accept
+    as a plain Python loop over Skill calls -- distinct from the boolean-accept
     refinement loop of ``research_agent.py`` in that it keeps the *best* draft and
     stops the moment a revision fails to earn its place.
 
 Demonstrates:
 - A typed *plan* (the ``Outline``) emitted by one agent that parameterizes every
-  downstream Template -- orchestration encoded as data threaded between agents
+  downstream Skill -- orchestration encoded as data threaded between agents
 - Two independent streams run concurrently (plotting || literature review) via
   ``asyncio.gather`` + ``asyncio.to_thread``
 - Decode-time certification of a ``Citation`` against a ground-truth index *and* a
@@ -98,13 +98,13 @@ import typing
 
 import pydantic
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
-# a template's argument (and structured-output) spec. So per-field guidance reaches
+# a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
 # don't already say it, so no prompt has to repeat it.
 
@@ -242,13 +242,13 @@ VENUES: dict[str, Venue] = {
 # reads it in __post_init__, exactly as ``scientist_one``'s claims read the
 # ``WORKSPACE`` bundle -- through a ContextVar rather than a bare global, so the
 # binding is scoped to the pipeline (set/reset in ``compose``) and safe under the
-# concurrent template calls that plotting and literature review make.
+# concurrent skill calls that plotting and literature review make.
 CUTOFF: contextvars.ContextVar[datetime.date] = contextvars.ContextVar("CUTOFF")
 
 
 # ---------------------------------------------------------------------------
 # The Outline -- the "score" the whole orchestra plays from. One structured value,
-# emitted by Step 1, that parameterizes every downstream Template.
+# emitted by Step 1, that parameterizes every downstream Skill.
 # ---------------------------------------------------------------------------
 
 
@@ -452,7 +452,7 @@ class OutlineAgent(Agent):
     agent will play from: a visualization plan, a targeted literature-search
     strategy, and a section-level writing plan."""
 
-    @Template.define
+    @Skill.define
     def plan(self, materials: RawMaterials) -> Outline:
         """Read the pre-writing materials and produce the ``Outline`` that drives the
         rest of the pipeline: a visualization plan, a targeted literature-search
@@ -481,7 +481,7 @@ class LiteratureReviewAgent(Agent):
         ]
         return hits
 
-    @Template.define
+    @Skill.define
     def review(self, outline: Outline, cutoff: datetime.date) -> RelatedWork:
         """Execute the outline's search strategy: for each theme and method cluster,
         use ``web_search`` to identify candidate prior work and ``verify`` to
@@ -502,7 +502,7 @@ class PlottingAgent(Agent):
     statistical plots grounded in the experimental log's numbers, and conceptual
     diagrams that convey the method."""
 
-    @Template.define
+    @Skill.define
     def draw(self, figures: list[FigurePlan], experimental_log: str) -> list[Figure]:
         """Produce one ``Figure`` per plan entry, realizing each ``FigurePlan``: a
         statistical plot of the numbers named in its ``data_source``, or a conceptual
@@ -522,7 +522,7 @@ class SectionWriter(Agent):
     from the experimental log, integrate the generated figures, and assemble a
     coherent full manuscript."""
 
-    @Template.define
+    @Skill.define
     def write(
         self,
         outline: Outline,
@@ -547,16 +547,16 @@ class SectionWriter(Agent):
 @dataclasses.dataclass
 class Reviewer(Agent):
     """You are AgentReview, a simulated peer reviewer who scores one manuscript on
-    its own merits. A method on an ``Agent`` rather than a module-level Template: a
-    module-level ``@Template.define`` lands in every other template's lexical scope
-    and is offered to those agents as a callable tool, but a Template *method* is
+    its own merits. A method on an ``Agent`` rather than a module-level Skill: a
+    module-level ``@Skill.define`` lands in every other skill's lexical scope
+    and is offered to those agents as a callable tool, but a Skill *method* is
     reached only through its own class, so the writing agents never see it. The
     ``refine`` loop makes a fresh instance per call, so the judge stays stateless --
     no memory of earlier verdicts to anchor the score the accept/revert rule reads."""
 
     guidelines: str
 
-    @Template.define
+    @Skill.define
     def review(self, manuscript: Manuscript) -> Review:
         """Score this manuscript and name the single highest-impact weakness for the
         next revision to fix, filling the ``Review`` as its schema describes. Ground
@@ -575,7 +575,7 @@ class ContentRefiner(Agent):
     little else as possible so the revision is a targeted improvement, not a
     rewrite."""
 
-    @Template.define
+    @Skill.define
     def revise(self, manuscript: Manuscript, review: Review) -> Manuscript:
         """Return a revised manuscript that fixes the reviewer's named weakness and
         nothing else: preserve everything the reviewer did not fault, keep the

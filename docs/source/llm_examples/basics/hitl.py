@@ -12,7 +12,7 @@ import argparse
 import dataclasses
 import enum
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -51,7 +51,7 @@ class Planner(Agent):
         self.execution_log.append(msg)
         return msg
 
-    @Template.define
+    @Skill.define
     def propose_next(self, task: str, feedback: str) -> ProposedAction:
         """You are a task planner helping the user accomplish a goal.
 

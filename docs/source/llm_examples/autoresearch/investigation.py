@@ -37,10 +37,10 @@ Demonstrates:
   pass on one stateful ``Agent``, and emits a ``Brief`` whose cited keys certify
   against the database -- Chain-of-Evidence extended to the literature-review stage
 - Parallel Explore-Exploit discovery: an ``asyncio`` fan-out (as in
-  ``map_reduce.py``) runs several solver branches per round, each a ``Template``
+  ``map_reduce.py``) runs several solver branches per round, each a ``Skill``
   returning a ``Callable`` the plain-Python evaluator scores, keeping the best --
   so the reported score has a real, re-runnable experiment log behind it
-- A post-hoc audit mixing deterministic checks with majority-vote ``Template`` LLM
+- A post-hoc audit mixing deterministic checks with majority-vote ``Skill`` LLM
   judges (each judge run several times in parallel, as in ``map_reduce.py``, and
   the majority taken), applied uniformly to the finished artifact bundle
 """
@@ -53,7 +53,7 @@ import dataclasses
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # The research task and its canonical evaluator (the ground truth)
@@ -225,7 +225,7 @@ class Workspace:
 # The evidence bundle for the run currently in scope. Claim.__post_init__ has no
 # parameters, so certification reaches ground truth ambiently -- but through a
 # ContextVar rather than a bare global, so the binding is scoped to the pipeline
-# (set/reset in ``run_scientist_one``) and safe under the concurrent template
+# (set/reset in ``run_scientist_one``) and safe under the concurrent skill
 # calls these examples make.
 WORKSPACE: contextvars.ContextVar[Workspace] = contextvars.ContextVar("WORKSPACE")
 
@@ -380,7 +380,7 @@ class Investigator(Agent):
         )
         return [r for _, r in hits[:top_k]]
 
-    @Template.define
+    @Skill.define
     def investigate(self, spec: str) -> Brief:
         """Survey the literature and produce a research brief for the task below.
         Use search_literature to find relevant prior work -- issue a few queries
@@ -410,7 +410,7 @@ class Solver(Agent):
     answer by writing code, not prose: you implement the solution as a function
     and let the evaluator judge it."""
 
-    @Template.define
+    @Skill.define
     def discover(
         self, spec: str, brief: str, approach: str, incumbent: float
     ) -> Solution:
@@ -484,7 +484,7 @@ class Critique:
     issues: str
 
 
-@Template.define
+@Skill.define
 def critique_coherence(paper: Paper) -> Critique:
     """You are a critical reviewer. The paper's claims are already known to be
     individually grounded (citations resolve, scores reproduce), so judge only its
@@ -520,7 +520,7 @@ class Writer(Agent):
                 return ref
         raise ValueError(f"no reference with key {bibkey!r}")
 
-    @Template.define
+    @Skill.define
     def write_paper(self, spec: str, brief: Brief) -> Paper:
         """Write up the completed research as a Paper of structured claims.
 
@@ -540,7 +540,7 @@ class Writer(Agent):
         {brief}
         """
 
-    @Template.define
+    @Skill.define
     def revise(self, critique: Critique) -> Paper:
         """A reviewer found coherence problems with your draft paper:
 
@@ -566,7 +566,7 @@ class AuditVerdict:
     reason: str
 
 
-@Template.define
+@Skill.define
 def check_specification_violation(
     spec: str, evaluator: Evaluator, solution: Solution
 ) -> AuditVerdict:
@@ -587,7 +587,7 @@ def check_specification_violation(
     """
 
 
-@Template.define
+@Skill.define
 def check_method_alignment(method_description: str, solution: Solution) -> AuditVerdict:
     """You are an integrity auditor (check I4: method-code alignment). Decide
     whether the paper's method description faithfully describes what the code
@@ -601,7 +601,7 @@ def check_method_alignment(method_description: str, solution: Solution) -> Audit
     """
 
 
-@Template.define
+@Skill.define
 def check_citation_support(statement: str, reference: Reference) -> AuditVerdict:
     """You are an integrity auditor (check I3: reference verification, content
     consistency). Decide whether the cited reference's abstract actually supports
@@ -782,9 +782,9 @@ def demo_fabrication() -> None:
             print(f"  [{label}] rejected -> {exc}\n")
 
     # 2. The same check, fed back by RetryLLMHandler, forces a correction. The
-    #    template is told to cite a fabricated reference; certification bounces the
+    #    skill is told to cite a fabricated reference; certification bounces the
     #    first attempt and the model must ground it before the call can return.
-    @Template.define
+    @Skill.define
     def cite_a_fact() -> CitationClaim:
         """Produce a CitationClaim backing this statement:
         "Dynamic programming solves subset-sum in pseudo-polynomial time."
