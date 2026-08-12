@@ -28,6 +28,7 @@ from effectful.ops.monoid import (
     MonoidOverMapping,
     MonoidOverSequence,
     NormalizeIntp,
+    Optimum,
     Or,
     PlusAssoc,
     PlusCastIterable,
@@ -65,7 +66,7 @@ from effectful.ops.monoid import (
     solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
-from effectful.ops.syntax import as_dict, ite, range_, syntactic_eq
+from effectful.ops.syntax import as_dict, deffn, ite, range_, syntactic_eq
 from effectful.ops.types import NotHandled, Operation, Term
 from tests._monoid_helpers import Backend, IntBackend, JaxBackend, syntactic_eq_alpha
 
@@ -1349,6 +1350,86 @@ def test_reduce_weighted_factorization(backend: Backend):
     )
 
 
+def test_reduce_argmin_weighted_factorization(backend: Backend):
+    """Factoring a separable argmin preserves both minimizing assignments."""
+    x, xx, y, yy, v = backend.define_vars("x", "xx", "y", "yy", "v", ret="scalar")
+
+    lhs = Min.reduce(
+        Sum.plus(Optimum((x() - 1) ** 2, {}), Optimum((y() - 2) ** 2, {})),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(4), deffn(Optimum(Sum.identity, {yy: v()}), v)),
+        },
+    )
+    rhs = Sum.plus(
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {xx: x()}),
+                Sum.plus(Optimum((x() - 1) ** 2, {})),
+            ),
+            {x: range(3)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {yy: y()}),
+                Sum.plus(Optimum((y() - 2) ** 2, {})),
+            ),
+            {y: range(4)},
+        ),
+    )
+
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
+    )
+
+
+def test_reduce_argmin_weighted_repeated_factorization(backend: Backend):
+    """Factoring repeatedly preserves every weighted minimizing assignment."""
+    x, xx, y, yy, z, zz, v = backend.define_vars(
+        "x", "xx", "y", "yy", "z", "zz", "v", ret="scalar"
+    )
+
+    lhs = Min.reduce(
+        Sum.plus(
+            Optimum((x() - 1) ** 2, {}),
+            Optimum((y() - 2) ** 2, {}),
+            Optimum((z() - 3) ** 2, {}),
+        ),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(4), deffn(Optimum(Sum.identity, {yy: v()}), v)),
+            z: Sum.weighted(range(5), deffn(Optimum(Sum.identity, {zz: v()}), v)),
+        },
+    )
+    rhs = Sum.plus(
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {xx: x()}),
+                Sum.plus(Optimum((x() - 1) ** 2, {})),
+            ),
+            {x: range(3)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {yy: y()}),
+                Sum.plus(Optimum((y() - 2) ** 2, {})),
+            ),
+            {y: range(4)},
+        ),
+        Min.reduce(
+            Sum.plus(
+                Optimum(Sum.identity, {zz: z()}),
+                Sum.plus(Optimum((z() - 3) ** 2, {})),
+            ),
+            {z: range(5)},
+        ),
+    )
+
+    backend.check_rewrite(
+        lhs=lhs, rhs=rhs, rule=coproduct(ReduceWeightedStream(), Factor())
+    )
+
+
 def test_weighted_expectation_demo():
     """Demo: compute E[f(X)] = Σ_x w(x)·f(x) via a weighted reduce.
 
@@ -1601,3 +1682,48 @@ def test_reduce_unfactor_reduces(Sum, Product, backend: Backend):
     )
     rhs = Sum.reduce(Product.plus(f(x()), g(y())), {x: X(), y: Y(), z: Z()})
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=ReduceUnfactor())
+
+
+def test_reduce_argmin(backend: Backend):
+    x, xx, v = backend.define_vars("x", "xx", "v", ret="scalar")
+
+    expr = Min.reduce(
+        (x() - 1) ** 2,
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v))},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(0, {xx: 1})
+
+
+def test_reduce_argmin_sum(backend: Backend):
+    x, xx, v = backend.define_vars("x", "xx", "v", ret="scalar")
+
+    expr = Min.reduce(
+        Sum.plus((x() - 1) ** 2, 2 * (x() - 2) ** 2),
+        {x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v))},
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(1, {xx: 2})
+
+
+def test_reduce_argmin_sum_disjoint(backend: Backend):
+    x, xx, y, yy, v = backend.define_vars("x", "xx", "y", "yy", "v", ret="scalar")
+
+    expr = Min.reduce(
+        Sum.plus((x() - 1) ** 2, (y() - 2) ** 2),
+        {
+            x: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {xx: v()}), v)),
+            y: Sum.weighted(range(3), deffn(Optimum(Sum.identity, {yy: v()}), v)),
+        },
+    )
+
+    with handler(NormalizeIntp), handler(EvaluateIntp):
+        result = evaluate(expr)
+
+    assert result == Optimum(0, {xx: 1, yy: 2})
