@@ -6,6 +6,9 @@ import sys
 import tempfile
 import typing
 
+# trigger mypy installation errors early
+import mypy.api  # noqa: F401
+
 from effectful.handlers.llm.harness.validation.hooks import type_check
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -128,6 +131,5 @@ class MypyTypeChecker(ObjectInterpretation):
         hi: int | None = None,
         *,
         lenient: bool = False,
-    ) -> bool:
+    ) -> None:
         _mypy_check_region(source, lo, hi, lenient)
-        return True
