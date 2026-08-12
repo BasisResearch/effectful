@@ -20,7 +20,6 @@ from effectful.handlers.llm.harness.context import (
 )
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.hooks import (
     call_system,
     call_user,
@@ -40,6 +39,7 @@ from effectful.handlers.llm.harness.serialization import (
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

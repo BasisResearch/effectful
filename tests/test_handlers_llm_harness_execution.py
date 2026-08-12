@@ -18,8 +18,6 @@ from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
-from effectful.handlers.llm.harness.execution.hooks import run_doctests, type_check
-from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -32,6 +30,8 @@ from effectful.handlers.llm.harness.synthesis.snippet import (
     _scan_non_nestable,
     _splice_snippet,
 )
+from effectful.handlers.llm.harness.validation.hooks import run_doctests, type_check
+from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import handler
 

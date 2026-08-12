@@ -10,6 +10,7 @@ from collections.abc import Callable
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
+import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.hooks import (
     ToolCallExecutionError,
     call_assistant,
@@ -211,7 +212,7 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
         anchor_asts = _recover_template_def(anchor) if anchor is not None else None
         if anchor_asts is not None:
             spliced = _splice_body(module, *anchor_asts)
-            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+            effectful.handlers.llm.harness.validation.hooks.type_check(*spliced)
 
         bytecode: types.CodeType = (
             effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
@@ -221,14 +222,14 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
         result = g[module.body[-1].name]  # type: ignore
 
         if anchor is None:
-            effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+            effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
             return result
         # Shadow the global name the doctests call and route the Template op back
         # into the synthesized function.
         result = functools.wraps(anchor)(result)
         g.update({anchor.__name__: result})
         with handler({anchor: result}):
-            effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+            effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)
@@ -369,7 +370,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
         anchor_asts = _recover_template_def(anchor) if anchor is not None else None
         if anchor_asts is not None:
             spliced = _splice_body(module, *anchor_asts)
-            effectful.handlers.llm.harness.execution.hooks.type_check(*spliced)
+            effectful.handlers.llm.harness.validation.hooks.type_check(*spliced)
 
         bytecode: types.CodeType = (
             effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
@@ -380,7 +381,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
 
         class_template = _class_template_of(anchor) if anchor is not None else None
         if class_template is None:
-            effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+            effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
             return result
         # A fresh instance's `agent.method(...)` dispatches through
         # `Template.__apply__`, which we intercept and redirect to the synthesized
@@ -394,7 +395,7 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
             return class_template(instance, *args, **kwargs)
 
         with handler({Template.__apply__: _doctest_apply, class_template: result}):
-            effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+            effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)

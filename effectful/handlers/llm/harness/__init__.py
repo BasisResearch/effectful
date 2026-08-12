@@ -44,7 +44,6 @@ import tenacity
 from effectful.handlers.llm.harness.context import FrameworkDocumenter
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
@@ -62,6 +61,7 @@ from effectful.handlers.llm.harness.synthesis.body import (
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.ops.semantics import handler
 
 # The providers that run model-authored Python, by the name the CLI knows them

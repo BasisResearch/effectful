@@ -15,6 +15,7 @@ import uuid
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
+import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
@@ -290,7 +291,7 @@ def _pydantic_type_code(ty):
             prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
             session = ast.parse(prior_src + value)
             checked = _splice_snippet(session, module_ast, template_def)
-            effectful.handlers.llm.harness.execution.hooks.type_check(
+            effectful.handlers.llm.harness.validation.hooks.type_check(
                 *checked, lenient=True
             )
 

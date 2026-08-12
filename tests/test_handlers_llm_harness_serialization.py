@@ -21,7 +21,6 @@ from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
@@ -33,6 +32,7 @@ from effectful.handlers.llm.harness.serialization import (
     _NameAndTool,
     to_content_blocks,
 )
+from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.types import Encodable, Template, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import handler

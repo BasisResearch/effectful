@@ -6,7 +6,7 @@ import sys
 import tempfile
 import typing
 
-from effectful.handlers.llm.harness.execution.hooks import type_check
+from effectful.handlers.llm.harness.validation.hooks import type_check
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 

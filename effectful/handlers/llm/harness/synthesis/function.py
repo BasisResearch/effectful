@@ -11,6 +11,7 @@ from collections.abc import Callable
 import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
+import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.serialization import (
     _IS_FINAL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
@@ -366,7 +367,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
             spliced = _splice_function(module, module_ast, template_def)
             # use _IS_FINAL_KEY to determine if this is a return value or a tool argument
             is_final = ctx.get(_IS_FINAL_KEY, False)
-            effectful.handlers.llm.harness.execution.hooks.type_check(
+            effectful.handlers.llm.harness.validation.hooks.type_check(
                 *spliced, lenient=not is_final
             )
 
@@ -377,7 +378,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         effectful.handlers.llm.harness.execution.hooks.exec(bytecode, g)
         result = g[module.body[-1].name]  # type: ignore
         _reject_param_count_mismatch(result, ty)
-        effectful.handlers.llm.harness.execution.hooks.run_doctests(result, g)
+        effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)
