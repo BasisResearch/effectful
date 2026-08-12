@@ -29,8 +29,7 @@ from effectful.handlers.llm.harness.execution.hooks import (
     exec,
     parse,
 )
-from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
-from effectful.ops.syntax import implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 
 # ----------------------------------------------------------------------------
 # The RestrictedPython policy: what generated code may name, touch and import
@@ -636,7 +635,7 @@ def _guarded_apply(
     return func(*args, **kwargs)
 
 
-class RestrictedPythonExecutor(MypyTypeChecker):
+class RestrictedPythonExecutor(ObjectInterpretation):
     """
     Safer provider using RestrictedPython.
 
@@ -649,6 +648,10 @@ class RestrictedPythonExecutor(MypyTypeChecker):
 
     Doctests are executed under the same policy as the code they exercise, so a
     model cannot smuggle past the sandbox in a docstring.
+
+    The sandbox says nothing about types: install
+    `~effectful.handlers.llm.harness.execution.mypy.MypyTypeChecker` alongside this
+    handler to type-check generated code before it is compiled and run.
 
     policy : type[RestrictingNodeTransformer], optional
         RestrictedPython compile_restricted policy for compilation. Defaults to

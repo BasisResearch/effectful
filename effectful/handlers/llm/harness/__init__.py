@@ -23,8 +23,8 @@ script in the same context::
 
 Harness flags (``--model``, ``--num-retries``, ``--langfuse``, ``--render``,
 ``--dump-system-prompt``, ``--tool-choice``, ``--reasoning-effort``,
-``--eval-provider``, ``--pdb``, ``--persist-db``) are consumed here; every other
-flag is passed through to the script unchanged.
+``--eval-provider``, ``--type-checker``, ``--pdb``, ``--persist-db``) are consumed
+here; every other flag is passed through to the script unchanged.
 """
 
 import argparse
@@ -44,6 +44,7 @@ import tenacity
 from effectful.handlers.llm.harness.context import FrameworkDocumenter
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
@@ -71,6 +72,15 @@ EVAL_PROVIDERS: dict[str, typing.Callable[[], typing.Any]] = {
     "restricted": RestrictedPythonExecutor,
 }
 
+# The handlers that type-check model-authored Python before it is compiled and
+# run, by the name the CLI knows them under. Independent of `EVAL_PROVIDERS`:
+# either checker composes with either provider. `none` installs nothing, leaving
+# the `type_check` operation's default rule, which passes everything.
+TYPE_CHECKERS: dict[str, typing.Callable[[], typing.Any] | None] = {
+    "mypy": MypyTypeChecker,
+    "none": None,
+}
+
 
 class harness(contextlib.ContextDecorator):
     """Install the standard `effectful.handlers.llm` handler stack.
@@ -85,8 +95,9 @@ class harness(contextlib.ContextDecorator):
     3. `HistoryBuilder` -- accumulate the message history of a call.
     4. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
     5. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
-    6. The ``eval_provider`` (`EVAL_PROVIDERS`) and `StatefulReplSynthesizer` --
-       run model-authored Python.
+    6. The ``type_checker`` (`TYPE_CHECKERS`), the ``eval_provider``
+       (`EVAL_PROVIDERS`) and `StatefulReplSynthesizer` -- check and run
+       model-authored Python.
     7. `FinalBodySynthesizer` -- synthesize a function and call it.
     8. `TenacityRetryer` -- retry malformed/failing model output.
     9. `LexicalReaders` -- expose lexically-scoped tools to the model.
@@ -112,6 +123,9 @@ class harness(contextlib.ContextDecorator):
             `~effectful.handlers.llm.completions.SQLitePersister`.
         eval_provider: Which provider runs model-authored Python -- a key of
             `EVAL_PROVIDERS` (``"unsafe"`` or ``"restricted"``).
+        type_checker: Which handler type-checks model-authored Python before it
+            runs -- a key of `TYPE_CHECKERS` (``"mypy"``, or ``"none"`` to run
+            generated code unchecked).
     """
 
     def __init__(
@@ -128,6 +142,7 @@ class harness(contextlib.ContextDecorator):
         api_key: str | None = None,
         persist_db: str | os.PathLike[str] | None = None,
         eval_provider: str = "unsafe",
+        type_checker: str = "mypy",
     ) -> None:
         self.model = model
         self.num_retries = num_retries
@@ -140,6 +155,7 @@ class harness(contextlib.ContextDecorator):
         self.api_key = api_key
         self.persist_db = persist_db
         self.eval_provider = eval_provider
+        self.type_checker = type_checker
 
     def __enter__(self) -> "harness":
         stack = contextlib.ExitStack()
@@ -167,6 +183,9 @@ class harness(contextlib.ContextDecorator):
             stack.enter_context(
                 handler(SystemPromptDumper(path=pathlib.Path(self.dump_system_prompt)))
             )
+        type_checker = TYPE_CHECKERS[self.type_checker]
+        if type_checker is not None:
+            stack.enter_context(handler(type_checker()))
         stack.enter_context(handler(EVAL_PROVIDERS[self.eval_provider]()))
         stack.enter_context(handler(StatefulReplSynthesizer()))
         stack.enter_context(handler(FinalBodySynthesizer()))
@@ -270,6 +289,13 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Provider that runs model-authored Python",
     )
     parser.add_argument(
+        "--type-checker",
+        type=str,
+        default="mypy",
+        choices=sorted(TYPE_CHECKERS),
+        help="Handler that type-checks model-authored Python before it runs",
+    )
+    parser.add_argument(
         "--pdb",
         action="store_true",
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
@@ -312,6 +338,7 @@ def main(argv: list[str] | None = None) -> None:
         else None,
         persist_db=ns.persist_db,
         eval_provider=ns.eval_provider,
+        type_checker=ns.type_checker,
     ):
         if ns.pdb:
             try:

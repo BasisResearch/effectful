@@ -31,6 +31,7 @@ from effectful.handlers.llm.harness.context import (
 )
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.hooks import (
     DecodedToolCall,
     ResultDecodingError,
@@ -55,6 +56,10 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 from tests.conftest import (
     EFFECTFUL_LLM_MODEL,
+    MockCompletionHandler,
+    add_numbers,
+    make_text_response,
+    make_tool_call_response,
     requires_anthropic,
     requires_llm,
     requires_openai,
@@ -435,22 +440,6 @@ def test_litellm_caching_selective(request):
 # ============================================================================
 
 
-class MockCompletionHandler(ObjectInterpretation):
-    """Mock handler that returns pre-configured completion responses."""
-
-    def __init__(self, responses: list[ModelResponse]):
-        self.responses = responses
-        self.call_count = 0
-        self.received_messages: list = []
-
-    @implements(completion)
-    def _completion(self, messages=None, **kwargs):
-        self.received_messages.append(list(messages) if messages else [])
-        response = self.responses[min(self.call_count, len(self.responses) - 1)]
-        self.call_count += 1
-        return response
-
-
 @pytest.fixture
 def message_sequence_provider():
     message_sequence = [{"role": "user", "content": "test"}]
@@ -463,54 +452,6 @@ def mock_completion_handler_factory():
         return MockCompletionHandler(responses)
 
     return _factory
-
-
-def make_tool_call_response(
-    tool_name: str, tool_args: str, tool_call_id: str = "call_1"
-) -> ModelResponse:
-    """Create a ModelResponse with a tool call."""
-    return ModelResponse(
-        id="test",
-        choices=[
-            {
-                "index": 0,
-                "message": {
-                    "role": "assistant",
-                    "content": None,
-                    "tool_calls": [
-                        {
-                            "id": tool_call_id,
-                            "type": "function",
-                            "function": {"name": tool_name, "arguments": tool_args},
-                        }
-                    ],
-                },
-                "finish_reason": "tool_calls",
-            }
-        ],
-        model="test-model",
-    )
-
-
-def make_text_response(content: str) -> ModelResponse:
-    """Create a ModelResponse with text content."""
-    return ModelResponse(
-        id="test",
-        choices=[
-            {
-                "index": 0,
-                "message": {"role": "assistant", "content": content},
-                "finish_reason": "stop",
-            }
-        ],
-        model="test-model",
-    )
-
-
-@Tool.define
-def add_numbers(a: int, b: int) -> int:
-    """Add two numbers together."""
-    return a + b
 
 
 class TestRetryLLMHandler:
@@ -732,6 +673,7 @@ class TestRetryLLMHandler:
         with (
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
         ):
             result = codeadapt("generate_paragraph")
@@ -1367,6 +1309,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1385,6 +1328,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(4))),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
@@ -1399,6 +1343,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a string processing function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1414,6 +1359,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a parameterized counting function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1430,6 +1376,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1453,6 +1400,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1474,6 +1422,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1534,6 +1483,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1557,6 +1507,7 @@ class TestSynthesizeAndCall:
             handler(LiteLLMProvider(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1578,6 +1529,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1605,6 +1557,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1628,6 +1581,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1682,6 +1636,7 @@ class TestSynthesizeAndCall:
         with (
             handler(LiteLLMProvider(model="test-model")),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(MockCompletionHandler([mixed])),
         ):
@@ -1739,6 +1694,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMProvider(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1771,6 +1727,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMProvider(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1792,6 +1749,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMProvider(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1838,6 +1796,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMProvider(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -2052,7 +2011,12 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(BuiltinExecutor()), handler(repl):
+    with (
+        handler(MypyTypeChecker()),
+        handler(_Loop()),
+        handler(BuiltinExecutor()),
+        handler(repl),
+    ):
         _t()
     return box[0]
 
@@ -3066,6 +3030,7 @@ class TestSyntheticReaderIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(LexicalReaders()),
@@ -3098,6 +3063,7 @@ class TestPythonReplIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LexicalReaders()),
             handler(StatefulReplSynthesizer()),

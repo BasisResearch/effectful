@@ -19,6 +19,7 @@ from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.hooks import run_doctests, type_check
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -78,7 +79,7 @@ def _raises(generated_src: str, anchor: Any) -> bool:
     # Splice then type-check as separate steps (the decode path's shape), under a
     # provider so the `type_check` op resolves.
     try:
-        with handler(BuiltinExecutor()):
+        with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
             anchor_asts = _recover_template_def(anchor)
             assert anchor_asts is not None
             module_ast, template_def = anchor_asts
@@ -277,7 +278,7 @@ def test_decode_runtime_only_pydantic_model_issue_576():
 
     MyModel = _make_model()
 
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         fn = pydantic.TypeAdapter(
             Encodable[Callable[[MyModel], MyModel]]
         ).validate_python(
@@ -323,7 +324,7 @@ def test_linecache_backed_template_is_checked():
 
 
 def test_decode_with_anchor_typechecks_and_runs():
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
@@ -335,7 +336,7 @@ def test_decode_with_anchor_typechecks_and_runs():
 
 
 def test_decode_with_anchor_rejects_bad_code():
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
@@ -349,7 +350,7 @@ def test_decode_with_anchor_rejects_bad_code():
 def test_decode_without_anchor_skips_typecheck():
     # Argument-path decoding carries no anchor -> the type check is skipped, so
     # even ill-typed code decodes (it is out of scope for this stage).
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
@@ -364,7 +365,7 @@ def test_decode_with_anchor_rejects_non_nestable():
     # The non-nestable scan is a decode-time precondition of the splice: with an
     # anchor, a star import (illegal once nested in the Template body) is rejected
     # before type checking.
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
@@ -399,7 +400,7 @@ def test_restricted_blocks_private_attribute_access():
     )
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
-        with handler(RestrictedPythonExecutor()):
+        with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
                 source, context={}
             )
@@ -417,7 +418,10 @@ def test_restricted_with_custom_policy():
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
-    with handler(RestrictedPythonExecutor(policy=CustomPolicy)):
+    with (
+        handler(MypyTypeChecker()),
+        handler(RestrictedPythonExecutor(policy=CustomPolicy)),
+    ):
         fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
             source, context={}
         )
@@ -442,7 +446,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
-        with handler(RestrictedPythonExecutor()):
+        with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
                 source_open, context=dangerous_ctx
             )
@@ -455,7 +459,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return os.name"""
     )
     with pytest.raises(Exception):
-        with handler(RestrictedPythonExecutor()):
+        with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
                 source_import, context=dangerous_ctx
             )
@@ -466,7 +470,7 @@ def test_builtins_in_env_does_not_bypass_security():
         module_code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
             source_safe, context=dangerous_ctx
         )
@@ -478,7 +482,7 @@ def test_builtins_in_env_does_not_bypass_security():
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
-        with handler(RestrictedPythonExecutor()):
+        with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
                 source_private, context=dangerous_ctx
             )
@@ -499,14 +503,14 @@ def _code(source: str) -> types.CodeType:
 
 def test_repl_seeds_from_lexical_context():
     """Names in the seed context are usable in executed code."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({"readings": [10, 20, 30]})
         assert session.exec_code(_code("print(sum(readings))")) == "60\n"
 
 
 def test_repl_persists_bindings_across_calls():
     """A binding created in one call is visible in the next."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         session.exec_code(_code("total = 41"))
         assert session.exec_code(_code("print(total)")) == "41\n"
@@ -514,7 +518,7 @@ def test_repl_persists_bindings_across_calls():
 
 def test_repl_rebinds_across_calls():
     """A seeded/prior name can be rebound using its prior value."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({"x": 10})
         session.exec_code(_code("x = x + 1"))
         assert session.exec_code(_code("print(x)")) == "11\n"
@@ -523,7 +527,7 @@ def test_repl_rebinds_across_calls():
 def test_repl_runs_complete_multistatement_block():
     """A complete `def` + call in one snippet runs in one shot (the case
     `single`-mode compilation would reject)."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         out = session.exec_code(
             _code("def double(n):\n    return n * 2\nprint(double(21))")
@@ -532,14 +536,14 @@ def test_repl_runs_complete_multistatement_block():
 
 
 def test_repl_captures_print():
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
 def test_repl_rejects_invalid_source_at_construction():
     """Invalid source is rejected when it is decoded to a code object -- before it
     ever reaches the session -- and valid code in the same provider still runs."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises(SyntaxError):
             _code("def f(:")
         assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
@@ -548,7 +552,7 @@ def test_repl_rejects_invalid_source_at_construction():
 def test_repl_exception_is_isolated():
     """A runtime exception is reported in the call's output; the session survives
     and retains prior state."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         session.exec_code(_code("kept = 7"))
         out = session.exec_code(_code("print(1 / 0)"))
@@ -560,7 +564,7 @@ def test_repl_system_exit_propagates():
     """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
     other exception (including `KeyboardInterrupt`) is caught and surfaced as
     output rather than escaping the call."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         with pytest.raises(SystemExit):
             session.exec_code(_code("raise SystemExit"))
@@ -572,7 +576,7 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
     """A function defined in an earlier call that raises in a later call formats
     with its *own* source line, not the later call's source -- the per-snippet
     filename keeps each cell's source in linecache."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         session.exec_code(_code("def boom():\n    return 1 / 0"))
         out = session.exec_code(_code("boom()"))
@@ -582,7 +586,7 @@ def test_repl_cross_snippet_traceback_shows_correct_source():
 def test_repl_new_binding_does_not_leak_into_seed_context():
     """A binding created in executed code stays in the session; the seed mapping
     the session was created from is not mutated."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         seed = {"base": 10}
         session = ReplSession(seed)
         session.exec_code(_code("derived = base + 5"))
@@ -593,7 +597,7 @@ def test_repl_new_binding_does_not_leak_into_seed_context():
 def test_repl_keeps_stdout_and_stderr_separate():
     """stdout (print output) and stderr (tracebacks) accumulate in separate,
     introspectable buffers; `exec_code` returns this call's stdout then stderr."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         out = session.exec_code(_code("print('hi')\n1 / 0"))
         assert session.stdout.getvalue() == "hi\n"
@@ -608,7 +612,7 @@ def test_repl_runsource_routes_through_ops():
     rather than falling back to the native single-mode compiler."""
     with pytest.raises(NotImplementedError):
         ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({})
         assert session.runsource("kept = 7") is False  # complete: compiled + ran
         assert session.locals["kept"] == 7
@@ -620,14 +624,14 @@ def test_repl_runsource_routes_through_ops():
 
 
 def test_repl_rebinds_across_calls_restricted():
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         session = ReplSession({"x": 10})
         session.exec_code(_code("x = x + 1"))
         assert session.exec_code(_code("print(x)")) == "11\n"
 
 
 def test_repl_captures_print_restricted():
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
 
 
@@ -639,7 +643,7 @@ def test_repl_captures_print_restricted():
 def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
     """Run one snippet through the parse/compile/exec ops under
     RestrictedEvalProvider, optionally capturing stdout."""
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         code = compile_op(parse_op(source, "<f>"), "<f>")
         if capture:
             buf = io.StringIO()
@@ -921,9 +925,12 @@ def test_restricted_runs_doctests_under_the_same_policy():
         """
         return x
 
-    with handler(BuiltinExecutor()):  # unrestricted: the example is just Python
+    with (
+        handler(MypyTypeChecker()),
+        handler(BuiltinExecutor()),
+    ):  # unrestricted: the example is just Python
         run_doctests(peek, {"peek": peek})
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         with pytest.raises(TypeError, match="doctest failed"):
             run_doctests(peek, {"peek": peek})
 
@@ -942,7 +949,7 @@ def test_restricted_doctest_can_print_and_import():
         """
         return sum(xs)
 
-    with handler(RestrictedPythonExecutor()):
+    with handler(MypyTypeChecker()), handler(RestrictedPythonExecutor()):
         run_doctests(summarize, {"summarize": summarize})
 
 
@@ -954,7 +961,7 @@ class TestRunDoctests:
         # `run_doctests` compiles and runs each example through the `compile` and
         # `exec` operations, so it needs a provider installed exactly as the code
         # it validates does.
-        with handler(BuiltinExecutor()):
+        with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
             yield
 
     def test_passing_doctests_pass(self):
@@ -1061,7 +1068,7 @@ class TestRunDoctestsThroughCallableDecode:
 
     def _decode(self, module_code: str, provider=None):
         provider = provider or BuiltinExecutor()
-        with handler(provider):
+        with handler(MypyTypeChecker()), handler(provider):
             return pydantic.TypeAdapter(
                 Encodable[Callable[[str, str], int]]
             ).validate_python(SynthesizedFunction(module_code=module_code), context={})
@@ -1135,7 +1142,7 @@ def _repl_raises(prior: list[str], snippet: str) -> bool:
     module_ast, template_def = anchor_asts
     checked = _splice_snippet(ast.parse(prior_src + snippet), module_ast, template_def)
     assert checked is not None
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         try:
             type_check(*checked, lenient=True)
             return False
@@ -1237,7 +1244,7 @@ def test_repl_decode_rejects_illtyped_snippet():
     type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
     fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
     to a code object."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises((pydantic.ValidationError, TypeError)):
             _decode("n: int = 'oops'\nprint(n)", anchor=True)
         assert isinstance(
@@ -1248,14 +1255,14 @@ def test_repl_decode_rejects_illtyped_snippet():
 def test_repl_decode_without_anchor_skips_typecheck():
     """Outside a managed Template call there is no anchor in the decode context, so an
     ill-typed snippet decodes without a type check (it can still run)."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
 
 
 def test_repl_exec_code_runs_and_records_history():
     """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
     records each snippet's source so a later decode can splice the accumulated session."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         session = ReplSession({"readings": [1, 2, 3]})
         assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
         assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
@@ -1267,13 +1274,13 @@ def test_repl_exec_code_runs_and_records_history():
 def test_encodable_code_rejects_future_import():
     """`from __future__ import ...` is illegal once nested in a function body, so it
     is rejected when the code object is decoded, before it can run."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("from __future__ import annotations\nx = 1")
 
 
 def test_encodable_code_rejects_star_import():
     """A star import is likewise rejected at decode."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("from os import *\nx = 1")

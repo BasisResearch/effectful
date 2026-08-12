@@ -21,6 +21,7 @@ from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
 from PIL import Image
 
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
@@ -766,7 +767,7 @@ def test_callable_encode_decode_behavioral(
 ):
     """Decoded callable is behaviorally equivalent to the original."""
     enc = pydantic.TypeAdapter(Encodable[ty])
-    with handler(eval_provider):
+    with handler(MypyTypeChecker()), handler(eval_provider):
         decoded = enc.validate_python(
             enc.dump_python(func, mode="json", context=ctx), context=ctx
         )
@@ -781,7 +782,7 @@ def test_callable_full_pipeline_behavioral(
     """Full encode->serialize->deserialize->decode pipeline is behaviorally equivalent."""
     enc = pydantic.TypeAdapter(Encodable[ty])
     text = json.dumps(enc.dump_python(func, mode="json", context=ctx))
-    with handler(eval_provider):
+    with handler(MypyTypeChecker()), handler(eval_provider):
         decoded = enc.validate_python(json.loads(text), context=ctx)
     assert decoded(*args) == expected
 
@@ -845,7 +846,7 @@ def test_callable_decode_rejects_invalid(
     ty, ctx, source, exc_type, anchor, eval_provider
 ):
     with pytest.raises(exc_type):
-        with handler(eval_provider):
+        with handler(MypyTypeChecker()), handler(eval_provider):
             pydantic.TypeAdapter(Encodable[ty]).validate_python(
                 source, context={**ctx, _TYPE_CHECK_ANCHOR_KEY: anchor}
             )
@@ -1032,7 +1033,7 @@ def test_encodable_code_compiles_source_to_a_code_object():
     provider, yielding a ready-to-run code object."""
     src = "x = 1\nprint(x)\n"
     adapter = pydantic.TypeAdapter(Encodable[CodeType])
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         decoded = adapter.validate_python(src)
     assert isinstance(decoded, CodeType)
 
@@ -1042,14 +1043,14 @@ def test_encodable_code_round_trips_to_source():
     `linecache`)."""
     src = "a = 2\n"
     adapter = pydantic.TypeAdapter(Encodable[CodeType])
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         decoded = adapter.validate_python(src)
         assert adapter.dump_python(decoded) == src
 
 
 def test_encodable_code_rejects_syntax_error():
     """Source that does not parse is rejected at decode."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises(SyntaxError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("def f(:")
 
@@ -1057,7 +1058,7 @@ def test_encodable_code_rejects_syntax_error():
 def test_encodable_code_rejects_compile_only_error():
     """`return` outside a function parses but does not compile -- still rejected,
     so the check is `compile`, not merely `ast.parse`."""
-    with handler(BuiltinExecutor()):
+    with handler(MypyTypeChecker()), handler(BuiltinExecutor()):
         with pytest.raises(SyntaxError):
             pydantic.TypeAdapter(Encodable[CodeType]).validate_python("return 5")
 

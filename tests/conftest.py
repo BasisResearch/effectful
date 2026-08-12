@@ -2,8 +2,10 @@ import os
 
 import litellm
 import pytest
+from litellm.files.main import ModelResponse
 
-from effectful.handlers.llm.harness.hooks import _tools_in_scope
+from effectful.handlers.llm.harness.hooks import Tool, _tools_in_scope, completion
+from effectful.ops.syntax import ObjectInterpretation, implements
 
 EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4o-mini")
 
@@ -101,3 +103,85 @@ def template_tools(template, *handlers):
     return {
         t for t in offered_tools(template.__context__, *handlers) if t is not template
     }
+
+
+# ============================================================================
+# Offline model doubles
+#
+# The counterpart to the `requires_*` markers above: these stand in for the
+# model entirely, so a test using them needs no API key and makes no network
+# call. Shared by the provision and observability suites.
+# ============================================================================
+
+
+class MockCompletionHandler(ObjectInterpretation):
+    """Mock handler that returns pre-configured completion responses."""
+
+    def __init__(self, responses: list[ModelResponse]):
+        self.responses = responses
+        self.call_count = 0
+        self.received_messages: list = []
+
+    @implements(completion)
+    def _completion(self, messages=None, **kwargs):
+        self.received_messages.append(list(messages) if messages else [])
+        response = self.responses[min(self.call_count, len(self.responses) - 1)]
+        self.call_count += 1
+        return response
+
+
+def make_tool_call_response(
+    tool_name: str, tool_args: str, tool_call_id: str = "call_1"
+) -> ModelResponse:
+    """Create a ModelResponse with a tool call."""
+    return ModelResponse(
+        id="test",
+        choices=[
+            {
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {"name": tool_name, "arguments": tool_args},
+                        }
+                    ],
+                },
+                "finish_reason": "tool_calls",
+            }
+        ],
+        model="test-model",
+    )
+
+
+def make_text_response(
+    content: str, usage: dict[str, int] | None = None
+) -> ModelResponse:
+    """Create a ModelResponse with text content.
+
+    ``usage`` populates the response's token counts. Real responses carry them
+    and some handlers read them (`LangfuseTracer` reports them as
+    ``usage_details``), but litellm synthesizes a zero-filled ``usage`` when it
+    is omitted, so a test that asserts on them has to ask for them explicitly.
+    """
+    return ModelResponse(
+        id="test",
+        choices=[
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        model="test-model",
+        **({"usage": usage} if usage is not None else {}),
+    )
+
+
+@Tool.define
+def add_numbers(a: int, b: int) -> int:
+    """Add two numbers together."""
+    return a + b

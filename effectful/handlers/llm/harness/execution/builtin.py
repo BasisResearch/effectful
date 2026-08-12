@@ -9,15 +9,16 @@ from effectful.handlers.llm.harness.execution.hooks import (
     exec,
     parse,
 )
-from effectful.handlers.llm.harness.execution.mypy import (
-    MypyTypeChecker,
-)
-from effectful.ops.syntax import implements
+from effectful.ops.syntax import ObjectInterpretation, implements
 
 
-class BuiltinExecutor(MypyTypeChecker):
+class BuiltinExecutor(ObjectInterpretation):
     """UNSAFE provider that handles parse, comple and exec operations
-    by shelling out to python *without* any further checks. Only use for testing."""
+    by shelling out to python *without* any further checks. Only use for testing.
+
+    Runs whatever it is given: type checking is a separate handler
+    (`~effectful.handlers.llm.harness.execution.mypy.MypyTypeChecker`), installed
+    alongside this one when generated code should be checked before it runs."""
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:

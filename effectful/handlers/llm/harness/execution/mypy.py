@@ -112,7 +112,13 @@ def _mypy_check_region(
 
 
 class MypyTypeChecker(ObjectInterpretation):
-    """Provider that handles type_check by shelling out to mypy."""
+    """Handler that handles type_check by shelling out to mypy.
+
+    Independent of any executor: it says how generated code is *checked*, not how
+    it is parsed, compiled or run, so it is installed alongside whichever of those
+    handlers a stack uses (``handler(MypyTypeChecker()), handler(BuiltinExecutor())``)
+    rather than being part of one.
+    """
 
     @implements(type_check)
     def type_check(
@@ -122,5 +128,6 @@ class MypyTypeChecker(ObjectInterpretation):
         hi: int | None = None,
         *,
         lenient: bool = False,
-    ) -> None:
+    ) -> bool:
         _mypy_check_region(source, lo, hi, lenient)
+        return True

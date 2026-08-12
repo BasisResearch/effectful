@@ -29,7 +29,7 @@ def type_check(
     hi: int | None = None,
     *,
     lenient: bool = False,
-) -> None:
+) -> bool:
     """
     Type check a module source, reporting only diagnostics inside a line region.
 
@@ -45,11 +45,16 @@ def type_check(
         for a synthesized ``Callable`` or ``TemplateBody``, which must honor its
         signature and gets no redefinition slack.
 
-    Returns None, raises TypeError on an in-region failure.
+    Returns True if the source type-checks, raises TypeError on an in-region
+    failure.
+
+    Unlike `parse`/`compile`/`exec`, which have no meaning without a provider,
+    type checking is an optional layer over them: the default rule below passes
+    everything, so a stack with no type checker installed runs generated code
+    unchecked rather than refusing to run it at all. `MypyTypeChecker` is the
+    handler that makes the check real.
     """
-    raise NotImplementedError(
-        "An eval provider must be installed in order to type check code."
-    )
+    return True
 
 
 @Operation.define

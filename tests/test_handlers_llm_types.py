@@ -20,6 +20,7 @@ from effectful.handlers.llm.harness.context import (
 )
 from effectful.handlers.llm.harness.durability import TenacityRetryer
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.hooks import (
     call_system,
     call_user,
@@ -2150,7 +2151,12 @@ def _drive_repl(body):
         """Drive one REPL-scoped call."""
         raise NotImplementedError
 
-    with handler(_Loop()), handler(BuiltinExecutor()), handler(repl):
+    with (
+        handler(MypyTypeChecker()),
+        handler(_Loop()),
+        handler(BuiltinExecutor()),
+        handler(repl),
+    ):
         _t()
     return box[0]
 
