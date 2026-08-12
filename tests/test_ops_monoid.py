@@ -1,5 +1,6 @@
 import functools
 import math
+import operator
 import sys
 import typing
 from collections.abc import Iterable, Mapping
@@ -16,6 +17,9 @@ from effectful.ops.monoid import (
     EliminateSingletonStreams,
     EvaluateIntp,
     Factor,
+    Group,
+    InverseInverse,
+    InversePlus,
     Max,
     Min,
     Monoid,
@@ -27,6 +31,7 @@ from effectful.ops.monoid import (
     PlusConsecutiveDups,
     PlusDistr,
     PlusEmpty,
+    PlusInverseCancellation,
     PlusOrder,
     PlusSingle,
     Product,
@@ -49,6 +54,7 @@ from effectful.ops.monoid import (
     WhereHoist,
     distributes_over,
     is_commutative,
+    solve_group_equality,
 )
 from effectful.ops.semantics import coproduct, evaluate, fvsof, handler
 from effectful.ops.syntax import as_dict, ite, range_, syntactic_eq
@@ -290,6 +296,80 @@ def test_zero_absorbs(monoid, backend: Backend, data):
     with handler(NormalizeIntp):
         assert backend.eq(monoid.plus(monoid.zero, a), monoid.zero)
         assert backend.eq(monoid.plus(a, monoid.zero), monoid.zero)
+
+
+def test_group_inverse_inverse(backend: Backend):
+    a = backend.define_vars("a", ret="scalar")
+    backend.check_rewrite(
+        lhs=Sum.inverse(Sum.inverse(a())), rhs=a(), rule=InverseInverse()
+    )
+
+
+def test_group_inverse_plus(backend: Backend):
+    a, b, c = backend.define_vars("a", "b", "c", ret="scalar")
+    backend.check_rewrite(
+        lhs=Sum.inverse(Sum.plus(a(), b(), c())),
+        rhs=Sum.plus(Sum.inverse(c()), Sum.inverse(b()), Sum.inverse(a())),
+        rule=InversePlus(),
+    )
+
+
+def test_group_inverse_cancellation(backend: Backend):
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    backend.check_rewrite(
+        lhs=Sum.plus(b(), a(), Sum.inverse(a())),
+        rhs=Sum.plus(b()),
+        rule=PlusInverseCancellation(),
+    )
+
+
+def test_group_inverse_cancellation_noncommutative(backend: Backend):
+    group = Group(name="Group", identity=0)
+    a, b = backend.define_vars("a", "b", ret="scalar")
+    evaluate_group = {
+        group.plus: lambda *args: sum(args),
+        group.inverse: operator.neg,
+    }
+
+    backend.check_rewrite(
+        lhs=group.plus(a(), group.inverse(a()), b()),
+        rhs=group.plus(b()),
+        rule=PlusInverseCancellation(),
+        normalize=evaluate_group,
+    )
+
+    nonadjacent = group.plus(a(), b(), group.inverse(a()))
+    backend.check_rewrite(
+        lhs=nonadjacent,
+        rhs=nonadjacent,
+        rule=PlusInverseCancellation(),
+        normalize=evaluate_group,
+    )
+
+
+def test_solve_group_equality(backend: Backend):
+    a, b, c, result = backend.define_vars("a", "b", "c", "result", ret="scalar")
+    equality = Sum.plus(a(), b(), c()) == result()
+    expected = b() == Sum.plus(Sum.inverse(a()), result(), Sum.inverse(c()))
+    assert syntactic_eq(solve_group_equality(equality, 1), expected)
+
+
+def test_solve_group_equality_reversed_and_negative_index(backend: Backend):
+    a, b, result = backend.define_vars("a", "b", "result", ret="scalar")
+    equality = result() == Sum.plus(a(), b())
+    expected = b() == Sum.plus(Sum.inverse(a()), result())
+    assert syntactic_eq(solve_group_equality(equality, -1), expected)
+
+
+def test_solve_group_equality_errors(backend: Backend):
+    a, b, result = backend.define_vars("a", "b", "result", ret="scalar")
+
+    with pytest.raises(TypeError, match="equality Term"):
+        solve_group_equality(Sum.plus(a(), b()), 0)
+    with pytest.raises(TypeError, match="Group.plus"):
+        solve_group_equality(Product.plus(a(), b()) == result(), 0)
+    with pytest.raises(IndexError, match="out of range"):
+        solve_group_equality(Sum.plus(a(), b()) == result(), 2)
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)

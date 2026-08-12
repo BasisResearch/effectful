@@ -170,6 +170,16 @@ class Monoid[W]:
         raise NotHandled
 
 
+class Group[T](Monoid[T]):
+    """A monoid in which every element has an inverse."""
+
+    @Operation.define
+    def inverse(self, value: T) -> T:
+        if value is self.identity:
+            return self.identity
+        raise NotHandled
+
+
 class MonoidWithZero[T](Monoid[T]):
     zero: T
 
@@ -182,7 +192,7 @@ Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
 ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
 ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
-Sum = Monoid(name="Sum", identity=0)
+Sum = Group(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
 LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
 CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
@@ -329,6 +339,55 @@ class MaskFusion(ObjectInterpretation):
 
 
 is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
+
+
+def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
+    """Isolate one argument of a group ``plus`` in an equality.
+
+    Given ``G.plus(a0, ..., an) == b``, isolate the argument at ``index``.
+    Negative indices follow normal Python indexing. The group expression may
+    occur on either side of the equality.
+    """
+    if not (
+        isinstance(equality, Term)
+        and is_equality(equality.op)
+        and len(equality.args) == 2
+        and not equality.kwargs
+    ):
+        raise TypeError("expected an equality Term")
+    if not isinstance(index, int):
+        raise TypeError("argument index must be an integer")
+
+    left, right = equality.args
+
+    def group_plus(value):
+        if not (isinstance(value, Term) and _is_monoid_plus(value.op)):
+            return None
+        monoid = value.op.__self__
+        return monoid if isinstance(monoid, Group) else None
+
+    monoid = group_plus(left)
+    if monoid is not None:
+        plus_term, other = left, right
+    elif (monoid := group_plus(right)) is not None:
+        plus_term, other = right, left
+    else:
+        raise TypeError("expected an equality containing a Group.plus Term")
+
+    assert isinstance(plus_term, Term)
+    try:
+        target = plus_term.args[index]
+    except IndexError:
+        raise IndexError("group argument index out of range") from None
+    if index < 0:
+        index += len(plus_term.args)
+
+    isolated = monoid.plus(
+        *(monoid.inverse(a) for a in reversed(plus_term.args[:index])),
+        other,
+        *(monoid.inverse(a) for a in reversed(plus_term.args[index + 1 :])),
+    )
+    return equality.op(target, isolated)
 
 
 class ReduceEqualityMaskRange(ObjectInterpretation):
@@ -482,6 +541,55 @@ class PlusAssoc(ObjectInterpretation):
             )
             assert len(args) > 0
             return monoid.plus(*flat_args)
+        return fwd()
+
+
+class InverseInverse(ObjectInterpretation):
+    """G.inverse(G.inverse(x)) = x"""
+
+    @implements(Group.inverse)
+    def inverse(self, monoid, value):
+        if isinstance(value, Term) and value.op is monoid.inverse:
+            return value.args[0]
+        return fwd()
+
+
+class InversePlus(ObjectInterpretation):
+    """G.inverse(G.plus(a, ..., z)) = G.plus(G.inverse(z), ..., G.inverse(a))."""
+
+    @implements(Group.inverse)
+    def inverse(self, monoid, value):
+        if isinstance(value, Term) and value.op is monoid.plus:
+            return monoid.plus(*(monoid.inverse(a) for a in reversed(value.args)))
+        return fwd()
+
+
+class PlusInverseCancellation(ObjectInterpretation):
+    """Cancel adjacent inverse pairs in a group plus."""
+
+    @staticmethod
+    def _are_inverses(monoid, left, right):
+        return (
+            isinstance(right, Term)
+            and right.op is monoid.inverse
+            and syntactic_eq(left, right.args[0])
+        ) or (
+            isinstance(left, Term)
+            and left.op is monoid.inverse
+            and syntactic_eq(left.args[0], right)
+        )
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        if not isinstance(monoid, Group):
+            return fwd()
+
+        pairs = zip(range(len(args) - 1), range(1, len(args)), strict=True)
+        for left, right in pairs:
+            if self._are_inverses(monoid, args[left], args[right]):
+                return monoid.plus(
+                    *(a for i, a in enumerate(args) if i not in (left, right))
+                )
         return fwd()
 
 
@@ -1156,6 +1264,12 @@ class SumPlus(ObjectInterpretation):
             return fwd()
         return sum(args)
 
+    @implements(Sum.inverse)
+    def inverse(self, value):
+        if isinstance(value, Term) or not isinstance(value, int | float):
+            return fwd()
+        return -value
+
 
 class MinPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Min`."""
@@ -1776,6 +1890,9 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusEmpty(),
     PlusSingle(),
     PlusAssoc(),
+    InverseInverse(),
+    InversePlus(),
+    PlusInverseCancellation(),
     PlusDistr(),
     PlusConsecutiveDups(),
     PlusOrder(),
