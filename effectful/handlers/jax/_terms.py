@@ -68,6 +68,7 @@ def _embed_array(ty, op, *args, **kwargs):
     if (
         op is jax_getitem
         and not isinstance(args[0], Term)
+        and not isinstance(args[1], Term)
         and all(not k.args and not k.kwargs for k in args[1] if isinstance(k, Term))
     ):
         return _EagerArrayTerm(jax_getitem, args[0], args[1])
