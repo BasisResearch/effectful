@@ -14,8 +14,17 @@ import jax
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
 from effectful.handlers.jax._handlers import _register_jax_op, is_eager_array
-from effectful.ops.semantics import evaluate, typeof
-from effectful.ops.syntax import defdata, defop
+from effectful.ops.monoid import (
+    LogSumExp,
+    Monoid,
+    NormalizeIntp,
+    Product,
+    Stream,
+    Streams,
+    Sum,
+)
+from effectful.ops.semantics import evaluate, fwd, typeof
+from effectful.ops.syntax import ObjectInterpretation, defdata, deffn, defop, implements
 from effectful.ops.types import NotHandled, Operation, Term
 
 
@@ -261,6 +270,13 @@ class _DistributionTerm(dist.Distribution):
 
     @property
     @defop
+    def has_enumerate_support(self) -> bool:
+        if not self._is_eager:
+            raise NotHandled
+        return self._pos_base_dist.has_enumerate_support
+
+    @property
+    @defop
     def event_shape(self) -> tuple[int, ...]:
         if not (self._is_eager):
             raise NotHandled
@@ -387,6 +403,7 @@ class _DistributionTerm(dist.Distribution):
 batch_shape = _DistributionTerm.batch_shape
 event_shape = _DistributionTerm.event_shape
 has_rsample = _DistributionTerm.has_rsample
+has_enumerate_support = _DistributionTerm.has_enumerate_support
 rsample = _DistributionTerm.rsample
 sample = _DistributionTerm.sample
 log_prob = _DistributionTerm.log_prob
@@ -1175,3 +1192,49 @@ class IndependentTerm(_DistributionTerm):
 @evaluate.register(dist.Independent)
 def _embed_independent(d: dist.Independent) -> Term[dist.Independent]:
     return Independent(d.base_dist, d.reinterpreted_batch_ndims)
+
+
+@Operation.define
+def distribution_stream(
+    distribution: numpyro.distributions.Distribution,
+) -> Stream[jax.Array]:
+    raise NotHandled
+
+
+class ReduceEnumerableDistribution(ObjectInterpretation):
+    """Distributions with enumerable support turn into weighted reductions of
+    arrays. The weighting used depends on the reduction monoid.
+
+    """
+
+    @implements(Monoid.reduce)
+    def _(self, monoid, body, streams: Streams):
+        for stream_id, stream in streams.items():
+            if not (isinstance(stream, Term) and stream.op == distribution_stream):
+                continue
+
+            dist = stream.args[0]
+            assert isinstance(dist, numpyro.distributions.Distribution)
+            if not dist.has_enumerate_support:
+                continue
+
+            support = dist.enumerate_support(expand=False)
+            value = Operation.define(jax.Array)
+            if monoid == LogSumExp:
+                weighted = Sum.weighted(support, deffn(dist.log_prob(value()), value))
+            elif monoid == Sum:
+                weighted = Product.weighted(
+                    support, deffn(jnp.exp(dist.log_prob(value())), value)
+                )
+            else:
+                continue
+
+            new_streams = {k: v for k, v in streams.items() if k != stream_id} | {
+                stream_id: weighted
+            }
+            return monoid.reduce(body, new_streams)
+
+        return fwd()
+
+
+NormalizeIntp.extend(ReduceEnumerableDistribution())
