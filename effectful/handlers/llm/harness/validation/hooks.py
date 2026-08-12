@@ -3,6 +3,7 @@ import doctest
 import types
 import typing
 
+import effectful.handlers.llm.harness.execution.hooks
 from effectful.ops.types import Operation
 
 
@@ -80,8 +81,8 @@ def run_doctests(
     # This rebinds module state, so it is not safe against another thread running
     # doctests concurrently under a *different* interpretation; the block is short
     # and holds only for the examples of one synthesized object.
-    doctest.compile = compile  # type: ignore[attr-defined]
-    doctest.exec = exec  # type: ignore[attr-defined]
+    doctest.compile = effectful.handlers.llm.harness.execution.hooks.compile  # type: ignore[attr-defined]
+    doctest.exec = effectful.handlers.llm.harness.execution.hooks.exec  # type: ignore[attr-defined]
     # Collect each example's want/got report via `out=...` and read failure
     # counts from `run`'s return value, avoiding `summarize`, which would print
     # to stdout instead of returning the report.
