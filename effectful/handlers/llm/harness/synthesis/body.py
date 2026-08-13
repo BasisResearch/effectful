@@ -445,6 +445,21 @@ def _callable_type_from_signature(
     return collections.abc.Callable[param_types, return_type]  # type: ignore
 
 
+def _has_plain_validator(ty: typing.Any) -> bool:
+    """Whether an `Encodable` annotation decodes from a wire form anywhere.
+
+    A `PlainValidator` in the encoding (a synthesized callable's source, an
+    image's data URL) replaces core validation with a decode step, so an
+    already-built value of the type cannot be re-validated through it.
+    """
+    if any(
+        isinstance(m, pydantic.PlainValidator)
+        for m in getattr(ty, "__metadata__", ())
+    ):
+        return True
+    return any(_has_plain_validator(arg) for arg in typing.get_args(ty))
+
+
 class FinalBodySynthesizer(ObjectInterpretation):
     """You may "answer" a Template by writing code instead of producing the value
     directly. The `submit_solution` tool accepts a single argument: a Python
@@ -556,26 +571,27 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 original arguments becomes the answer.
                 """
                 answer = implementation(*args, **kwargs)  # type: ignore
-                # The direct final-message path validates the answer through
-                # `Encodable[return_type]`, so a return type carrying a validator
-                # is enforced there. A `submit_solution` answer must be checked the
-                # same way, or that validator is silently skipped. The answer is an
-                # already-built value, not the source the encoding's decode expects,
-                # so apply only the declared type's value-validators (its
-                # `AfterValidator`s), letting pydantic dispatch (value)/(value, info)
-                # and thread the decode context (the Template's lexical scope plus
-                # its arguments, matching how the direct path builds it).
+                if return_type is inspect.Signature.empty or return_type is str:
+                    return answer  # type: ignore
                 encodable = TypeToPydanticType().evaluate(return_type)
-                afters = [
-                    m
-                    for m in getattr(encodable, "__metadata__", ())
-                    if isinstance(m, pydantic.AfterValidator)
-                ]
-                if afters:
-                    context = {**dict(template.__context__), **bound_args.arguments}
-                    answer = pydantic.TypeAdapter(
-                        typing.Annotated[typing.Any, *afters]
-                    ).validate_python(answer, context=context)
+                context = {**dict(template.__context__), **bound_args.arguments}
+                if _has_plain_validator(encodable):
+                    # The answer is already in decoded form; a `PlainValidator`
+                    # encoding expects the wire form, so run only the
+                    # post-decode checks.
+                    afters = [
+                        m
+                        for m in getattr(encodable, "__metadata__", ())
+                        if isinstance(m, pydantic.AfterValidator)
+                    ]
+                    if afters:
+                        answer = pydantic.TypeAdapter(
+                            typing.Annotated[typing.Any, *afters]
+                        ).validate_python(answer, context=context)
+                else:
+                    answer = pydantic.TypeAdapter(encodable).validate_python(
+                        answer, context=context
+                    )
                 return answer  # type: ignore
 
             return super().define(submit_solution, name=cls.__toolname__)
