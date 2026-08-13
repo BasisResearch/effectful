@@ -555,7 +555,28 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 it (see the "Code synthesis" section); its return value on the
                 original arguments becomes the answer.
                 """
-                return implementation(*args, **kwargs)  # type: ignore
+                answer = implementation(*args, **kwargs)  # type: ignore
+                # The direct final-message path validates the answer through
+                # `Encodable[return_type]`, so a return type carrying a validator
+                # is enforced there. A `submit_solution` answer must be checked the
+                # same way, or that validator is silently skipped. The answer is an
+                # already-built value, not the source the encoding's decode expects,
+                # so apply only the declared type's value-validators (its
+                # `AfterValidator`s), letting pydantic dispatch (value)/(value, info)
+                # and thread the decode context (the Template's lexical scope plus
+                # its arguments, matching how the direct path builds it).
+                encodable = TypeToPydanticType().evaluate(return_type)
+                afters = [
+                    m
+                    for m in getattr(encodable, "__metadata__", ())
+                    if isinstance(m, pydantic.AfterValidator)
+                ]
+                if afters:
+                    context = {**dict(template.__context__), **bound_args.arguments}
+                    answer = pydantic.TypeAdapter(
+                        typing.Annotated[typing.Any, *afters]
+                    ).validate_python(answer, context=context)
+                return answer  # type: ignore
 
             return super().define(submit_solution, name=cls.__toolname__)
 
