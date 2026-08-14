@@ -382,8 +382,10 @@ class _ComplexModel(typing.TypedDict):
 
 
 @pydantic.validate_call(validate_return=True)
-def _validate_complex(value: _ComplexModel) -> complex:
-    return complex(value["real"], value["imag"])
+def _validate_complex(value: _ComplexModel | complex) -> complex:
+    return (
+        value if isinstance(value, complex) else complex(value["real"], value["imag"])
+    )
 
 
 @pydantic.validate_call(validate_return=True)
@@ -395,13 +397,14 @@ def _serialize_complex(value: complex) -> _ComplexModel:
 def _pydantic_type_complex(ty):
     """Encode ``complex`` as ``{"real": float, "imag": float}``."""
 
-    adapted_schema = pydantic.TypeAdapter(_ComplexModel).json_schema()
+    schema = pydantic.TypeAdapter(_ComplexModel).json_schema()
+    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
 
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_complex),
+        pydantic.BeforeValidator(_validate_complex),
         pydantic.PlainSerializer(_serialize_complex),
-        pydantic.WithJsonSchema({**adapted_schema, "additionalProperties": False}),
+        pydantic.WithJsonSchema(schema),
     ]
 
 
@@ -429,16 +432,6 @@ def _pydantic_type_tuple(ty):
             **{f: (t, ...) for f, t in zip(nt_fields, nt_types)},
         )
 
-        def _nt_validate(value, info: pydantic.ValidationInfo):
-            if isinstance(value, tuple | list):
-                value = dict(zip(nt_fields, value))
-            return ty(
-                **{
-                    f: nt_adapters[i].validate_python(value[f], context=info.context)
-                    for i, f in enumerate(nt_fields)
-                }
-            )
-
         def _nt_serialize(value, info: pydantic.SerializationInfo):
             return {
                 f: nt_adapters[i].dump_python(
@@ -449,7 +442,6 @@ def _pydantic_type_tuple(ty):
 
         return typing.Annotated[
             ty,
-            pydantic.PlainValidator(_nt_validate),
             pydantic.PlainSerializer(_nt_serialize),
             pydantic.WithJsonSchema(_inline_refs(nt_model.model_json_schema())),
         ]
@@ -474,13 +466,12 @@ def _pydantic_type_tuple(ty):
         **{f"item_{i}": (a, ...) for i, a in enumerate(effective)},
     )
 
-    def _validate(value, info: pydantic.ValidationInfo):
-        if isinstance(value, tuple | list):
-            value = {f"item_{i}": v for i, v in enumerate(value)}
-        return tuple(
-            adapters[i].validate_python(value[f"item_{i}"], context=info.context)
-            for i in range(len(effective))
-        )
+    def _decode(value):
+        """Reshape the ``item_0``/``item_1``/... object form back into a positional
+        tuple, leaving the tuple itself for Pydantic to validate elementwise."""
+        if isinstance(value, Mapping):
+            return tuple(value[f"item_{i}"] for i in range(len(effective)))
+        return value
 
     def _serialize(value, info: pydantic.SerializationInfo):
         return {
@@ -490,7 +481,7 @@ def _pydantic_type_tuple(ty):
 
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate),
+        pydantic.BeforeValidator(_decode),
         pydantic.PlainSerializer(_serialize),
         pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
     ]
@@ -510,8 +501,9 @@ def _pydantic_type_operation(ty: type[Operation]):
     )
 
 
-@pydantic.validate_call(validate_return=False)
-def _validate_image(value: ChatCompletionImageObject) -> Image.Image:
+def _validate_image(value: ChatCompletionImageObject | Image.Image) -> Image.Image:
+    if isinstance(value, Image.Image):
+        return value
     value = pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(value)
     image_url: litellm.ChatCompletionImageUrlObject | str = value["image_url"]
     url: str = image_url["url"] if isinstance(image_url, dict) else image_url
@@ -535,7 +527,8 @@ def _pydantic_type_image(ty: type[Image.Image]):
     adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_image),
+        pydantic.InstanceOf,
+        pydantic.BeforeValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
         pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
     ]
@@ -601,6 +594,7 @@ def _serialize_callable(value: Callable) -> dict:
 def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
+        pydantic.InstanceOf,
         pydantic.PlainSerializer(_serialize_callable),
         pydantic.WithJsonSchema(
             EncodedFunction.model_json_schema(), mode="serialization"
@@ -608,37 +602,11 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     ]
 
 
-def _validate_tool_identity(value: typing.Any) -> Tool:
-    """Accept a `Tool` that is already a `Tool`.
-
-    Nothing decodes a tool from JSON -- doing so would be a synthesis path, like
-    `Callable`'s -- so this only makes the type's own membership test explicit,
-    as Pydantic's `callable()` check does for a `Callable`.
-    """
-    if not isinstance(value, Tool):
-        raise ValueError(f"expected a Tool, got {type(value).__name__}")
-    return value
-
-
 @TypeToPydanticType.register(Tool)
 def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
-    """Encode a `Tool` (or `Template`) *value* as the callable it is.
-
-    A tool arriving here is a value like any other -- returned by another tool,
-    spliced into a prompt -- so it encodes as its source, exactly as
-    `_pydantic_callable_serialize_only` encodes a `Callable`.  What a tool looks
-    like when it is *offered* to the model is the encoding of `_NameAndTool`
-    below: a different thing, which needs a name a bare `Tool` does not carry.
-
-    Registering this is required, not decorative: `Tool` inherits from
-    `Operation`, whose registration raises, and singledispatch prefers a base
-    class over the `Callable` ABC.  The validator is here because Pydantic
-    cannot build a core schema for the `Tool` class on its own, and a
-    `PlainValidator` supplies one.
-    """
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_tool_identity),
+        pydantic.InstanceOf,
         pydantic.PlainSerializer(_serialize_callable),
         pydantic.WithJsonSchema(
             EncodedFunction.model_json_schema(), mode="serialization"
@@ -647,8 +615,10 @@ def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
 
 
 def _validate_name_and_tool(
-    value: ChatCompletionToolParam, info: pydantic.ValidationInfo
+    value: typing.Any, info: pydantic.ValidationInfo
 ) -> _NameAndTool:
+    if isinstance(value, _NameAndTool):
+        return value
     assert isinstance(info.context, Mapping), "Tool decoding requires context"
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     name = value["function"]["name"]
@@ -703,29 +673,35 @@ def _pydantic_type_name_and_tool(ty: type[_NameAndTool]):
     would route to `_pydantic_type_tuple`'s NamedTuple branch, which would try
     to build a `TypeAdapter` for the `Tool` field and fail.
     """
-    schema = _inline_refs(pydantic.TypeAdapter(ChatCompletionToolParam).json_schema())
-    schema = _ensure_strict_json_schema(schema, path=(), root={})
+    schema = pydantic.TypeAdapter(ChatCompletionToolParam).json_schema()
+    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_name_and_tool),
+        pydantic.InstanceOf,
+        pydantic.BeforeValidator(_validate_name_and_tool),
         pydantic.PlainSerializer(_serialize_name_and_tool),
         pydantic.WithJsonSchema(schema),
     ]
 
 
 def _validate_tool_call(
-    value: ChatCompletionMessageToolCall,
+    value: ChatCompletionMessageToolCall | DecodedToolCall,
     info: pydantic.ValidationInfo,
 ) -> DecodedToolCall:
-    if isinstance(value, dict):
-        value = OpenAIChatCompletionMessageToolCall.model_validate(value)
+    if isinstance(value, DecodedToolCall):
+        return value
+    call = (
+        OpenAIChatCompletionMessageToolCall.model_validate(value)
+        if isinstance(value, dict)
+        else value
+    )
     ctx = info.context or {}
-    assert value.function.name is not None
-    tool = ctx[_NAME2TOOL_KEY][value.function.name]
+    assert call.function.name is not None
+    tool = ctx[_NAME2TOOL_KEY][call.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
     decoded_args = {}
-    for name, raw_arg in json.loads(value.function.arguments).items():
+    for name, raw_arg in json.loads(call.function.arguments).items():
         assert name in sig.parameters, (
             f"Unexpected argument {name} for tool {tool.__name__}"
         )
@@ -737,8 +713,8 @@ def _validate_tool_call(
     return DecodedToolCall(
         tool=tool,
         bound_args=sig.bind(**decoded_args),
-        id=value.id,
-        name=value.function.name,
+        id=call.id,
+        name=call.function.name,
     )
 
 
@@ -771,11 +747,12 @@ def _serialize_tool_call(
 def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
     # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
     # type) rather than litellm's (empty dict with extra="allow").
-    schema = _inline_refs(OpenAIChatCompletionMessageToolCall.model_json_schema())
-    schema = _ensure_strict_json_schema(schema, path=(), root={})
+    schema = OpenAIChatCompletionMessageToolCall.model_json_schema()
+    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate_tool_call),
+        pydantic.InstanceOf,
+        pydantic.BeforeValidator(_validate_tool_call),
         pydantic.PlainSerializer(_serialize_tool_call),
         pydantic.WithJsonSchema(schema),
     ]

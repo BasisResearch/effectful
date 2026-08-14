@@ -279,7 +279,7 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--reasoning-effort",
         type=str,
-        default=None,
+        default="default",
         choices=_reasoning_effort_choices(),
         help="Reasoning effort forwarded to litellm.completion",
     )

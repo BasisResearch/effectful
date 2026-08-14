@@ -6,7 +6,6 @@ import logging
 import textwrap
 import types
 import typing
-from collections.abc import Callable
 
 import pydantic
 
@@ -31,7 +30,7 @@ type SplicedRegion = tuple[str, int, int]
 logger = logging.getLogger(__name__)
 
 
-def _reject_param_count_mismatch(fn: Callable, ty: typing.Any) -> None:
+def _reject_param_count_mismatch(fn: collections.abc.Callable, ty: typing.Any) -> None:
     """Raise ``ValueError`` if the synthesized ``fn``'s positional arity does not
     match the expected ``Callable[[...], ret]`` type.
 
@@ -235,7 +234,7 @@ class SynthesizedFunction(EncodedFunction):
         """),
     )
 
-    # A general `Callable` is type-checked against the requested signature, so it must
+    # A general `collections.abc.Callable` is type-checked against the requested signature, so it must
     # be fully annotated. A Template *body* is instead checked against the enclosing
     # Template's own signature (`splice_template_body`), which already carries the
     # annotations -- so its subclasses waive this and may omit the `self` receiver.
@@ -287,7 +286,9 @@ class SynthesizedFunction(EncodedFunction):
         return value
 
     @classmethod
-    def _create_model_from_callable_type(cls, typ: type[Callable]) -> type[typing.Self]:
+    def _create_model_from_callable_type(
+        cls, typ: type[collections.abc.Callable]
+    ) -> type[typing.Self]:
         """Create a SynthesizedFunction subclass carrying the requested signature in
         the model-facing description.
 
@@ -308,7 +309,7 @@ class SynthesizedFunction(EncodedFunction):
         )
 
     @classmethod
-    def _signature_str(cls, typ: type[Callable]) -> str:
+    def _signature_str(cls, typ: type[collections.abc.Callable]) -> str:
         """Render a ``Callable[[...], ...]`` signature by type *name* (not its
         fully-qualified ``repr``), so the model sees ``Callable[[State], int]`` rather
         than ``collections.abc.Callable[[pkg.mod.State], builtins.int]``."""
@@ -331,7 +332,7 @@ class SynthesizedFunction(EncodedFunction):
         return ""
 
 
-@TypeToPydanticType.register(Callable)
+@TypeToPydanticType.register(collections.abc.Callable)
 def _pydantic_callable(ty: typing.Any) -> typing.Any:
     """Pydantic-compatible Annotated type for a parameterized `Callable` value.
 
@@ -341,16 +342,23 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
     `_pydantic_template_body`.
     """
     typed_enc = SynthesizedFunction._create_model_from_callable_type(
-        Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
+        collections.abc.Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
     )
 
     def _validate(
-        value: SynthesizedFunction | dict | str, info: pydantic.ValidationInfo
-    ) -> Callable:
+        value: SynthesizedFunction | dict | str | collections.abc.Callable,
+        info: pydantic.ValidationInfo,
+    ) -> collections.abc.Callable:
         if isinstance(value, str):
             value = typed_enc.model_validate({"module_code": value})
-        if isinstance(value, dict):
+        elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
+        elif isinstance(value, EncodedFunction):
+            value = typed_enc.model_validate(value.model_dump())
+        elif callable(value):
+            return value
+
+        assert isinstance(value, typed_enc)
 
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
@@ -387,7 +395,8 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
     # emits, with no synthesis prose.
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(_validate),
+        pydantic.InstanceOf,
+        pydantic.BeforeValidator(_validate),
         pydantic.PlainSerializer(_serialize_callable),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),

@@ -512,6 +512,81 @@ def test_encode_idempotent(ty, value, ctx):
 
 
 # ============================================================================
+# Law 6: decode(v) == v for an already-decoded v (decoding is idempotent)
+# ============================================================================
+
+
+@pytest.mark.parametrize("ty,value,ctx", ROUNDTRIP_CASES)
+def test_decode_idempotent(ty, value, ctx):
+    """`Encodable[T]` validates a real `T`, not only the wire form of one.
+
+    A value that never crossed the model boundary -- the result of applying a
+    synthesized function, say -- can be checked against its declared type, which
+    is the whole point of validating one at all.
+    """
+    dec = pydantic.TypeAdapter(Encodable[ty])
+    assert dec.validate_python(value, context=ctx or {}) == value
+
+
+# ============================================================================
+# The encoding leaves room for validators it did not supply
+# ============================================================================
+
+_CALLER_VALIDATOR_CASES = [
+    pytest.param(complex, 3 + 4j, -3 + 4j, lambda z: z.real >= 0, id="complex"),
+    pytest.param(tuple[int, str], (1, "a"), (-1, "a"), lambda t: t[0] >= 0, id="tuple"),
+    pytest.param(
+        Image.Image,
+        _make_png_image("RGB", (10, 10), "red"),
+        _make_png_image("RGB", (2, 2), "red"),
+        lambda im: im.width >= 10,
+        id="image",
+    ),
+    pytest.param(_Coord, _Coord(3, 4), _Coord(-3, 4), lambda c: c.x >= 0, id="nt"),
+]
+
+
+@pytest.mark.parametrize("ty,ok,bad,predicate", _CALLER_VALIDATOR_CASES)
+def test_caller_validators_run_on_the_decoded_value(ty, ok, bad, predicate):
+    """An `AfterValidator` a caller annotates a type with runs on the decoded
+    value, in both directions.
+
+    The encoding wraps validation rather than replacing it, so it composes with
+    whatever else the annotation carries instead of shadowing it.
+    """
+
+    def check(value):
+        assert predicate(value), "rejected"
+        return value
+
+    dec = pydantic.TypeAdapter(Encodable[Annotated[ty, pydantic.AfterValidator(check)]])
+    enc = pydantic.TypeAdapter(Encodable[ty])
+
+    assert dec.validate_python(ok) == ok
+    assert dec.validate_python(enc.dump_python(ok, mode="json")) == ok
+    for rejected in (bad, enc.dump_python(bad, mode="json")):
+        with pytest.raises(pydantic.ValidationError, match="rejected"):
+            dec.validate_python(rejected)
+
+
+def test_annotated_metadata_reaches_pydantic():
+    """`Encodable[Annotated[T, ...]]` keeps each metadata item its own item.
+
+    Packed into a single tuple, metadata is still *present* but invisible to
+    everything that looks for it by type -- Pydantic finding a validator, say.
+    """
+
+    def check(x: int) -> int:
+        assert x > 0, "rejected"
+        return x
+
+    marker = pydantic.AfterValidator(check)
+    assert marker in Encodable[Annotated[int, marker]].__metadata__
+    with pytest.raises(pydantic.ValidationError, match="rejected"):
+        pydantic.TypeAdapter(Encodable[Annotated[int, marker]]).validate_python(-1)
+
+
+# ============================================================================
 # Term-specific: Encodable raises TypeError for Term and Operation
 # ============================================================================
 

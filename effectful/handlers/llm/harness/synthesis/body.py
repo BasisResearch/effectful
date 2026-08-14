@@ -33,7 +33,7 @@ from effectful.handlers.llm.harness.synthesis.function import (
     _def_nodes,
     _recover_template_def,
 )
-from effectful.handlers.llm.types import Template, Tool
+from effectful.handlers.llm.types import Encodable, Template, Tool
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -188,12 +188,15 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
     )
 
     def _validate(
-        value: SynthesizedTemplateBody | dict | str, info: pydantic.ValidationInfo
+        value: SynthesizedTemplateBody | dict | str | Callable,
+        info: pydantic.ValidationInfo,
     ) -> Callable:
         if isinstance(value, str):
             value = typed_enc.model_validate({"module_code": value})
-        if isinstance(value, dict):
+        elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
+        elif callable(value):
+            return typing.cast(Callable, value)
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
@@ -232,13 +235,14 @@ def _pydantic_template_body(ty: typing.Any) -> typing.Any:
             effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
-    # Distinct schemas per direction: validation (the model *produces* a function)
-    # carries the synthesis instructions; serialization (the model *reads* an
-    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
-    # emits, with no synthesis prose.
+    if typing.get_args(ty):
+        ty_ = collections.abc.Callable[typing.get_args(ty)]  # type: ignore
+    else:
+        ty_ = collections.abc.Callable
+
     return typing.Annotated[
-        ty,
-        pydantic.PlainValidator(_validate),
+        pydantic.InstanceOf[ty_],  # type: ignore
+        pydantic.BeforeValidator(_validate),
         pydantic.PlainSerializer(lambda value: _serialize_callable(value)),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
@@ -350,12 +354,15 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
     )
 
     def _validate(
-        value: SynthesizedMethodTemplateBody | dict | str, info: pydantic.ValidationInfo
+        value: SynthesizedMethodTemplateBody | dict | str | Callable,
+        info: pydantic.ValidationInfo,
     ) -> Callable:
         if isinstance(value, str):
             value = typed_enc.model_validate({"module_code": value})
-        if isinstance(value, dict):
+        elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
+        elif callable(value):
+            return typing.cast(Callable, value)
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
@@ -398,13 +405,14 @@ def _pydantic_method_template_body(ty: typing.Any) -> typing.Any:
             effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
-    # Distinct schemas per direction: validation (the model *produces* a function)
-    # carries the synthesis instructions; serialization (the model *reads* an
-    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
-    # emits, with no synthesis prose.
+    if typing.get_args(ty):
+        ty_ = collections.abc.Callable[typing.get_args(ty)]  # type: ignore
+    else:
+        ty_ = collections.abc.Callable
+
     return typing.Annotated[
-        ty,
-        pydantic.PlainValidator(_validate),
+        pydantic.InstanceOf[ty_],  # type: ignore
+        pydantic.BeforeValidator(_validate),
         pydantic.PlainSerializer(_serialize_callable),
         pydantic.WithJsonSchema(
             _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
@@ -549,7 +557,10 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 ]
                 return_type = signature.return_annotation
 
-            def submit_solution(implementation: body_type) -> return_type:  # type: ignore
+            @pydantic.validate_call(validate_return=True)
+            def submit_solution(
+                implementation: Encodable[body_type],  # type: ignore
+            ) -> Encodable[return_type]:  # type: ignore
                 """
                 Answer this Template by submitting a Python function that implements
                 it (see the "Code synthesis" section); its return value on the

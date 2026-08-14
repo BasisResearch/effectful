@@ -299,7 +299,8 @@ def _pydantic_type_code(ty):
 
     return typing.Annotated[
         ty,
-        pydantic.PlainValidator(validate),
+        pydantic.InstanceOf,
+        pydantic.BeforeValidator(validate),
         pydantic.PlainSerializer(
             lambda value: "".join(linecache.getlines(value.co_filename))
         ),

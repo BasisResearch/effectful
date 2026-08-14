@@ -144,8 +144,7 @@ class TypeEvaluator(abc.ABC):
     @evaluate.register
     def _(self, typ: typing._AnnotatedAlias):  # type: ignore
         return typing.Annotated[
-            self.evaluate(typing.get_args(typ)[0]),
-            typ.__metadata__,
+            (self.evaluate(typing.get_args(typ)[0]), *typ.__metadata__)
         ]
 
     @evaluate.register
