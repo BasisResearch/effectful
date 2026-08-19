@@ -45,7 +45,7 @@ def harness(
     """
     Instantiate the standard `effectful.handlers.llm` handler stack.
     Install it with :func:`~effectful.ops.semantics.handler`::
-    
+
         with handler(harness(...)):
             ...
 
