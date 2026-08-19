@@ -3,6 +3,7 @@ import collections.abc
 import dataclasses
 import json
 import sys
+import threading
 import time
 import typing
 
@@ -351,6 +352,22 @@ def _render_frame(
     return rich.console.Group(*[_message_panel(m) for m in history], tail)
 
 
+# Transport failures a streamed read can hit that an unstreamed one would not:
+# the connection is held open across chunks, so it is exposed to anything that
+# disturbs the pool meanwhile. Deliberately narrow -- a refused request, a bad
+# model name or a rejected schema fails identically without streaming, and
+# re-issuing it would only pay for the same error twice.
+#
+# Each is listed on its own: litellm's exceptions inherit from *openai's*
+# hierarchy rather than from each other, so `litellm.Timeout` is not a
+# `litellm.APIConnectionError` and naming one does not cover the other.
+_STREAM_TRANSPORT_ERRORS = (
+    litellm.exceptions.MidStreamFallbackError,
+    litellm.exceptions.APIConnectionError,
+    litellm.exceptions.Timeout,
+)
+
+
 @dataclasses.dataclass(frozen=True)
 class RichTerminalRenderer(ObjectInterpretation):
     """Stream `completion` and live-render the whole message sequence.
@@ -371,8 +388,69 @@ class RichTerminalRenderer(ObjectInterpretation):
         default_factory=lambda: rich.console.Console(file=sys.__stdout__)
     )
 
+    # Held for the lifetime of a ``Live`` region. See `_completion`.
+    #
+    # Constructed eagerly, in ``__init__``: the one thing this must never do is hand
+    # two threads two different locks, and creating it on first use would risk
+    # exactly that -- ``functools.cached_property`` is unsynchronized as of 3.12, so
+    # concurrent first access can run the factory more than once. ``compare`` and
+    # ``repr`` are off so the generated ``__eq__``/``__hash__``/``__repr__`` stay
+    # over the configuration this handler carries rather than its internals.
+    _live_lock: threading.Lock = dataclasses.field(
+        default_factory=threading.Lock, repr=False, compare=False
+    )
+
     @implements(completion)
     def _completion(self, *args, **kwargs) -> typing.Any:
+        """Stream and live-render this completion, or -- if another already holds
+        the terminal, or if the stream breaks -- let it run unstreamed and print it
+        as a settled panel.
+
+        A ``Live`` region owns the console for its duration, and there is one
+        console. Concurrent skill calls (the ``asyncio.gather`` +
+        ``asyncio.to_thread`` fan-out several examples demonstrate) would otherwise
+        open overlapping ``Live`` regions and interleave two redraws into the same
+        rows. Acquiring without blocking is what keeps that fan-out parallel: a
+        caller that loses the race proceeds immediately down the settled path
+        rather than queueing behind the live one.
+
+        The same fallback covers a stream that dies in flight. Streaming here is a
+        debugging affordance this handler *adds* to a request that did not ask for
+        it, so it also owns the cost: a long-lived streamed read shares a connection
+        pool with whatever else the process is doing, and losing that race is not a
+        reason to fail a call that would have succeeded unstreamed. The retry is safe
+        because a broken stream yields no result to duplicate.
+        """
+        if self._live_lock.acquire(blocking=False):
+            try:
+                return self._completion_live(*args, **kwargs)
+            except _STREAM_TRANSPORT_ERRORS as e:
+                self.console.print(
+                    rich.text.Text(
+                        f"stream failed ({type(e).__name__}); retrying unstreamed",
+                        style="dim",
+                    )
+                )
+            finally:
+                self._live_lock.release()
+        return self._completion_settled(*args, **kwargs)
+
+    def _completion_settled(self, *args, **kwargs) -> typing.Any:
+        """Render a completion that could not take the live region: forward it
+        unchanged -- so it is *not* forced onto the streaming path -- and print the
+        finished turn as one panel once it lands."""
+        response = fwd(*args, **kwargs)
+        if isinstance(response, litellm.types.utils.ModelResponse):
+            choice = response.choices[0]
+            if isinstance(choice, litellm.types.utils.Choices):
+                self.console.print(
+                    _message_panel(
+                        typing.cast(Message, choice.message.model_dump(mode="json"))
+                    )
+                )
+        return response
+
+    def _completion_live(self, *args, **kwargs) -> typing.Any:
         kwargs = {
             **kwargs,
             "stream": True,

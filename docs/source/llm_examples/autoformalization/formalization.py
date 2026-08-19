@@ -16,7 +16,7 @@ Unlike the sibling examples, which fake their environment (a static in-memory
 index instead of live web search), LEAP's environment *is* the load-bearing part,
 so we do not fake it: the ``VERIFIER (LEAN)`` of the paper's Figure 1 is a real
 Lean 4 + Mathlib toolchain, invoked as a subprocess. A proof that does not compile
-raises with the actual Lean error, and the harness's ``RetryLLMHandler`` feeds that
+raises with the actual Lean error, and the harness's ``TenacityRetryer`` feeds that
 error back -- the paper's "continuous interaction with the Lean compiler" is a real
 compile loop, not a simulation. Each of the paper's named components falls out of
 an ordinary effectful idiom:
@@ -26,7 +26,7 @@ an ordinary effectful idiom:
     ``sorry`` -- the same decode-time certification ``scientist_one.py`` uses for
     citations, except the ground truth is a theorem prover rather than an index.
     An uncompilable proof is not a well-typed ``LeanProof``; it raises, and
-    ``RetryLLMHandler`` feeds the compiler diagnostic back (the paper's ``REVISER``).
+    ``TenacityRetryer`` feeds the compiler diagnostic back (the paper's ``REVISER``).
 
   * The sketch is the same certification with a richer preamble. A decomposition's
     sketch proves the goal *assuming* its proposed lemmas: the search installs the
@@ -65,7 +65,7 @@ an ordinary effectful idiom:
 
 Demonstrates:
 - Decode-time certification against a *real external tool* (the Lean compiler),
-  so ``RetryLLMHandler`` turns an uncompilable proof into a compiler-feedback
+  so ``TenacityRetryer`` turns an uncompilable proof into a compiler-feedback
   revision -- the certification idiom of ``scientist_one.py`` with a prover as
   ground truth
 - A ContextVar carrying per-goal compile state (preamble + goal), read ambiently
@@ -249,7 +249,7 @@ class LeanProof:
 
     ``__post_init__`` assembles ``<goal> := by <tactics>`` under the in-scope
     preamble and compiles it with the real Lean kernel; an uncompilable proof (or one
-    that tries to use ``sorry``) raises, and ``RetryLLMHandler`` feeds Lean's own
+    that tries to use ``sorry``) raises, and ``TenacityRetryer`` feeds Lean's own
     error message back so the model revises against the compiler. Used for both the
     direct proof and the decomposition sketch -- they differ only in the preamble the
     search installs (a sketch's preamble carries the proposed lemmas as ``sorry``
@@ -620,7 +620,7 @@ def try_direct(dag: ProofDAG, node: GoalNode, sig: str, depth: int) -> bool:
     the compiler on decode. Returns True and records the tactics on success; on
     failure (retries exhausted without a compiling proof) returns False so the caller
     decomposes. This is the paper's direct-formalization path with REVISER feedback
-    (here, ``RetryLLMHandler``)."""
+    (here, ``TenacityRetryer``)."""
     ind = "  " * depth
     ctx = LeanContext(dag.kernel, dag.proved_preamble(), node.decl)
     informal = with_ctx(ctx, lambda: NLProver().argue(node.decl, dag.context_digest()))

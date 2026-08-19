@@ -31,11 +31,11 @@ idioms:
     time* both that its key resolves to a real indexed paper and that the paper
     predates the venue's cutoff. A hallucinated reference or a leaked
     future-dated one is not a well-typed ``Citation``; it raises, and the harness's
-    ``RetryLLMHandler`` feeds the error back -- the same decode-time certification
+    ``TenacityRetryer`` feeds the error back -- the same decode-time certification
     ``scientist_one.py`` uses for citations, plus the paper's anti-leakage cutoff.
 
   * Tools are scoped by class. Only the Literature Review Agent holds the
-    ``web_search`` and ``verify`` Tools; the Outline, Plotting, Section, and
+    ``web_search`` Tool; the Outline, Plotting, Section, and
     Refinement agents subclass a bare ``Agent`` and are closed-book by
     construction -- no "do not search" instruction needed, because nothing in their
     lexical scope is a Tool (the encapsulation idiom of ``scholar_peer.py``).
@@ -54,7 +54,7 @@ Demonstrates:
 - Two independent streams run concurrently (plotting || literature review) via
   ``asyncio.gather`` + ``asyncio.to_thread``
 - Decode-time certification of a ``Citation`` against a ground-truth index *and* a
-  temporal cutoff, so ``RetryLLMHandler`` turns a fabricated or leaked reference
+  temporal cutoff, so ``TenacityRetryer`` turns a fabricated or leaked reference
   into a correction (Identify -> Verify, grounded by construction)
 - Class-scoped search Tools: only one agent can search; the writing agents are
   closed-book by construction, no instruction required
@@ -65,8 +65,10 @@ Demonstrates:
 # Simplifications vs. the source:
 # - Static index, not live search. PaperOrchestra's Literature Review Agent hits a
 #   live LLM web search and the real Semantic Scholar API; here ``web_search`` and
-#   ``verify`` query a tiny in-memory INDEX, so a retrieved paper has a stable key a
-#   Citation can certify against. This shows the Identify->Verify *shape*, not real
+#   ``Citation.__post_init__`` both read a tiny in-memory INDEX, so a retrieved paper
+#   has a stable key a Citation can certify against. The authentication half of the
+#   loop is therefore a decode-time check on the type rather than a second Tool call.
+#   This shows the Identify->Verify *shape*, not real
 #   retrieval, and the anti-leakage cutoff -- a real ``datetime.date`` submission
 #   deadline the Citation checks against -- filters a planted future-dated entry
 #   rather than genuinely unseen work. The paper's Semantic Scholar ID dedup and its
@@ -306,6 +308,20 @@ class Outline:
     sections: list[SectionPlan]
 
 
+# Every field below that carries LaTeX carries this too. The harness answers a
+# Skill by having the model write a Python function body, so a control sequence in
+# an ordinary string literal is escape-processed before it is ever a value:
+# ``"\texttt"`` is a TAB followed by ``exttt``, and ``"$3.1\times$"`` loses the
+# ``\t`` the same way. The damage is silent -- the manuscript simply comes out with
+# a tab in the middle of a word -- so the guidance goes on the fields themselves,
+# where the model reads it as part of the schema it is filling.
+_LATEX_ESCAPING = (
+    "Contains LaTeX control sequences. When writing this as a Python string "
+    "literal, use a raw string (r'...') or double every backslash: in an ordinary "
+    r"literal ``\texttt`` and ``\times`` collapse to a TAB character."
+)
+
+
 # ---------------------------------------------------------------------------
 # Artifacts crossing between agents
 # ---------------------------------------------------------------------------
@@ -331,7 +347,7 @@ class Citation:
         if entry is None:
             raise ValueError(
                 f"citation {self.key!r} does not resolve to any indexed paper "
-                f"(available: {sorted(INDEX)}); cite only papers found via verify"
+                f"(available: {sorted(INDEX)}); cite only papers found via web_search"
             )
         cutoff = CUTOFF.get()
         if entry.date >= cutoff:
@@ -360,11 +376,11 @@ class Figure:
     figure_id: str = dataclasses.field(
         metadata={"description": "Matches the FigurePlan.figure_id this realizes."}
     )
-    caption: str
+    caption: str = dataclasses.field(metadata={"description": _LATEX_ESCAPING})
     latex: str = dataclasses.field(
         metadata={
             "description": "Self-contained LaTeX for the figure: a pgfplots axis or "
-            "tabular for a plot, TikZ for a diagram."
+            "tabular for a plot, TikZ for a diagram. " + _LATEX_ESCAPING
         }
     )
 
@@ -374,7 +390,7 @@ class Section:
     """One body section of the manuscript (Method, Experiments, ...)."""
 
     name: str
-    body: str
+    body: str = dataclasses.field(metadata={"description": _LATEX_ESCAPING})
 
 
 @pydantic.dataclasses.dataclass
@@ -465,9 +481,11 @@ class OutlineAgent(Agent):
 
 class LiteratureReviewAgent(Agent):
     """You are the Literature Review Agent. You run a two-move discovery loop --
-    *identify* candidate prior work with web search, then *verify* each candidate
-    exists before citing it -- and draft the Introduction and Related Work grounded
-    in verified references, not keyword-matched guesses."""
+    *identify* candidate prior work with web search, and *verify* it by citing it:
+    every ``Citation`` you build is authenticated as it is constructed, and one that
+    names no indexed paper, or one published on or after the cutoff, is rejected and
+    returned to you. You draft the Introduction and Related Work grounded in verified
+    references, not keyword-matched guesses."""
 
     @Tool.define
     def web_search(self, query: str) -> list[IndexedPaper]:
@@ -484,9 +502,8 @@ class LiteratureReviewAgent(Agent):
     @Skill.define
     def review(self, outline: Outline, cutoff: datetime.date) -> RelatedWork:
         """Execute the outline's search strategy: for each theme and method cluster,
-        use ``web_search`` to identify candidate prior work and ``verify`` to
-        authenticate each candidate before citing it. Then draft the Introduction and
-        Related Work, positioning the contribution honestly against the verified
+        use ``web_search`` to identify candidate prior work. Then draft the Introduction
+        and Related Work, positioning the contribution honestly against the verified
         prior work, and collect every ``Citation`` into the bank.
 
         The cutoff is {cutoff}: cite only papers published strictly before it (see
@@ -628,11 +645,11 @@ async def _write(
 
     # Steps 2 & 3 run concurrently: given the outline, plotting and literature
     # review are independent, each driving its own work (the reviewer its tool loop).
-    figures = await asyncio.to_thread(
-        PlottingAgent().draw, outline.figures, materials.experimental_log
-    )
-    related = await asyncio.to_thread(
-        LiteratureReviewAgent().review, outline, venue.cutoff
+    figures, related = await asyncio.gather(
+        asyncio.to_thread(
+            PlottingAgent().draw, outline.figures, materials.experimental_log
+        ),
+        asyncio.to_thread(LiteratureReviewAgent().review, outline, venue.cutoff),
     )
 
     # Step 4: assemble the full draft from the plan, the lit-review sections, and

@@ -48,8 +48,13 @@ import collections.abc
 import dataclasses
 import textwrap
 
-from gridworlds import Action, Color, Game, State, Transition
-
+from docs.source.llm_examples.reasoning.gridworlds import (
+    Action,
+    Color,
+    Game,
+    State,
+    Transition,
+)
 from effectful.handlers.llm import Agent, Skill
 
 
@@ -211,6 +216,11 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.env == "push":
+        # Imported under the same name as the types at the top of this file. Reaching
+        # the module a second way would give a second, distinct `State` class, and a
+        # frozen dataclass only compares equal to its own class -- so `observe()` and
+        # the synthesized `step` would return incomparable values and every prediction
+        # check below would report a surprise.
         from docs.source.llm_examples.reasoning.gridworlds import PushGame
 
         game = PushGame()

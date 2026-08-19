@@ -58,10 +58,18 @@ def _reasoning_effort_choices() -> list[str] | None:
 
 
 def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
-    """Split ``argv`` into harness options and pass-through script flags."""
+    """Split ``argv`` into harness options and pass-through script flags.
+
+    ``allow_abbrev=False`` is what makes the split honest. With argparse's default,
+    any script flag that is a unique prefix of a harness flag is claimed here
+    instead of being passed through -- a script's ``--mode`` would be read as this
+    parser's ``--model``, silently overwriting the model *and* dropping the flag the
+    script needed.
+    """
     parser = argparse.ArgumentParser(
         prog=f"python -m {__spec__.name}" if __spec__ else None,
         description=textwrap.dedent(__doc__),
+        allow_abbrev=False,
     )
     parser.add_argument("script", help="Path to the script to run")
     parser.add_argument(
@@ -74,7 +82,10 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--num-retries",
         type=int,
         default=5,
-        help="Number of retries for malformed/failing LLM output",
+        help=(
+            "Attempts for malformed/failing LLM output, and for transport-level "
+            "failures (forwarded to litellm as its own num_retries)"
+        ),
     )
     parser.add_argument(
         "--langfuse",

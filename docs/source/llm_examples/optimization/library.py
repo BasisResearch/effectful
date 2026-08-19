@@ -76,37 +76,16 @@ import typing
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.ops.semantics import handler
 
-# The one piece of handler boilerplate in this file, and it is load-bearing wherever a
-# model sits inside the evaluator. In those domains the paper optimizes an artifact
-# *for a specific model* -- a prompt for GPT-4.1-mini, an agent architecture for Gemini
-# Flash -- with a strong proposer and a cheap target, the whole point being to lift the
-# cheap one. (Its other domains have no target model at all: in circle packing, the
-# Optuna comparison and the scheduling algorithms, the artifact is the solution and the
-# evaluator is code.) In effectful "run this call on a different model" is a scoped
-# handler, so ``worker(...)`` is all the machinery that split needs -- no config
-# system, no per-skill model registry.
-#
-# One consequence worth knowing, because it affects how the numbers those domains
-# report should be read: these handlers do *not* shadow the harness's
-# ``TenacityRetryer``. They implement ``completion`` and ``call_agent``, while
-# the retryer intercepts ``call_assistant``, which sits between them -- so a worker
-# answer that fails to decode is fed its own error and asked again, up to the harness's
-# retry limit, exactly as a proposer call would be. Only a failure that exhausts the
-# retries reaches the evaluator's ``except`` branch and scores zero. Every score in
-# `prompting.py` and `kernels.py` is therefore a score for the artifact *plus that
-# repair loop*, not for the artifact alone, and an artifact whose outputs are
-# borderline-undecodable is flattered by it.
 WORKER_MODEL = "openai/gpt-4.1-mini"
 
 
 @contextlib.contextmanager
-def worker(model: str) -> collections.abc.Iterator[None]:
+def worker(model: str):
     """Scope a call to the cheap model the artifact is being optimized *for*."""
-    with handler(AgentLoop()), handler(LiteLLMConfigurer(model=model)):
+    with handler(LiteLLMConfigurer(model=model)):
         yield
 
 

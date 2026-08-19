@@ -141,7 +141,7 @@ def predict_next_step(state: GameState) -> Step:
     A ``get_valid_moves`` tool is defined in the closure so the skill
     can query which moves are legal for the current game state.  A
     ``validate_move`` tool checks whether a proposed move is legal and
-    raises ``ValueError`` if not — when wrapped by ``RetryLLMHandler``,
+    raises ``ValueError`` if not — when wrapped by ``TenacityRetryer``,
     this error is fed back to the LLM so it can correct itself.
     """
     valid = state.valid_steps()

@@ -53,9 +53,9 @@ class TenacityRetryer(ObjectInterpretation):
         **kwargs,
     ):
         self.catch_tool_errors = catch_tool_errors
-        assert "retry" not in kwargs, "Cannot override retry logic of RetryLLMHandler"
+        assert "retry" not in kwargs, "Cannot override retry logic of TenacityRetryer"
         assert "reraise" not in kwargs, (
-            "Cannot override reraise logic of RetryLLMHandler"
+            "Cannot override reraise logic of TenacityRetryer"
         )
         self.call_assistant_retryer = tenacity.Retrying(
             retry=tenacity.retry_if_exception_type(

@@ -1,3 +1,12 @@
+"""The interface types a user writes against.
+
+:class:`Skill`, :class:`Tool`, :class:`Agent` and :class:`Encodable` are pure
+declarations: none of them talk to a model on their own, and calling a
+:class:`Skill` outside a handler stack raises
+:exc:`~effectful.ops.types.NotHandled`. The handlers in
+:mod:`effectful.handlers.llm.harness` are what give them their meaning.
+"""
+
 import abc
 import collections
 import doctest
@@ -353,7 +362,7 @@ class Agent(abc.ABC):
     Set `self.__agent_id__` (a plain attribute, read lazily -- see below) to make
     this instance's history and declared dataclass fields persist across
     process restarts when a persistence handler (see
-    `effectful.handlers.llm.completions.SQLitePersister`) is installed.
+    `effectful.handlers.llm.harness.durability.persistence.SQLitePersister`) is installed.
     Leave it unset (the default) for a normal, transient instance -- it still
     gets a private history, just not backed by any database, and it is never
     checkpointed even if a persistence handler happens to be active.

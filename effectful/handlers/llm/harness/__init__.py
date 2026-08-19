@@ -1,3 +1,10 @@
+"""Handlers that give the types in :mod:`effectful.handlers.llm.types` their meaning.
+
+The :func:`harness` function assembles the standard stack; its constituents are
+documented in the submodules below and may be recombined or replaced
+individually.
+"""
+
 import os
 import pathlib
 import typing
@@ -72,7 +79,9 @@ def harness(
     11. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
     Args:
-        num_retries: Attempts for malformed/failing model output.
+        num_retries: Attempts for malformed/failing model output (via
+            `TenacityRetryer`) and, independently, for transport-level failures
+            (via litellm's own ``num_retries``, bound into the request).
         langfuse: Log LLM calls and metadata to Langfuse.
         render: Live-render the streaming message history in the terminal.
         dump_system_prompt: If set, dump the assembled system prompt to this
@@ -80,7 +89,7 @@ def harness(
         persist_db: If set, path to a SQLite database used to checkpoint a
             persisted `~effectful.handlers.llm.types.Agent`'s (one
             constructed with an explicit `agent_id`) state and history via
-            `~effectful.handlers.llm.completions.SQLitePersister`.
+            `~effectful.handlers.llm.harness.durability.persistence.SQLitePersister`.
         eval_provider: Which provider runs model-authored Python -- a key of
             `EVAL_PROVIDERS` (``"unsafe"`` or ``"restricted"``).
         type_checker: Which handler type-checks model-authored Python before it
@@ -89,7 +98,7 @@ def harness(
     """
     h: Interpretation = AgentLoop()
     h = coproduct(h, LexicalToolExtractor())
-    h = coproduct(h, LiteLLMConfigurer(**provider_config))
+    h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     h = coproduct(h, HistoryBuilder())
     if render:

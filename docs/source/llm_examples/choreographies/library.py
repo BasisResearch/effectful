@@ -32,12 +32,12 @@ Results live in memory, so by default an interrupted run starts over. Give
 a later run over the same path replays those results and resumes at the first
 step that never finished. (Agent *history* is a separate matter -- give an
 `~effectful.handlers.llm.types.Agent` an ``agent_id`` and install
-`~effectful.handlers.llm.completions.SQLitePersister` to checkpoint it.)
+`~effectful.handlers.llm.harness.durability.persistence.SQLitePersister` to checkpoint it.)
 
 ## Why the program is async, and where the threads went
 
 `effectful`'s handler stack is synchronous, top to bottom: `call_agent`,
-`fwd`, and everything in `effectful.handlers.llm.completions` down to
+`fwd`, and everything in `effectful.handlers.llm.harness` down to
 `litellm.completion` are blocking calls. Two consequences shape this module.
 
 *A handler's body must run synchronously -- but it may return an awaitable.*
@@ -103,17 +103,17 @@ is what gives `scatter` a pool to hand work to::
         agents=[architect, coder1, coder2, reviewer],
         log="./state/steps.db",   # optional; resume where an earlier run stopped
     )
-    with (
-        handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="gpt-4o-mini")),
-        handler(RetryLLMHandler()),
-    ):
-        reviews = choreo(
-            "Build a URL slugify library",
-            architect=architect,
-            coder=[coder1, coder2],
-            reviewer=reviewer,
-        )
+    reviews = choreo(
+        "Build a URL slugify library",
+        architect=architect,
+        coder=[coder1, coder2],
+        reviewer=reviewer,
+    )
+
+Calling it is all there is to it -- the skill calls inside need a model behind
+them, which the module launcher supplies::
+
+    python -m effectful.handlers.llm.harness your_choreography.py --model gpt-4o-mini
 
 ``multi_agent_choreography.py``, alongside this module, is a complete, runnable
 version: agents with tools, a review-and-fix loop, and resumption.
@@ -516,7 +516,7 @@ class Choreography[**P, T]:
     Results are pickled, which is what lets a step return a dataclass or any
     other decoded value rather than only JSON. A log is a cache of your own
     run, read back with the same trust as
-    `~effectful.handlers.llm.completions.SQLitePersister`'s checkpoints -- and
+    `~effectful.handlers.llm.harness.durability.persistence.SQLitePersister`'s checkpoints -- and
     read back only by running the choreography again, since a step ID means
     nothing without the program that assigned it.
 
@@ -531,17 +531,15 @@ class Choreography[**P, T]:
 
         choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
 
-        with (
-            handler(AgentLoop()),
-            handler(LiteLLMConfigurer(model="gpt-4o-mini")),
-            handler(RetryLLMHandler()),
-        ):
-            result = choreo(
-                "Build a library...",
-                architect=architect,
-                coder=coder,
-                reviewer=reviewer,
-            )
+        result = choreo(
+            "Build a library...",
+            architect=architect,
+            coder=coder,
+            reviewer=reviewer,
+        )
+
+    Run the calling script under ``python -m effectful.handlers.llm.harness`` to
+    put a model behind the skill calls.
     """
 
     program: Callable[P, Awaitable[T]]

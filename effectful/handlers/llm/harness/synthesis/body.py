@@ -125,7 +125,7 @@ class SkillBody:
     """The synthesized *body* of a `Skill`, as opposed to a general `Callable`.
 
     Used only as the type of `submit_solution`'s ``implementation`` parameter (see
-    `effectful.handlers.llm.completions.SynthesizeAndCall`).  A `SkillBody[[P],
+    `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`).  A `SkillBody[[P],
     R]` carries the Skill's parameter and return types exactly like a
     `Callable`, but gets its own `TypeToPydanticType` case (`_pydantic_skill_body`)
     so the synthesized function is type-checked against the enclosing Skill's
@@ -513,6 +513,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
     #     with (
     #         handler(AgentLoop()),
     #         handler(LiteLLMConfigurer(model="gpt-5-mini")),
+    #         handler(HistoryBuilder()),
     #         handler(FinalBodySynthesizer()),
     #         handler(TenacityRetryer()),
     #     ):

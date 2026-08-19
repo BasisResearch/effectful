@@ -34,7 +34,7 @@ lessons across branches. Each pillar falls out of ordinary effectful idioms:
     doctest that certifies "the module returns a valid tour (a permutation)" at
     decode time -- run on a *different, smaller* instance than the evaluation one, so
     a stage that hardcodes the problem size fails the doctest and is fed back by
-    ``RetryLLMHandler`` (the render-doctest grounding of ``illustration`` /
+    ``TenacityRetryer`` (the render-doctest grounding of ``illustration`` /
     ``countdown``). "The module must produce a valid tour" is grounding by
     construction; the Test Executor / Error Analyzer of the paper are this evaluator
     plus the harness's retry feedback.
@@ -64,7 +64,7 @@ Demonstrates:
 - A typed ``Design`` emitted by one agent that *is* the search's action space --
   Decompose-as-data threaded through Implement (the Outline idiom)
 - Code synthesis with a decode-time contract: each module is a ``Callable`` whose
-  doctest certifies it returns a valid permutation, fed back by ``RetryLLMHandler``,
+  doctest certifies it returns a valid permutation, fed back by ``TenacityRetryer``,
   and run on a different instance so it cannot hardcode the problem size
 - Comparative reflective memory: an LLM comparison of a strong vs. weak branch
   emits a lesson spliced into later syntheses (invalidating the cache), so

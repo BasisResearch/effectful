@@ -30,7 +30,7 @@ idioms:
   * Grounded critique by construction. A ``MissingBaseline`` the Scout emits
     certifies at decode time that the omitted work it names is a paper ``search``
     actually returned this run; a hallucinated omission raises and
-    ``RetryLLMHandler`` feeds it back, so the Scout can only accuse authors of
+    ``TenacityRetryer`` feeds it back, so the Scout can only accuse authors of
     skipping work it truly retrieved. This is an addition, not a mechanism the
     paper describes -- its Scout searches but does no such check -- made in the
     spirit of its aim to ground critiques in verified flaws rather than generic

@@ -108,7 +108,7 @@ class Comparison:
 
     ``__post_init__`` certifies the verdict is internally coherent before it is
     ever returned: a match is exactly a `Weakening.NONE`, and a mismatch has to
-    say what is wrong. An incoherent answer raises, and `RetryLLMHandler` hands
+    say what is wrong. An incoherent answer raises, and `TenacityRetryer` hands
     the message back to the model as the next turn -- so "matches, but it's a
     tautology" is not a verdict this pipeline can emit.
     """

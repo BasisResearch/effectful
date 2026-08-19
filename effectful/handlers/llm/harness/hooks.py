@@ -1,3 +1,9 @@
+"""The operations of the agent loop.
+
+These are the extension points that every other handler in
+:mod:`effectful.handlers.llm.harness` implements or intercepts.
+"""
+
 import abc
 import collections
 import collections.abc
@@ -122,7 +128,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 
 
 @Operation.define
-@functools.wraps(litellm.completion)
+@functools.wraps(litellm.completion, assigned=(), updated=())
 def completion(*args, **kwargs) -> typing.Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 

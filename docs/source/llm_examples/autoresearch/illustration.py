@@ -19,7 +19,7 @@ GPT-Image) and is out of scope. Each agent falls out of an ordinary effectful id
   * Retriever -- generative retrieval as decode-time certification. A ``Retrieval``
     names keys of exemplars from the fixed reference set R; ``__post_init__`` rejects
     any key that does not resolve in the immutable ``REFERENCES`` constant, so a
-    hallucinated selection is fed back by ``RetryLLMHandler`` (the certification
+    hallucinated selection is fed back by ``TenacityRetryer`` (the certification
     idiom of ``scholar_peer.py``/``scientist_one.py``). Because R is a module
     constant, not per-run mutable state, the check reads it directly -- no ContextVar
     needed. A retrieval ``Tool`` surfaces the candidate metadata as a strong
@@ -39,7 +39,7 @@ GPT-Image) and is out of scope. Each agent falls out of an ordinary effectful id
     ``Solver -> Solution``): a pure nullary closure that builds and returns a fresh
     ``Figure`` via matplotlib's object-oriented API. A render-doctest in its docstring
     calls the synthesized ``plot()``, so a plot whose code raises when it runs fails
-    the doctest and is fed back by ``RetryLLMHandler`` -- "the plot must render" is
+    the doctest and is fed back by ``TenacityRetryer`` -- "the plot must render" is
     grounding by construction, and the doctest runs the code on a *different* plan,
     forcing it to read its data from the closed-over plan rather than
     hardcode.
@@ -50,25 +50,16 @@ GPT-Image) and is out of scope. Each agent falls out of an ordinary effectful id
     refined ``StyledPlot`` plus the concrete issues it saw. The Visualizer<->Critic
     loop is a plain Python ``for`` loop over these two Skills.
 
-  * Judge -- referenced, multimodal, hierarchical. It compares two rendered PNGs
-    (round-0 P* vs the final round-T render -- the paper's Critic-on/off ablation)
-    against S and C on four dimensions (Faithfulness, Conciseness, Readability,
-    Aesthetics), each win/tie/loss, and plain Python aggregates them under the
-    paper's hierarchical rule: faithfulness+readability are primary and decide the
-    winner; conciseness+aesthetics break primary ties ("show the truth").
-
 Demonstrates:
 - Code synthesis whose return ``Callable`` must render: the model writes a pure
   nullary closure that builds and returns a ``Figure`` via matplotlib's OO API, and a
   doctest turns "the plot actually renders" into a decode-time contract fed back by
-  ``RetryLLMHandler``
+  ``TenacityRetryer``
 - A real multimodal refinement loop: matplotlib renders a PNG a vision model
   critiques, then the plan is regenerated -- the Visualizer<->Critic loop, not simulated
 - Decode-time certification of a retrieval selection against an immutable reference
   set, read directly (no ContextVar) because the set is a module constant
 - A typed plan (``StyledPlot``) threaded through the pipeline as orchestration data
-- A referenced multimodal LLM judge with hierarchical win/tie/loss aggregation,
-  stateless (a fresh instance per call)
 - Per-field guidance carried on the types via ``field(metadata={"description": ...})``
 """
 
@@ -84,9 +75,12 @@ Demonstrates:
 #   gestured at without real reference images.
 # - One task, not PaperBananaBench. The paper curates 292 evaluation cases; here a
 #   single planted illustration task runs end to end, as the sibling examples do.
-# - No human-reference comparison. The paper's VLM-as-a-Judge scores against a
-#   human-drawn figure; lacking one, we use the paper's own Critic-on/off ablation as
-#   the referenced pair (round-0 P* vs final round-T), which isolates the loop's value.
+# - No evaluation. The paper's VLM-as-a-Judge scores a render against a human-drawn
+#   figure on four dimensions and aggregates them hierarchically; scoring the pipeline
+#   is out of scope here, as it is in the sibling examples. ``refine`` still returns
+#   both ends of the paper's Critic-on/off ablation -- the round-0 and final renders --
+#   and every round is written to ``outdir``, so the loop's effect can be read off the
+#   PNGs directly.
 
 import argparse
 import collections.abc
@@ -371,7 +365,7 @@ class Critique:
 
 def render(plot: PlottingFn, path: pathlib.Path) -> Image.Image:
     """Render a plot to a real PNG at ``path`` and load it back as a PIL image -- the
-    actual pixels the Critic and Judge inspect. A drawing error propagates (the
+    actual pixels the Critic inspects. A drawing error propagates (the
     Visualizer's render-doctest already guards against non-rendering code).
 
     ``savefig(bbox_inches="tight")`` trims margins during the save itself -- safe on a
@@ -612,19 +606,21 @@ def illustrate(
     outdir: pathlib.Path,
 ) -> StyledPlot:
     """Linear Planning Phase (Retriever -> Planner -> Stylist) then the Iterative
-    Refinement Loop (Visualizer <-> Critic), judged by the referenced ablation
-    round-0 vs final. Returns the final plan, the judge's per-dimension scores, and
-    the aggregated overall winner ('A'=round-0, 'B'=final, or 'tie')."""
-    # Linear Planning Phase.
+    Refinement Loop (Visualizer <-> Critic). Returns the final plan; both rounds'
+    renders are left on disk under ``outdir``."""
+    # Linear Planning Phase. The Retriever certifies its selection as *keys*, so
+    # resolve them against R here -- the Planner learns from the exemplars'
+    # structure and style notes, which a bare key does not carry.
     retrieval = Retriever().retrieve(task)
-    description = Planner().plan(task, retrieval.selected)
+    exemplars = [REFERENCES[key] for key in retrieval.selected]
+    description = Planner().plan(task, exemplars)
 
     stylist = Stylist()
     guideline = stylist.synthesize_guideline(list(REFERENCES.values()))
     p_star = stylist.restyle(description, guideline)
 
     # Iterative Refinement Loop: the real render+critique cycle.
-    round0, final, plan = refine(task, p_star, max_iter=max_iter, outdir=outdir)
+    _round0, _final, plan = refine(task, p_star, max_iter=max_iter, outdir=outdir)
     return plan
 
 

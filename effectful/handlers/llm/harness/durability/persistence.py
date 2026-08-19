@@ -15,14 +15,19 @@ from effectful.ops.types import Operation
 class SQLitePersister(ObjectInterpretation):
     """Handler that persists `Agent` history and state to a SQLite database.
 
-    Install alongside `AgentLoop` and `LiteLLMConfigurer`::
+    Install alongside `AgentLoop`, `LiteLLMConfigurer` and `HistoryBuilder`::
 
         with (
             handler(AgentLoop()),
             handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
             handler(SQLitePersister(Path("./state/checkpoints.db"))),
         ):
             bot.ask("question")
+
+    `HistoryBuilder` is what opens the transaction a call's messages accumulate
+    in, so a stack without it has no history for this handler to checkpoint.
+    `harness` assembles all of these; assemble them by hand only to leave one out.
 
     Only agents constructed with an explicit `agent_id` (see `Agent`) are
     checkpointed -- a transient agent (the default) is never written to the
@@ -50,12 +55,13 @@ class SQLitePersister(ObjectInterpretation):
     agent) are passed through without additional checkpointing -- only the
     outermost call per agent saves.
 
-    Composes with `RetryLLMHandler`::
+    Composes with `TenacityRetryer`::
 
         with (
             handler(AgentLoop()),
             handler(LiteLLMConfigurer()),
-            handler(RetryLLMHandler()),
+            handler(HistoryBuilder()),
+            handler(TenacityRetryer()),
             handler(SQLitePersister(Path("./state/checkpoints.db"))),
         ):
             bot.ask("question")

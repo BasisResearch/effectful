@@ -12,8 +12,10 @@ Langfuse SDK's own recommended way to unit-test instrumentation. No API key, no
 Langfuse server, no network.
 """
 
+import concurrent.futures
 import io
 import json
+import threading
 
 import langfuse
 import litellm
@@ -324,6 +326,152 @@ def test_renderer_streams_reasoning_and_tool_calls():
         assert role in output
     assert "you are a helpful assistant" in output
     assert "add_numbers" in output
+
+
+class _ConcurrentProbe(ObjectInterpretation):
+    """Records the ``stream`` each request carried, and holds the first caller
+    inside the provider until a second one has arrived.
+
+    The barrier is what makes the test deterministic: without it the first call
+    could finish and release the live region before the second ever entered, and
+    the contention this is about would never occur.
+    """
+
+    def __init__(self, parties: int):
+        self.barrier = threading.Barrier(parties, timeout=10)
+        self.streamed: list[bool] = []
+        self.lock = threading.Lock()
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        with self.lock:
+            self.streamed.append(bool(kwargs.get("stream")))
+        self.barrier.wait()
+        if kwargs.get("stream"):
+            return iter([_delta_chunk(content="streamed")])
+        return make_text_response("settled")
+
+
+def test_renderer_serializes_the_live_region_without_serializing_the_calls():
+    """Only one concurrent completion may drive a ``Live``; the rest run unstreamed.
+
+    A ``Live`` owns the console for its duration and there is one console, so
+    overlapping regions would interleave two redraws into the same rows. The
+    guard is non-blocking, so the losing callers proceed immediately -- the point
+    is to keep the fan-out parallel while keeping the terminal legible.
+    """
+    probe = _ConcurrentProbe(parties=3)
+    buffer = io.StringIO()
+    console = rich.console.Console(file=buffer, force_terminal=True, width=100)
+    renderer = RichTerminalRenderer(console=console)
+
+    def call(i):
+        with handler(probe), handler(renderer):
+            return completion(
+                messages=[{"role": "user", "content": f"q{i}"}], model="test-model"
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+        responses = list(pool.map(call, range(3)))
+
+    # All three ran -- the barrier could only be cleared by three callers inside
+    # the provider at once, so none of them queued behind the live one.
+    assert len(responses) == 3
+    # Exactly one took the live path; the others were not forced onto streaming.
+    assert sorted(probe.streamed) == [False, False, True]
+
+    output = _plain(buffer.getvalue())
+    assert "streamed" in output
+    # The settled turns are still rendered, just as finished panels.
+    assert output.count("settled") == 2
+
+
+class _BrokenStream(ObjectInterpretation):
+    """Fails the streamed request, answers the unstreamed one."""
+
+    def __init__(self, error: Exception):
+        self.error = error
+        self.streamed_attempts = 0
+        self.settled_attempts = 0
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        if kwargs.get("stream"):
+            self.streamed_attempts += 1
+            raise self.error
+        self.settled_attempts += 1
+        return make_text_response("recovered")
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        litellm.exceptions.MidStreamFallbackError(
+            message="boom", model="m", llm_provider="openai"
+        ),
+        litellm.APIConnectionError(message="boom", model="m", llm_provider="openai"),
+        litellm.Timeout(message="boom", model="m", llm_provider="openai"),
+    ],
+    ids=["mid-stream", "connection", "timeout"],
+)
+def test_renderer_retries_a_broken_stream_without_streaming(error):
+    """A transport failure on the streamed read is retried unstreamed.
+
+    Streaming is something this handler adds to a request that did not ask for
+    it, so a call that would have succeeded unstreamed must not fail merely
+    because it was being rendered.
+    """
+    provider = _BrokenStream(error)
+    buffer = io.StringIO()
+    console = rich.console.Console(file=buffer, force_terminal=True, width=100)
+
+    with handler(provider), handler(RichTerminalRenderer(console=console)):
+        response = completion(
+            messages=[{"role": "user", "content": "q"}], model="test-model"
+        )
+
+    assert response.choices[0].message.content == "recovered"
+    assert provider.streamed_attempts == 1
+    assert provider.settled_attempts == 1
+    assert "retrying unstreamed" in _plain(buffer.getvalue())
+
+
+def test_renderer_does_not_retry_a_rejected_request():
+    """A request the provider refuses fails identically unstreamed, so re-issuing
+    it would only pay for the same error twice."""
+    provider = _BrokenStream(
+        litellm.BadRequestError(message="nope", model="m", llm_provider="openai")
+    )
+    renderer = RichTerminalRenderer(
+        console=rich.console.Console(file=io.StringIO(), force_terminal=True)
+    )
+    with handler(provider), handler(renderer):
+        with pytest.raises(litellm.BadRequestError):
+            completion(messages=[{"role": "user", "content": "q"}], model="test-model")
+
+    assert provider.settled_attempts == 0
+    assert renderer._live_lock.acquire(blocking=False), "live region left held"
+    renderer._live_lock.release()
+
+
+def test_renderer_releases_the_live_region_after_a_failure():
+    """A completion that raises must not leave the live region held, or every
+    later call in the process would silently fall back to the settled path."""
+
+    class _Boom(ObjectInterpretation):
+        @implements(completion)
+        def _completion(self, *args, **kwargs):
+            raise RuntimeError("provider exploded")
+
+    renderer = RichTerminalRenderer(
+        console=rich.console.Console(file=io.StringIO(), force_terminal=True)
+    )
+    with handler(_Boom()), handler(renderer):
+        with pytest.raises(RuntimeError, match="provider exploded"):
+            completion(messages=[{"role": "user", "content": "q"}], model="test-model")
+
+    assert renderer._live_lock.acquire(blocking=False), "live region left held"
+    renderer._live_lock.release()
 
 
 # ============================================================================

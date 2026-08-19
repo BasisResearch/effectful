@@ -1,4 +1,4 @@
-"""Tests for `effectful.handlers.llm.completions`'s persistence support:
+"""Tests for `effectful.handlers.llm.harness.durability.persistence`'s persistence support:
 persisted `Agent`s and `SQLitePersister`.
 
 These are deliberately independent of a real LLM wherever possible:

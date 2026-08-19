@@ -279,7 +279,7 @@ def _pydantic_type_code(ty):
         # type-check anchor in the decode context, splice the accumulated REPL session
         # (`PythonRepl.repl_history` returns the prior snippets of the session in scope)
         # plus this snippet into the Skill body and check it. A type error raises here
-        # -> the tool-call decode fails -> `RetryLLMHandler` retries, so ill-typed code
+        # -> the tool-call decode fails -> `TenacityRetryer` retries, so ill-typed code
         # never reaches `runcode`.
         if anchor is not None and _recover_skill_def(anchor) is not None:
             # Prepend the already-run (type-clean) session snippets so their bindings

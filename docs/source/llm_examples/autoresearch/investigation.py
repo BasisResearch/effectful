@@ -11,7 +11,7 @@ mechanisms carry that idea, and both fall out of ordinary effectful idioms:
   * Chain-of-Evidence *by construction*. Every value the Writer emits is a Claim
     that certifies itself against a ground-truth Workspace at decode time. A
     hallucinated citation or an invented score raises during decoding, and the
-    harness's ``RetryLLMHandler`` feeds the error back so the Writer must ground
+    harness's ``TenacityRetryer`` feeds the error back so the Writer must ground
     the claim before it stands -- exactly the retry path ``error_recovery.py``
     uses for a bad ``Rating``. This is why ScientistOne reports zero hallucinated
     references: an ungrounded reference is simply not a well-typed Claim.
@@ -26,7 +26,7 @@ mechanisms carry that idea, and both fall out of ordinary effectful idioms:
 
 Demonstrates:
 - Decode-time certification of structured output against external ground truth,
-  so ``RetryLLMHandler`` turns fabrications into corrections (Chain-of-Evidence)
+  so ``TenacityRetryer`` turns fabrications into corrections (Chain-of-Evidence)
 - Multi-hop evidence chains: a ``ConclusionClaim`` rests on other claims (their
   bibkeys/metrics), which rest on artifacts -- the *chain* in Chain-of-Evidence
 - The three-stage pipeline: literature grounding -> discovery -> paper writing,
@@ -755,7 +755,7 @@ def investigate(
 def demo_fabrication() -> None:
     """Show the by-construction guarantee actually *firing*: a fabricated claim is
     not a well-typed ``Claim``, and under the harness that rejection is fed back
-    (via ``RetryLLMHandler``) so the model must ground the claim before it stands.
+    (via ``TenacityRetryer``) so the model must ground the claim before it stands.
     """
     ws = Workspace(references=list(REFERENCES), log={"score": 9.0})
     WORKSPACE.set(ws)
@@ -781,7 +781,7 @@ def demo_fabrication() -> None:
         except ValueError as exc:
             print(f"  [{label}] rejected -> {exc}\n")
 
-    # 2. The same check, fed back by RetryLLMHandler, forces a correction. The
+    # 2. The same check, fed back by TenacityRetryer, forces a correction. The
     #    skill is told to cite a fabricated reference; certification bounces the
     #    first attempt and the model must ground it before the call can return.
     @Skill.define
@@ -791,7 +791,7 @@ def demo_fabrication() -> None:
         Cite it to Newton's Principia, using the bibkey 'newton1687'.
         """
 
-    print("The same check, fed back by RetryLLMHandler, forces a correction:")
+    print("The same check, fed back by TenacityRetryer, forces a correction:")
     try:
         claim = cite_a_fact()
         print(f"  told to cite 'newton1687'; grounded result cites '{claim.bibkey}'")

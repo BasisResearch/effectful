@@ -888,7 +888,7 @@ class TestAgentWithToolCalls:
 
 
 class TestAgentWithRetryHandler:
-    """RetryLLMHandler composes correctly with Agent history."""
+    """TenacityRetryer composes correctly with Agent history."""
 
     def test_failed_retries_dont_pollute_history(self):
         mock = MockCompletionHandler(

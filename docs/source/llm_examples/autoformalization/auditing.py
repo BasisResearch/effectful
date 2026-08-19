@@ -35,7 +35,7 @@ requirements``. Here it is enforced by the code's shape:
 
   * ``Comparison`` certifies at decode time that a verdict is coherent: a match
     is exactly a `Weakening.NONE`, and a mismatch must name its discrepancy. An
-    incoherent answer raises and `RetryLLMHandler` hands it back as the next
+    incoherent answer raises and `TenacityRetryer` hands it back as the next
     turn. Upstream's schema admits ``match: true`` alongside
     ``weakeningType: "tautology"`` with nothing to catch it.
 
@@ -118,7 +118,7 @@ Demonstrates:
 - Structural separation as *lexical scope*, with the module rather than the
   signature as the boundary the framework actually respects
 - Decode-time certification of a structured verdict's internal coherence, turning
-  a self-contradictory answer into a `RetryLLMHandler` retry
+  a self-contradictory answer into a `TenacityRetryer` retry
 - Reuse of a sibling example's real external verifier (`formalization.py`'s
   `LeanKernel`) to establish a premise, rather than asserting it
 - Labelled corpora and an accuracy report separating the two error directions
@@ -986,7 +986,7 @@ class Audit:
     """One claim's result: what the pipeline decided, and what it read on the way.
 
     ``comparison`` is None when the pipeline never produced a well-formed verdict
-    -- the model kept emitting an incoherent one and `RetryLLMHandler` ran out of
+    -- the model kept emitting an incoherent one and `TenacityRetryer` ran out of
     attempts. That is upstream's third status, ``error``: not a confirmation and
     not a dispute, and it counts against the run rather than being dropped.
     """

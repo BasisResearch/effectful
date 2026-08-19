@@ -1,3 +1,9 @@
+"""Conversion between Python values and the model's wire format.
+
+Python values are converted to the content blocks, tool schemas and JSON
+payloads exchanged with the model, and the model's output is converted back.
+"""
+
 import base64
 import collections.abc
 import dataclasses

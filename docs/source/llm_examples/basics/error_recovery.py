@@ -3,9 +3,9 @@
 A single task -- rate a movie after looking it up -- exercises both retry paths:
 
 Demonstrates:
-- RetryLLMHandler surfacing tool exceptions back to the LLM as tool messages, so a
+- TenacityRetryer surfacing tool exceptions back to the LLM as tool messages, so a
   flaky tool (lookup_movie) can succeed after multiple attempts
-- RetryLLMHandler feeding pydantic validation errors back to the LLM so it can
+- TenacityRetryer feeding pydantic validation errors back to the LLM so it can
   correct structured output (a Rating) that fails validation
 """
 

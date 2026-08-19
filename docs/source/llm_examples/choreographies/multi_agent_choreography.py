@@ -327,12 +327,14 @@ def main() -> None:
     output_dir = args.workspace / "output"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # An explicit agent_id is what makes an Agent persistent, and it is also how
+    # An explicit __agent_id__ is what makes an Agent persistent, and it is also how
     # endpoint projection tells the agents apart.
-    architect = ArchitectAgent(output_dir, agent_id="architect")
-    coders = [CoderAgent(output_dir, agent_id=f"coder-{i}") for i in range(args.coders)]
+    architect = ArchitectAgent(output_dir, __agent_id__="architect")
+    coders = [
+        CoderAgent(output_dir, __agent_id__=f"coder-{i}") for i in range(args.coders)
+    ]
     reviewers = [
-        ReviewerAgent(output_dir, args.test_timeout, agent_id=f"reviewer-{i}")
+        ReviewerAgent(output_dir, args.test_timeout, __agent_id__=f"reviewer-{i}")
         for i in range(args.reviewers)
     ]
 

@@ -1260,7 +1260,7 @@ def _decode(source: str, *, anchor: bool) -> types.CodeType:
 def test_repl_decode_rejects_illtyped_snippet():
     """With the Skill anchor in the decode context, an ill-typed-but-runnable snippet is
     type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
-    fails the tool-call decode and `RetryLLMHandler` retries). A well-typed snippet decodes
+    fails the tool-call decode and `TenacityRetryer` retries). A well-typed snippet decodes
     to a code object."""
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         with pytest.raises((pydantic.ValidationError, TypeError)):

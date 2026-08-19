@@ -4,6 +4,7 @@ breaking down individual components like LiteLLMConfigurer,
 ProgramSynthesis, and sampling strategies.
 """
 
+import contextlib
 import functools
 import inspect
 import json
@@ -457,7 +458,7 @@ def test_litellm_caching_selective(request):
 
 
 # ============================================================================
-# RetryLLMHandler Tests
+# TenacityRetryer Tests
 # ============================================================================
 
 
@@ -475,11 +476,11 @@ def mock_completion_handler_factory():
     return _factory
 
 
-class TestRetryLLMHandler:
-    """Tests for RetryLLMHandler functionality."""
+class TestTenacityRetryer:
+    """Tests for TenacityRetryer functionality."""
 
     def test_retry_handler_succeeds_on_first_attempt(self):
-        """Test that RetryLLMHandler passes through when no error occurs."""
+        """Test that TenacityRetryer passes through when no error occurs."""
         # Response with valid tool call
         responses = [make_text_response("hello")]
 
@@ -506,7 +507,7 @@ class TestRetryLLMHandler:
         assert result == "hello"
 
     def test_retry_handler_retries_on_invalid_tool_call(self):
-        """Test that RetryLLMHandler retries when tool call decoding fails."""
+        """Test that TenacityRetryer retries when tool call decoding fails."""
         # First response has invalid tool args, second has valid response
         responses = [
             make_tool_call_response(
@@ -542,7 +543,7 @@ class TestRetryLLMHandler:
         )
 
     def test_retry_handler_retries_on_unknown_tool(self):
-        """Test that RetryLLMHandler retries when tool is not found."""
+        """Test that TenacityRetryer retries when tool is not found."""
         # First response has unknown tool, second has valid response
         responses = [
             make_tool_call_response("unknown_tool", '{"x": 1}'),  # Unknown tool
@@ -572,7 +573,7 @@ class TestRetryLLMHandler:
         assert result == "success"
 
     def test_retry_handler_exhausts_retries(self):
-        """Test that RetryLLMHandler raises after exhausting all retries."""
+        """Test that TenacityRetryer raises after exhausting all retries."""
         # All responses have invalid tool calls
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
@@ -601,7 +602,7 @@ class TestRetryLLMHandler:
         assert mock_handler.call_count == 3
 
     def test_retry_handler_with_zero_retries(self):
-        """Test RetryLLMHandler with stop_after_attempt(1) fails immediately on error."""
+        """Test TenacityRetryer with stop_after_attempt(1) fails immediately on error."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
         ]
@@ -703,7 +704,7 @@ class TestRetryLLMHandler:
         assert isinstance(result, str)
 
     def test_retry_handler_retries_on_invalid_result(self):
-        """Test that RetryLLMHandler retries when result decoding fails."""
+        """Test that TenacityRetryer retries when result decoding fails."""
         # First response has invalid JSON, second has valid response
         responses = [
             make_text_response('"not valid for int"'),  # Invalid for int
@@ -736,7 +737,7 @@ class TestRetryLLMHandler:
         )
 
     def test_retry_handler_exhausts_retries_on_result_decoding(self):
-        """Test that RetryLLMHandler raises after exhausting retries on result decoding."""
+        """Test that TenacityRetryer raises after exhausting retries on result decoding."""
         # All responses have invalid results for int type
         responses = [
             make_text_response('"not an int"'),
@@ -765,7 +766,7 @@ class TestRetryLLMHandler:
         assert mock_handler.call_count == 3
 
     def test_retry_handler_raises_tool_call_decoding_error(self):
-        """Test that RetryLLMHandler raises ToolCallDecodingError with correct attributes."""
+        """Test that TenacityRetryer raises ToolCallDecodingError with correct attributes."""
         responses = [
             make_tool_call_response("add_numbers", '{"a": "bad", "b": "bad"}'),
         ]
@@ -797,7 +798,7 @@ class TestRetryLLMHandler:
         assert "add_numbers" in str(error)
 
     def test_retry_handler_raises_result_decoding_error(self):
-        """Test that RetryLLMHandler raises ResultDecodingError with correct attributes."""
+        """Test that TenacityRetryer raises ResultDecodingError with correct attributes."""
         responses = [
             make_text_response('"not an int"'),
         ]
@@ -944,7 +945,7 @@ class TestToolExecutionErrorHandling:
     """Tests for runtime tool execution error handling."""
 
     def test_retry_handler_catches_tool_runtime_error(self):
-        """Test that RetryLLMHandler catches tool runtime errors and returns error message."""
+        """Test that TenacityRetryer catches tool runtime errors and returns error message."""
 
         # Create a decoded tool call for failing_tool
         sig = inspect.signature(failing_tool)
@@ -962,7 +963,7 @@ class TestToolExecutionErrorHandling:
         assert "42" in result["content"]
 
     def test_retry_handler_catches_division_by_zero(self):
-        """Test that RetryLLMHandler catches division by zero errors."""
+        """Test that TenacityRetryer catches division by zero errors."""
 
         sig = inspect.signature(divide_tool)
         bound_args = sig.bind(a=10, b=0)
@@ -1365,7 +1366,7 @@ class TestCallableSynthesis:
     def test_synthesize_via_bound_method(self, request):
         """A *method* Skill synthesizes a callable end-to-end -- exercising the
         bound-method `__default__` anchor through the real splice type-check
-        (RetryLLMHandler lets the model recover from a malformed first draft)."""
+        (TenacityRetryer lets the model recover from a malformed first draft)."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
@@ -1593,7 +1594,7 @@ class TestSynthesizeAndCall:
 
     def test_retries_on_runtime_error(self):
         """A synthesized function that raises when applied to the inputs surfaces
-        as a ToolCallExecutionError; RetryLLMHandler feeds the error back and the
+        as a ToolCallExecutionError; TenacityRetryer feeds the error back and the
         loop continues so the model can revise."""
         mock = MockCompletionHandler(
             [
@@ -2062,7 +2063,7 @@ def _drive_repl(body):
     A tiny `call_agent` handler stands in for the LLM loop, handing
     `body` the call's `exec_code` tool so it runs against one REPL session (the
     supported way to reach a session).  Install any outer handlers (e.g.
-    `RetryLLMHandler`) around the call.  Returns `body`'s result.
+    `TenacityRetryer`) around the call.  Returns `body`'s result.
     """
     box = []
     repl = StatefulReplSynthesizer()
@@ -2145,7 +2146,7 @@ class TestCallToolWrapsExecutionError:
 
 
 class TestRetryHandlerCatchToolErrorsFiltering:
-    """RetryLLMHandler should only catch tool errors matching catch_tool_errors."""
+    """TenacityRetryer should only catch tool errors matching catch_tool_errors."""
 
     def test_matching_error_returns_feedback_message(self):
         """When original_error matches catch_tool_errors, return error feedback."""
@@ -2205,7 +2206,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
         assert "Tool execution failed" in result["content"]
 
     def test_no_retry_handler_propagates_execution_error(self):
-        """Without RetryLLMHandler, ToolCallExecutionError propagates directly."""
+        """Without TenacityRetryer, ToolCallExecutionError propagates directly."""
         sig = inspect.signature(failing_tool)
         bound_args = sig.bind(x=1)
         tc = DecodedToolCall(failing_tool, bound_args, "call_no_retry", "failing_tool")
@@ -2334,7 +2335,7 @@ class TestLiteLLMProviderMessagePruning:
 class TestAgentCrossSkillRecovery:
     """Issue #558: Agent should recover from errored tool calls across skill methods.
 
-    When a tool call fails and the error propagates (not caught by RetryLLMHandler),
+    When a tool call fails and the error propagates (not caught by TenacityRetryer),
     the agent's message history must be cleaned up so subsequent skill calls
     don't fail due to orphaned assistant tool_calls messages.
     """
@@ -3227,3 +3228,74 @@ class TestPythonReplIntegration:
         s = statistics.pstdev(readings)
         expected = sum(1 for r in readings if abs(r - m) > s)
         assert result == expected
+
+
+# ============================================================================
+# Scoping a call to a different model
+# ============================================================================
+
+
+class TestScopedModelOverride:
+    """A nested `LiteLLMConfigurer` re-points one call at another model.
+
+    This is the shape the optimization examples use to score an artifact against
+    a cheap "worker" model while a stronger model drives the search. It is worth
+    pinning because it is the *only* handler an example installs for itself, and
+    because getting it wrong is quiet: a nested handler that answers `call_agent`
+    without forwarding leaves `HistoryBuilder.get_history` unbound, and the
+    request then goes out with no messages at all rather than raising.
+    """
+
+    @staticmethod
+    def _stack(mock):
+        return (
+            handler(mock),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="outer-model")),
+            handler(HistoryBuilder()),
+        )
+
+    def test_scoped_override_switches_model_and_keeps_history(self):
+        mock = MockCompletionHandler([make_text_response("hi")])
+
+        @Skill.define
+        def greet(name: str) -> str:
+            """Greet {name}."""
+
+        with contextlib.ExitStack() as stack:
+            for h in self._stack(mock):
+                stack.enter_context(h)
+            greet("world")
+            with handler(LiteLLMConfigurer(model="worker-model")):
+                greet("world")
+
+        outer, inner = mock.received_messages
+        assert [m["role"] for m in outer] == ["system", "user"]
+        # The scoped call is an ordinary harness call: same history, new model.
+        assert [m["role"] for m in inner] == ["system", "user"]
+
+    def test_scoped_override_still_retries_a_malformed_answer(self):
+        """The nested configurer implements `completion`, the lowest hook, so
+        every handler above it -- including `TenacityRetryer` on `call_assistant`
+        -- keeps applying to the scoped call."""
+        # A non-`str` return type is decoded out of a `{"value": ...}` box, so the
+        # first answer is malformed and the second is well-formed.
+        mock = MockCompletionHandler(
+            [make_text_response("not a number"), make_text_response('{"value": 7}')]
+        )
+
+        @Skill.define
+        def count() -> int:
+            """Return a number."""
+
+        with contextlib.ExitStack() as stack:
+            for h in self._stack(mock):
+                stack.enter_context(h)
+            stack.enter_context(
+                handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3)))
+            )
+            with handler(LiteLLMConfigurer(model="worker-model")):
+                assert count() == 7
+
+        assert mock.call_count == 2
