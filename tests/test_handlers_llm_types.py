@@ -60,6 +60,7 @@ class SkillStringIntp(ObjectInterpretation):
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = skill.__context__.new_child(bound_args.arguments)
+        assert skill.__doc__ is not None
         model_input = call_user(
             PromptSection(
                 type="prompt_section",
