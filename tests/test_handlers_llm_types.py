@@ -26,6 +26,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
+    LexicalToolExtractor,
     skill_system_prompt,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
@@ -351,6 +352,7 @@ class TestAgentHistoryAccumulation:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -380,6 +382,7 @@ class TestAgentHistoryAccumulation:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -408,6 +411,7 @@ class TestAgentIsolation:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -438,6 +442,7 @@ class TestAgentIsolation:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -463,6 +468,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -482,6 +488,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -504,6 +511,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -533,6 +541,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
@@ -559,6 +568,7 @@ class TestSystemPromptInvariant:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -578,6 +588,7 @@ class TestSystemPromptInvariant:
         mock = MockCompletionHandler([make_text_response("ok")])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -810,6 +821,7 @@ class TestAgentWithToolCalls:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -852,6 +864,7 @@ class TestAgentWithRetryHandler:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
@@ -891,6 +904,7 @@ class TestNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -912,6 +926,7 @@ class TestNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -941,6 +956,7 @@ class TestNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -970,6 +986,7 @@ class TestNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -1003,6 +1020,7 @@ class TestNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -1072,6 +1090,7 @@ class TestCrossAgentNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -1100,6 +1119,7 @@ class TestCrossAgentNestedSkillCalling:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -1446,6 +1466,7 @@ class TestStaticAndClassMethodSkills:
         mock = MockCompletionHandler([make_text_response("42")])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -1511,6 +1532,7 @@ class TestStaticAndClassMethodSkills:
         mock = MockCompletionHandler([make_text_response("yes")])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
@@ -2329,6 +2351,7 @@ def test_primes_decode_int():
 
     with (
         handler(AgentLoop()),
+        handler(LexicalToolExtractor()),
         handler(LiteLLMConfigurer()),
         handler(HistoryBuilder()),
         handler(mock),

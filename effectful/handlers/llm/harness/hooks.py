@@ -25,7 +25,6 @@ from effectful.handlers.llm.harness.serialization import (
     to_content_blocks,
 )
 from effectful.handlers.llm.types import (
-    Agent,
     Encodable,
     Skill,
     Tool,
@@ -141,47 +140,6 @@ type AssistantResult[T] = tuple[
 ]
 
 
-def _tools_in_scope(
-    env: collections.abc.Mapping[str, typing.Any],
-    *,
-    seen: frozenset[int] = frozenset(),
-) -> collections.abc.Set[Tool]:
-    """
-    Return the tools available to a Skill given its lexical context.
-
-    Default rule: `Tool` and `Skill` values bound directly in `env`, plus
-    those reachable through any `Agent` instance in `env` -- whatever is bound
-    on the instance or declared on its class, and, recursively, the tools of any
-    `Agent` those in turn hold.  `seen` guards that recursion against reference
-    cycles; it is internal, and callers pass only `env`.
-
-    Reaching through a nested `Agent` flattens its whole toolset into the result.
-    That is what makes holding one as an attribute a way to compose tools, and it
-    is why a specialised sub-agent is better left a bare `Skill`, whose own
-    scope stays its own.
-
-    Tools are identified by object, so the same `Tool` visible under several
-    bindings appears once.  The name each one is offered under is assigned by
-    :func:`_advertised_names`, not taken from the binding name.
-    """
-    result: set[Tool] = set()
-
-    for name, obj in env.items():
-        if not name.isidentifier():
-            continue
-        if isinstance(obj, Tool | Skill):
-            result.add(obj)
-        elif isinstance(obj, Agent) and id(obj) not in seen:
-            seen |= {id(obj)}
-            result |= _tools_in_scope(
-                vars(obj)
-                | {k: getattr(obj, k) for cls in type(obj).__mro__ for k in vars(cls)},
-                seen=seen,
-            )
-
-    return frozenset(result)
-
-
 @Operation.define
 def call_assistant[T](
     messages: collections.abc.Sequence[Message],
@@ -209,7 +167,6 @@ def call_assistant[T](
             includes the raw assistant message for retry handling.
     """
 
-    tools = tools | _tools_in_scope(env)
     if _TYPE_CHECK_ANCHOR_KEY in env:
         tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
 

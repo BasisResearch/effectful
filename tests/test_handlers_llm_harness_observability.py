@@ -32,6 +32,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_system,
     completion,
 )
+from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
@@ -130,6 +131,7 @@ def test_tracer_traces_skill_completion_and_tool(langfuse_client):
     with (
         handler(MockCompletionHandler(responses)),
         handler(AgentLoop()),
+        handler(LexicalToolExtractor()),
         handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(LangfuseTracer(client=client)),

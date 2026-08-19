@@ -113,6 +113,32 @@ class LexicalReaders(ObjectInterpretation):
         return fwd(messages, response_type, env, readers)
 
 
+class LexicalToolExtractor(ObjectInterpretation):
+    """Offer the model the tools reachable from a `Skill`'s lexical scope.
+
+    Unions `_tools_in_scope(env)` into the request's `tools` and forwards, so a
+    `Skill` is offered the `Tool`/`Skill` values bound in its context (and those
+    its in-scope `Agent`s hold) without naming them itself.
+
+    Install it below anything else that contributes tools: the anchor `Skill` is
+    dropped from the set by `call_assistant`'s default rule, so this must be the
+    innermost `call_assistant` handler for that subtraction to see it. Without
+    this handler installed a `Skill` is simply offered no lexical tools -- the
+    request is well-formed either way, so the omission surfaces only as a model
+    that never calls a tool it was supposed to have.
+    """
+
+    @implements(call_assistant)
+    def _call_assistant(
+        self,
+        messages: collections.abc.Sequence[Message],
+        response_type: type,
+        env: collections.abc.Mapping[str, typing.Any],
+        tools: collections.abc.Set[Tool] = frozenset(),
+    ) -> AssistantResult:
+        return fwd(messages, response_type, env, tools | _tools_in_scope(env))
+
+
 def _get_qualname(cls) -> str:
     """Module-qualified name of a type, dropping the ``builtins`` prefix."""
     if not isinstance(cls, type):
@@ -274,3 +300,44 @@ def skill_system_prompt(skill: Skill) -> PromptSection:
         title=f"`{skill.__name__}{skill.__signature__}`",
         content=[s for s in sections if s is not None],
     )
+
+
+def _tools_in_scope(
+    env: collections.abc.Mapping[str, typing.Any],
+    *,
+    seen: frozenset[int] = frozenset(),
+) -> collections.abc.Set[Tool]:
+    """
+    Return the tools available to a Skill given its lexical context.
+
+    Default rule: `Tool` and `Skill` values bound directly in `env`, plus
+    those reachable through any `Agent` instance in `env` -- whatever is bound
+    on the instance or declared on its class, and, recursively, the tools of any
+    `Agent` those in turn hold.  `seen` guards that recursion against reference
+    cycles; it is internal, and callers pass only `env`.
+
+    Reaching through a nested `Agent` flattens its whole toolset into the result.
+    That is what makes holding one as an attribute a way to compose tools, and it
+    is why a specialised sub-agent is better left a bare `Skill`, whose own
+    scope stays its own.
+
+    Tools are identified by object, so the same `Tool` visible under several
+    bindings appears once.  The name each one is offered under is assigned by
+    :func:`_advertised_names`, not taken from the binding name.
+    """
+    result: set[Tool] = set()
+
+    for name, obj in env.items():
+        if not name.isidentifier():
+            continue
+        if isinstance(obj, Tool | Skill):
+            result.add(obj)
+        elif isinstance(obj, Agent) and id(obj) not in seen:
+            seen |= {id(obj)}
+            result |= _tools_in_scope(
+                vars(obj)
+                | {k: getattr(obj, k) for cls in type(obj).__mro__ for k in vars(cls)},
+                seen=seen,
+            )
+
+    return frozenset(result)

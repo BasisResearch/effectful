@@ -36,7 +36,6 @@ from effectful.handlers.llm.harness.hooks import (
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
-    _tools_in_scope,
     call_agent,
     call_assistant,
     call_tool,
@@ -44,6 +43,8 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
+    LexicalToolExtractor,
+    _tools_in_scope,
 )
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
@@ -209,6 +210,7 @@ class TestLiteLLMProvider:
         """Test that a LiteLLM-backed skill call returns a non-empty string."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("testing")
@@ -221,6 +223,7 @@ class TestLiteLLMProvider:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             classification = classify_genre(plot)
@@ -235,6 +238,7 @@ class TestLiteLLMProvider:
         """Test a LiteLLM-backed skill call with integer return type."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = generate_number(100)
@@ -251,6 +255,7 @@ class TestLiteLLMProvider:
                     request, model=EFFECTFUL_LLM_MODEL, temperature=0.1
                 )
             ),
+            handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             result = simple_prompt("deterministic test")
@@ -273,6 +278,7 @@ def test_agent_tool_names_are_valid_integration():
     # for a reason that has nothing to do with tool names.
     with (
         handler(AgentLoop()),
+        handler(LexicalToolExtractor()),
         handler(
             LiteLLMConfigurer(
                 model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=64
@@ -317,6 +323,7 @@ def categorise_image(image: Image.Image) -> str:
 def test_image_input(request):
     with (
         handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(LexicalToolExtractor()),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
         assert any("smile" in categorise_image(smiley_face()) for _ in range(3))
@@ -354,6 +361,7 @@ def test_list_image_input(request):
 
     with (
         handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(LexicalToolExtractor()),
         handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -386,6 +394,7 @@ class TestPydanticBaseModelReturn:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
             review = review_book(plot)
@@ -401,7 +410,10 @@ class TestPydanticBaseModelReturn:
 
 def test_litellm_caching_integration(request):
     litellm.cache = Cache()
-    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+    with (
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(LexicalToolExtractor()),
+    ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         p3 = simple_prompt("oranges")
@@ -413,8 +425,11 @@ def test_litellm_caching_integration(request):
 
 def test_litellm_caching_integration_disabled(request):
     litellm.cache = Cache()
-    with handler(
-        ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
+    with (
+        handler(
+            ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
+        ),
+        handler(LexicalToolExtractor()),
     ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
@@ -422,7 +437,10 @@ def test_litellm_caching_integration_disabled(request):
 
 
 def test_litellm_caching_selective(request):
-    with handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)):
+    with (
+        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(LexicalToolExtractor()),
+    ):
         p1 = simple_prompt("apples")
         p2 = simple_prompt("apples")
         assert p1 != p2, "when caching is not enabled, llm outputs should be different"
@@ -676,6 +694,7 @@ class TestRetryLLMHandler:
         with (
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
         ):
@@ -1059,6 +1078,7 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
@@ -1069,6 +1089,7 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([response])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
         ):
             _, tool_calls, _ = call_assistant(
@@ -1084,6 +1105,7 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([response])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
             pytest.raises(ResultDecodingError, match="YOU MUST ANSWER DIRECTLY"),
         ):
@@ -1098,6 +1120,7 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
         ):
             _, tool_calls, result = call_assistant(
@@ -1117,8 +1140,10 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
         ):
             _, _, result = call_assistant([], response_type=str, env={})
@@ -1130,8 +1155,10 @@ class TestForcedToolChoice:
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
@@ -1145,6 +1172,7 @@ class TestForcedToolChoice:
         with (
             handler(_StreamingMockCompletionHandler("just prose")),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             handler(RichTerminalRenderer()),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
@@ -1321,6 +1349,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -1339,6 +1368,7 @@ class TestCallableSynthesis:
         (RetryLLMHandler lets the model recover from a malformed first draft)."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(4))),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1355,6 +1385,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a string processing function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -1371,6 +1402,7 @@ class TestCallableSynthesis:
         """Test that LLM can synthesize a parameterized counting function."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=3)),
@@ -1388,6 +1420,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -1412,6 +1445,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -1434,6 +1468,7 @@ class TestCallableSynthesis:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -1494,6 +1529,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1518,6 +1554,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
@@ -1542,6 +1579,7 @@ class TestSynthesizeAndCall:
         mock = MockCompletionHandler([make_text_response(json.dumps({"value": 99}))])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1571,6 +1609,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1596,6 +1635,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1652,6 +1692,7 @@ class TestSynthesizeAndCall:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1710,6 +1751,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
@@ -1744,6 +1786,7 @@ class TestSynthesizeAndCallDoctests:
         )
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
@@ -1767,6 +1810,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
@@ -1815,6 +1859,7 @@ class TestSynthesizeAndCallDoctests:
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
@@ -2190,6 +2235,7 @@ class TestLiteLLMProviderMessagePruning:
         with pytest.raises(ToolCallExecutionError):
             with (
                 handler(AgentLoop()),
+                handler(LexicalToolExtractor()),
                 handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
@@ -2216,6 +2262,7 @@ class TestLiteLLMProviderMessagePruning:
         with pytest.raises(ToolCallDecodingError):
             with (
                 handler(AgentLoop()),
+                handler(LexicalToolExtractor()),
                 handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
@@ -2241,6 +2288,7 @@ class TestLiteLLMProviderMessagePruning:
         with pytest.raises(ToolCallExecutionError):
             with (
                 handler(AgentLoop()),
+                handler(LexicalToolExtractor()),
                 handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
@@ -2271,6 +2319,7 @@ class TestLiteLLMProviderMessagePruning:
         # call for the agent and writes back to its __history__.
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock_handler),
@@ -2337,6 +2386,7 @@ class TestAgentCrossSkillRecovery:
         with handler(TwoPhaseCompletionHandler()):
             with (
                 handler(AgentLoop()),
+                handler(LexicalToolExtractor()),
                 handler(LiteLLMConfigurer(model="test")),
                 handler(HistoryBuilder()),
             ):
@@ -2395,6 +2445,7 @@ class TestAgentCrossSkillRecovery:
         with pytest.raises(ToolCallExecutionError):
             with (
                 handler(AgentLoop()),
+                handler(LexicalToolExtractor()),
                 handler(LiteLLMConfigurer(model="test")),
                 handler(HistoryBuilder()),
                 handler(mock),
@@ -2426,6 +2477,7 @@ class TestAgentCrossSkillRecovery:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
@@ -2465,6 +2517,7 @@ class TestAgentCrossSkillRecovery:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiResponseHandler()),
@@ -2518,6 +2571,7 @@ class TestAgentCrossSkillRecovery:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(PhaseHandler()),
@@ -2574,6 +2628,7 @@ class TestAgentSystemMessageDeduplication:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(CountingHandler()),
@@ -2612,6 +2667,7 @@ class TestAgentSystemMessageDeduplication:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiHandler()),
@@ -2659,6 +2715,7 @@ class TestAgentSystemMessageDeduplication:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MemoryHandler()),
@@ -2700,6 +2757,7 @@ class TestAgentSystemMessageDeduplication:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(OrderHandler()),
@@ -2770,6 +2828,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2794,6 +2853,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2821,6 +2881,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2853,6 +2914,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2880,6 +2942,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2907,6 +2970,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -2934,6 +2998,7 @@ class TestPromptCaching:
         with (
             handler(capture),
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(provider),
             handler(HistoryBuilder()),
         ):
@@ -3031,7 +3096,12 @@ class TestPromptCaching:
     def test_openai_accepts_cache_control_via_litellm(self):
         """OpenAI works fine with cache_control (litellm strips it)."""
         provider = LiteLLMConfigurer(model="gpt-4o-mini", tool_choice="none")
-        with handler(AgentLoop()), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             result = simple_prompt("math")
         assert isinstance(result, str)
 
@@ -3041,7 +3111,12 @@ class TestPromptCaching:
         provider = LiteLLMConfigurer(
             model="claude-opus-4-6", max_tokens=20, tool_choice="none"
         )
-        with handler(AgentLoop()), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             result = simple_prompt("math")
         assert isinstance(result, str)
 
@@ -3070,6 +3145,7 @@ class TestSyntheticReaderIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(LexicalReaders()),
         ):
             result = report_sum()
@@ -3103,6 +3179,7 @@ class TestSyntheticReaderIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
@@ -3136,6 +3213,7 @@ class TestPythonReplIntegration:
 
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(LexicalToolExtractor()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LexicalReaders()),

@@ -50,6 +50,7 @@ from effectful.handlers.llm.harness.execution.restricted import (
 )
 from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
+from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import (
     RichTerminalRenderer,
@@ -92,7 +93,8 @@ class harness(contextlib.ContextDecorator):
     context manager, decorator, or via the module CLI) installs the handlers and
     exiting removes them. The handlers, in installation order, are:
 
-    1. `AgentLoop` and `LiteLLMConfigurer` -- the agent loop and the model
+    1. `AgentLoop`, `LexicalToolExtractor` and `LiteLLMConfigurer` -- the agent
+       loop, the tools it offers from a `Skill`'s lexical scope, and the model
        backend it drives.
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
@@ -169,6 +171,7 @@ class harness(contextlib.ContextDecorator):
         if self.reasoning_effort is not None:
             provider_config["reasoning_effort"] = self.reasoning_effort
         stack.enter_context(handler(AgentLoop()))
+        stack.enter_context(handler(LexicalToolExtractor()))
         stack.enter_context(
             handler(
                 LiteLLMConfigurer(

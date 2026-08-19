@@ -27,6 +27,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_agent,
     completion,
 )
+from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
 from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -631,6 +632,7 @@ class TestHandlerComposition:
 
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
@@ -657,6 +659,7 @@ class TestHandlerComposition:
         mock = MockCompletionHandler([make_text_response("fine")])
         with (
             handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),

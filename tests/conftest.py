@@ -4,7 +4,8 @@ import litellm
 import pytest
 from litellm.files.main import ModelResponse
 
-from effectful.handlers.llm.harness.hooks import Tool, _tools_in_scope, completion
+from effectful.handlers.llm.harness.hooks import Tool, completion
+from effectful.handlers.llm.harness.legibility.lexical import _tools_in_scope
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4o-mini")
