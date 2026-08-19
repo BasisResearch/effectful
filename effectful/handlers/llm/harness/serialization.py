@@ -156,7 +156,7 @@ class PromptSection(typing.TypedDict):
     type: typing.Literal["prompt_section"]
     title: str
     content: collections.abc.Sequence[
-        litellm.OpenAIMessageContentListBlock | "PromptSection"
+        typing.Union[OpenAIMessageContentListBlock, "PromptSection"]
     ]
 
 
