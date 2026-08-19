@@ -6,22 +6,11 @@ import typing
 import litellm
 from litellm.types.llms.openai import ChatCompletionToolChoiceValues
 
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
-    call_assistant,
-    call_system,
-    call_tool,
-    call_user,
     completion,
 )
-from effectful.handlers.llm.harness.legibility.lexical import skill_system_prompt
-from effectful.handlers.llm.harness.serialization import (
-    _TYPE_CHECK_ANCHOR_KEY,
-    PromptSection,
-)
-from effectful.handlers.llm.types import Skill
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -194,58 +183,3 @@ class LiteLLMConfigurer(ObjectInterpretation):
             )
         self._enforce_tool_choice(kwargs.get("tool_choice"), response)
         return response
-
-
-class LiteLLMProvider(LiteLLMConfigurer):
-    """Implements skills using the LiteLLM API."""
-
-    @implements(Skill.__apply__)
-    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-        # The harness half starts empty and is filled in by whichever handlers
-        # are installed; with none of them it renders as nothing at all.
-        message: Message = call_system(
-            PromptSection(type="prompt_section", title="Harness", content=[]),
-            skill_system_prompt(skill),
-        )
-
-        bound_args = inspect.signature(skill).bind(*args, **kwargs)
-        bound_args.apply_defaults()
-        env = skill.__context__.new_child(
-            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: skill}
-        )
-
-        header = f"{skill.__name__}{skill.__signature__}".replace("{", "{{").replace(
-            "}", "}}"
-        )
-        assert skill.__doc__ is not None
-        prompt_template = header + "\n\n" + skill.__doc__
-        message = call_user(prompt_template, env)
-
-        result: T | None = None
-        is_final: bool = False
-        while not is_final:
-            message, tool_calls, result = call_assistant(
-                list(HistoryBuilder.get_history()),
-                skill.__signature__.return_annotation,
-                env,
-            )
-            if tool_calls:
-                for tool_call in tool_calls:
-                    message, result, is_final = call_tool(tool_call)
-                    if is_final:
-                        # Stop here rather than run the rest of the turn: a later
-                        # call would overwrite `result` and `is_final`, silently
-                        # discarding the answer. Which call in a mixed turn is the
-                        # answer is genuinely ambiguous, so say so instead of
-                        # picking one -- a finalizing tool tells the model to call
-                        # it alone (see `FinalBodySynthesizer`), and a turn that
-                        # ignores that is a defect worth surfacing.
-                        assert len(tool_calls) == 1, (
-                            f"a finalizing tool call must be the only call in its "
-                            f"turn, but {len(tool_calls)} were requested"
-                        )
-                        break
-            else:
-                is_final = True
-
-        return typing.cast(T, result)

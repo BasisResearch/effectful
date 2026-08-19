@@ -48,6 +48,7 @@ from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
+from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import (
@@ -55,7 +56,7 @@ from effectful.handlers.llm.harness.observability.rendering import (
 )
 from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
 from effectful.handlers.llm.harness.provision import (
-    LiteLLMProvider,
+    LiteLLMConfigurer,
 )
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
@@ -91,7 +92,8 @@ class harness(contextlib.ContextDecorator):
     context manager, decorator, or via the module CLI) installs the handlers and
     exiting removes them. The handlers, in installation order, are:
 
-    1. `LiteLLMProvider` -- the model backend.
+    1. `AgentLoop` and `LiteLLMConfigurer` -- the agent loop and the model
+       backend it drives.
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `HistoryBuilder` -- accumulate the message history of a call.
@@ -166,9 +168,10 @@ class harness(contextlib.ContextDecorator):
         provider_config: dict[str, str] = {}
         if self.reasoning_effort is not None:
             provider_config["reasoning_effort"] = self.reasoning_effort
+        stack.enter_context(handler(AgentLoop()))
         stack.enter_context(
             handler(
-                LiteLLMProvider(
+                LiteLLMConfigurer(
                     model=self.model,
                     tool_choice=self.tool_choice,
                     api_base=self.api_base,

@@ -26,11 +26,16 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from effectful.handlers.llm import Skill
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
-from effectful.handlers.llm.harness.hooks import PromptSection, call_system, completion
+from effectful.handlers.llm.harness.hooks import (
+    AgentLoop,
+    PromptSection,
+    call_system,
+    completion,
+)
 from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
 from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -124,7 +129,8 @@ def test_tracer_traces_skill_completion_and_tool(langfuse_client):
 
     with (
         handler(MockCompletionHandler(responses)),
-        handler(LiteLLMProvider(model="test-model")),
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(LangfuseTracer(client=client)),
     ):

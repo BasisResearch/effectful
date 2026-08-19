@@ -5,6 +5,7 @@ import pickle
 import sqlite3
 import typing
 
+from effectful.handlers.llm.harness.hooks import call_agent
 from effectful.handlers.llm.types import Agent, Skill
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -14,9 +15,13 @@ from effectful.ops.types import Operation
 class SQLitePersister(ObjectInterpretation):
     """Handler that persists `Agent` history and state to a SQLite database.
 
-    Install alongside `LiteLLMProvider`::
+    Install alongside `AgentLoop` and `LiteLLMConfigurer`::
 
-        with handler(LiteLLMProvider()), handler(SQLitePersister(Path("./state/checkpoints.db"))):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(SQLitePersister(Path("./state/checkpoints.db"))),
+        ):
             bot.ask("question")
 
     Only agents constructed with an explicit `agent_id` (see `Agent`) are
@@ -34,7 +39,7 @@ class SQLitePersister(ObjectInterpretation):
 
     **On an exception**, nothing is saved. A `Skill` call's work happens
     against a private copy of the agent's history that is only written back
-    on success (see `LiteLLMProvider._call`), so an interrupted call's partial
+    on success (see `AgentLoop._call`), so an interrupted call's partial
     exchange -- and any other in-process state not captured by `__history__`
     (e.g. a `PythonRepl` session) -- is unrecoverable regardless of what this
     handler does. There is deliberately no crash-recovery "handoff" note: the
@@ -48,7 +53,8 @@ class SQLitePersister(ObjectInterpretation):
     Composes with `RetryLLMHandler`::
 
         with (
-            handler(LiteLLMProvider()),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
             handler(RetryLLMHandler()),
             handler(SQLitePersister(Path("./state/checkpoints.db"))),
         ):
@@ -128,7 +134,7 @@ class SQLitePersister(ObjectInterpretation):
             if f.name != "__agent_id__" and f.metadata.get("persist", True)
         }
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         result = fwd()
         if hasattr(skill, "__history__") and skill.__self__.__is_persistent__:  # type: ignore

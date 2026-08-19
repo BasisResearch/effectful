@@ -20,6 +20,7 @@ from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    call_agent,
     call_assistant,
     call_system,
 )
@@ -328,7 +329,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     # `_call_system`), so implementation notes belong in comments like this one.
     #
     # Scoping mirrors how `__history__` is managed for Skill calls: `_apply`
-    # handles `Skill.__apply__` to introduce fresh session-bound handlers
+    # handles `call_agent` to introduce fresh session-bound handlers
     # (`exec_code`, `read_lexical_variable`, `repl_history`) for the duration of
     # the call, and `_call_assistant` injects an `exec_code` Tool routed to that
     # session.  The session is therefore introduced and eliminated by its own
@@ -397,7 +398,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
             agent_prompt,
         )
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _apply[**P, T](
         self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

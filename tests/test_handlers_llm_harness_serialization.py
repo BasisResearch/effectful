@@ -864,7 +864,7 @@ def test_callable_full_pipeline_behavioral(
 
 # A Skill-style anchor whose return type is the Callable being decoded.
 # Decoding only runs the (source-anchored) type check when an anchor is in scope
-# (bound by Skill.__apply__); the result path has one, the argument path does
+# (bound by call_agent); the result path has one, the argument path does
 # not. The return-type case needs the body checked against the expected signature,
 # so it provides an anchor; the structural cases (param count, missing/last-stmt)
 # are caught without one.

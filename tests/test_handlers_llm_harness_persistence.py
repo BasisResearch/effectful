@@ -4,7 +4,7 @@ persisted `Agent`s and `SQLitePersister`.
 These are deliberately independent of a real LLM wherever possible:
 `_FakeAgentCalls` stands in for a full provider for anything that only cares
 about *when/what* gets checkpointed. A couple of composition tests still pull
-in `LiteLLMProvider` with a `MockCompletionHandler`, matching the pattern used
+in the real agent loop with a `MockCompletionHandler`, matching the pattern used
 throughout the rest of this test suite.
 """
 
@@ -23,9 +23,11 @@ from effectful.handlers.llm.harness.durability.persistence import SQLitePersiste
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
+    AgentLoop,
+    call_agent,
     completion,
 )
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -134,7 +136,7 @@ class _FakeAgentCalls(ObjectInterpretation):
         self.call_count = 0
         self.calls: list[tuple[str, tuple, dict]] = []
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _call(self, skill, *args, **kwargs):
         self.calls.append((skill.__name__, args, kwargs))
         n = self.call_count
@@ -426,7 +428,7 @@ class TestAutomaticCheckpointing:
     def test_nothing_saved_on_exception(self, tmp_path):
         """An unhandled error mid-call leaves no checkpoint at all -- there is
         nothing meaningful to save: the failed call's own history never
-        touched `agent.__history__` (see `LiteLLMProvider._call`), so a
+        touched `agent.__history__` (see `AgentLoop._call`), so a
         checkpoint taken at that point would just be an empty/stale row."""
         db_path = tmp_path / "checkpoints.db"
 
@@ -628,7 +630,8 @@ class TestHandlerComposition:
         )
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -653,7 +656,8 @@ class TestHandlerComposition:
 
         mock = MockCompletionHandler([make_text_response("fine")])
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
         ):

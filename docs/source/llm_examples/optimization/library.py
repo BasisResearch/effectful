@@ -66,6 +66,7 @@ not reproduce of its section of the paper:
 """
 
 import collections.abc
+import contextlib
 import dataclasses
 import inspect
 import linecache
@@ -75,7 +76,8 @@ import typing
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.hooks import AgentLoop
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.ops.semantics import handler
 
 # The one piece of handler boilerplate in this file, and it is load-bearing wherever a
@@ -89,8 +91,8 @@ from effectful.ops.semantics import handler
 # system, no per-skill model registry.
 #
 # One consequence worth knowing, because it affects how the numbers those domains
-# report should be read: this provider does *not* shadow the harness's
-# ``TenacityRetryer``. It implements ``completion`` and ``Skill.__apply__``, while
+# report should be read: these handlers do *not* shadow the harness's
+# ``TenacityRetryer``. They implement ``completion`` and ``call_agent``, while
 # the retryer intercepts ``call_assistant``, which sits between them -- so a worker
 # answer that fails to decode is fed its own error and asked again, up to the harness's
 # retry limit, exactly as a proposer call would be. Only a failure that exhausts the
@@ -101,9 +103,11 @@ from effectful.ops.semantics import handler
 WORKER_MODEL = "openai/gpt-4.1-mini"
 
 
-def worker(model: str) -> typing.Any:
+@contextlib.contextmanager
+def worker(model: str) -> collections.abc.Iterator[None]:
     """Scope a call to the cheap model the artifact is being optimized *for*."""
-    return handler(LiteLLMProvider(model=model))
+    with handler(AgentLoop()), handler(LiteLLMConfigurer(model=model)):
+        yield
 
 
 # ---------------------------------------------------------------------------

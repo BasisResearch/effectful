@@ -414,7 +414,7 @@ class RichTerminalRenderer(ObjectInterpretation):
         }
 
         # Count prompt tokens locally to size the prefill wait. `model` is injected
-        # downstream by LiteLLMProvider, so it may be absent here -- token_counter
+        # downstream by LiteLLMConfigurer, so it may be absent here -- token_counter
         # falls back to a default tokenizer, giving an approximate count.
         try:
             prompt_tokens: int | None = litellm.token_counter(

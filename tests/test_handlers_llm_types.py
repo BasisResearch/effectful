@@ -18,6 +18,8 @@ from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
+    AgentLoop,
+    call_agent,
     call_system,
     call_user,
     completion,
@@ -27,7 +29,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     skill_system_prompt,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     DecodedToolCall,
@@ -52,7 +54,7 @@ class SkillStringIntp(ObjectInterpretation):
 
     """
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
@@ -347,7 +349,12 @@ class TestAgentHistoryAccumulation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot.send("hello")
             bot.send("how are you")
 
@@ -371,7 +378,12 @@ class TestAgentHistoryAccumulation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot.send("a")
             bot.send("b")
 
@@ -394,7 +406,12 @@ class TestAgentIsolation:
         bot1 = ChatBot()
         bot2 = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot1.send("msg for bot1")
             bot2.send("msg for bot2")
 
@@ -419,7 +436,12 @@ class TestAgentIsolation:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot.send("hello")
             standalone("fish")
             bot.send("bye")
@@ -439,7 +461,12 @@ class TestSystemPromptInvariant:
         mock = MockCompletionHandler([make_text_response("hi")])
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot.send("hello")
 
         assert_single_system_message_first(mock.received_messages[0])
@@ -453,7 +480,12 @@ class TestSystemPromptInvariant:
         )
         bot = ChatBot()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             bot.send("first")
             bot.send("second")
 
@@ -470,7 +502,12 @@ class TestSystemPromptInvariant:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             agent.outer("demo")
 
         for messages in mock.received_messages:
@@ -495,7 +532,8 @@ class TestSystemPromptInvariant:
         )
 
         with (
-            handler(LiteLLMProvider()),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
@@ -519,7 +557,12 @@ class TestSystemPromptInvariant:
             ]
         )
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             standalone("fish")
             standalone("birds")
 
@@ -533,7 +576,12 @@ class TestSystemPromptInvariant:
             raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("ok")])
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             standalone("fish")
 
         assert_single_system_message_first(mock.received_messages[0])
@@ -760,7 +808,12 @@ class TestAgentWithToolCalls:
         )
         agent = MathAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = agent.compute("what is 2+3?")
 
         assert result == "The answer is 5"
@@ -798,7 +851,8 @@ class TestAgentWithRetryHandler:
         agent = NumberAgent()
 
         with (
-            handler(LiteLLMProvider()),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
@@ -835,7 +889,12 @@ class TestNestedSkillCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = agent.outer("demo")
 
         assert result == "all good"
@@ -851,7 +910,12 @@ class TestNestedSkillCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             agent.outer("demo")
 
         roles = [m["role"] for m in agent.__history__]
@@ -875,7 +939,12 @@ class TestNestedSkillCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             agent.outer("demo")
 
         # Call 0: outer's first call_assistant → [user]
@@ -899,7 +968,12 @@ class TestNestedSkillCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             agent.outer("first")
             agent.outer("second")
 
@@ -927,7 +1001,12 @@ class TestNestedSkillCalling:
         )
         agent = _DesignerAgent()
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             r1 = agent.outer("first")
             r2 = agent.outer("second")
 
@@ -991,7 +1070,12 @@ class TestCrossAgentNestedSkillCalling:
         helper = _HelperAgent()
         orch = _OrchestratorAgent(helper)
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = orch.run("do the thing")
 
         assert result == "final answer"
@@ -1014,7 +1098,12 @@ class TestCrossAgentNestedSkillCalling:
         helper = _HelperAgent()
         orch = _OrchestratorAgent(helper)
 
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             orch.run("first task")
             helper.answer("second question")
 
@@ -1355,7 +1444,12 @@ class TestStaticAndClassMethodSkills:
                 raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("42")])
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = MyClass.ask("what is 6*7?")
         assert result == "42"
 
@@ -1415,7 +1509,12 @@ class TestStaticAndClassMethodSkills:
                 raise NotHandled
 
         mock = MockCompletionHandler([make_text_response("yes")])
-        with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer()),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
             result = MyClass.ask("is the sky blue?")
         assert result == "yes"
 
@@ -2123,7 +2222,7 @@ def test_python_repl_composes_with_lexical_readers():
 def _drive_repl(body):
     """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Skill call.
 
-    A tiny `Skill.__apply__` handler stands in for the LLM loop: it collects
+    A tiny `call_agent` handler stands in for the LLM loop: it collects
     the tools for a single call and hands `body` that call's `exec_code` tool, so
     `body` sees exactly one REPL session for its duration.  This is the supported
     way to reach a session -- `PythonRepl` introduces it per call, mirroring
@@ -2133,7 +2232,7 @@ def _drive_repl(body):
     repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
-        @implements(Skill.__apply__)
+        @implements(call_agent)
         def _call(self, *_a, **_k):
             exec_code = repl.exec_code
             # Bodies pass source strings; decode them to code objects as the LLM
@@ -2228,7 +2327,12 @@ def test_primes_decode_int():
     """A non-string return type is decoded from the model's structured output."""
     mock = MockCompletionHandler([make_text_response('{"value": 61}')])
 
-    with handler(LiteLLMProvider()), handler(HistoryBuilder()), handler(mock):
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer()),
+        handler(HistoryBuilder()),
+        handler(mock),
+    ):
         result = primes(6)
 
     assert result == 61

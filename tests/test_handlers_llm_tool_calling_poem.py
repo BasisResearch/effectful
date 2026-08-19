@@ -12,9 +12,10 @@ from pydantic.dataclasses import dataclass as pydantic_dataclass
 from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
+    AgentLoop,
     call_assistant,
 )
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -106,7 +107,8 @@ class TestToolCalling:
         """Test that skills with tools work with the configured model."""
         poem_eval_ctx = LoggingPoemEvaluationInterpretation()
         with (
-            handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model=EFFECTFUL_LLM_MODEL)),
             handler(HistoryBuilder()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(poem_eval_ctx),

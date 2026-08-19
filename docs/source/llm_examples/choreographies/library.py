@@ -36,7 +36,7 @@ step that never finished. (Agent *history* is a separate matter -- give an
 
 ## Why the program is async, and where the threads went
 
-`effectful`'s handler stack is synchronous, top to bottom: `Skill.__apply__`,
+`effectful`'s handler stack is synchronous, top to bottom: `call_agent`,
 `fwd`, and everything in `effectful.handlers.llm.completions` down to
 `litellm.completion` are blocking calls. Two consequences shape this module.
 
@@ -103,7 +103,11 @@ is what gives `scatter` a pool to hand work to::
         agents=[architect, coder1, coder2, reviewer],
         log="./state/steps.db",   # optional; resume where an earlier run stopped
     )
-    with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="gpt-4o-mini")),
+        handler(RetryLLMHandler()),
+    ):
         reviews = choreo(
             "Build a URL slugify library",
             architect=architect,
@@ -527,7 +531,11 @@ class Choreography[**P, T]:
 
         choreo = Choreography(build_codebase, agents=[architect, coder, reviewer])
 
-        with handler(LiteLLMProvider(model="gpt-4o-mini")), handler(RetryLLMHandler()):
+        with (
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="gpt-4o-mini")),
+            handler(RetryLLMHandler()),
+        ):
             result = choreo(
                 "Build a library...",
                 architect=architect,

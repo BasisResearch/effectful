@@ -4,7 +4,7 @@ import inspect
 import langfuse
 import pydantic
 
-from effectful.handlers.llm.harness.hooks import call_tool, completion
+from effectful.handlers.llm.harness.hooks import call_agent, call_tool, completion
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.handlers.llm.types import Encodable, Skill
 from effectful.internals.unification import nested_type
@@ -86,7 +86,7 @@ class LangfuseTracer(ObjectInterpretation):
             obs.update(output=message["content"], metadata={"is_final": is_final})
             return message, result, is_final
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def call_skill(self, skill: Skill, *args, **kwargs):
         bound = inspect.signature(skill).bind(*args, **kwargs)
         bound.apply_defaults()

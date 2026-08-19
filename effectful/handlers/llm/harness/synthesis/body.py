@@ -13,6 +13,7 @@ import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.hooks import (
     ToolCallExecutionError,
+    call_agent,
     call_assistant,
     call_system,
     call_tool,
@@ -391,7 +392,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
             effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
             return result
         # A fresh instance's `agent.method(...)` dispatches through
-        # `Skill.__apply__`, which we intercept and redirect to the synthesized
+        # `call_agent`, which we intercept and redirect to the synthesized
         # implementation.
         result = functools.wraps(class_skill)(result)
 
@@ -401,7 +402,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
                 return fwd()
             return class_skill(instance, *args, **kwargs)
 
-        with handler({Skill.__apply__: _doctest_apply, class_skill: result}):
+        with handler({call_agent: _doctest_apply, class_skill: result}):
             effectful.handlers.llm.harness.validation.hooks.run_doctests(result, g)
         return result
 
@@ -510,7 +511,8 @@ class FinalBodySynthesizer(ObjectInterpretation):
     # the model as a tool message and the loop continues so it can revise::
     #
     #     with (
-    #         handler(LiteLLMProvider(model="gpt-5-mini")),
+    #         handler(AgentLoop()),
+    #         handler(LiteLLMConfigurer(model="gpt-5-mini")),
     #         handler(FinalBodySynthesizer()),
     #         handler(TenacityRetryer()),
     #     ):
@@ -608,7 +610,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
         else:
             return message, result, is_final
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _apply[**P, T](
         self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:

@@ -4,9 +4,9 @@ import contextlib
 from effectful.handlers.llm.harness.hooks import (
     Message,
     ResultDecodingError,
-    Skill,
     ToolCallDecodingError,
     ToolCallExecutionError,
+    call_agent,
     call_assistant,
     call_system,
     call_tool,
@@ -83,7 +83,7 @@ class HistoryBuilder(ObjectInterpretation):
         self.append_message(message)
         return (message, result, is_final)
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def call_skill(self, skill, *args, **kwargs):
         history: collections.abc.MutableSequence[Message] = getattr(
             skill, "__history__", []

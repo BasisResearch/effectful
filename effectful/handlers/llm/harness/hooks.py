@@ -3,6 +3,7 @@ import collections
 import collections.abc
 import dataclasses
 import functools
+import inspect
 import json
 import traceback
 import typing
@@ -30,6 +31,7 @@ from effectful.handlers.llm.types import (
     Tool,
 )
 from effectful.internals.unification import nested_type
+from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
 Message = (
@@ -343,7 +345,7 @@ def call_system(
 ) -> litellm.ChatCompletionSystemMessage:
     """Assemble the system message from the two halves of the system prompt.
 
-    `agent_prompt` describes the task: the caller (`LiteLLMProvider._call`)
+    `agent_prompt` describes the task: the caller (`AgentLoop._call`)
     introspects it from the `Skill` being called.  `harness_prompt` describes
     the machinery the task runs under, and arrives empty: each installed handler
     with something to say about the harness intercepts this operation and adds the
@@ -365,3 +367,62 @@ def call_system(
     return litellm.ChatCompletionSystemMessage(
         role="system", content=list(_render_system_prompt(document))
     )
+
+
+call_agent = Skill.__apply__
+"""Alias for `Skill.__apply__`: the operation invoked when a `Skill` is called.
+
+Handlers install against this to intercept an agent call, alongside the other
+`call_*` hooks in this module.
+"""
+
+
+class AgentLoop(ObjectInterpretation):
+    @implements(call_agent)
+    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+        from effectful.handlers.llm.harness.legibility.lexical import (
+            skill_system_prompt,
+        )
+
+        # The harness half starts empty and is filled in by whichever handlers
+        # are installed; with none of them it renders as nothing at all.
+        message: Message = call_system(
+            PromptSection(type="prompt_section", title="Harness", content=[]),
+            skill_system_prompt(skill),
+        )
+
+        bound_args = inspect.signature(skill).bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        env = skill.__context__.new_child(
+            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: skill}
+        )
+
+        header = f"{skill.__name__}{skill.__signature__}".replace("{", "{{").replace(
+            "}", "}}"
+        )
+        assert skill.__doc__ is not None
+        prompt_template = header + "\n\n" + skill.__doc__
+        message = call_user(prompt_template, env)
+
+        result: T | None = None
+        is_final: bool = False
+        while not is_final:
+            message, tool_calls, result = call_assistant(
+                list(HistoryBuilder.get_history()),
+                skill.__signature__.return_annotation,
+                env,
+            )
+            if tool_calls:
+                for tool_call in tool_calls:
+                    message, result, is_final = call_tool(tool_call)
+                    if is_final:
+                        assert len(tool_calls) == 1, (
+                            f"a finalizing tool call must be the only call in its "
+                            f"turn, but {len(tool_calls)} were requested"
+                        )
+                        break
+            else:
+                is_final = True
+
+        return typing.cast(T, result)

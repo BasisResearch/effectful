@@ -1,7 +1,7 @@
 """Tests for ``docs/source/llm_examples/choreographies/library.py`` -- choreographic
 endpoint projection.
 
-No real LLM is involved: `MockLLM` and friends implement `Skill.__apply__`
+No real LLM is involved: `MockLLM` and friends implement `call_agent`
 directly, so what is under test is the choreography -- step allocation, result
 sharing, scatter distribution -- rather than any completion logic.
 
@@ -28,6 +28,7 @@ from docs.source.llm_examples.choreographies.library import (
     step,
 )
 from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm.harness.hooks import call_agent
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -67,7 +68,7 @@ class MockLLM(ObjectInterpretation):
         self._lock = threading.Lock()
         self.calls: list[str] = []
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _call(self, skill, *args, **kwargs):
         key = _key(skill)
         with self._lock:
@@ -92,7 +93,7 @@ class FailingMockLLM(MockLLM):
         super().__init__(responses)
         self._fail_on = fail_on
 
-    @implements(Skill.__apply__)
+    @implements(call_agent)
     def _call(self, skill, *args, **kwargs):
         if _key(skill) in self._fail_on:
             raise RuntimeError(f"Simulated failure on {_key(skill)}")

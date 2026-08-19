@@ -1,6 +1,6 @@
 """Tests for LLM handlers and providers.
 This module tests the functionality from build/main.py and build/llm.py,
-breaking down individual components like LiteLLMProvider,
+breaking down individual components like LiteLLMConfigurer,
 ProgramSynthesis, and sampling strategies.
 """
 
@@ -30,12 +30,14 @@ from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
+    AgentLoop,
     DecodedToolCall,
     ResultDecodingError,
     Tool,
     ToolCallDecodingError,
     ToolCallExecutionError,
     _tools_in_scope,
+    call_agent,
     call_assistant,
     call_tool,
     completion,
@@ -44,7 +46,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
 )
 from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
-from effectful.handlers.llm.harness.provision import LiteLLMProvider
+from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -93,7 +95,7 @@ def retry_on_error(error: type[Exception], n: int):
     return decorator
 
 
-class ReplayLiteLLMProvider(LiteLLMProvider):
+class ReplayLiteLLMProvider(LiteLLMConfigurer, AgentLoop):
     test_id: str
     call_count = 0
 
@@ -201,10 +203,10 @@ class _ToolNameAgent(Agent):
 
 
 class TestLiteLLMProvider:
-    """Tests for LiteLLMProvider basic functionality."""
+    """Tests for the LiteLLM-backed agent loop's basic functionality."""
 
     def test_simple_prompt(self, request):
-        """Test that LiteLLMProvider returns a non-empty string."""
+        """Test that a LiteLLM-backed skill call returns a non-empty string."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -214,7 +216,7 @@ class TestLiteLLMProvider:
             assert len(result) > 0
 
     def test_structured_output(self, request):
-        """Test LiteLLMProvider with structured Pydantic output."""
+        """Test a LiteLLM-backed skill call with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
@@ -230,7 +232,7 @@ class TestLiteLLMProvider:
             assert len(classification.explanation) > 0
 
     def test_integer_return_type(self, request):
-        """Test LiteLLMProvider with integer return type."""
+        """Test a LiteLLM-backed skill call with integer return type."""
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -241,7 +243,7 @@ class TestLiteLLMProvider:
             assert 1 <= result <= 100
 
     def test_with_config_params(self, request):
-        """Test LiteLLMProvider accepts and uses additional configuration parameters."""
+        """Test LiteLLMConfigurer accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
             handler(
@@ -270,8 +272,9 @@ def test_agent_tool_names_are_valid_integration():
     # truncated to empty content is decoded as "no final response" and fails the call
     # for a reason that has nothing to do with tool names.
     with (
+        handler(AgentLoop()),
         handler(
-            LiteLLMProvider(
+            LiteLLMConfigurer(
                 model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=64
             )
         ),
@@ -1055,7 +1058,8 @@ class TestForcedToolChoice:
     def test_prose_answer_is_rejected(self):
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
             call_assistant([], response_type=str, env={"add_numbers": add_numbers})
@@ -1064,7 +1068,8 @@ class TestForcedToolChoice:
         response = make_tool_call_response("add_numbers", '{"a": 1, "b": 2}')
         with (
             handler(MockCompletionHandler([response])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
         ):
             _, tool_calls, _ = call_assistant(
                 [],
@@ -1078,7 +1083,8 @@ class TestForcedToolChoice:
         response = make_tool_call_response("add_numbers", '{"a": 1, "b": 2}')
         with (
             handler(MockCompletionHandler([response])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="none")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
             pytest.raises(ResultDecodingError, match="YOU MUST ANSWER DIRECTLY"),
         ):
             call_assistant(
@@ -1091,7 +1097,8 @@ class TestForcedToolChoice:
     def test_prose_answer_is_accepted_when_tools_are_disabled(self):
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="none")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
         ):
             _, tool_calls, result = call_assistant(
                 [], response_type=str, env={"add_numbers": add_numbers}
@@ -1109,8 +1116,10 @@ class TestForcedToolChoice:
         """
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
-            handler(LiteLLMProvider(model="test-model", tool_choice="auto")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
         ):
             _, _, result = call_assistant([], response_type=str, env={})
         assert result == "just prose"
@@ -1120,8 +1129,10 @@ class TestForcedToolChoice:
         configurers agree it is the one to enforce."""
         with (
             handler(MockCompletionHandler([make_text_response("just prose")])),
-            handler(LiteLLMProvider(model="test-model", tool_choice="auto")),
-            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
             call_assistant([], response_type=str, env={"add_numbers": add_numbers})
@@ -1133,7 +1144,8 @@ class TestForcedToolChoice:
         they are reassembled."""
         with (
             handler(_StreamingMockCompletionHandler("just prose")),
-            handler(LiteLLMProvider(model="test-model", tool_choice="required")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
             handler(RichTerminalRenderer()),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
@@ -1481,7 +1493,8 @@ class TestSynthesizeAndCall:
             ]
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1504,7 +1517,8 @@ class TestSynthesizeAndCall:
             ]
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1527,7 +1541,8 @@ class TestSynthesizeAndCall:
         structured output: the model may answer the return type directly."""
         mock = MockCompletionHandler([make_text_response(json.dumps({"value": 99}))])
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1555,7 +1570,8 @@ class TestSynthesizeAndCall:
             ]
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1579,7 +1595,8 @@ class TestSynthesizeAndCall:
             ]
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1634,7 +1651,8 @@ class TestSynthesizeAndCall:
             model="test-model",
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1691,7 +1709,8 @@ class TestSynthesizeAndCallDoctests:
         )
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1724,7 +1743,8 @@ class TestSynthesizeAndCallDoctests:
             ]
         )
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1746,7 +1766,8 @@ class TestSynthesizeAndCallDoctests:
         good = "def impl(x: int) -> int:\n    return x * 3\n"
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1793,7 +1814,8 @@ class TestSynthesizeAndCallDoctests:
         agent = Doubler()
         mock = MockCompletionHandler([make_submit_solution_response(good)])
         with (
-            handler(LiteLLMProvider(model="test-model")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(MypyTypeChecker()),
@@ -1992,7 +2014,7 @@ def type_error_tool(x: int) -> str:
 def _drive_repl(body):
     """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Skill call.
 
-    A tiny `Skill.__apply__` handler stands in for the LLM loop, handing
+    A tiny `call_agent` handler stands in for the LLM loop, handing
     `body` the call's `exec_code` tool so it runs against one REPL session (the
     supported way to reach a session).  Install any outer handlers (e.g.
     `RetryLLMHandler`) around the call.  Returns `body`'s result.
@@ -2001,7 +2023,7 @@ def _drive_repl(body):
     repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
-        @implements(Skill.__apply__)
+        @implements(call_agent)
         def _call(self, *_a, **_k):
             box.append(body(repl.exec_code))
             return None
@@ -2148,7 +2170,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
 
 
 class TestLiteLLMProviderMessagePruning:
-    """LiteLLMProvider should prune messages added during a failed skill call."""
+    """`AgentLoop` should prune messages added during a failed skill call."""
 
     def test_messages_pruned_on_tool_execution_error(self):
         """When a tool error propagates, all messages from that call are pruned."""
@@ -2167,7 +2189,8 @@ class TestLiteLLMProviderMessagePruning:
 
         with pytest.raises(ToolCallExecutionError):
             with (
-                handler(LiteLLMProvider(model="test")),
+                handler(AgentLoop()),
+                handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2192,7 +2215,8 @@ class TestLiteLLMProviderMessagePruning:
 
         with pytest.raises(ToolCallDecodingError):
             with (
-                handler(LiteLLMProvider(model="test")),
+                handler(AgentLoop()),
+                handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2216,7 +2240,8 @@ class TestLiteLLMProviderMessagePruning:
 
         with pytest.raises(ToolCallExecutionError):
             with (
-                handler(LiteLLMProvider(model="test")),
+                handler(AgentLoop()),
+                handler(LiteLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2245,7 +2270,8 @@ class TestLiteLLMProviderMessagePruning:
         # No enclosing transaction: HistoryBuilder detects this is the outermost
         # call for the agent and writes back to its __history__.
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock_handler),
         ):
@@ -2309,7 +2335,11 @@ class TestAgentCrossSkillRecovery:
         agent = TestAgent()
 
         with handler(TwoPhaseCompletionHandler()):
-            with handler(LiteLLMProvider(model="test")), handler(HistoryBuilder()):
+            with (
+                handler(AgentLoop()),
+                handler(LiteLLMConfigurer(model="test")),
+                handler(HistoryBuilder()),
+            ):
                 # First call should fail with tool execution error
                 with pytest.raises(ToolCallExecutionError):
                     agent.step_with_tool("stage 1")
@@ -2364,7 +2394,8 @@ class TestAgentCrossSkillRecovery:
 
         with pytest.raises(ToolCallExecutionError):
             with (
-                handler(LiteLLMProvider(model="test")),
+                handler(AgentLoop()),
+                handler(LiteLLMConfigurer(model="test")),
                 handler(HistoryBuilder()),
                 handler(mock),
             ):
@@ -2394,7 +2425,8 @@ class TestAgentCrossSkillRecovery:
         agent = SuccessAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -2432,7 +2464,8 @@ class TestAgentCrossSkillRecovery:
         agent = ChatAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiResponseHandler()),
         ):
@@ -2484,7 +2517,8 @@ class TestAgentCrossSkillRecovery:
         agent = RecoveryAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(PhaseHandler()),
         ):
@@ -2505,7 +2539,7 @@ class TestAgentCrossSkillRecovery:
 class TestAgentSystemMessageDeduplication:
     """Regression tests for system message duplication bug.
 
-    When LiteLLMProvider._call copies the history, call_system replaces the
+    When AgentLoop._call copies the history, call_system replaces the
     system message in the copy. Previously, history.update(history_copy) was
     used to merge back, which is additive — it didn't remove the stale system
     message key deleted from the copy. This caused multiple system messages to
@@ -2539,7 +2573,8 @@ class TestAgentSystemMessageDeduplication:
         agent = ThreeCallAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(CountingHandler()),
         ):
@@ -2576,7 +2611,8 @@ class TestAgentSystemMessageDeduplication:
         agent = SystemMsgAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiHandler()),
         ):
@@ -2622,7 +2658,8 @@ class TestAgentSystemMessageDeduplication:
         agent = MemoryAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MemoryHandler()),
         ):
@@ -2662,7 +2699,8 @@ class TestAgentSystemMessageDeduplication:
         agent = OrderAgent()
 
         with (
-            handler(LiteLLMProvider(model="test")),
+            handler(AgentLoop()),
+            handler(LiteLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(OrderHandler()),
         ):
@@ -2724,12 +2762,17 @@ class TestPromptCaching:
     def test_system_message_has_cache_control(self):
         """System message should include cache_control for prompt caching."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             simple_prompt("test")
 
         msgs = capture.received_messages[0]
@@ -2742,13 +2785,18 @@ class TestPromptCaching:
     def test_agent_user_message_has_cache_control(self):
         """Agent calls should add cache_control to the last user message."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             agent.ask("What is 2+2?")
 
         msgs = capture.received_messages[0]
@@ -2765,12 +2813,17 @@ class TestPromptCaching:
         concern applied to every request, so a plain Skill's tool-use rounds
         get the same cached prefix an Agent's turns do."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             simple_prompt("test")
 
         msgs = capture.received_messages[0]
@@ -2791,13 +2844,18 @@ class TestPromptCaching:
                 make_text_response("42"),
             ]
         )
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             agent.ask("What is 2+2?")
 
         # The final request carries the longest history; count its breakpoints.
@@ -2813,13 +2871,18 @@ class TestPromptCaching:
         capture = MockCompletionHandler(
             [make_text_response("first"), make_text_response("second")]
         )
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             agent.ask("first question")
             agent.ask("second question")
 
@@ -2835,13 +2898,18 @@ class TestPromptCaching:
         """The annotation is added to the outgoing request, not the transcript,
         so it never reaches `__history__` (or an Agent's checkpoint)."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             agent.ask("What is 2+2?")
 
         # Every breakpoint in the request -- on the system message and on the
@@ -2858,12 +2926,17 @@ class TestPromptCaching:
     def test_cache_control_format_is_ephemeral(self):
         """cache_control should use the ephemeral type."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMProvider(model="test")
+        provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
         # provider: LiteLLMConfigurer._completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
-        with handler(capture), handler(provider), handler(HistoryBuilder()):
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(provider),
+            handler(HistoryBuilder()),
+        ):
             simple_prompt("test")
 
         for msg in capture.received_messages[0]:
@@ -2957,18 +3030,18 @@ class TestPromptCaching:
     @requires_openai
     def test_openai_accepts_cache_control_via_litellm(self):
         """OpenAI works fine with cache_control (litellm strips it)."""
-        provider = LiteLLMProvider(model="gpt-4o-mini", tool_choice="none")
-        with handler(provider), handler(HistoryBuilder()):
+        provider = LiteLLMConfigurer(model="gpt-4o-mini", tool_choice="none")
+        with handler(AgentLoop()), handler(provider), handler(HistoryBuilder()):
             result = simple_prompt("math")
         assert isinstance(result, str)
 
     @requires_anthropic
     def test_anthropic_accepts_cache_control(self):
         """Anthropic should accept messages with cache_control."""
-        provider = LiteLLMProvider(
+        provider = LiteLLMConfigurer(
             model="claude-opus-4-6", max_tokens=20, tool_choice="none"
         )
-        with handler(provider), handler(HistoryBuilder()):
+        with handler(AgentLoop()), handler(provider), handler(HistoryBuilder()):
             result = simple_prompt("math")
         assert isinstance(result, str)
 
