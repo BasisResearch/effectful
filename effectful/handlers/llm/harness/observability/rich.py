@@ -59,12 +59,12 @@ def _accumulate(
     partial["content"] += delta.content or ""
     # `reasoning_content` is absent (not just None) on deltas that carry none.
     partial["reasoning_content"] += getattr(delta, "reasoning_content", None) or ""
-    tc: litellm.types.utils.ChatCompletionDeltaToolCall
     for tc in delta.tool_calls or []:
+        function = getattr(tc, "function", None)
         slot = partial["tool_calls"].setdefault(tc.index, {"name": "", "args": ""})
-        if tc.function is not None:
-            slot["name"] = tc.function.name or slot["name"]
-            slot["args"] += tc.function.arguments or ""
+        if function is not None:
+            slot["name"] = function.name or slot["name"]
+            slot["args"] += function.arguments or ""
 
 
 # Panel border colors keyed by message role.
