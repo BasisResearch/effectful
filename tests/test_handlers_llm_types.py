@@ -29,7 +29,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalToolExtractor,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
-from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     DecodedToolCall,

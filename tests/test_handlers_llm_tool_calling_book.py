@@ -11,7 +11,7 @@ from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import AgentLoop, call_assistant
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled

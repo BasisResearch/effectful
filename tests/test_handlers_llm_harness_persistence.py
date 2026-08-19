@@ -28,7 +28,7 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
