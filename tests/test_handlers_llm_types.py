@@ -27,7 +27,6 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
     LexicalToolExtractor,
-    skill_system_prompt,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
 from effectful.handlers.llm.harness.provision import LiteLLMConfigurer
@@ -38,7 +37,8 @@ from effectful.handlers.llm.harness.serialization import (
     _advertised_names,
     _NameAndTool,
     _rebase_headings,
-    _render_system_prompt,
+    _render_prompt_section,
+    format_as_content_blocks,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
@@ -60,7 +60,13 @@ class SkillStringIntp(ObjectInterpretation):
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = skill.__context__.new_child(bound_args.arguments)
-        model_input = call_user(skill.__doc__, env)
+        model_input = call_user(
+            PromptSection(
+                type="prompt_section",
+                title=skill.__name__,
+                content=format_as_content_blocks(skill.__doc__, env),
+            )
+        )
         skill_result = model_input["content"]
         assert len(skill_result) == 1
         return skill_result[0]["text"]
@@ -628,7 +634,7 @@ class TestSystemPromptDocument:
             self._section("Outer", [*to_content_blocks("intro"), inner])
         )
         assert (
-            _message_text(_render_system_prompt(prompt))
+            _message_text(_render_prompt_section(prompt))
             == "# Outer\n\nintro\n\n## Inner\n\n### Own heading\n\nbody"
         )
 
@@ -640,7 +646,7 @@ class TestSystemPromptDocument:
             self._section("Blank", ""),
             self._section("Kept", "body"),
         )
-        assert _message_text(_render_system_prompt(prompt)) == "# Kept\n\nbody"
+        assert _message_text(_render_prompt_section(prompt)) == "# Kept\n\nbody"
 
     def test_non_text_blocks_reach_the_system_prompt(self):
         """The document is a block list, not a Markdown string, so a section may
@@ -655,11 +661,52 @@ class TestSystemPromptDocument:
                 [*to_content_blocks("before"), image, *to_content_blocks("after")],
             )
         )
-        blocks = _render_system_prompt(prompt)
+        blocks = _render_prompt_section(prompt)
         assert [b["type"] for b in blocks] == ["text", "image_url", "text"]
         assert blocks[0]["text"] == "# Figure\n\nbefore"
         assert blocks[1] == image
         assert blocks[2]["text"] == "after"
+
+    def test_the_user_message_carries_the_skill_header(self):
+        """`call_user` renders its argument as a *child* of an enclosing
+        document, for the same reason `call_system` assembles one: a section
+        handed to `_render_prompt_section` at level 0 is the document itself,
+        whose title labels it rather than appearing in it. Passed straight
+        through, the Skill's header would be computed and then dropped."""
+
+        @Skill.define
+        def rhyme(a: str, b: str) -> str:
+            """The {a} sat in the {b}."""
+            raise NotHandled
+
+        bound = inspect.signature(rhyme).bind("cat", "hat")
+        bound.apply_defaults()
+        env = rhyme.__context__.new_child(bound.arguments)
+
+        message = call_user(AgentLoop()._skill_user_prompt(rhyme, env))
+        assert (
+            _message_text(message["content"])
+            == "# rhyme(a: str, b: str) -> str\n\nThe cat sat in the hat."
+        )
+
+    def test_braces_in_a_signature_survive_the_header(self):
+        """Only the docstring is interpolated, so a `{}` default in the
+        signature reaches the heading as written -- escaping it here would
+        show up literally."""
+
+        @Skill.define
+        def defaulted(a: str, opts: dict = {}) -> str:
+            """Answer about {a}."""
+            raise NotHandled
+
+        bound = inspect.signature(defaulted).bind("x")
+        bound.apply_defaults()
+        env = defaulted.__context__.new_child(bound.arguments)
+
+        message = call_user(AgentLoop()._skill_user_prompt(defaulted, env))
+        assert _message_text(message["content"]).startswith(
+            "# defaulted(a: str, opts: dict = {}) -> str"
+        )
 
     def test_a_handler_documents_itself_with_its_own_docstring(self):
         """A handler adds the section describing itself to `harness_prompt` and
@@ -696,7 +743,9 @@ class TestSystemPromptDocument:
         harness_prompt = self._section("Harness", [])
         with handler(Documented()):
             content = _message_text(
-                call_system(harness_prompt, skill_system_prompt(standalone))["content"]
+                call_system(
+                    harness_prompt, AgentLoop()._skill_system_prompt(standalone)
+                )["content"]
             )
 
         assert "# Harness\n\n## Documented" in content
@@ -710,7 +759,7 @@ class TestAgentDocstringFallback:
     def _system_content(self, skill):
         message = call_system(
             PromptSection(type="prompt_section", title="Harness", content=[]),
-            skill_system_prompt(skill),
+            AgentLoop()._skill_system_prompt(skill),
         )
         return _message_text(message["content"])
 

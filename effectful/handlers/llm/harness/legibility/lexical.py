@@ -280,28 +280,6 @@ def _module_section(mod: types.ModuleType | None) -> PromptSection | None:
     )
 
 
-def skill_system_prompt(skill: Skill) -> PromptSection:
-    """The half of the system prompt describing a call to `skill`.
-
-    Everything here is introspected from the Skill, and its subsections are
-    laid out most-constant-first so that the document caches well as the
-    conversation grows: the module, then the agent and its skills, then the
-    names in scope.  `call_system` puts this after the harness half, which is
-    constant over the whole process.
-    """
-    sections = (
-        _module_section(inspect.getmodule(skill)),
-        _agent_section(skill),
-        _imports_section(skill.__context__),
-        _vars_section(skill.__context__),
-    )
-    return PromptSection(
-        type="prompt_section",
-        title=f"`{skill.__name__}{skill.__signature__}`",
-        content=[s for s in sections if s is not None],
-    )
-
-
 def _tools_in_scope(
     env: collections.abc.Mapping[str, typing.Any],
     *,

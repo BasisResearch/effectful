@@ -218,7 +218,7 @@ def _rebase_headings(md: str, top: int) -> str:
     return _shift_headings(md, top - min(levels))
 
 
-def _render_system_prompt(
+def _render_prompt_section(
     prompt: PromptSection, level: int = 0
 ) -> list[OpenAIMessageContentListBlock]:
     """Flatten an assembled prompt into content blocks.
@@ -249,7 +249,7 @@ def _render_system_prompt(
 
     for item in prompt["content"]:
         if item.get("type") == "prompt_section":
-            for block in _render_system_prompt(
+            for block in _render_prompt_section(
                 typing.cast(PromptSection, item), level + 1
             ):
                 emit(block)

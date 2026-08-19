@@ -20,7 +20,7 @@ from effectful.handlers.llm.harness.serialization import (
     _advertised_names,
     _BoxedResponse,
     _NameAndTool,
-    _render_system_prompt,
+    _render_prompt_section,
     format_as_content_blocks,
     to_content_blocks,
 )
@@ -284,16 +284,24 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 
 
 @Operation.define
-def call_user(
-    prompt_template: str,
-    env: collections.abc.Mapping[str, typing.Any],
-) -> litellm.ChatCompletionUserMessage:
+def call_user(user_prompt: PromptSection) -> litellm.ChatCompletionUserMessage:
     """
     Format a `Skill`'s prompt applied to arguments into a user message.
+
+    `user_prompt` is wrapped in an enclosing document for the same reason
+    `call_system` assembles one: `_render_prompt_section` treats level 0 as the
+    document itself and does not render its title, so a section handed straight
+    to it would lose its heading.  Wrapped, `user_prompt` is a child and its
+    title becomes the message's ``#`` heading.
     """
-    parts = format_as_content_blocks(prompt_template, env)
-    message = litellm.ChatCompletionUserMessage(role="user", content=parts)
-    return message
+    document = PromptSection(
+        type="prompt_section",
+        title=f"User Prompt: {user_prompt['title']}",
+        content=[user_prompt],
+    )
+    return litellm.ChatCompletionUserMessage(
+        role="user", content=list(_render_prompt_section(document))
+    )
 
 
 @Operation.define
@@ -322,7 +330,7 @@ def call_system(
         content=[harness_prompt, agent_prompt],
     )
     return litellm.ChatCompletionSystemMessage(
-        role="system", content=list(_render_system_prompt(document))
+        role="system", content=list(_render_prompt_section(document))
     )
 
 
@@ -335,18 +343,68 @@ Handlers install against this to intercept an agent call, alongside the other
 
 
 class AgentLoop(ObjectInterpretation):
+    def _skill_system_prompt(self, skill: Skill) -> PromptSection:
+        """The half of the system prompt describing a call to `skill`.
+
+        Everything here is introspected from the `Skill`, and its subsections
+        are laid out most-constant-first so that the document caches well as
+        the conversation grows: the module, then the agent and its skills, then
+        the names in scope.  `call_system` puts this after the harness half,
+        which is constant over the whole process.
+
+        A plain method, not an operation: a handler that wants to say something
+        here intercepts `call_system` and adds to the *harness* half, which is
+        the argument it is handed for exactly that purpose.
+        """
+        from effectful.handlers.llm.harness.legibility.lexical import (
+            _agent_section,
+            _imports_section,
+            _module_section,
+            _vars_section,
+        )
+
+        sections = (
+            _module_section(inspect.getmodule(skill)),
+            _agent_section(skill),
+            _imports_section(skill.__context__),
+            _vars_section(skill.__context__),
+        )
+        return PromptSection(
+            type="prompt_section",
+            title=f"`{skill.__name__}{skill.__signature__}`",
+            content=[s for s in sections if s is not None],
+        )
+
+    def _skill_user_prompt(
+        self, skill: Skill, env: collections.abc.Mapping[str, typing.Any]
+    ) -> PromptSection:
+        """The `Skill`'s prompt -- its docstring -- applied to `env`.
+
+        This is the request itself, as opposed to the standing description of
+        the task that `_skill_system_prompt` assembles: the docstring's
+        ``{placeholders}`` are filled from the bound arguments, so it is the one
+        part of the exchange that differs per call.
+
+        Only the docstring is interpolated.  The title is a heading rendered as
+        written, so a signature carrying braces -- a ``{}`` default, say --
+        needs no escaping and must not get any.
+        """
+        assert skill.__doc__ is not None
+        return PromptSection(
+            type="prompt_section",
+            title=f"{skill.__name__}{skill.__signature__}",
+            content=format_as_content_blocks(skill.__doc__, env),
+        )
+
     @implements(call_agent)
     def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
         from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
-        from effectful.handlers.llm.harness.legibility.lexical import (
-            skill_system_prompt,
-        )
 
         # The harness half starts empty and is filled in by whichever handlers
         # are installed; with none of them it renders as nothing at all.
         message: Message = call_system(
             PromptSection(type="prompt_section", title="Harness", content=[]),
-            skill_system_prompt(skill),
+            self._skill_system_prompt(skill),
         )
 
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
@@ -355,12 +413,7 @@ class AgentLoop(ObjectInterpretation):
             bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: skill}
         )
 
-        header = f"{skill.__name__}{skill.__signature__}".replace("{", "{{").replace(
-            "}", "}}"
-        )
-        assert skill.__doc__ is not None
-        prompt_template = header + "\n\n" + skill.__doc__
-        message = call_user(prompt_template, env)
+        message = call_user(self._skill_user_prompt(skill, env))
 
         result: T | None = None
         is_final: bool = False
