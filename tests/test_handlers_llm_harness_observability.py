@@ -33,9 +33,9 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
-from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
-from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
+from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
+from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
+from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements

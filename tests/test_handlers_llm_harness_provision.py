@@ -46,7 +46,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalToolExtractor,
     _tools_in_scope,
 )
-from effectful.handlers.llm.harness.observability.rendering import RichTerminalRenderer
+from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,

@@ -51,11 +51,11 @@ from effectful.handlers.llm.harness.execution.restricted import (
 from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.observability.dumping import SystemPromptDumper
-from effectful.handlers.llm.harness.observability.rendering import (
+from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
+from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
+from effectful.handlers.llm.harness.observability.rich import (
     RichTerminalRenderer,
 )
-from effectful.handlers.llm.harness.observability.tracing import LangfuseTracer
 from effectful.handlers.llm.harness.provision.litellm import (
     LiteLLMConfigurer,
 )
