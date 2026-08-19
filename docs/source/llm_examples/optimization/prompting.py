@@ -90,7 +90,7 @@ from docs.source.llm_examples.optimization.library import (
     report,
     worker,
 )
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -147,7 +147,7 @@ class Answer:
     final: str
 
 
-@Template.define
+@Skill.define
 def answer_question(instructions: str, question: str) -> Answer:
     """{instructions}
 
@@ -269,7 +269,7 @@ class Proposer(Agent):
     diagnostics to decide which failure mode is costing the most, then you write the
     instruction that addresses it."""
 
-    @Template.define
+    @Skill.define
     def propose_prompt(self, current: str, feedback: list[Rollout]) -> str:
         """You are optimizing the SYSTEM PROMPT given to a small model that writes
         sentences under hard constraints -- an exact word count, a required initial

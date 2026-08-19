@@ -17,7 +17,7 @@ from effectful.handlers.llm.harness.serialization import (
     PromptSection,
     to_content_blocks,
 )
-from effectful.handlers.llm.types import Agent, Encodable, Template, Tool
+from effectful.handlers.llm.types import Agent, Encodable, Skill, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -25,7 +25,7 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 
 class LexicalReaders(ObjectInterpretation):
     """Some of the tools below take no arguments and simply return the current
-    value of a named variable from this Template's lexical scope (see the
+    value of a named variable from this Skill's lexical scope (see the
     *Lexical scope* table for the available names and their types). Call such a
     reader when your answer depends on the concrete value of an in-scope
     variable that has not already been spliced into the prompt — it lets you
@@ -173,55 +173,55 @@ def _imports_section(
     )
 
 
-def _template_section(template: Template) -> PromptSection:
-    """Spec for a single `Template`: header, prompt, arg schemas.
+def _skill_section(skill: Skill) -> PromptSection:
+    """Spec for a single `Skill`: header, prompt, arg schemas.
 
-    A subsection of the enclosing agent/template section (see `_agent_section`),
+    A subsection of the enclosing agent/skill section (see `_agent_section`),
     so it renders at ``##`` and the prompt's own headings below that.
     """
     parts = []
-    prompt = inspect.getdoc(template.__default__) or ""
+    prompt = inspect.getdoc(skill.__default__) or ""
     if prompt:
         parts.append(prompt)
     args = [
         f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
         f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"  # type: ignore[name-defined]
-        for name, p in template.__signature__.parameters.items()
+        for name, p in skill.__signature__.parameters.items()
     ]
     if args:
         parts.append("**Arguments**\n\n" + "\n".join(args))
     return PromptSection(
         type="prompt_section",
-        title=f"`{template.__name__}{template.__signature__}`",
+        title=f"`{skill.__name__}{skill.__signature__}`",
         content=to_content_blocks("\n\n".join(parts)),
     )
 
 
-def _agent_section(template: Template) -> PromptSection:
+def _agent_section(skill: Skill) -> PromptSection:
     """The section for the task: the Agent's docstring (if any) followed by a
-    subsection for every Template sharing the current history (an Agent's
-    methods, or just ``template`` for a free-function template)."""
+    subsection for every Skill sharing the current history (an Agent's
+    methods, or just ``skill`` for a free-function skill)."""
     inst = (
-        template.__default__.__self__
-        if isinstance(template.__default__, types.MethodType)
+        skill.__default__.__self__
+        if isinstance(skill.__default__, types.MethodType)
         else None
     )
     if isinstance(inst, Agent):
         agent_doc = inspect.getdoc(type(inst)) or ""
         title = f"Agent `{_get_qualname(type(inst))}`"
-        templates = set()
+        skills = set()
         for cls in type(inst).__mro__:
             for attr in vars(cls):
                 try:
                     value = getattr(inst, attr)
                 except Exception:
                     continue
-                if isinstance(value, Template):
-                    templates.add(value)
+                if isinstance(value, Skill):
+                    skills.add(value)
     else:
         agent_doc = ""
-        title = "Template"
-        templates = {template}
+        title = "Skill"
+        skills = {skill}
 
     # The agent docstring is intro prose for the section, ahead of the specs;
     # order the specs by name so the prompt is stable across method reordering
@@ -231,10 +231,7 @@ def _agent_section(template: Template) -> PromptSection:
         title=title,
         content=[
             *to_content_blocks(agent_doc),
-            *(
-                _template_section(t)
-                for t in sorted(templates, key=lambda t: t.__name__)
-            ),
+            *(_skill_section(t) for t in sorted(skills, key=lambda t: t.__name__)),
         ],
     )
 
@@ -257,23 +254,23 @@ def _module_section(mod: types.ModuleType | None) -> PromptSection | None:
     )
 
 
-def template_system_prompt(template: Template) -> PromptSection:
-    """The half of the system prompt describing a call to `template`.
+def skill_system_prompt(skill: Skill) -> PromptSection:
+    """The half of the system prompt describing a call to `skill`.
 
-    Everything here is introspected from the Template, and its subsections are
+    Everything here is introspected from the Skill, and its subsections are
     laid out most-constant-first so that the document caches well as the
-    conversation grows: the module, then the agent and its templates, then the
+    conversation grows: the module, then the agent and its skills, then the
     names in scope.  `call_system` puts this after the harness half, which is
     constant over the whole process.
     """
     sections = (
-        _module_section(inspect.getmodule(template)),
-        _agent_section(template),
-        _imports_section(template.__context__),
-        _vars_section(template.__context__),
+        _module_section(inspect.getmodule(skill)),
+        _agent_section(skill),
+        _imports_section(skill.__context__),
+        _vars_section(skill.__context__),
     )
     return PromptSection(
         type="prompt_section",
-        title=f"`{template.__name__}{template.__signature__}`",
+        title=f"`{skill.__name__}{skill.__signature__}`",
         content=[s for s in sections if s is not None],
     )

@@ -25,7 +25,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
@@ -161,25 +161,25 @@ class MovieClassification:
     )
 
 
-@Template.define
+@Skill.define
 def classify_genre(plot: str) -> MovieClassification:
     """Classify the movie genre based on this plot: {plot}."""
     raise NotImplementedError
 
 
-@Template.define
+@Skill.define
 def simple_prompt(topic: str) -> str:
     """Write a short sentence about {topic}."""
     raise NotImplementedError
 
 
-@Template.define
+@Skill.define
 def generate_number(max_value: int) -> int:
     """Generate a random number between 1 and {max_value}."""
     raise NotImplementedError
 
 
-@Template.define
+@Skill.define
 def create_function(char: str) -> Callable[[str], int]:
     """Create a function that counts occurrences of the character '{char}' in a string.
 
@@ -189,12 +189,12 @@ def create_function(char: str) -> Callable[[str], int]:
 
 
 class _ToolNameAgent(Agent):
-    @Template.define
+    @Skill.define
     def helper(self) -> str:
         """Return the literal string 'ok'."""
         raise NotHandled
 
-    @Template.define
+    @Skill.define
     def ask(self, prompt: str) -> str:
         """Answer briefly: {prompt}"""
         raise NotHandled
@@ -258,8 +258,8 @@ class TestLiteLLMProvider:
 @requires_llm
 def test_agent_tool_names_are_valid_integration():
     agent = _ToolNameAgent()
-    template = agent.ask
-    tools = _tools_in_scope(template.__context__)
+    skill = agent.ask
+    tools = _tools_in_scope(skill.__context__)
     names = {t.__name__ for t in tools}
     assert tools
     assert agent.helper.__name__ in names
@@ -303,7 +303,7 @@ def smiley_face() -> Image.Image:
     return img
 
 
-@Template.define
+@Skill.define
 def categorise_image(image: Image.Image) -> str:
     """Return a description of the following image.
     {image}"""
@@ -326,7 +326,7 @@ class ImageDescription(BaseModel):
     count: int = Field(description="Number of images provided")
 
 
-@Template.define
+@Skill.define
 def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
     """You are a vision assistant. Describe what you see.
 
@@ -345,7 +345,7 @@ def describe_images(context: str, views: list[Image.Image]) -> ImageDescription:
 
 @requires_vision
 def test_list_image_input(request):
-    """Regression test for GitHub issue #552: list[Image.Image] in templates."""
+    """Regression test for GitHub issue #552: list[Image.Image] in skills."""
     img_red = Image.new("RGB", (64, 64), (255, 0, 0))
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
@@ -371,7 +371,7 @@ class BookReview(BaseModel):
     summary: str = Field(..., description="brief summary of the review")
 
 
-@Template.define
+@Skill.define
 def review_book(plot: str) -> BookReview:
     """Review a book based on this plot: {plot}."""
     raise NotImplementedError
@@ -638,12 +638,12 @@ class TestRetryLLMHandler:
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 
-        @Template.define
+        @Skill.define
         def generate_paragraph() -> str:
             """Please generate a paragraph: with exactly 4 sentences ending with 'walk', 'tumbling', 'another', and 'lunatic'."""
             raise NotHandled
 
-        @Template.define
+        @Skill.define
         def codeact(
             template_name: str,
             args_json: str = "[]",
@@ -656,7 +656,7 @@ class TestRetryLLMHandler:
             """
             raise NotHandled
 
-        @Template.define
+        @Skill.define
         def codeadapt(
             template_name: str,
             args_json: str = "[]",
@@ -1244,7 +1244,7 @@ class TestErrorClasses:
 # ============================================================================
 
 
-@Template.define
+@Skill.define
 def synthesize_adder() -> Callable[[int, int], int]:
     """Generate a Python function that adds two integers together.
 
@@ -1253,7 +1253,7 @@ def synthesize_adder() -> Callable[[int, int], int]:
     raise NotHandled
 
 
-@Template.define
+@Skill.define
 def synthesize_string_processor() -> Callable[[str], str]:
     """Generate a Python function that converts a string to uppercase
     and adds exclamation marks at the end.
@@ -1261,7 +1261,7 @@ def synthesize_string_processor() -> Callable[[str], str]:
     raise NotHandled
 
 
-@Template.define
+@Skill.define
 def synthesize_counter(char: str) -> Callable[[str], int]:
     """Generate a Python function that counts occurrences of the character '{char}'
     in a given input string.
@@ -1271,7 +1271,7 @@ def synthesize_counter(char: str) -> Callable[[str], int]:
     raise NotHandled
 
 
-@Template.define
+@Skill.define
 def synthesize_is_even() -> Callable[[int], bool]:
     """Generate a Python function that checks if a number is even.
 
@@ -1280,7 +1280,7 @@ def synthesize_is_even() -> Callable[[int], bool]:
     raise NotHandled
 
 
-@Template.define
+@Skill.define
 def synthesize_three_param_func() -> Callable[[int, int, int], int]:
     """Generate a Python function that takes exactly three integer parameters
     and returns their product (multiplication).
@@ -1289,10 +1289,10 @@ def synthesize_three_param_func() -> Callable[[int, int, int], int]:
 
 
 class _MethodSynthesizer:
-    """A class whose *method* is a Template returning a Callable, so its synthesis
-    anchor is a bound-method ``__default__`` (eb8680: bound-method Templates)."""
+    """A class whose *method* is a Skill returning a Callable, so its synthesis
+    anchor is a bound-method ``__default__`` (eb8680: bound-method Skills)."""
 
-    @Template.define
+    @Skill.define
     def make_adder(self) -> Callable[[int, int], int]:
         """Generate a Python function that adds two integers together.
 
@@ -1322,7 +1322,7 @@ class TestCallableSynthesis:
             assert add_func(100, 200) == 300
 
     def test_synthesize_via_bound_method(self, request):
-        """A *method* Template synthesizes a callable end-to-end -- exercising the
+        """A *method* Skill synthesizes a callable end-to-end -- exercising the
         bound-method `__default__` anchor through the real splice type-check
         (RetryLLMHandler lets the model recover from a malformed first draft)."""
         with (
@@ -1451,27 +1451,27 @@ def make_submit_solution_response(
     )
 
 
-@Template.define
+@Skill.define
 def double_it(x: int) -> int:
     """Return double the integer {x}."""
     raise NotHandled
 
 
 class _Doubler(Agent):
-    @Template.define
+    @Skill.define
     def double(self, x: int) -> int:
         """Return double the integer {x}."""
         raise NotHandled
 
 
 class TestSynthesizeAndCall:
-    """Tests for the SynthesizeAndCall handler, which answers a Template by
+    """Tests for the SynthesizeAndCall handler, which answers a Skill by
     exposing a ``submit_solution`` tool that the model calls with a synthesized
     function; the function is applied to the original arguments, its value is the
     result, and the handler's `call_tool` rule marks the call final."""
 
     def test_returns_called_result(self):
-        """The Template result is the value of applying the synthesized function
+        """The Skill result is the value of applying the synthesized function
         to the original arguments, not the function itself."""
         mock = MockCompletionHandler(
             [
@@ -1647,7 +1647,7 @@ class TestSynthesizeAndCall:
         """A signature with *args/**kwargs cannot be expressed as a Callable type,
         so building the synthesis tool for it is rejected."""
 
-        @Template.define
+        @Skill.define
         def variadic(*args: int) -> int:
             """Sum the arguments."""
             raise NotHandled
@@ -1660,18 +1660,18 @@ class TestSynthesizeAndCall:
 
 class TestSynthesizeAndCallDoctests:
     """SynthesizeAndCall validates the synthesized function against the
-    Template's own docstring doctests (#433), rerouting Template calls in the
+    Skill's own docstring doctests (#433), rerouting Skill calls in the
     doctests to the synthesized function so they never re-synthesize.
 
-    The doctest-bearing Templates are defined *inside* each test rather than at
+    The doctest-bearing Skills are defined *inside* each test rather than at
     module scope so pytest's ``--doctest-modules`` collection does not try to run
-    them (they reference a Template that needs an LLM to resolve)."""
+    them (they reference a Skill that needs an LLM to resolve)."""
 
-    def test_passes_when_synthesized_function_meets_template_doctests(self):
-        # The Template's docstring carries the doctests; the synthesized
-        # function's OWN docstring is deliberately wrong to prove the Template's
+    def test_passes_when_synthesized_function_meets_skill_doctests(self):
+        # The Skill's docstring carries the doctests; the synthesized
+        # function's OWN docstring is deliberately wrong to prove the Skill's
         # docstring is what gets run.
-        @Template.define
+        @Skill.define
         def triple_it(x: int) -> int:
             """Return triple the integer {x}.
 
@@ -1706,7 +1706,7 @@ class TestSynthesizeAndCallDoctests:
         assert mock.call_count == 1
 
     def test_rejects_then_retries_when_doctests_fail(self):
-        @Template.define
+        @Skill.define
         def triple_it(x: int) -> int:
             """Return triple the integer {x}.
 
@@ -1737,8 +1737,8 @@ class TestSynthesizeAndCallDoctests:
         assert result == 6
         assert mock.call_count == 2
 
-    def test_template_without_doctests_synthesizes_normally(self):
-        @Template.define
+    def test_skill_without_doctests_synthesizes_normally(self):
+        @Skill.define
         def triple_it(x: int) -> int:
             """Return triple the integer {x}."""
             raise NotHandled
@@ -1759,16 +1759,16 @@ class TestSynthesizeAndCallDoctests:
         assert mock.call_count == 1
 
     def test_agent_method_doctests_route_to_synthesized_function(self):
-        """An Agent-method Template's doctests build their own instances
+        """An Agent-method Skill's doctests build their own instances
         (``agent = Doubler()``), so each ``agent.double(...)`` call dispatches a
         *fresh* per-instance op -- distinct from the one that triggered
-        synthesis.  Matching on the shared class-level template reroutes every
+        synthesis.  Matching on the shared class-level skill reroutes every
         such call to the synthesized function (with the instance passed as
         ``self``), so the doctests validate the synthesized code instead of
         re-synthesizing or hitting the LLM."""
 
         class Doubler(Agent):
-            @Template.define
+            @Skill.define
             def double(self, x: int) -> int:
                 """Return double the integer {x}.
 
@@ -1782,7 +1782,7 @@ class TestSynthesizeAndCallDoctests:
 
         # A drop-in syntactic replacement for the method body keeps `self` in the
         # signature; the synthesized function's OWN docstring is deliberately
-        # wrong to prove the Template's docstring is what gets run.
+        # wrong to prove the Skill's docstring is what gets run.
         good = (
             "def double(self, x: int) -> int:\n"
             '    """>>> never\n'
@@ -1990,9 +1990,9 @@ def type_error_tool(x: int) -> str:
 
 
 def _drive_repl(body):
-    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Skill call.
 
-    A tiny `Template.__apply__` handler stands in for the LLM loop, handing
+    A tiny `Skill.__apply__` handler stands in for the LLM loop, handing
     `body` the call's `exec_code` tool so it runs against one REPL session (the
     supported way to reach a session).  Install any outer handlers (e.g.
     `RetryLLMHandler`) around the call.  Returns `body`'s result.
@@ -2001,12 +2001,12 @@ def _drive_repl(body):
     repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
-        @implements(Template.__apply__)
+        @implements(Skill.__apply__)
         def _call(self, *_a, **_k):
             box.append(body(repl.exec_code))
             return None
 
-    @Template.define
+    @Skill.define
     def _t() -> None:
         """Drive one REPL-scoped call."""
         raise NotImplementedError
@@ -2148,7 +2148,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
 
 
 class TestLiteLLMProviderMessagePruning:
-    """LiteLLMProvider should prune messages added during a failed template call."""
+    """LiteLLMProvider should prune messages added during a failed skill call."""
 
     def test_messages_pruned_on_tool_execution_error(self):
         """When a tool error propagates, all messages from that call are pruned."""
@@ -2160,7 +2160,7 @@ class TestLiteLLMProviderMessagePruning:
 
         message_sequence = []
 
-        @Template.define
+        @Skill.define
         def task_with_flaky_tool(instruction: str) -> str:
             """Do: {instruction}"""
             raise NotHandled
@@ -2185,7 +2185,7 @@ class TestLiteLLMProviderMessagePruning:
 
         message_sequence = []
 
-        @Template.define
+        @Skill.define
         def task_with_tools(instruction: str) -> str:
             """Do: {instruction}"""
             raise NotHandled
@@ -2209,7 +2209,7 @@ class TestLiteLLMProviderMessagePruning:
 
         message_sequence = [{"role": "user", "content": "hello"}]
 
-        @Template.define
+        @Skill.define
         def task_with_flaky_tool(instruction: str) -> str:
             """Do: {instruction}"""
             raise NotHandled
@@ -2226,7 +2226,7 @@ class TestLiteLLMProviderMessagePruning:
         assert message_sequence == [{"role": "user", "content": "hello"}]
 
     def test_successful_call_preserves_messages(self):
-        """A successful top-level template call should write messages back to Agent history."""
+        """A successful top-level skill call should write messages back to Agent history."""
         responses = [make_text_response("done")]
         mock_handler = MockCompletionHandler(responses)
 
@@ -2235,7 +2235,7 @@ class TestLiteLLMProviderMessagePruning:
             Your goal is to complete `simple_task` and persist successful history.
             """
 
-            @Template.define
+            @Skill.define
             def simple_task(self, instruction: str) -> str:
                 """Do: {instruction}"""
                 raise NotHandled
@@ -2256,16 +2256,16 @@ class TestLiteLLMProviderMessagePruning:
         assert len(agent.__history__) >= 2
 
 
-class TestAgentCrossTemplateRecovery:
-    """Issue #558: Agent should recover from errored tool calls across template methods.
+class TestAgentCrossSkillRecovery:
+    """Issue #558: Agent should recover from errored tool calls across skill methods.
 
     When a tool call fails and the error propagates (not caught by RetryLLMHandler),
-    the agent's message history must be cleaned up so subsequent template calls
+    the agent's message history must be cleaned up so subsequent skill calls
     don't fail due to orphaned assistant tool_calls messages.
     """
 
     def test_agent_second_call_succeeds_after_tool_error(self):
-        """After a tool error in one template, another template on the same agent works."""
+        """After a tool error in one skill, another skill on the same agent works."""
 
         @Tool.define
         def bad_service() -> str:
@@ -2276,23 +2276,23 @@ class TestAgentCrossTemplateRecovery:
 
         @dataclasses.dataclass
         class TestAgent(Agent):
-            """You are a cross-template recovery test agent.
-            Your goal is to recover from failed tool calls across template methods.
+            """You are a cross-skill recovery test agent.
+            Your goal is to recover from failed tool calls across skill methods.
             """
 
-            @Template.define
+            @Skill.define
             def step_with_tool(self, task: str) -> str:
                 """Use bad_service for: {task}"""
                 raise NotHandled
 
-            @Template.define
+            @Skill.define
             def step_no_tool(self, topic: str) -> str:
                 """Summarize: {topic}. Do not use any tools."""
                 raise NotHandled
 
         # Step 1: LLM calls bad_service → tool error propagates
         tool_call_response = make_tool_call_response("bad_service", "{}")
-        # Step 2: Simple text response for the second template
+        # Step 2: Simple text response for the second skill
         text_response = make_text_response("summary result")
 
         call_count = 0
@@ -2353,7 +2353,7 @@ class TestAgentCrossTemplateRecovery:
             Your goal is to ensure failed calls do not persist message history.
             """
 
-            @Template.define
+            @Skill.define
             def do_work(self, task: str) -> str:
                 """Do: {task}"""
                 raise NotHandled
@@ -2384,7 +2384,7 @@ class TestAgentCrossTemplateRecovery:
             Your goal is to preserve message history for successful calls.
             """
 
-            @Template.define
+            @Skill.define
             def greet(self, name: str) -> str:
                 """Say hello to {name}."""
                 raise NotHandled
@@ -2415,7 +2415,7 @@ class TestAgentCrossTemplateRecovery:
             Your goal is to accumulate conversation history across successful calls.
             """
 
-            @Template.define
+            @Skill.define
             def chat(self, msg: str) -> str:
                 """Respond to: {msg}"""
                 raise NotHandled
@@ -2460,12 +2460,12 @@ class TestAgentCrossTemplateRecovery:
             Your goal is to recover after a failed call and retain only successful history.
             """
 
-            @Template.define
+            @Skill.define
             def risky(self, task: str) -> str:
                 """Do risky: {task}"""
                 raise NotHandled
 
-            @Template.define
+            @Skill.define
             def safe(self, task: str) -> str:
                 """Do safe: {task}. Do not use tools."""
                 raise NotHandled
@@ -2522,7 +2522,7 @@ class TestAgentSystemMessageDeduplication:
         class ThreeCallAgent(Agent):
             """You are a test agent for system message deduplication."""
 
-            @Template.define
+            @Skill.define
             def ask(self, question: str) -> str:
                 """Answer: {question}"""
                 raise NotHandled
@@ -2559,7 +2559,7 @@ class TestAgentSystemMessageDeduplication:
         class SystemMsgAgent(Agent):
             """You are a system message count test agent."""
 
-            @Template.define
+            @Skill.define
             def do(self, task: str) -> str:
                 """Do: {task}"""
                 raise NotHandled
@@ -2598,7 +2598,7 @@ class TestAgentSystemMessageDeduplication:
         class MemoryAgent(Agent):
             """You are a memory test agent."""
 
-            @Template.define
+            @Skill.define
             def chat(self, msg: str) -> str:
                 """User says: {msg}"""
                 raise NotHandled
@@ -2645,7 +2645,7 @@ class TestAgentSystemMessageDeduplication:
         class OrderAgent(Agent):
             """You are a message order test agent."""
 
-            @Template.define
+            @Skill.define
             def step(self, n: int) -> str:
                 """Step {n}"""
                 raise NotHandled
@@ -2712,7 +2712,7 @@ def _has_block_cache_control(msg: dict) -> bool:
 class CachingAgent(Agent):
     """A test agent with persistent history."""
 
-    @Template.define
+    @Skill.define
     def ask(self, question: str) -> str:
         """You are a helpful assistant. Answer concisely: {question}"""
         raise NotHandled
@@ -2762,7 +2762,7 @@ class TestPromptCaching:
 
     def test_non_agent_user_message_has_cache_control(self):
         """Non-agent calls are marked too: the breakpoint is a transport-level
-        concern applied to every request, so a plain Template's tool-use rounds
+        concern applied to every request, so a plain Skill's tool-use rounds
         get the same cached prefix an Agent's turns do."""
         capture = MockCompletionHandler([make_text_response("42")])
         provider = LiteLLMProvider(model="test")
@@ -2947,11 +2947,11 @@ class TestPromptCaching:
                 for block in content:
                     assert "cache_control" not in block
 
-    # `simple_prompt` is a module-level Template, so every other Template in this
+    # `simple_prompt` is a module-level Skill, so every other Skill in this
     # module is in its lexical scope and is offered to the model as a tool. What
     # these two tests assert is that the provider accepts a request carrying
     # cache_control, so `tool_choice="none"` keeps the model from wandering off
-    # into one of those tools (e.g. a synthesis Template, which needs an eval
+    # into one of those tools (e.g. a synthesis Skill, which needs an eval
     # provider installed) on a request that has nothing to do with them.
 
     @requires_openai
@@ -2983,13 +2983,13 @@ class TestSyntheticReaderIntegration:
 
     @requires_llm
     def test_llm_reads_lexical_value(self, request):
-        """Template asks LLM to inspect _known_data and report its sum.
+        """Skill asks LLM to inspect _known_data and report its sum.
         The synthetic reader for _known_data is available in the tools
         array; the LLM should call it, see [10,20,30,40,50], and report
         the sum (150)."""
         _known_data = [10, 20, 30, 40, 50]
 
-        @Template.define
+        @Skill.define
         def report_sum() -> int:
             """Use the `_known_data` tool to read the list of numbers,
             then return their sum as an integer."""
@@ -3005,17 +3005,17 @@ class TestSyntheticReaderIntegration:
         assert result == sum(_known_data)  # 150
 
     @requires_llm
-    def test_template_synthesis_uses_lexical_reader(self, request):
-        """A Template that synthesizes a callable grounds its output
+    def test_skill_synthesis_uses_lexical_reader(self, request):
+        """A Skill that synthesizes a callable grounds its output
         in a lexical value exposed as a synthetic reader.
 
-        The Template asks the LLM to write a lambda comparing its
+        The Skill asks the LLM to write a lambda comparing its
         argument against `threshold`; the LLM must call the `threshold`
         reader to inspect the value before emitting code.
         """
         threshold = 0.85
 
-        @Template.define
+        @Skill.define
         def make_above_threshold() -> Callable[[float], bool]:
             """Use the `threshold` reader tool to inspect its current
             float value, then emit a single Python function definition:
@@ -3047,13 +3047,13 @@ class TestPythonReplIntegration:
 
     @requires_llm
     def test_llm_computes_via_exec_code(self, request):
-        """A Template seeds a list in lexical scope and asks the LLM to
+        """A Skill seeds a list in lexical scope and asks the LLM to
         compute a derived statistic by running code.  The LLM uses the
         `exec_code` tool (possibly across several rounds, with state
         persisting) and returns the typed result."""
         readings = [12, 19, 23, 31, 8, 27]
 
-        @Template.define
+        @Skill.define
         def outlier_count() -> int:
             """Use the `exec_code` tool to compute how many values in the
             `readings` list lie strictly more than one population standard

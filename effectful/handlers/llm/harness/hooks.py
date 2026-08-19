@@ -26,7 +26,7 @@ from effectful.handlers.llm.harness.serialization import (
 from effectful.handlers.llm.types import (
     Agent,
     Encodable,
-    Template,
+    Skill,
     Tool,
 )
 from effectful.internals.unification import nested_type
@@ -145,9 +145,9 @@ def _tools_in_scope(
     seen: frozenset[int] = frozenset(),
 ) -> collections.abc.Set[Tool]:
     """
-    Return the tools available to a Template given its lexical context.
+    Return the tools available to a Skill given its lexical context.
 
-    Default rule: `Tool` and `Template` values bound directly in `env`, plus
+    Default rule: `Tool` and `Skill` values bound directly in `env`, plus
     those reachable through any `Agent` instance in `env` -- whatever is bound
     on the instance or declared on its class, and, recursively, the tools of any
     `Agent` those in turn hold.  `seen` guards that recursion against reference
@@ -155,7 +155,7 @@ def _tools_in_scope(
 
     Reaching through a nested `Agent` flattens its whole toolset into the result.
     That is what makes holding one as an attribute a way to compose tools, and it
-    is why a specialised sub-agent is better left a bare `Template`, whose own
+    is why a specialised sub-agent is better left a bare `Skill`, whose own
     scope stays its own.
 
     Tools are identified by object, so the same `Tool` visible under several
@@ -167,7 +167,7 @@ def _tools_in_scope(
     for name, obj in env.items():
         if not name.isidentifier():
             continue
-        if isinstance(obj, Tool | Template):
+        if isinstance(obj, Tool | Skill):
             result.add(obj)
         elif isinstance(obj, Agent) and id(obj) not in seen:
             seen |= {id(obj)}
@@ -290,11 +290,11 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     the serialised response to the model.
 
     Returns the appended tool message, the tool's return value, and whether the
-    call finalizes the Template -- always ``False`` here. Finalization is a policy
+    call finalizes the Skill -- always ``False`` here. Finalization is a policy
     a handler of this operation applies to its own tools, not a property of the
     tool's type: see
     `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`, which
-    marks its ``submit_solution`` call final so that value becomes the Template's
+    marks its ``submit_solution`` call final so that value becomes the Skill's
     result and the completion loop stops.
 
     The returned value is a :class:`ToolCallExecutionError` rather than the tool's
@@ -330,7 +330,7 @@ def call_user(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> litellm.ChatCompletionUserMessage:
     """
-    Format a `Template`'s prompt applied to arguments into a user message.
+    Format a `Skill`'s prompt applied to arguments into a user message.
     """
     parts = format_as_content_blocks(prompt_template, env)
     message = litellm.ChatCompletionUserMessage(role="user", content=parts)
@@ -344,7 +344,7 @@ def call_system(
     """Assemble the system message from the two halves of the system prompt.
 
     `agent_prompt` describes the task: the caller (`LiteLLMProvider._call`)
-    introspects it from the `Template` being called.  `harness_prompt` describes
+    introspects it from the `Skill` being called.  `harness_prompt` describes
     the machinery the task runs under, and arrives empty: each installed handler
     with something to say about the harness intercepts this operation and adds the
     section documenting the capability it provides.  This rule only has to put the

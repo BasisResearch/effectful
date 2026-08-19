@@ -5,7 +5,7 @@ Demonstrates:
 - Online: embedding a query, retrieving relevant chunks, and generating
   a grounded answer
 - ``@Tool.define`` to expose retrieval as a tool the LLM can call
-- Separation of indexing (plain Python) from generation (``@Template.define``)
+- Separation of indexing (plain Python) from generation (``@Skill.define``)
 """
 
 import argparse
@@ -14,7 +14,7 @@ import dataclasses
 import litellm
 import numpy as np
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Vector index
@@ -116,7 +116,7 @@ def build_index(documents: list[str], embedding_model: str) -> VectorIndex:
 
 
 # ---------------------------------------------------------------------------
-# RAG agent (online phase): the `retrieve` tool and `answer_question` template
+# RAG agent (online phase): the `retrieve` tool and `answer_question` skill
 # share one instance, so the tool is auto-captured from lexical scope.
 # ---------------------------------------------------------------------------
 
@@ -132,7 +132,7 @@ class RAGAgent(Agent):
         """Return the top-k most similar chunks to the query."""
         return self.index.search(query, top_k)
 
-    @Template.define
+    @Skill.define
     def answer_question(self, question: str) -> str:
         """You are a helpful assistant. Answer the user's question using ONLY
         information retrieved from the knowledge base via the retrieve tool.

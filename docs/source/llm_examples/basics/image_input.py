@@ -1,7 +1,7 @@
-"""Passing PIL images directly to a template.
+"""Passing PIL images directly to a skill.
 
 Demonstrates:
-- Templates accepting ``PIL.Image.Image`` arguments
+- Skills accepting ``PIL.Image.Image`` arguments
 - Inline base64 image data so the script is self-contained
 """
 
@@ -11,10 +11,10 @@ import io
 
 from PIL import Image
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
-@Template.define
+@Skill.define
 def describe_image(image: Image.Image) -> str:
     """Return a short description of the following image.
     {image}

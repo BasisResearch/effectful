@@ -1,13 +1,13 @@
 """Tests for LLM tool calling functionality - Book recommendation.
 
-This module is separate to avoid lexical context pollution from other templates.
+This module is separate to avoid lexical context pollution from other skills.
 """
 
 from dataclasses import dataclass
 
 from pydantic import BaseModel, Field
 
-from effectful.handlers.llm import Template, Tool
+from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import call_assistant
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
@@ -74,7 +74,7 @@ class LoggingBookRecommendationInterpretation(ObjectInterpretation):
         return recommendation
 
 
-@Template.define
+@Skill.define
 def get_book_recommendation(user_preference: str) -> BookRecommendation:
     """Get a book recommendation based on user preference: {user_preference}.
 
@@ -87,7 +87,7 @@ def get_book_recommendation(user_preference: str) -> BookRecommendation:
 class TestPydanticBaseModelToolCalls:
     @requires_llm
     def test_pydantic_basemodel_tool_calling(self):
-        """Test that templates with tools work with Pydantic BaseModel."""
+        """Test that skills with tools work with Pydantic BaseModel."""
         book_rec_ctx = LoggingBookRecommendationInterpretation()
         with (
             handler(LiteLLMProvider(model=EFFECTFUL_LLM_MODEL)),

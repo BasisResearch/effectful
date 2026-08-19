@@ -3,7 +3,7 @@ import pathlib
 
 from PIL import Image
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 
 class ImageTools(Agent):
@@ -53,7 +53,7 @@ class ImageTools(Agent):
         i3.paste(i2, (i1.width, 0))
         return self._encode(i3)
 
-    @Template.define
+    @Skill.define
     def _rotate_and_concat(self, i: int) -> int:
         """Create an image consisting of four copies of the image {i}
         concatenated horizontally. Each copy should be rotated 90 degrees from

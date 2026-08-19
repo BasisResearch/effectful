@@ -8,10 +8,10 @@ work out by hand are often easy to brute-force or verify with a short program.
 import argparse
 import collections.abc
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
-@Template.define
+@Skill.define
 def musr_object_placement(
     story: str, person: str, item: str, locations: collections.abc.Sequence[str]
 ) -> str:

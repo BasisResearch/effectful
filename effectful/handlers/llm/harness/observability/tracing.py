@@ -6,7 +6,7 @@ import pydantic
 
 from effectful.handlers.llm.harness.hooks import call_tool, completion
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
-from effectful.handlers.llm.types import Encodable, Template
+from effectful.handlers.llm.types import Encodable, Skill
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -14,7 +14,7 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 
 @dataclasses.dataclass(frozen=True)
 class LangfuseTracer(ObjectInterpretation):
-    """Traces Tool, Template, and completion calls with Langfuse.
+    """Traces Tool, Skill, and completion calls with Langfuse.
 
     Compose with a provider via :func:`~effectful.ops.semantics.handler`
     to add tracing::
@@ -86,9 +86,9 @@ class LangfuseTracer(ObjectInterpretation):
             obs.update(output=message["content"], metadata={"is_final": is_final})
             return message, result, is_final
 
-    @implements(Template.__apply__)
-    def call_template(self, template: Template, *args, **kwargs):
-        bound = inspect.signature(template).bind(*args, **kwargs)
+    @implements(Skill.__apply__)
+    def call_skill(self, skill: Skill, *args, **kwargs):
+        bound = inspect.signature(skill).bind(*args, **kwargs)
         bound.apply_defaults()
         agent_input = {
             name: pydantic.TypeAdapter(
@@ -97,7 +97,7 @@ class LangfuseTracer(ObjectInterpretation):
             for name, value in bound.arguments.items()
         }
         with self.client.start_as_current_observation(
-            as_type="agent", name=template.__name__, input=agent_input
+            as_type="agent", name=skill.__name__, input=agent_input
         ) as obs:
             result = fwd()
             obs.update(

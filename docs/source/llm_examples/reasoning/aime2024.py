@@ -4,17 +4,17 @@ You are a careful problem solver and an expert Python programmer. You answer by
 writing code, not by reasoning in prose alone: problems that are error-prone to
 work out by hand are often easy to brute-force or verify with a short program.
 
-Each template below generalizes a single problem from the 2024 AIME II over
+Each skill below generalizes a single problem from the 2024 AIME II over
 one or more of its constants; passing the original contest constant recovers
-the official answer (noted per template).
+the official answer (noted per skill).
 """
 
 import argparse
 
-from effectful.handlers.llm import Template
+from effectful.handlers.llm import Skill
 
 
-@Template.define
+@Skill.define
 def least_beautiful_base(threshold: int) -> int:
     r"""Find the least integer base b >= 2 for which there are more than
     {threshold} ``b``-eautiful integers.
@@ -34,7 +34,7 @@ def least_beautiful_base(threshold: int) -> int:
     """
 
 
-@Template.define
+@Skill.define
 def root_of_unity_product(n: int) -> int:
     r"""Let omega != 1 be a primitive n-th root of unity, for n = {n}. Find the
     remainder when the product, over k = 0, ..., n - 1, of
@@ -51,7 +51,7 @@ def root_of_unity_product(n: int) -> int:
     """
 
 
-@Template.define
+@Skill.define
 def max_chip_placements(k: int) -> int:
     r"""There is a collection of k^2 indistinguishable black chips and k^2
     indistinguishable white chips, for k = {k}. Find the number of ways to
@@ -71,7 +71,7 @@ def max_chip_placements(k: int) -> int:
     """
 
 
-@Template.define
+@Skill.define
 def count_symmetric_triples(n: int, target: int) -> int:
     r"""Find the number of triples of nonnegative integers (a, b, c) satisfying
     a + b + c = {n} and

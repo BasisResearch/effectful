@@ -38,7 +38,7 @@ effectful idiom rather than a subsystem:
   * **The paper's "refiner" is `TenacityRetryer` plus decode-time certification.** It
     reports needing a dedicated step for "malformed code blocks, import errors, syntax
     issues ... essential for code and agent artifacts where minor formatting errors
-    cause complete evaluation failure". A code artifact here is a ``Template``
+    cause complete evaluation failure". A code artifact here is a ``Skill``
     returning a ``Callable``: the model's source is parsed, type-checked against the
     requested signature, compiled, and its own doctests are run at decode time, so a
     malformed candidate is fed its own error and revised before it ever reaches the
@@ -86,11 +86,11 @@ from effectful.ops.semantics import handler
 # Optuna comparison and the scheduling algorithms, the artifact is the solution and the
 # evaluator is code.) In effectful "run this call on a different model" is a scoped
 # handler, so ``worker(...)`` is all the machinery that split needs -- no config
-# system, no per-template model registry.
+# system, no per-skill model registry.
 #
 # One consequence worth knowing, because it affects how the numbers those domains
 # report should be read: this provider does *not* shadow the harness's
-# ``TenacityRetryer``. It implements ``completion`` and ``Template.__apply__``, while
+# ``TenacityRetryer``. It implements ``completion`` and ``Skill.__apply__``, while
 # the retryer intercepts ``call_assistant``, which sits between them -- so a worker
 # answer that fails to decode is fed its own error and asked again, up to the harness's
 # retry limit, exactly as a proposer call would be. Only a failure that exhausts the
@@ -178,7 +178,7 @@ class Rollout:
 
 # ---------------------------------------------------------------------------
 # The generic engine. No LLM appears below this line except through ``proposer``,
-# which is the domain's Template call: everything else -- selection, minibatching,
+# which is the domain's Skill call: everything else -- selection, minibatching,
 # acceptance, pruning, caching -- is ordinary Python.
 # ---------------------------------------------------------------------------
 

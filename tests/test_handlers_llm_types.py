@@ -13,7 +13,7 @@ import pydantic
 import pytest
 from litellm import ModelResponse
 
-from effectful.handlers.llm import Agent, Encodable, Template, Tool
+from effectful.handlers.llm import Agent, Encodable, Skill, Tool
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
@@ -24,7 +24,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
-    template_system_prompt,
+    skill_system_prompt,
 )
 from effectful.handlers.llm.harness.observability.rendering import _message_text
 from effectful.handlers.llm.harness.provision import LiteLLMProvider
@@ -43,61 +43,59 @@ from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests.conftest import offered_tools, template_tools
+from tests.conftest import offered_tools, skill_tools
 
 
-class TemplateStringIntp(ObjectInterpretation):
-    """Returns the result of template formatting as a string. Only supports
-    templates that produce string prompts.
+class SkillStringIntp(ObjectInterpretation):
+    """Returns the result of skill formatting as a string. Only supports
+    skills that produce string prompts.
 
     """
 
-    @implements(Template.__apply__)
-    def _[**P, T](
-        self, template: Template[P, T], *args: P.args, **kwargs: P.kwargs
-    ) -> T:
-        bound_args = inspect.signature(template).bind(*args, **kwargs)
+    @implements(Skill.__apply__)
+    def _[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+        bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
-        env = template.__context__.new_child(bound_args.arguments)
-        model_input = call_user(template.__doc__, env)
-        template_result = model_input["content"]
-        assert len(template_result) == 1
-        return template_result[0]["text"]
+        env = skill.__context__.new_child(bound_args.arguments)
+        model_input = call_user(skill.__doc__, env)
+        skill_result = model_input["content"]
+        assert len(skill_result) == 1
+        return skill_result[0]["text"]
 
 
-def test_template_formatting_simple():
-    @Template.define
+def test_skill_formatting_simple():
+    @Skill.define
     @staticmethod
     def rhyme(a: str, b: str) -> str:
         """The {a} sat in the {b}."""
         raise NotHandled
 
-    with handler(TemplateStringIntp()):
+    with handler(SkillStringIntp()):
         assert rhyme("cat", "hat").endswith("The cat sat in the hat.")
 
 
-def test_template_formatting_method():
+def test_skill_formatting_method():
     @dataclass
     class User:
         name: str
 
-        @Template.define
+        @Skill.define
         def greet(self, day: str) -> float:
             """Greet the user '{self.name}' and wish them a good {day}."""
             raise NotHandled
 
-    with handler(TemplateStringIntp()):
+    with handler(SkillStringIntp()):
         user = User("Bob")
         assert user.greet("Monday").endswith(
             "Greet the user 'Bob' and wish them a good Monday."
         )
 
 
-def _make_template_in_own_scope():
-    """Module-level helper: the template's lexical scope is this function,
+def _make_skill_in_own_scope():
+    """Module-level helper: the skill's lexical scope is this function,
     NOT whatever dynamic caller invokes it."""
 
-    @Template.define
+    @Skill.define
     def t() -> str:
         """test"""
         raise NotHandled
@@ -106,25 +104,25 @@ def _make_template_in_own_scope():
 
 
 class _ModuleLevelA:
-    @Template.define
+    @Skill.define
     def f(self) -> str:
         """Do stuff"""
         raise NotImplementedError
 
 
-def _define_scoped_templates():
+def _define_scoped_skills():
     @Tool.define
     def shown(self) -> int:
         """Should be able to see this tool."""
         return 0
 
     class A:
-        @Template.define
+        @Skill.define
         def f(self) -> str:
             """test"""
             return ""
 
-    @Template.define
+    @Skill.define
     def g() -> int:
         """test"""
         return 0
@@ -132,7 +130,7 @@ def _define_scoped_templates():
     def _nested():
         nonlocal shown
 
-        @Template.define
+        @Skill.define
         def h() -> int:
             """test"""
             return 0
@@ -140,13 +138,13 @@ def _define_scoped_templates():
         return h
 
     class B:
-        @Template.define
+        @Skill.define
         def i(self) -> str:
             """test"""
             return ""
 
         class C:
-            @Template.define
+            @Skill.define
             def j(self) -> str:
                 """test"""
                 return ""
@@ -218,8 +216,8 @@ class MockCompletionHandler(ObjectInterpretation):
 def _document_headings(md: str) -> list[str]:
     """The ATX headings of `md`, ignoring fenced code blocks.
 
-    The system prompt embeds the Template's module -- this very file, for a
-    Template defined in a test -- as a fenced block, so a plain substring check
+    The system prompt embeds the Skill's module -- this very file, for a
+    Skill defined in a test -- as a fenced block, so a plain substring check
     for a heading matches the assertion literal in that embedded source rather
     than the assembled document.  Skipping fences asserts on the real outline.
     """
@@ -255,28 +253,28 @@ class ChatBot(Agent):
 
     bot_name: str = dataclasses.field(default="ChatBot")
 
-    @Template.define
+    @Skill.define
     def send(self, user_input: str) -> str:
         """A friendly bot named {self.bot_name}. User writes: {user_input}"""
         raise NotHandled
 
 
 class _DesignerAgent(Agent):
-    """You are an agent for nested-template regression tests.
-    Your goal is to call nested tools/templates and return a final response.
+    """You are an agent for nested-skill regression tests.
+    Your goal is to call nested tools/skills and return a final response.
     """
 
-    @Template.define
+    @Skill.define
     def nested_check(self, payload: str) -> str:
         """Check: {payload}. Do not use tools."""
         raise NotHandled
 
     @Tool.define
     def nested_tool(self, payload: str) -> str:
-        """Check payload by calling a nested LLM template."""
+        """Check payload by calling a nested LLM skill."""
         return self.nested_check(payload)
 
-    @Template.define
+    @Skill.define
     def outer(self, payload: str) -> str:
         """Call `nested_tool` for: {payload}, then return final answer."""
         raise NotHandled
@@ -384,7 +382,7 @@ class TestAgentHistoryAccumulation:
 
 
 class TestAgentIsolation:
-    """Each agent instance has independent history; non-agent templates are unaffected."""
+    """Each agent instance has independent history; non-agent skills are unaffected."""
 
     def test_two_agents_have_independent_histories(self):
         mock = MockCompletionHandler(
@@ -406,8 +404,8 @@ class TestAgentIsolation:
         # Each bot made exactly one call, so their histories should be equal in size
         assert len(bot1.__history__) == len(bot2.__history__)
 
-    def test_non_agent_template_gets_fresh_sequence(self):
-        @Template.define
+    def test_non_agent_skill_gets_fresh_sequence(self):
+        @Skill.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
@@ -484,7 +482,7 @@ class TestSystemPromptInvariant:
             Your goal is to produce an integer response after retry feedback.
             """
 
-            @Template.define
+            @Skill.define
             def pick_number(self) -> int:
                 """Pick a number."""
                 raise NotHandled
@@ -508,8 +506,8 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[0])
         assert_single_system_message_first(mock.received_messages[1])
 
-    def test_non_agent_template_calls_have_one_system_message(self):
-        @Template.define
+    def test_non_agent_skill_calls_have_one_system_message(self):
+        @Skill.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
@@ -529,7 +527,7 @@ class TestSystemPromptInvariant:
         assert_single_system_message_first(mock.received_messages[1])
 
     def test_system_message_assembled_from_introspection(self):
-        @Template.define
+        @Skill.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
@@ -540,9 +538,9 @@ class TestSystemPromptInvariant:
 
         assert_single_system_message_first(mock.received_messages[0])
         content = _message_text(mock.received_messages[0][0]["content"])
-        # The content is a Markdown document introspected from the Template and
+        # The content is a Markdown document introspected from the Skill and
         # rendered from the assembled prompt, not a stored attribute: the task
-        # half is a `#` section and the Template's spec a `###` subsection of it.
+        # half is a `#` section and the Skill's spec a `###` subsection of it.
         headings = _document_headings(content)
         assert "# `standalone(topic: str) -> str`" in headings
         assert "### `standalone(topic: str) -> str`" in headings
@@ -608,7 +606,7 @@ class TestSystemPromptDocument:
         """A handler adds the section describing itself to `harness_prompt` and
         forwards, leaving the section it was handed untouched."""
 
-        @Template.define
+        @Skill.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
@@ -639,9 +637,7 @@ class TestSystemPromptDocument:
         harness_prompt = self._section("Harness", [])
         with handler(Documented()):
             content = _message_text(
-                call_system(harness_prompt, template_system_prompt(standalone))[
-                    "content"
-                ]
+                call_system(harness_prompt, skill_system_prompt(standalone))["content"]
             )
 
         assert "# Harness\n\n## Documented" in content
@@ -652,16 +648,16 @@ class TestSystemPromptDocument:
 class TestAgentDocstringFallback:
     """Agent subclasses' class docstrings flow into the assembled system message."""
 
-    def _system_content(self, template):
+    def _system_content(self, skill):
         message = call_system(
             PromptSection(type="prompt_section", title="Harness", content=[]),
-            template_system_prompt(template),
+            skill_system_prompt(skill),
         )
         return _message_text(message["content"])
 
     def test_missing_docstring_uses_inherited_doc(self):
         class MissingDocAgent(Agent):
-            @Template.define
+            @Skill.define
             def act(self) -> str:
                 """Do something."""
                 raise NotHandled
@@ -683,7 +679,7 @@ class TestAgentDocstringFallback:
             Your goal is to satisfy the explicit Agent docstring requirement.
             """
 
-            @Template.define
+            @Skill.define
             def act(self) -> str:
                 """Do something."""
                 raise NotHandled
@@ -702,7 +698,7 @@ class TestAgentCachedProperty:
             Your goal is to expose lazily initialized Agent state.
             """
 
-            @Template.define
+            @Skill.define
             def greet(self, name: str) -> str:
                 """Hello {name}."""
                 raise NotHandled
@@ -721,7 +717,7 @@ class TestAgentCachedProperty:
             def __init__(self, name: str):
                 self.name = name
 
-            @Template.define
+            @Skill.define
             def greet(self) -> str:
                 """Say hello."""
                 raise NotHandled
@@ -751,7 +747,7 @@ class TestAgentWithToolCalls:
             Your goal is to call arithmetic tools and return a textual answer.
             """
 
-            @Template.define
+            @Skill.define
             def compute(self, question: str) -> str:
                 """Answer: {question}"""
                 raise NotHandled
@@ -794,7 +790,7 @@ class TestAgentWithRetryHandler:
             Your goal is to return an integer after potential retry corrections.
             """
 
-            @Template.define
+            @Skill.define
             def pick_number(self) -> int:
                 """Pick a number."""
                 raise NotHandled
@@ -818,17 +814,17 @@ class TestAgentWithRetryHandler:
         assert {"user", "assistant"} == roles - {"system"}
 
 
-class TestNestedTemplateCalling:
-    """Issue #560: nested Template invocation via tool on the same Agent.
+class TestNestedSkillCalling:
+    """Issue #560: nested Skill invocation via tool on the same Agent.
 
-    When a Template triggers a tool call whose implementation invokes
-    another Template on the same Agent, the inner call must:
+    When a Skill triggers a tool call whose implementation invokes
+    another Skill on the same Agent, the inner call must:
     - work on a fresh copy of the agent's history
     - NOT write its messages back to agent.__history__
-    - return its result correctly so the outer template can continue
+    - return its result correctly so the outer skill can continue
     """
 
-    def test_same_agent_nested_template_via_tool(self):
+    def test_same_agent_nested_skill_via_tool(self):
         """The scenario from issue #560 completes without error."""
         mock = MockCompletionHandler(
             [
@@ -845,7 +841,7 @@ class TestNestedTemplateCalling:
         assert result == "all good"
 
     def test_only_outermost_writes_to_history(self):
-        """Inner template's messages are absent from agent.__history__."""
+        """Inner skill's messages are absent from agent.__history__."""
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
@@ -867,9 +863,9 @@ class TestNestedTemplateCalling:
         assert roles.count("assistant") == 2  # tool_call + final
         assert roles.count("tool") == 1
 
-    def test_inner_template_gets_fresh_messages(self):
-        """The nested template's LLM call sees only its own system + user,
-        not the outer template's in-flight messages."""
+    def test_inner_skill_gets_fresh_messages(self):
+        """The nested skill's LLM call sees only its own system + user,
+        not the outer skill's in-flight messages."""
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("nested_tool", '{"payload": "demo"}'),
@@ -888,8 +884,8 @@ class TestNestedTemplateCalling:
         inner_roles = [m["role"] for m in mock.received_messages[1]]
         assert {"user"} <= set(inner_roles) <= {"system", "user"}
 
-    def test_inner_template_sees_prior_completed_history(self):
-        """After a previous top-level call, the nested inner template sees
+    def test_inner_skill_sees_prior_completed_history(self):
+        """After a previous top-level call, the nested inner skill sees
         the completed history but NOT the current outer call's in-flight messages."""
         mock = MockCompletionHandler(
             [
@@ -949,7 +945,7 @@ class TestNestedTemplateCalling:
 class _HelperAgent(Agent):
     """You are a helper agent for cross-agent nesting regression tests."""
 
-    @Template.define
+    @Skill.define
     def answer(self, q: str) -> str:
         """Answer: {q}. Do not use tools."""
         raise NotHandled
@@ -966,17 +962,17 @@ class _OrchestratorAgent(Agent):
         """Ask the helper agent a question."""
         return self._helper.answer(q)
 
-    @Template.define
+    @Skill.define
     def run(self, task: str) -> str:
         """Task: {task}"""
         raise NotHandled
 
 
-class TestCrossAgentNestedTemplateCalling:
+class TestCrossAgentNestedSkillCalling:
     """A tool call that delegates to a *different* Agent must write back that
     agent's own history, not be mistaken for a same-agent nested call.
 
-    `HistoryBuilder.call_template` keys its outermost-call detection on the
+    `HistoryBuilder.call_skill` keys its outermost-call detection on the
     identity of each agent's `__history__` (`agents_called`), so being inside
     *some* transaction is not enough to make a call look nested: only a second
     call against the same agent's history is, and a different agent invoked
@@ -1030,18 +1026,18 @@ class TestCrossAgentNestedTemplateCalling:
 
 
 # ---------------------------------------------------------------------------
-# Template method and scoping tests (moved from test_handlers_llm_template.py)
+# Skill method and scoping tests (moved from test_handlers_llm_types.py)
 # ---------------------------------------------------------------------------
 
 
-def test_template_method():
-    """Test that methods can be used as templates."""
+def test_skill_method():
+    """Test that methods can be used as skills."""
     local_variable = None  # noqa: F841
 
     @dataclass
     class A(Agent):
-        """You are a template-method test agent.
-        Your goal is to expose method tools and method templates correctly.
+        """You are a skill-method test agent.
+        Your goal is to expose method tools and method skills correctly.
         """
 
         x: int
@@ -1051,21 +1047,21 @@ def test_template_method():
             """Returns a random number, chosen by fair dice roll."""
             return 4
 
-        @Template.define
+        @Skill.define
         def f(self) -> int:
             """What is the number after 3?"""
             raise NotHandled
 
     a = A(0)
-    assert isinstance(a.f, Template)
-    assert a.random in template_tools(a.f)
-    # f is the template itself — found via self but correctly removed (non-recursive)
-    assert a.f not in template_tools(a.f)
-    assert any(t() == 4 for t in template_tools(a.f) if t is a.random)
+    assert isinstance(a.f, Skill)
+    assert a.random in skill_tools(a.f)
+    # f is the skill itself — found via self but correctly removed (non-recursive)
+    assert a.f not in skill_tools(a.f)
+    assert any(t() == 4 for t in skill_tools(a.f) if t is a.random)
 
     class B(A):
-        """You are a derived template-method test agent.
-        Your goal is to add inherited-tool coverage for method-template tests.
+        """You are a derived skill-method test agent.
+        Your goal is to add inherited-tool coverage for method-skill tests.
         """
 
         @Tool.define
@@ -1074,13 +1070,13 @@ def test_template_method():
             return str(reversed(s))
 
     b = B(1)
-    assert isinstance(b.f, Template)
-    assert b.random in template_tools(b.f)
-    assert b.reverse in template_tools(b.f)
+    assert isinstance(b.f, Skill)
+    assert b.random in skill_tools(b.f)
+    assert b.reverse in skill_tools(b.f)
 
 
-def test_template_method_nested_class():
-    """Test that template methods work on nested classes."""
+def test_skill_method_nested_class():
+    """Test that skill methods work on nested classes."""
     local_variable = "test"  # noqa: F841
 
     @Tool.define
@@ -1096,36 +1092,36 @@ def test_template_method_nested_class():
         class B:
             y: bool
 
-            @Template.define
+            @Skill.define
             def f(self) -> int:
                 """What is the number after 3?"""
                 raise NotHandled
 
     a = A.B(True)
-    assert isinstance(a.f, Template)
-    tools = template_tools(a.f)
+    assert isinstance(a.f, Skill)
+    tools = skill_tools(a.f)
     # random is found via the enclosing function scope
     assert random in tools
-    # f is the template itself — found via self but correctly removed (non-recursive)
+    # f is the skill itself — found via self but correctly removed (non-recursive)
     assert a.f not in tools
     assert random() == 4
 
 
-def test_template_method_module():
-    """Test that template methods work when defined on module-level classes."""
+def test_skill_method_module():
+    """Test that skill methods work when defined on module-level classes."""
     a = _ModuleLevelA()
-    assert isinstance(a.f, Template)
+    assert isinstance(a.f, Skill)
 
 
-def test_template_method_scoping():
+def test_skill_method_scoping():
     @Tool.define
     def hidden(self) -> int:
         """Shouldn't be able to see this tool."""
         return 0
 
-    templates = _define_scoped_templates()
-    for t in templates:
-        assert isinstance(t, Template)
+    skills = _define_scoped_skills()
+    for t in skills:
+        assert isinstance(t, Skill)
         assert "shown" in t.__context__
         assert "hidden" not in t.__context__
 
@@ -1136,7 +1132,7 @@ def test_template_method_scoping():
 
 
 class TestLexicalScopeCollection:
-    """Tests that Template.define follows Python's lexical scope rules."""
+    """Tests that Skill.define follows Python's lexical scope rules."""
 
     def test_class_body_locals_excluded_from_context(self):
         """Class body variables (like __qualname__, field defaults) should not
@@ -1152,7 +1148,7 @@ class TestLexicalScopeCollection:
                 """A tool."""
                 return 42
 
-            @Template.define
+            @Skill.define
             def ask(self) -> str:
                 """Ask something."""
                 raise NotHandled
@@ -1165,7 +1161,7 @@ class TestLexicalScopeCollection:
         assert "Foo" in foo.ask.__context__
 
     def test_enclosing_function_scope_visible(self):
-        """Tools defined in the enclosing function are visible to templates
+        """Tools defined in the enclosing function are visible to skills
         defined inside a class in that function."""
 
         @Tool.define
@@ -1174,22 +1170,22 @@ class TestLexicalScopeCollection:
             return 99
 
         class Bar:
-            @Template.define
+            @Skill.define
             def ask(self) -> str:
                 """Ask something."""
                 raise NotHandled
 
         bar = Bar()
-        assert helper in template_tools(bar.ask)
+        assert helper in skill_tools(bar.ask)
 
     def test_dynamic_caller_not_leaked(self):
         """Variables from a dynamic caller (not lexical enclosure) should not
-        appear in the template's context."""
+        appear in the skill's context."""
         leaked = False  # noqa: F841
 
-        # _make_template_in_own_scope is defined at module level, so
+        # _make_skill_in_own_scope is defined at module level, so
         # this test method is a dynamic caller, not a lexical encloser.
-        t = _make_template_in_own_scope()
+        t = _make_skill_in_own_scope()
         assert "leaked" not in t.__context__
 
     def test_class_method_tools_discovered_via_self(self):
@@ -1207,15 +1203,15 @@ class TestLexicalScopeCollection:
                 """Measure the widget."""
                 return 10
 
-            @Template.define
+            @Skill.define
             def describe(self) -> str:
                 """Describe this widget."""
                 raise NotHandled
 
         w = Widget()
-        assert w.measure in template_tools(w.describe)
-        # The template itself is not in tools (non-recursive)
-        assert w.describe not in template_tools(w.describe)
+        assert w.measure in skill_tools(w.describe)
+        # The skill itself is not in tools (non-recursive)
+        assert w.describe not in skill_tools(w.describe)
 
     def test_inherited_tools_visible(self):
         """Tools from a base Agent class are visible through the instance."""
@@ -1235,16 +1231,16 @@ class TestLexicalScopeCollection:
             Your goal is to consume tools inherited from a base agent class.
             """
 
-            @Template.define
+            @Skill.define
             def ask(self) -> str:
                 """Ask something."""
                 raise NotHandled
 
         d = Derived()
-        assert d.base_tool in template_tools(d.ask)
+        assert d.base_tool in skill_tools(d.ask)
 
     def test_tool_in_enclosing_function_visible_through_class(self):
-        """function -> class -> Template.define: tool in the function is visible."""
+        """function -> class -> Skill.define: tool in the function is visible."""
 
         @Tool.define
         def outer_tool() -> int:
@@ -1252,15 +1248,15 @@ class TestLexicalScopeCollection:
             return 1
 
         class Inner:
-            @Template.define
+            @Skill.define
             def ask(self) -> str:
                 """Ask something."""
                 raise NotHandled
 
-        assert outer_tool in template_tools(Inner().ask)
+        assert outer_tool in skill_tools(Inner().ask)
 
     def test_tool_in_enclosing_function_visible_through_nested_classes(self):
-        """function -> class -> class -> Template.define: tool in the function
+        """function -> class -> class -> Skill.define: tool in the function
         is still visible after skipping multiple class body frames."""
 
         @Tool.define
@@ -1270,15 +1266,15 @@ class TestLexicalScopeCollection:
 
         class Outer:
             class Inner:
-                @Template.define
+                @Skill.define
                 def ask(self) -> str:
                     """Ask something."""
                     raise NotHandled
 
-        assert outer_tool in template_tools(Outer.Inner().ask)
+        assert outer_tool in skill_tools(Outer.Inner().ask)
 
     def test_nested_function_then_class(self):
-        """function -> function -> class -> Template.define: all enclosing
+        """function -> function -> class -> Skill.define: all enclosing
         function scopes are visible, matching Python's lexical scope rules."""
 
         def _make():
@@ -1288,7 +1284,7 @@ class TestLexicalScopeCollection:
                 return 2
 
             class MyClass:
-                @Template.define
+                @Skill.define
                 def ask(self) -> str:
                     """Ask."""
                     raise NotHandled
@@ -1297,13 +1293,13 @@ class TestLexicalScopeCollection:
 
         outer_var = True  # noqa: F841
         cls, inner_tool = _make()
-        assert inner_tool in template_tools(cls().ask)
+        assert inner_tool in skill_tools(cls().ask)
         # The test method is a lexical encloser of _make, so its locals
         # are visible — matching Python's actual scoping rules.
         assert "outer_var" in cls().ask.__context__
 
-    def test_nested_function_scopes_template_at_inner(self):
-        """function -> function -> Template.define: template sees all
+    def test_nested_function_scopes_skill_at_inner(self):
+        """function -> function -> Skill.define: skill sees all
         enclosing function scopes, matching Python's lexical scope rules."""
 
         def _outer():
@@ -1312,7 +1308,7 @@ class TestLexicalScopeCollection:
             def _inner():
                 inner_var = "inner"  # noqa: F841
 
-                @Template.define
+                @Skill.define
                 def t() -> str:
                     """test"""
                     raise NotHandled
@@ -1327,32 +1323,32 @@ class TestLexicalScopeCollection:
 
 
 # ---------------------------------------------------------------------------
-# staticmethod / classmethod Templates
+# staticmethod / classmethod Skills
 # ---------------------------------------------------------------------------
 
 
-class TestStaticAndClassMethodTemplates:
-    """Tests for @Template.define applied to staticmethod and classmethod descriptors."""
+class TestStaticAndClassMethodSkills:
+    """Tests for @Skill.define applied to staticmethod and classmethod descriptors."""
 
-    def test_staticmethod_template_in_class(self):
-        """@Template.define @staticmethod in a class body produces a Template
+    def test_staticmethod_skill_in_class(self):
+        """@Skill.define @staticmethod in a class body produces a Skill
         accessible as a class attribute."""
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @staticmethod
             def ask(question: str) -> str:
                 """Answer: {question}"""
                 raise NotHandled
 
-        assert isinstance(MyClass.ask, Template)
-        assert isinstance(MyClass().ask, Template)
+        assert isinstance(MyClass.ask, Skill)
+        assert isinstance(MyClass().ask, Skill)
 
-    def test_staticmethod_template_callable(self):
-        """Staticmethod Templates can be called through a handler."""
+    def test_staticmethod_skill_callable(self):
+        """Staticmethod Skills can be called through a handler."""
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @staticmethod
             def ask(question: str) -> str:
                 """Answer: {question}"""
@@ -1363,8 +1359,8 @@ class TestStaticAndClassMethodTemplates:
             result = MyClass.ask("what is 6*7?")
         assert result == "42"
 
-    def test_staticmethod_template_captures_enclosing_scope(self):
-        """A staticmethod Template captures the enclosing function scope,
+    def test_staticmethod_skill_captures_enclosing_scope(self):
+        """A staticmethod Skill captures the enclosing function scope,
         even through the re-entrant _define_staticmethod call."""
 
         @Tool.define
@@ -1373,21 +1369,21 @@ class TestStaticAndClassMethodTemplates:
             return 99
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @staticmethod
             def ask(x: int) -> int:
                 """Compute {x}."""
                 raise NotHandled
 
-        assert helper in template_tools(MyClass.ask)
+        assert helper in skill_tools(MyClass.ask)
 
-    def test_staticmethod_template_excludes_class_body(self):
-        """A staticmethod Template does not capture class body locals."""
+    def test_staticmethod_skill_excludes_class_body(self):
+        """A staticmethod Skill does not capture class body locals."""
 
         class MyClass:
             class_var = 42  # noqa: F841
 
-            @Template.define
+            @Skill.define
             @staticmethod
             def ask() -> str:
                 """Ask."""
@@ -1395,24 +1391,24 @@ class TestStaticAndClassMethodTemplates:
 
         assert "class_var" not in MyClass.ask.__context__
 
-    def test_classmethod_template_in_class(self):
-        """@Template.define @classmethod in a class body produces a Template
+    def test_classmethod_skill_in_class(self):
+        """@Skill.define @classmethod in a class body produces a Skill
         accessible as a class attribute (lazily via _ClassMethodOpDescriptor)."""
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @classmethod
             def ask(cls, question: str) -> str:
                 """Answer: {question}"""
                 raise NotHandled
 
-        assert isinstance(MyClass.ask, Template)
+        assert isinstance(MyClass.ask, Skill)
 
-    def test_classmethod_template_callable(self):
-        """Classmethod Templates can be called through a handler."""
+    def test_classmethod_skill_callable(self):
+        """Classmethod Skills can be called through a handler."""
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @classmethod
             def ask(cls, question: str) -> str:
                 """Answer: {question}"""
@@ -1423,12 +1419,12 @@ class TestStaticAndClassMethodTemplates:
             result = MyClass.ask("is the sky blue?")
         assert result == "yes"
 
-    def test_classmethod_template_signature_excludes_cls(self):
-        """The classmethod Template's signature does not include cls,
+    def test_classmethod_skill_signature_excludes_cls(self):
+        """The classmethod Skill's signature does not include cls,
         since the classmethod descriptor binds it automatically."""
 
         class MyClass:
-            @Template.define
+            @Skill.define
             @classmethod
             def ask(cls, question: str) -> str:
                 """Answer: {question}"""
@@ -1438,21 +1434,21 @@ class TestStaticAndClassMethodTemplates:
         assert "cls" not in sig.parameters
         assert "question" in sig.parameters
 
-    def test_agent_skips_staticmethod_template(self):
-        """Agent.__init_subclass__ does not wrap staticmethod Templates
-        in cached_property — they remain accessible as plain Templates."""
+    def test_agent_skips_staticmethod_skill(self):
+        """Agent.__init_subclass__ does not wrap staticmethod Skills
+        in cached_property — they remain accessible as plain Skills."""
 
         class MyAgent(Agent):
-            """You are a staticmethod-template test agent.
-            Your goal is to verify Agent wrapping does not alter static templates.
+            """You are a staticmethod-skill test agent.
+            Your goal is to verify Agent wrapping does not alter static skills.
             """
 
-            @Template.define
+            @Skill.define
             def instance_method(self) -> str:
                 """Say hello."""
                 raise NotHandled
 
-            @Template.define
+            @Skill.define
             @staticmethod
             def static_method(x: int) -> int:
                 """Double {x}."""
@@ -1460,49 +1456,49 @@ class TestStaticAndClassMethodTemplates:
 
         agent = MyAgent()
         # instance_method is wrapped by Agent into a cached_property
-        assert isinstance(agent.instance_method, Template)
-        # static_method remains a plain Template accessible on class and instance
-        assert isinstance(MyAgent.static_method, Template)
-        assert isinstance(agent.static_method, Template)
+        assert isinstance(agent.instance_method, Skill)
+        # static_method remains a plain Skill accessible on class and instance
+        assert isinstance(MyAgent.static_method, Skill)
+        assert isinstance(agent.static_method, Skill)
         # static_method should NOT have __history__ set
         assert not hasattr(MyAgent.static_method, "__history__")
 
-    def test_agent_skips_classmethod_template(self):
-        """Agent.__init_subclass__ does not wrap classmethod Templates
+    def test_agent_skips_classmethod_skill(self):
+        """Agent.__init_subclass__ does not wrap classmethod Skills
         in cached_property — they remain class-level operations."""
 
         class MyAgent(Agent):
-            """You are a classmethod-template test agent.
-            Your goal is to verify Agent wrapping does not alter class templates.
+            """You are a classmethod-skill test agent.
+            Your goal is to verify Agent wrapping does not alter class skills.
             """
 
-            @Template.define
+            @Skill.define
             def instance_method(self) -> str:
                 """Say hello."""
                 raise NotHandled
 
-            @Template.define
+            @Skill.define
             @classmethod
             def class_method(cls) -> str:
                 """Do something."""
                 raise NotHandled
 
         agent = MyAgent()
-        assert isinstance(agent.instance_method, Template)
-        assert isinstance(MyAgent.class_method, Template)
+        assert isinstance(agent.instance_method, Skill)
+        assert isinstance(MyAgent.class_method, Skill)
         # class_method should NOT have __history__ set
         assert not hasattr(MyAgent.class_method, "__history__")
 
 
-def test_template_formatting_scoped():
+def test_skill_formatting_scoped():
     feet_per_mile = 5280  # noqa: F841
 
-    @Template.define
+    @Skill.define
     def convert(feet: int) -> float:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
-    with handler(TemplateStringIntp()):
+    with handler(SkillStringIntp()):
         assert convert(7920).endswith(
             "How many miles is 7920 feet? There are 5280 feet per mile."
         )
@@ -1511,7 +1507,7 @@ def test_template_formatting_scoped():
 def test_validate_params_valid():
     """All format vars match signature params -- should succeed."""
 
-    @Template.define
+    @Skill.define
     def poem(topic: str, style: str) -> str:
         """Write a {style} poem about {topic}."""
         raise NotHandled
@@ -1522,7 +1518,7 @@ def test_validate_params_valid():
 def test_validate_no_vars():
     """No format vars -- should succeed."""
 
-    @Template.define
+    @Skill.define
     def simple() -> str:
         """Just a plain prompt with no variables."""
         raise NotHandled
@@ -1534,7 +1530,7 @@ def test_validate_undefined_var():
     """Referencing a variable not in params or lexical scope raises at define time."""
     with pytest.raises(TypeError, match="author"):
 
-        @Template.define
+        @Skill.define
         def write_poem(topic: str) -> str:
             """Write a poem about {topic} by {author}."""
             raise NotHandled
@@ -1544,7 +1540,7 @@ def test_validate_multiple_undefined_vars():
     """Multiple undefined variables should all appear in the error."""
     with pytest.raises(TypeError, match="author") as exc_info:
 
-        @Template.define
+        @Skill.define
         def write_poem(topic: str) -> str:
             """Write a poem about {topic} by {author} in {language}."""
             raise NotHandled
@@ -1559,7 +1555,7 @@ def test_validate_compound_field_name():
     class Agent:
         name: str
 
-        @Template.define
+        @Skill.define
         def greet(self, day: str) -> str:
             """Agent '{self.name}' says hello on {day}."""
             raise NotHandled
@@ -1570,23 +1566,23 @@ def test_validate_compound_field_name():
 
 
 def test_validate_staticmethod():
-    """Staticmethod templates should also be validated."""
+    """Staticmethod skills should also be validated."""
 
-    @Template.define
+    @Skill.define
     @staticmethod
     def ok(a: str, b: str) -> str:
         """Combine {a} and {b}."""
         raise NotHandled
 
-    # The underlying Template should exist
+    # The underlying Skill should exist
     assert ok.__func__.__default__.__doc__.endswith("Combine {a} and {b}.")
 
 
 def test_validate_staticmethod_undefined():
-    """Staticmethod templates with undefined vars should raise."""
+    """Staticmethod skills with undefined vars should raise."""
     with pytest.raises(TypeError, match="missing"):
 
-        @Template.define
+        @Skill.define
         @staticmethod
         def bad(a: str) -> str:
             """Combine {a} and {missing}."""
@@ -1594,41 +1590,41 @@ def test_validate_staticmethod_undefined():
 
 
 def test_validate_staticmethod_lexical_scope():
-    """Staticmethod templates should capture lexical scope variables."""
+    """Staticmethod skills should capture lexical scope variables."""
     feet_per_mile = 5280  # noqa: F841
 
-    @Template.define
+    @Skill.define
     @staticmethod
     def convert(feet: int) -> str:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
-    # The inner template should have the correct lexical context
+    # The inner skill should have the correct lexical context
     inner = convert.__func__
     assert "feet_per_mile" in inner.__context__
 
 
 def test_staticmethod_lexical_scope_formatting():
-    """Staticmethod templates should format lexical scope variables at runtime."""
+    """Staticmethod skills should format lexical scope variables at runtime."""
     feet_per_mile = 5280  # noqa: F841
 
-    @Template.define
+    @Skill.define
     @staticmethod
     def convert(feet: int) -> str:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
 
-    with handler(TemplateStringIntp()):
+    with handler(SkillStringIntp()):
         assert convert(7920).endswith(
             "How many miles is 7920 feet? There are 5280 feet per mile."
         )
 
 
 def test_validate_lexical_var():
-    """Lexical scope variables are allowed in template format strings."""
+    """Lexical scope variables are allowed in skill format strings."""
     feet_per_mile = 5280  # noqa: F841
 
-    @Template.define
+    @Skill.define
     def convert(feet: int) -> float:
         """How many miles is {feet} feet? There are {feet_per_mile} feet per mile."""
         raise NotHandled
@@ -1640,7 +1636,7 @@ def test_validate_both_params_and_lexical():
     """Both params and lexical scope vars are allowed."""
     author = "Shakespeare"  # noqa: F841
 
-    @Template.define
+    @Skill.define
     def write_poem(topic: str) -> str:
         """Write a poem about {topic} by {author}."""
         raise NotHandled
@@ -1656,7 +1652,7 @@ def test_validate_undefined_with_lexical_still_fails():
 
     with pytest.raises(TypeError, match="nonexistent"):
 
-        @Template.define
+        @Skill.define
         def bad(topic: str) -> str:
             """Write about {topic} by {author} using {nonexistent}."""
             raise NotHandled
@@ -1665,7 +1661,7 @@ def test_validate_undefined_with_lexical_still_fails():
 def test_validate_field_name_identifier():
     """arg_name as identifier: {name}."""
 
-    @Template.define
+    @Skill.define
     def fmt(price: float, name: str) -> str:
         """Buy {name} for {price}."""
         raise NotHandled
@@ -1678,7 +1674,7 @@ def test_validate_field_name_attribute_access():
     class Agent:
         name: str
 
-        @Template.define
+        @Skill.define
         def greet(self, day: str) -> str:
             """{self.name} says hello on {day}."""
             raise NotHandled
@@ -1687,7 +1683,7 @@ def test_validate_field_name_attribute_access():
 def test_validate_field_name_index_access():
     """field_name with index access: {items[0]}."""
 
-    @Template.define
+    @Skill.define
     def fmt(items: list) -> str:
         """First item is {items[0]}."""
         raise NotHandled
@@ -1696,27 +1692,27 @@ def test_validate_field_name_index_access():
 def test_validate_field_name_chained_access():
     """field_name with chained attribute and index: {obj.items[0].name}."""
 
-    @Template.define
+    @Skill.define
     def fmt(obj: object) -> str:
         """Name: {obj.items[0].name}."""
         raise NotHandled
 
 
 def test_validate_field_name_positional_digit():
-    """arg_name as digit+ (positional): {0} is not supported in templates."""
+    """arg_name as digit+ (positional): {0} is not supported in skills."""
     with pytest.raises(TypeError, match="0"):
 
-        @Template.define
+        @Skill.define
         def bad(x: str) -> str:
             """Value: {0}."""
             raise NotHandled
 
 
 def test_validate_field_name_empty():
-    """Empty arg_name (auto-numbering): {} is not supported in templates."""
+    """Empty arg_name (auto-numbering): {} is not supported in skills."""
     with pytest.raises(TypeError):
 
-        @Template.define
+        @Skill.define
         def bad(x: str) -> str:
             """Value: {}."""
             raise NotHandled
@@ -1725,7 +1721,7 @@ def test_validate_field_name_empty():
 def test_validate_conversion_r():
     """Conversion !r should not affect variable resolution."""
 
-    @Template.define
+    @Skill.define
     def fmt(value: str) -> str:
         """The value is {value!r}."""
         raise NotHandled
@@ -1734,7 +1730,7 @@ def test_validate_conversion_r():
 def test_validate_conversion_s():
     """Conversion !s should not affect variable resolution."""
 
-    @Template.define
+    @Skill.define
     def fmt(value: str) -> str:
         """The value is {value!s}."""
         raise NotHandled
@@ -1743,7 +1739,7 @@ def test_validate_conversion_s():
 def test_validate_conversion_a():
     """Conversion !a should not affect variable resolution."""
 
-    @Template.define
+    @Skill.define
     def fmt(value: str) -> str:
         """The value is {value!a}."""
         raise NotHandled
@@ -1752,7 +1748,7 @@ def test_validate_conversion_a():
 def test_validate_string_format_spec_width_align():
     """String-safe format specs (width, alignment, fill) work at runtime."""
 
-    @Template.define
+    @Skill.define
     def fmt(label: str) -> str:
         """Label: {label:>20} or {label:*^30}"""
         raise NotHandled
@@ -1761,7 +1757,7 @@ def test_validate_string_format_spec_width_align():
 def test_validate_string_format_spec_truncation():
     """String-safe precision (truncation) works at runtime."""
 
-    @Template.define
+    @Skill.define
     def fmt(val: str) -> str:
         """Truncated: {val!s:.10}"""
         raise NotHandled
@@ -1772,7 +1768,7 @@ def test_validate_numeric_format_spec_passes_validation():
     fail at runtime (applied to serialised str, not float).
     """
 
-    @Template.define
+    @Skill.define
     def fmt(price: float, count: int) -> str:
         """Price: ${price:.2f}, count: {count:d}."""
         raise NotHandled
@@ -1785,7 +1781,7 @@ def test_validate_compound_field_with_spec():
     class Calc:
         precision: int
 
-        @Template.define
+        @Skill.define
         def compute(self, value: float) -> str:
             """Compute {value} with precision {self.precision:d}."""
             raise NotHandled
@@ -1795,15 +1791,15 @@ def test_validate_format_spec_on_undefined_var():
     """Undefined variable with a format spec should still raise."""
     with pytest.raises(TypeError, match="missing"):
 
-        @Template.define
+        @Skill.define
         def bad(x: int) -> str:
             """Value: {x} and {missing:.2f}."""
             raise NotHandled
 
 
 # ---------------------------------------------------------------------------
-# Doctests in a Template docstring must be constant (no spliced arguments).
-# Templates are defined *inside* each test so pytest's --doctest-modules does
+# Doctests in a Skill docstring must be constant (no spliced arguments).
+# Skills are defined *inside* each test so pytest's --doctest-modules does
 # not try to collect/run these docstring examples.
 # ---------------------------------------------------------------------------
 
@@ -1811,7 +1807,7 @@ def test_validate_format_spec_on_undefined_var():
 def test_validate_constant_doctest_ok():
     """A doctest with no format fields is accepted."""
 
-    @Template.define
+    @Skill.define
     def dbl(x: int) -> int:
         """Double {x}.
 
@@ -1827,7 +1823,7 @@ def test_validate_param_spliced_into_doctest_source_rejected():
     """A parameter spliced into the doctest source is rejected at define time."""
     with pytest.raises(TypeError, match="constant") as exc:
 
-        @Template.define
+        @Skill.define
         def dbl(x: int) -> int:
             """Double {x}.
 
@@ -1843,7 +1839,7 @@ def test_validate_field_spliced_into_doctest_want_rejected():
     """A field spliced into the expected output is rejected."""
     with pytest.raises(TypeError, match="constant"):
 
-        @Template.define
+        @Skill.define
         def dbl(x: int) -> int:
             """Double {x}.
 
@@ -1858,7 +1854,7 @@ def test_validate_bare_braces_in_doctest_rejected():
     positional field) and is rejected."""
     with pytest.raises(TypeError, match="constant"):
 
-        @Template.define
+        @Skill.define
         def dbl(x: int) -> int:
             """Double {x}.
 
@@ -1873,7 +1869,7 @@ def test_validate_escaped_braces_in_doctest_ok():
     """Escaped braces ``{{``/``}}`` format to literal braces, so they are
     constant and accepted."""
 
-    @Template.define
+    @Skill.define
     def make_dict(x: int) -> dict:
         """Build a dict from {x}.
 
@@ -1889,7 +1885,7 @@ def test_validate_escaped_braces_in_doctest_ok():
 def test_validate_field_in_prose_with_constant_doctest_ok():
     """Format fields are still allowed in the prose around constant doctests."""
 
-    @Template.define
+    @Skill.define
     def about(theme: str) -> int:
         """Count words about {theme}.
 
@@ -2071,12 +2067,12 @@ def test_lexical_reader_exposes_data_values():
         assert any(t() is v for t in tools)
 
 
-def test_template_tools_includes_synthetic_readers_for_locals():
-    """A template offers synthetic readers for plain values in lexical scope
+def test_skill_tools_includes_synthetic_readers_for_locals():
+    """A skill offers synthetic readers for plain values in lexical scope
     when `LexicalReaders` is installed."""
     _test_data = [10, 20, 30]
 
-    @Template.define
+    @Skill.define
     def t() -> int:
         """Doc."""
         raise NotHandled
@@ -2084,7 +2080,7 @@ def test_template_tools_includes_synthetic_readers_for_locals():
     # Restrict to reader tools (safe to call) rather than other in-scope tools.
     readers = [
         tool
-        for tool in template_tools(t, LexicalReaders())
+        for tool in skill_tools(t, LexicalReaders())
         if isinstance(tool, LexicalReaders._LexicalVariableTool)
     ]
     assert any(reader() == [10, 20, 30] for reader in readers)
@@ -2125,9 +2121,9 @@ def test_python_repl_composes_with_lexical_readers():
 
 
 def _drive_repl(body):
-    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Template call.
+    """Run ``body(exec_code)`` inside one `PythonRepl`-scoped Skill call.
 
-    A tiny `Template.__apply__` handler stands in for the LLM loop: it collects
+    A tiny `Skill.__apply__` handler stands in for the LLM loop: it collects
     the tools for a single call and hands `body` that call's `exec_code` tool, so
     `body` sees exactly one REPL session for its duration.  This is the supported
     way to reach a session -- `PythonRepl` introduces it per call, mirroring
@@ -2137,7 +2133,7 @@ def _drive_repl(body):
     repl = StatefulReplSynthesizer()
 
     class _Loop(ObjectInterpretation):
-        @implements(Template.__apply__)
+        @implements(Skill.__apply__)
         def _call(self, *_a, **_k):
             exec_code = repl.exec_code
             # Bodies pass source strings; decode them to code objects as the LLM
@@ -2146,7 +2142,7 @@ def _drive_repl(body):
             box.append(body(lambda src: exec_code(decode(src))))
             return None
 
-    @Template.define
+    @Skill.define
     def _t() -> None:
         """Drive one REPL-scoped call."""
         raise NotImplementedError
@@ -2162,7 +2158,7 @@ def _drive_repl(body):
 
 
 def test_python_repl_state_persists_within_one_call():
-    """Within one Template call, `exec_code` state carries across calls: a
+    """Within one Skill call, `exec_code` state carries across calls: a
     binding made in one snippet is visible in the next."""
 
     def body(exec_code):
@@ -2173,7 +2169,7 @@ def test_python_repl_state_persists_within_one_call():
 
 
 def test_python_repl_distinct_calls_get_isolated_sessions():
-    """Each Template call gets its own session: a binding made in one call is
+    """Each Skill call gets its own session: a binding made in one call is
     not visible in a separate call."""
     _drive_repl(lambda exec_code: exec_code("leaked = 1"))
     assert (
@@ -2183,13 +2179,13 @@ def test_python_repl_distinct_calls_get_isolated_sessions():
 
 
 def test_python_repl_nested_call_is_isolated_and_outer_survives():
-    """A nested Template call introduces its own session by construction: the
+    """A nested Skill call introduces its own session by construction: the
     inner body cannot see the outer's bindings, and the outer session keeps its
     state across the nested call."""
 
     def outer(exec_code):
         exec_code("outer_var = 1")
-        inner_sees_outer = _drive_repl(  # a fully nested Template call
+        inner_sees_outer = _drive_repl(  # a fully nested Skill call
             lambda inner: inner("print('outer_var' in dir())")
         )
         outer_after = exec_code("print(outer_var, 'outer_var' in dir())")
@@ -2205,20 +2201,20 @@ def test_python_repl_nested_call_is_isolated_and_outer_survives():
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def primes(first_digit: int) -> int:
     """Give exactly one prime number with {first_digit} as the first digit. Respond with only the number."""
     raise NotHandled
 
 
-# Mutually recursive templates (module-level so globals are live for each other).
-@Template.define
+# Mutually recursive skills (module-level so globals are live for each other).
+@Skill.define
 def mutual_a() -> str:
     """Use mutual_a and mutual_b as tools to do task A."""
     raise NotHandled
 
 
-@Template.define
+@Skill.define
 def mutual_b() -> str:
     """Use mutual_a and mutual_b as tools to do task B."""
     raise NotHandled
@@ -2239,67 +2235,67 @@ def test_primes_decode_int():
     assert isinstance(result, int)
 
 
-def test_template_captures_other_templates_in_lexical_context():
-    """Templates defined in lexical scope are captured and offered as tools."""
+def test_skill_captures_other_skills_in_lexical_context():
+    """Skills defined in lexical scope are captured and offered as tools."""
 
-    @Template.define
+    @Skill.define
     def story_with_moral(topic: str) -> str:
         """Write a story about {topic} with a moral lesson."""
         raise NotHandled
 
-    @Template.define
+    @Skill.define
     def story_funny(topic: str) -> str:
         """Write a funny story about {topic}."""
         raise NotHandled
 
-    @Template.define
+    @Skill.define
     def write_story(topic: str, style: str) -> str:
         """Write a story about {topic} in style {style}."""
         raise NotHandled
 
-    # __context__ is a ChainMap(locals, globals) - sub-templates are visible.
+    # __context__ is a ChainMap(locals, globals) - sub-skills are visible.
     assert write_story.__context__["story_with_moral"] is story_with_moral
     assert write_story.__context__["story_funny"] is story_funny
 
-    # Templates in lexical context are exposed as callable tools.
-    assert story_with_moral in template_tools(write_story)
-    assert story_funny in template_tools(write_story)
+    # Skills in lexical context are exposed as callable tools.
+    assert story_with_moral in skill_tools(write_story)
+    assert story_funny in skill_tools(write_story)
 
 
-def test_mutually_recursive_templates():
-    """Module-level templates see each other (mutual recursion) via globals."""
+def test_mutually_recursive_skills():
+    """Module-level skills see each other (mutual recursion) via globals."""
     assert "mutual_a" in mutual_a.__context__
     assert "mutual_b" in mutual_a.__context__
     assert "mutual_a" in mutual_b.__context__
     assert "mutual_b" in mutual_b.__context__
 
     # Each sees the other as a callable tool.
-    assert mutual_a in template_tools(mutual_b)
-    assert mutual_b in template_tools(mutual_a)
-    # A template is always dropped from its own toolset.
-    assert mutual_a not in template_tools(mutual_a)
-    assert mutual_b not in template_tools(mutual_b)
+    assert mutual_a in skill_tools(mutual_b)
+    assert mutual_b in skill_tools(mutual_a)
+    # A skill is always dropped from its own toolset.
+    assert mutual_a not in skill_tools(mutual_a)
+    assert mutual_b not in skill_tools(mutual_b)
 
 
 def test_lexical_context_shadowing():
     """Local variables shadow global variables in lexical context."""
     shadow_test_value = "local"  # noqa: F841 - intentional shadowing
 
-    @Template.define
-    def template_with_shadowed_var() -> str:
-        """Test template."""
+    @Skill.define
+    def skill_with_shadowed_var() -> str:
+        """Test skill."""
         raise NotHandled
 
     # The lexical context should see the LOCAL value, not global.
-    assert template_with_shadowed_var.__context__["shadow_test_value"] == "local"
+    assert skill_with_shadowed_var.__context__["shadow_test_value"] == "local"
 
 
 def test_lexical_context_sees_globals_when_no_local():
     """Globals are visible when there's no local shadow."""
 
-    @Template.define
-    def template_sees_global() -> str:
-        """Test template."""
+    @Skill.define
+    def skill_sees_global() -> str:
+        """Test skill."""
         raise NotHandled
 
-    assert template_sees_global.__context__["shadow_test_value"] == "global"
+    assert skill_sees_global.__context__["shadow_test_value"] == "global"

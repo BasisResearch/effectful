@@ -12,7 +12,7 @@ every agent runs the same program, and every step's result is shared, all
 agents allocate the same IDs in the same order. Each ID names an
 `asyncio.Future`; for a given step, `EndpointProjection` either:
 
-- **executes** it and resolves the future, if the step's template belongs to
+- **executes** it and resolves the future, if the step's skill belongs to
   this agent; or
 - **awaits** that future, if it belongs to another agent.
 
@@ -31,12 +31,12 @@ Results live in memory, so by default an interrupted run starts over. Give
 `Choreography` a *log* path and each step is written to SQLite as it completes;
 a later run over the same path replays those results and resumes at the first
 step that never finished. (Agent *history* is a separate matter -- give an
-`~effectful.handlers.llm.template.Agent` an ``agent_id`` and install
+`~effectful.handlers.llm.types.Agent` an ``agent_id`` and install
 `~effectful.handlers.llm.completions.SQLitePersister` to checkpoint it.)
 
 ## Why the program is async, and where the threads went
 
-`effectful`'s handler stack is synchronous, top to bottom: `Template.__apply__`,
+`effectful`'s handler stack is synchronous, top to bottom: `Skill.__apply__`,
 `fwd`, and everything in `effectful.handlers.llm.completions` down to
 `litellm.completion` are blocking calls. Two consequences shape this module.
 
@@ -51,7 +51,7 @@ what lets a step ID be allocated while `step` is being called. It is why the
 choreography spells its steps out with ``await step(...)`` rather than calling
 ``architect.plan(spec)`` directly.
 
-*A template call must still run on a thread.* `step` hands the blocking call to
+*A skill call must still run on a thread.* `step` hands the blocking call to
 a worker thread and awaits it, so an agent waiting on a peer costs a suspended
 coroutine rather than a parked thread. Note that the naive alternative --
 wrapping each agent's whole program in `asyncio.to_thread` -- deadlocks here:
@@ -63,7 +63,7 @@ the number of agents for the same reason.
 ## Primitives
 
 `step`
-    One template call: executed by its owner, shared with everyone else. Inside
+    One skill call: executed by its owner, shared with everyone else. Inside
     a `scatter` item, where the item is already the step, it is just the call.
 `scatter`
     Distribute items across a pool of same-role agents, each item going to
@@ -253,14 +253,14 @@ def _fail(future: asyncio.Future, error: BaseException) -> None:
 
 @Operation.define
 def step[**P, T](
-    template: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    skill: Callable[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> Awaitable[T]:
     """Take one step of a choreography, and return an awaitable for its result.
 
-    Under `EndpointProjection`, the agent that owns *template* executes the
+    Under `EndpointProjection`, the agent that owns *skill* executes the
     step while the others await its result; a step recorded by an earlier run
     (see `Choreography`'s *log*) returns without calling the model at all. A
-    template bound
+    skill bound
     to no agent is executed by every agent.
 
     The step ID is allocated when `step` is called, not when its result is
@@ -270,7 +270,7 @@ def step[**P, T](
     Inside `scatter` the enclosing item *is* the step -- it has its own ID and
     its own entry in the log -- so a step there is simply the call itself, run
     on the choreography's thread pool with no further bookkeeping. A step on
-    another agent's template is refused, since a scatter item is work one agent
+    another agent's skill is refused, since a scatter item is work one agent
     took on alone.
 
     Unhandled -- outside any choreography -- this is `asyncio.to_thread`, so a
@@ -280,7 +280,7 @@ def step[**P, T](
     >>> asyncio.run(step(str.upper, "a step is a call, until it is projected"))
     'A STEP IS A CALL, UNTIL IT IS PROJECTED'
     """
-    return asyncio.to_thread(template, *args, **kwargs)
+    return asyncio.to_thread(skill, *args, **kwargs)
 
 
 @Operation.define
@@ -301,7 +301,7 @@ def scatter[A: Agent, T, U](
     Unhandled, items are processed sequentially, round-robin over the pool.
 
     *fn* should only touch the agent it is handed; a `step` inside it on any
-    other agent's template is refused.
+    other agent's skill is refused.
     """
     return _scatter_sequentially(items, agent, fn)
 
@@ -336,7 +336,7 @@ class EndpointProjection(ObjectInterpretation):
         agent_ids: The IDs of every agent in the run, used to reject a step
             belonging to an agent that is not participating. ``None`` skips
             the check.
-        executor: Thread pool for blocking template calls. ``None`` uses
+        executor: Thread pool for blocking skill calls. ``None`` uses
             asyncio's default executor, which is only safe when agents do not
             wait on each other -- `Choreography` always passes its own.
     """
@@ -364,30 +364,30 @@ class EndpointProjection(ObjectInterpretation):
         return self._agent.__agent_id__
 
     @implements(step)
-    def _step(self, template: Callable, *args, **kwargs) -> Awaitable:
-        return self._run_step(self._next_step(), template, args, kwargs)
+    def _step(self, skill: Callable, *args, **kwargs) -> Awaitable:
+        return self._run_step(self._next_step(), skill, args, kwargs)
 
     @implements(scatter)
     def _scatter_items(self, items, agent, fn) -> Awaitable:
         return self._scatter(self._next_step(), items, agent, fn)
 
-    def _step_within_item(self, template: Callable, *args, **kwargs) -> Awaitable:
+    def _step_within_item(self, skill: Callable, *args, **kwargs) -> Awaitable:
         """`step`, as interpreted while this agent runs a scatter item.
 
         The item already is a step, with its own ID and its own place in the
         log, so there is nothing left to coordinate -- just run the call.
         """
         if (
-            hasattr(template, "__history__")
-            and (agent_id := template.__self__.__agent_id__) != self._agent_id  # type: ignore
+            hasattr(skill, "__history__")
+            and (agent_id := skill.__self__.__agent_id__) != self._agent_id  # type: ignore
         ):
             raise RuntimeError(
                 f"a scatter item taken on by {self._agent_id!r} called "
-                f"{template.__name__}(), which belongs to "
+                f"{skill.__name__}(), which belongs to "
                 f"{agent_id!r}. A scatter item is work one agent "
                 f"does alone; step across agents outside the scatter."
             )
-        return self._in_thread(template, *args, **kwargs)
+        return self._in_thread(skill, *args, **kwargs)
 
     async def _in_thread[T](self, fn: Callable[..., T], *args, **kwargs) -> T:
         """Await *fn* on a worker thread, carrying the current context along.
@@ -402,17 +402,17 @@ class EndpointProjection(ObjectInterpretation):
         )
 
     async def _run_step(
-        self, step_id: str, template: Callable, args: tuple, kwargs: dict
+        self, step_id: str, skill: Callable, args: tuple, kwargs: dict
     ) -> Any:
 
-        if not hasattr(template, "__history__"):
-            # Unbound template: not owned by anyone, so every agent runs it.
-            return await self._in_thread(template, *args, **kwargs)
+        if not hasattr(skill, "__history__"):
+            # Unbound skill: not owned by anyone, so every agent runs it.
+            return await self._in_thread(skill, *args, **kwargs)
 
-        agent: Agent = template.__self__  # type: ignore
+        agent: Agent = skill.__self__  # type: ignore
         if self._agent_ids is not None and agent.__agent_id__ not in self._agent_ids:
             raise ChoreographyError(
-                f"{template.__name__}() belongs to agent "
+                f"{skill.__name__}() belongs to agent "
                 f"{agent.__agent_id__!r}, which is not part of this "
                 f"choreography -- no one would ever run it."
             )
@@ -425,7 +425,7 @@ class EndpointProjection(ObjectInterpretation):
             return result.result()
 
         try:
-            value = await self._in_thread(template, *args, **kwargs)
+            value = await self._in_thread(skill, *args, **kwargs)
         except Exception as e:
             _fail(result, e)
             raise
@@ -476,7 +476,7 @@ class Choreography[**P, T]:
     having run every agent through it.
 
     Every agent runs *program* as its own `asyncio.Task`; `EndpointProjection`
-    is what makes each of those tasks behave differently. Blocking template
+    is what makes each of those tasks behave differently. Blocking skill
     calls go to a thread pool sized to the number of agents, so no agent can be
     starved by another's model call.
 

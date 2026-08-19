@@ -1,9 +1,9 @@
 """Research agent with web search and LLM quality control.
 
 Demonstrates:
-- @Tool.define web-search tool, auto-captured into templates from lexical scope
+- @Tool.define web-search tool, auto-captured into skills from lexical scope
 - An Agent subclass with persistent conversation history
-- One Template judging another's output, returning a structured QualityJudgment
+- One Skill judging another's output, returning a structured QualityJudgment
   (a bool plus written feedback)
 - A feedback-driven refinement loop: answer -> judge -> refine -> judge -> ...
 """
@@ -14,7 +14,7 @@ import urllib.parse
 
 import requests
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Search tool
@@ -80,12 +80,12 @@ class QualityJudgment:
 class Researcher(Agent):
     """Agent that answers research questions using web search, refining on feedback."""
 
-    @Template.define
+    @Skill.define
     def answer(self, question: str) -> str:
         """You are a research assistant. Use the search tool to find accurate,
         specific information, then answer the question: {question}"""
 
-    @Template.define
+    @Skill.define
     def refine(self, question: str, feedback: str) -> str:
         """A reviewer rejected your previous answer to the question ({question})
         with this feedback: {feedback}. Use the search tool as needed and provide
@@ -97,7 +97,7 @@ class Researcher(Agent):
 # ---------------------------------------------------------------------------
 
 
-@Template.define
+@Skill.define
 def judge_quality(question: str, answer: str) -> QualityJudgment:
     """You are a strict quality reviewer. Evaluate whether this answer adequately
     addresses the question with accurate, specific information.

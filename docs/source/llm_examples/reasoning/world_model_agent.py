@@ -5,7 +5,7 @@ model play a game with hidden rules "like a physicist": write the game's mechani
 as an executable program, test it against the recorded history, and plan inside it.
 
 Demonstrates:
-- A ``Template`` returning a ``Callable`` -- the model's *world model* is executable
+- A ``Skill`` returning a ``Callable`` -- the model's *world model* is executable
   Python, synthesized once and then run thousands of times by ordinary code
 - An ``Agent`` whose persistent state is the memory: an append-only Timeline of real
   transitions that is fed back into every deliberation as ground truth
@@ -50,7 +50,7 @@ import textwrap
 
 from gridworlds import Action, Color, Game, State, Transition
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 @dataclasses.dataclass
@@ -60,7 +60,7 @@ class Physicist(Agent):
     hint: str
     timeline: list[Transition] = dataclasses.field(default_factory=list)
 
-    @Template.define
+    @Skill.define
     def explore(self, state: State) -> Action:
         """
         Propose an action that would be informative about the hidden dynamics,
@@ -85,7 +85,7 @@ class Physicist(Agent):
         Do not use any tools.
         """
 
-    @Template.define
+    @Skill.define
     def theorize(
         self, state: State
     ) -> collections.abc.Callable[[State, Action], State]:

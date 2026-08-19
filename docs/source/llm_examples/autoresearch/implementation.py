@@ -109,11 +109,11 @@ import time
 
 import pydantic
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of a
-# template's argument (and structured-output) spec. So per-field guidance reaches the
+# skill's argument (and structured-output) spec. So per-field guidance reaches the
 # model *through the type* -- used below only where the field name and type don't
 # already say it, so no prompt has to repeat it.
 
@@ -348,7 +348,7 @@ class Designer(Agent):
     (stages), and for each module you propose a few concrete implementation strategies
     for a downstream search to choose among."""
 
-    @Template.define
+    @Skill.define
     def design(self, task: Task) -> Design:
         """Analyze the task and decompose a solution into an ordered pipeline of two
         or three modules. Each module is a stage that takes the cities and the current
@@ -368,7 +368,7 @@ class Implementer(Agent):
     a tour, and the harness compiles and runs it. You read the module's intent and the
     chosen strategy, and you apply any lessons learned from earlier attempts."""
 
-    @Template.define
+    @Skill.define
     def implement(self, module: ModuleSpec, strategy: str, lessons: str) -> Stage:
         """Write ``stage``: a function ``stage(cities, tour)`` that takes the list of
         ``City`` points and the current ``tour`` (a list of city indices) and RETURNS
@@ -412,7 +412,7 @@ class Reflector(Agent):
     one won, distilling a single transferable lesson a future implementer can reuse.
     You solve credit assignment by comparison, not by guessing."""
 
-    @Template.define
+    @Skill.define
     def reflect(self, better: RolloutSummary, worse: RolloutSummary) -> Reflection:
         """Compare these two branches of the search. The first achieved a higher reward
         (a shorter tour, accounting for its execution cost) than the second. Identify

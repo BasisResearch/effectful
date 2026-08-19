@@ -19,15 +19,15 @@ def type_check(
     Type check a module source, reporting only diagnostics inside a line region.
 
     source: A complete module source to check (e.g. produced by
-        ``splice_into_source``, which splices generated code into a Template's real
+        ``splice_into_source``, which splices generated code into a Skill's real
         module source).
     lo, hi: Inclusive line range within ``source`` to report errors from; when
         omitted, the whole source is in scope. Errors outside the region are
         ignored so unrelated pre-existing code never blocks synthesis.
     lenient: when True, relax the check for incrementally-built REPL code spliced into
-        a Template body -- allow redefinition (a cell may rebind or redefine a name)
-        and don't require the body to satisfy the Template's return type. Off (strict)
-        for a synthesized ``Callable`` or ``TemplateBody``, which must honor its
+        a Skill body -- allow redefinition (a cell may rebind or redefine a name)
+        and don't require the body to satisfy the Skill's return type. Off (strict)
+        for a synthesized ``Callable`` or ``SkillBody``, which must honor its
         signature and gets no redefinition slack. How much slack this buys is up to
         the handler: it is a list of disabled mypy error codes under `MypyTypeChecker`
         and close to a no-op under `TyTypeChecker`, which is already this permissive.

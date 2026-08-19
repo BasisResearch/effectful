@@ -16,7 +16,7 @@ from effectful.ops.types import Operation
 
 
 class Tool[**P, T](Operation[P, T]):
-    """A `Tool` is a function that may be called by a `Template`.
+    """A `Tool` is a function that may be called by a `Skill`.
 
     A `Tool` wraps a normal Python callable; its signature (parameter types
     and return type) and docstring define the schema the model sees, and the
@@ -24,7 +24,7 @@ class Tool[**P, T](Operation[P, T]):
 
     ## Example usage
 
-    Templates may call any tool that is in their lexical scope. In the
+    Skills may call any tool that is in their lexical scope. In the
     following example, the LLM suggests a vacation destination using the
     `cities` and `weather` tools:
 
@@ -40,12 +40,12 @@ class Tool[**P, T](Operation[P, T]):
         status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
         return status.get(city, "unknown")
 
-    @Template.define  # cities and weather auto-captured from lexical scope
+    @Skill.define  # cities and weather auto-captured from lexical scope
     def vacation() -> str:
         \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
     ```
 
-    Class methods may be used as templates, in which case any other methods
+    Class methods may be used as skills, in which case any other methods
     decorated with `Tool.define` will be provided as tools.
 
     """
@@ -66,18 +66,18 @@ class Tool[**P, T](Operation[P, T]):
         return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
 
 
-class Template[**P, T](Tool[P, T]):
-    """A `Template` is a function that is implemented by a large language model.
+class Skill[**P, T](Tool[P, T]):
+    """A `Skill` is a function that is implemented by a large language model.
 
-    ## Constructing Templates
+    ## Constructing Skills
 
-    Apply `Template.define` as a decorator to a fully type-annotated function or
+    Apply `Skill.define` as a decorator to a fully type-annotated function or
     method whose body is either empty or `raise NotHandled`. The docstring is a
     [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
     prompt: its `{...}` fields are filled at call time (see *Prompt assembly*
     below) and the LLM's response is decoded to the return type.
 
-    `Template.define` validates the definition and raises if:
+    `Skill.define` validates the definition and raises if:
 
     - the function has no docstring (every `Tool` needs one);
     - a `{...}` field names something that is neither a parameter nor a name in
@@ -86,28 +86,28 @@ class Template[**P, T](Tool[P, T]):
       doctests must be constant, since the whole docstring is formatted into the
       prompt at call time; escape any literal braces as `{{` and `}}`.
 
-    See `effectful.ops.types.Operation.define` for more on `Template.define`.
+    See `effectful.ops.types.Operation.define` for more on `Skill.define`.
 
-    The following template writes limericks on a given theme:
+    The following skill writes limericks on a given theme:
 
-    >>> @Template.define
+    >>> @Skill.define
     ... def limerick(theme: str) -> str:
     ...     \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
 
     ## Structured output
 
-    Templates may return types that are not strings.
+    Skills may return types that are not strings.
     The output from the LLM is then decoded before being returned to the user.
 
-    For example, this template returns integers:
+    For example, this skill returns integers:
 
-    >>> @Template.define
+    >>> @Skill.define
     ... def primes(first_digit: int) -> int:
     ...     \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
 
     Structured generation is used to constrain the LLM to return values that can be decoded without error.
 
-    Templates can return complex data structures, such as dataclasses:
+    Skills can return complex data structures, such as dataclasses:
 
     >>> import dataclasses
     >>> @dataclasses.dataclass
@@ -115,7 +115,7 @@ class Template[**P, T](Tool[P, T]):
     ...     whos_there: str
     ...     punchline: str
 
-    >>> @Template.define
+    >>> @Skill.define
     ... def write_joke(theme: str) -> KnockKnockJoke:
     ...     \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
 
@@ -124,12 +124,12 @@ class Template[**P, T](Tool[P, T]):
 
     ## Using tools
 
-    Instances of `Tool` in a `Template`'s lexical scope may be called by the LLM
+    Instances of `Tool` in a `Skill`'s lexical scope may be called by the LLM
     during completion, and are offered automatically. Scope follows ordinary
     Python rules: enclosing-function locals, module globals, and — for a method
-    template — sibling `Tool`/`Template` methods on the same class. A template
+    skill — sibling `Tool`/`Skill` methods on the same class. A skill
     cannot call a tool it cannot lexically see, so it should use only tools that
-    are in scope and relevant to the task. Templates are themselves tools,
+    are in scope and relevant to the task. Skills are themselves tools,
     enabling composition into agent workflows.
 
     ## Prompt assembly
@@ -140,10 +140,10 @@ class Template[**P, T](Tool[P, T]):
 
     | # | Section heading | Content | Constant over |
     | - | --------------- | ------- | ------------- |
-    | 1 | `# Harness` | What the installed handlers provide, a `##` subsection each: the framework concepts (the package overview plus a `###` per concept — `Template`, `Tool`, `Agent`, `Encodable`) followed by one per capability handler (a Python REPL, code synthesis, readers for lexically scoped values), every one of them sourced from a real docstring | the handler stack |
-    | 2 | `# <name><signature>` | The call, introspected from this template, as the `##` subsections below | the call |
-    | 2.1 | `## Module <name>` | Source of the template's module (docstring if source is unavailable) | the module |
-    | 2.2 | `## Agent <cls>` (or `## Template`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every template sharing the instance's history (an `Agent`'s methods, or just this template) | the instance |
+    | 1 | `# Harness` | What the installed handlers provide, a `##` subsection each: the framework concepts (the package overview plus a `###` per concept — `Skill`, `Tool`, `Agent`, `Encodable`) followed by one per capability handler (a Python REPL, code synthesis, readers for lexically scoped values), every one of them sourced from a real docstring | the handler stack |
+    | 2 | `# <name><signature>` | The call, introspected from this skill, as the `##` subsections below | the call |
+    | 2.1 | `## Module <name>` | Source of the skill's module (docstring if source is unavailable) | the module |
+    | 2.2 | `## Agent <cls>` (or `## Skill`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every skill sharing the instance's history (an `Agent`'s methods, or just this skill) | the instance |
     | 2.3 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
     | 2.4 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
 
@@ -157,7 +157,7 @@ class Template[**P, T](Tool[P, T]):
 
     | # | Part | Content |
     | - | ---- | ------- |
-    | 1 | Header | `<name><signature>` — identifies which template this turn calls |
+    | 1 | Header | `<name><signature>` — identifies which skill this turn calls |
     | 2 | Body | The docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
 
     """
@@ -165,7 +165,7 @@ class Template[**P, T](Tool[P, T]):
     __context__: collections.ChainMap[str, typing.Any]
 
     @classmethod
-    def _validate_doctests_constant(cls, template: "Template", doc: str) -> None:
+    def _validate_doctests_constant(cls, skill: "Skill", doc: str) -> None:
         """Validate that no format string variables are spliced into doctests.
 
         The whole docstring is ``str.format``-ed into the prompt at call time,
@@ -177,7 +177,7 @@ class Template[**P, T](Tool[P, T]):
         :raises TypeError: If any doctest example contains an active field.
         """
         try:
-            parts = doctest.DocTestParser().parse(doc, template.__name__)
+            parts = doctest.DocTestParser().parse(doc, skill.__name__)
         except ValueError:
             # Malformed doctest -- not a prompt-field concern; it surfaces when
             # the doctests are actually run, so skip the constancy check here.
@@ -204,7 +204,7 @@ class Template[**P, T](Tool[P, T]):
             # Render the auto-numbered empty field ``{}`` readably.
             shown = sorted({f or "{}" for f in spliced})
             raise TypeError(
-                f"Template '{template.__name__}' splices {shown} "
+                f"Skill '{skill.__name__}' splices {shown} "
                 f"into a doctest example. Doctests must be constant -- they are "
                 f"formatted into the prompt at call time, so they may not contain "
                 f"format fields. Escape literal braces as '{{{{' and '}}}}'."
@@ -213,7 +213,7 @@ class Template[**P, T](Tool[P, T]):
     @classmethod
     def _validate_prompt(
         cls,
-        template: "Template",
+        skill: "Skill",
         context: collections.ChainMap[str, typing.Any],
     ) -> None:
         """Validate that all format string variables in the docstring
@@ -227,11 +227,11 @@ class Template[**P, T](Tool[P, T]):
         :raises TypeError: If any format string variable cannot be resolved, or
             a format field is spliced into a doctest example.
         """
-        assert template.__doc__ is not None
-        doc = template.__doc__
-        cls._validate_doctests_constant(template, doc)
+        assert skill.__doc__ is not None
+        doc = skill.__doc__
+        cls._validate_doctests_constant(skill, doc)
         formatter = string.Formatter()
-        param_names = set(template.__signature__.parameters.keys())
+        param_names = set(skill.__signature__.parameters.keys())
         context_keys = set(context.keys())
         allowed_names = param_names | context_keys
 
@@ -247,9 +247,9 @@ class Template[**P, T](Tool[P, T]):
 
         if unresolved:
             raise TypeError(
-                f"Template '{template.__name__}' docstring references undefined "
+                f"Skill '{skill.__name__}' docstring references undefined "
                 f"variables {list(sorted(unresolved))} that are not in the signature "
-                f"{{{template.__signature__}}} or lexical scope."
+                f"{{{skill.__signature__}}} or lexical scope."
             )
 
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
@@ -262,22 +262,20 @@ class Template[**P, T](Tool[P, T]):
         self_param_name = list(self.__signature__.parameters.keys())[0]
         result.__context__ = self.__context__.new_child({self_param_name: instance})
         if isinstance(instance, Agent):
-            assert isinstance(result, Template) and not hasattr(result, "__history__")
+            assert isinstance(result, Skill) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
             result.__self__ = instance  # type: ignore[attr-defined]
         return result
 
     @classmethod
-    def define[**Q, V](
-        cls, default: Callable[Q, V], *args, **kwargs
-    ) -> "Template[Q, V]":
-        """Define a prompt template.
+    def define[**Q, V](cls, default: Callable[Q, V], *args, **kwargs) -> "Skill[Q, V]":
+        """Define a skill.
 
         `define` takes a function and can be used as a decorator.
         The function's docstring should be a prompt, which may be templated in the function arguments.
         The prompt will be provided with any instances of `Tool` that exist in the lexical context as callable tools.
 
-        See `effectful.ops.types.Operation.define` for more information on the use of `Template.define`.
+        See `effectful.ops.types.Operation.define` for more information on the use of `Skill.define`.
 
         """
         frame = inspect.currentframe()
@@ -332,20 +330,24 @@ class Template[**P, T](Tool[P, T]):
             isinstance(default, types.MethodType) and default.__self__ is not None
         )
         if not isinstance(op, staticmethod | classmethod) and not is_bound_wrapper:
-            cls._validate_prompt(typing.cast(Template, op), context)
+            cls._validate_prompt(typing.cast(Skill, op), context)
 
-        return typing.cast(Template[Q, V], op)
+        return typing.cast(Skill[Q, V], op)
+
+
+# alias for backwards compatibility
+Template = Skill
 
 
 class Agent(abc.ABC):
     """Mixin that gives each instance a persistent LLM message history.
 
-    Subclass and decorate methods with `Template.define`.
+    Subclass and decorate methods with `Skill.define`.
     Each instance accumulates messages across calls so the LLM sees
     prior conversation context.
 
     Agents compose freely with `dataclasses.dataclass` and other
-    base classes.  Instance attributes are available in template
+    base classes.  Instance attributes are available in skill
     docstrings via `{self.attr}`.
 
     Set `self.__agent_id__` (a plain attribute, read lazily -- see below) to make
@@ -378,7 +380,7 @@ class Agent(abc.ABC):
     class ChatBot(Agent):
         bot_name: str
 
-        @Template.define
+        @Skill.define
         def send(self, user_input: str) -> str:
             \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
 
@@ -391,15 +393,15 @@ class Agent(abc.ABC):
     ## Encapsulation via lexical scope
 
     Since scope is ordinary Python scope, defining agents inside a function
-    partitions their `Template`s and `Tool`s into disjoint sets:
+    partitions their `Skill`s and `Tool`s into disjoint sets:
 
     ```python
     class Chatbot(Agent):
-        @Template.define
+        @Skill.define
         def respond(self, user_query: str) -> str: ...
 
     class TravelAdvisor(Agent):
-        @Template.define
+        @Skill.define
         def recommend(self, user_query: str) -> str: ...
         @Tool.define
         def search_weather(self, city: str) -> str: ...
@@ -407,7 +409,7 @@ class Agent(abc.ABC):
     def main():
         chatbot, advisor = Chatbot(), TravelAdvisor()
 
-        @Template.define
+        @Skill.define
         def simulate(chatbot, advisor) -> str:
             \"""Use {chatbot} and {advisor} to simulate a conversation.\"""
             ...
@@ -416,7 +418,7 @@ class Agent(abc.ABC):
     `chatbot.respond` sees only its own methods (plus module-level definitions),
     not `advisor`'s; `simulate` sees `chatbot` and `advisor`, but they cannot see
     `simulate`. Inlining these definitions into module scope instead would let
-    every template see every other. Agents that need overlapping toolsets should
+    every skill see every other. Agents that need overlapping toolsets should
     share tools through a common base class or mixin rather than redefining them.
 
     """
@@ -440,7 +442,7 @@ class Agent(abc.ABC):
     def __history__(self) -> MutableSequence[Mapping[str, typing.Any]]:
         history: MutableSequence[Mapping[str, typing.Any]] = []
         if self.__is_persistent__:
-            # Deferred import: completions.py imports Agent/Template from this
+            # Deferred import: completions.py imports Agent/Skill from this
             # module, so this can only be resolved at call time, not at module
             # load time. The query below and `SQLitePersister.__init__`'s
             # `CREATE TABLE checkpoints` must be kept in sync.
@@ -479,7 +481,7 @@ else:
             so the model sees a faithful, schema-shaped rendering of each value
             (including non-text values such as images, emitted as content
             blocks).
-        - **Decoding (model -> Python):** a `Template`'s structured return
+        - **Decoding (model -> Python):** a `Skill`'s structured return
             value and the arguments of every tool call are validated and
             decoded from the model's JSON back into real Python objects through
             the same `Encodable[type]` schema, so the value handed to your code

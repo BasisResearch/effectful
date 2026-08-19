@@ -558,7 +558,7 @@ def _serialize_callable(value: Callable) -> dict:
     statement must be a function definition", "every parameter must be annotated")
     are demands on code a model is *writing*, and a value being serialized is under
     no such obligation. It is any callable that reached this point -- a class handed
-    back by a lexical-scope read, or an inner function a Template *body* returned,
+    back by a lexical-scope read, or an inner function a Skill *body* returned,
     which was never required to annotate anything -- and re-validating its recovered
     source rejected those with a `ValidationError` raised from inside pydantic's
     serializer, aborting the whole call rather than encoding the value.

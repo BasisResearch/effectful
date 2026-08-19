@@ -16,7 +16,7 @@ class FrameworkDocumenter(ObjectInterpretation):
 
     Its content is sourced from the real docstrings of
     `effectful.handlers.llm` and the concepts it exports, so what the model is
-    told about `Template`, `Tool`, `Agent` and `Encodable` cannot drift from what
+    told about `Skill`, `Tool`, `Agent` and `Encodable` cannot drift from what
     a reader of the package is told.  It is the same for every call in the
     process, which is what makes it worth putting first.
     """

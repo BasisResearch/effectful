@@ -2,7 +2,7 @@
 
 The example scripts under ``docs/source/llm_examples`` share a fixed stack of
 handlers -- a LiteLLM provider, a Python REPL, retry/decoding logic, and so on --
-that turns a bare `Template`/`Agent` into something runnable. This module
+that turns a bare `Skill`/`Agent` into something runnable. This module
 factors that stack into a single object, `harness`, so the scripts themselves
 carry none of the boilerplate.
 
@@ -120,7 +120,7 @@ class harness(contextlib.ContextDecorator):
         api_base: API base URL forwarded to the provider.
         api_key: API key forwarded to the provider.
         persist_db: If set, path to a SQLite database used to checkpoint a
-            persisted `~effectful.handlers.llm.template.Agent`'s (one
+            persisted `~effectful.handlers.llm.types.Agent`'s (one
             constructed with an explicit `agent_id`) state and history via
             `~effectful.handlers.llm.completions.SQLitePersister`.
         eval_provider: Which provider runs model-authored Python -- a key of

@@ -50,7 +50,7 @@ from docs.source.llm_examples.choreographies.library import (
     scatter,
     step,
 )
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 DEFAULT_TEST_TIMEOUT = 60
 """Seconds a generated test file gets before the reviewer gives up on it."""
@@ -117,7 +117,7 @@ class ArchitectAgent(Agent):
             return "No Python files yet."
         return "\n".join(str(f.relative_to(self.output_dir)) for f in files)
 
-    @Template.define
+    @Skill.define
     def plan_modules(self, project_spec: str) -> PlanResult:
         """Given this project specification, output a plan with a "modules" list.
         Each module spec has: module_path, description, public_api, test_path.
@@ -153,7 +153,7 @@ class CoderAgent(Agent):
         full.write_text(content)
         return f"Wrote {len(content)} chars to {path}"
 
-    @Template.define
+    @Skill.define
     def implement_module(self, module_spec: str) -> str:
         """Implement the following module specification. Use `write_file`
         to write both the module and its test file. Use `read_file` to
@@ -204,7 +204,7 @@ class ReviewerAgent(Agent):
             return f"Timed out after {self.test_timeout}s — the tests do not terminate."
         return f"exit code {result.returncode}\n\n{result.stdout[-4000:]}"
 
-    @Template.define
+    @Skill.define
     def review_module(self, module_path: str, test_path: str) -> ReviewResult:
         """Review the module at {module_path} and its tests at {test_path}.
         Use `read_file` to read them and `run_tests` to run the test file.

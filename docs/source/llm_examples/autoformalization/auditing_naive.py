@@ -1,6 +1,6 @@
 """The naive audit arm: one call, a verdict, and a sentence.
 
-Alone in a module because a template's system prompt includes the source of its
+Alone in a module because a skill's system prompt includes the source of its
 defining module, so agents sharing a file are shown each other's prompts and
 types. The arms differ, so they do not share a file.
 """
@@ -10,7 +10,7 @@ import enum
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Template
+from effectful.handlers.llm import Agent, Skill
 
 
 class NaiveVerdict(enum.StrEnum):
@@ -41,7 +41,7 @@ class NaiveAuditor(Agent):
     """You check whether verified Lean theorems correctly formalize the natural
     language requirements they are said to capture."""
 
-    @Template.define
+    @Skill.define
     def audit(self, requirement: str, statement: str) -> NaiveJudgement:
         """Does this Lean theorem faithfully capture the requirement below?
 

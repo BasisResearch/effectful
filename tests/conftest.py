@@ -92,17 +92,15 @@ def offered_tools(env, *handlers):
     return captured
 
 
-def template_tools(template, *handlers):
-    """Set of Tools a `Template` would offer under the given handlers.
+def skill_tools(skill, *handlers):
+    """Set of Tools a `Skill` would offer under the given handlers.
 
-    Mirrors the behaviour of the removed ``Template.tools`` property: it applies
-    the same handler augmentation as :func:`offered_tools` and drops the template
-    itself, matching `LiteLLMProvider`'s ``_tools_in_scope(env) - {template}``.
+    Mirrors the behaviour of the removed ``Skill.tools`` property: it applies
+    the same handler augmentation as :func:`offered_tools` and drops the skill
+    itself, matching `LiteLLMProvider`'s ``_tools_in_scope(env) - {skill}``.
     Like :func:`offered_tools`, tools are kept by object identity.
     """
-    return {
-        t for t in offered_tools(template.__context__, *handlers) if t is not template
-    }
+    return {t for t in offered_tools(skill.__context__, *handlers) if t is not skill}
 
 
 # ============================================================================

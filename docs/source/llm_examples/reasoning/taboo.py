@@ -11,7 +11,7 @@ import argparse
 import dataclasses
 import enum
 
-from effectful.handlers.llm import Agent, Template, Tool
+from effectful.handlers.llm import Agent, Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -53,7 +53,7 @@ class Hinter(Agent):
                 return True
         return False
 
-    @Template.define
+    @Skill.define
     def give_hint(self, guesser_response: str) -> str:
         """You are playing a word guessing game. You must help the guesser
         figure out the secret word by giving creative hints.
@@ -72,7 +72,7 @@ class Hinter(Agent):
 class Guesser(Agent):
     """Agent that tries to guess the secret word from hints."""
 
-    @Template.define
+    @Skill.define
     def make_guess(self, hint: str) -> Guess:
         """You are playing a word guessing game. Based on the hints you've
         received, guess the secret word.

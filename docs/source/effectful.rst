@@ -47,10 +47,10 @@ LLM
    :members:
    :undoc-members:
 
-Template
-""""""""
+Skill
+"""""
 
-.. automodule:: effectful.handlers.llm.template
+.. automodule:: effectful.handlers.llm.types
    :members:
    :undoc-members:
 

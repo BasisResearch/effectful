@@ -75,11 +75,11 @@ class MypyTypeChecker(ObjectInterpretation):
         reports only the region's errors (the whole source when the region is
         omitted), so pre-existing errors elsewhere in `source` never block synthesis.
 
-        When ``lenient`` (for REPL code spliced into a Template body): allow a variable to be
+        When ``lenient`` (for REPL code spliced into a Skill body): allow a variable to be
         redefined with a new type across cells (``--allow-redefinition-new``, which supersedes
         the narrower ``--allow-redefinition`` and requires ``--local-partial-types``), a
         def/class/import to be redefined (``no-redef``), and the body not to return the
-        Template's declared type (``return``/``empty-body``). All normal for an
+        Skill's declared type (``return``/``empty-body``). All normal for an
         incrementally-built REPL, not real errors.
         """
         tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
