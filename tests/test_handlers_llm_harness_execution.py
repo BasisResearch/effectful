@@ -970,7 +970,9 @@ def test_restricted_still_refuses_the_way_out(label, source):
         ("subclass SystemExit", "class E(SystemExit):\n    pass\nraise E(9)"),
         # An allowed module holds the modules *it* imported as public attributes,
         # so the allowlist has to gate the module wherever it is reached from --
-        # not just the name in the `import` statement.
+        # not just the name in the `import` statement. The pairs these reach
+        # through are registered in `_MODULE_ATTRIBUTE_ESCAPES` below, which is
+        # what keeps them from going stale unnoticed.
         ("uuid.os", "import uuid\nR = uuid.os"),
         ("uuid.os.system", "import uuid\nR = uuid.os.system('echo pwned')"),
         ("uuid.os._exit", "import uuid\nR = uuid.os._exit(0)"),
@@ -1005,6 +1007,42 @@ def test_restricted_cannot_terminate_its_host_issue_757(label, source):
         _restricted_run(source, {})
 
 
+# Every (module, attribute) pair the escape cases above reach a second module
+# through. Registered here so `test_module_attribute_escapes_are_still_reachable`
+# can check they exist; see that test for why.
+_MODULE_ATTRIBUTE_ESCAPES = [
+    ("uuid", "os"),
+    ("typing", "sys"),
+    ("queue", "threading"),
+    ("json", "codecs"),
+]
+
+
+@pytest.mark.parametrize("module_name,attribute", _MODULE_ATTRIBUTE_ESCAPES)
+def test_module_attribute_escapes_are_still_reachable(module_name, attribute):
+    """Guard the escape cases above: an attribute that no longer exists would
+    make them pass without testing anything.
+
+    Those cases assert `pytest.raises(Exception)`, and deliberately so -- what
+    they are proving is that the escape fails as something *catchable*, which a
+    narrower assertion could not express. But that breadth also admits the
+    `AttributeError` of an attribute that simply is not there any more: a
+    stdlib module's incidental imports are not API, and 3.14 dropped `re` from
+    both `csv` and `base64`. Were `uuid.os` to go the same way, `import uuid; R
+    = uuid.os` would keep passing while proving nothing about the gate, and the
+    sandbox would be untested exactly where it is load-bearing.
+
+    So this fails loudly instead, and the fix when it does is to re-point the
+    case at a module attribute that still exists -- not to delete it.
+    """
+    module = importlib.import_module(module_name)
+    reached = getattr(module, attribute, None)
+    assert isinstance(reached, types.ModuleType), (
+        f"{module_name}.{attribute} is no longer a module attribute on this "
+        f"interpreter, so the escape case that reaches through it proves nothing"
+    )
+
+
 @pytest.mark.parametrize(
     "label,source",
     [
@@ -1012,7 +1050,14 @@ def test_restricted_cannot_terminate_its_host_issue_757(label, source):
         ("allowed submodule", "import collections.abc\nR = collections.abc.Mapping"),
         ("from-import a submodule", "from collections import abc\nR = abc.Mapping"),
         ("from-import a name", "from dataclasses import dataclass\nR = dataclass"),
-        ("module attribute that is a module", "import csv\nR = csv.re.match('a', 'a')"),
+        # `fractions.math` rather than the more obvious `csv.re`: a stdlib module's
+        # incidental imports are not API, and 3.14 dropped `re` from both `csv` and
+        # `base64`. `Fraction` cannot normalize without `math.gcd`, so this pair is
+        # load-bearing upstream rather than incidental.
+        (
+            "module attribute that is a module",
+            "import fractions\nR = fractions.math.gcd(4, 6)",
+        ),
         ("Exception is still available", "R = Exception('fine')"),
         (
             "except Exception still works",
@@ -1022,8 +1067,8 @@ def test_restricted_cannot_terminate_its_host_issue_757(label, source):
 )
 def test_restricted_module_gate_leaves_ordinary_imports_alone(label, source):
     """The gate above is on the *module*, so an allowed module reached through
-    another allowed module (`csv.re`) is fine, and taking `Exception` out of
-    `BaseException`'s company leaves ordinary error handling untouched."""
+    another allowed module (`fractions.math`) is fine, and taking `Exception` out
+    of `BaseException`'s company leaves ordinary error handling untouched."""
     ns: dict = {}
     _restricted_run(source, ns)
     assert "R" in ns

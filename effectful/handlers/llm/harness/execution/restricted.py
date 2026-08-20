@@ -570,8 +570,8 @@ def _checked_module(value: typing.Any) -> typing.Any:
     not merely which ones it may name in an ``import``. Every allowed module
     carries the modules it imported itself as ordinary public attributes -- and a
     public attribute is exactly what `_guarded_getattr` hands over without
-    further question -- so without this check ``uuid.os``, ``typing.sys``,
-    ``queue.threading`` and ``csv.re`` all read straight out of the sandbox.
+    further question -- so without this check ``uuid.os``, ``typing.sys`` and
+    ``queue.threading`` all read straight out of the sandbox.
 
     The residual: this catches a module *fetched as an attribute or imported*, which
     is how modules are actually reached. A module returned from a call would not be
