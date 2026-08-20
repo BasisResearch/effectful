@@ -3,8 +3,10 @@
 import ast
 import builtins
 import contextlib
+import dataclasses
 import importlib.util
 import io
+import json
 import sys
 import types
 from collections.abc import Callable
@@ -12,13 +14,18 @@ from typing import Any
 
 import pydantic
 import pytest
+import tenacity
 from RestrictedPython import RestrictingNodeTransformer
 
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
+from effectful.handlers.llm.harness.hooks import AgentLoop
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
     SynthesizedFunction,
@@ -27,14 +34,22 @@ from effectful.handlers.llm.harness.synthesis.function import (
 )
 from effectful.handlers.llm.harness.synthesis.snippet import (
     ReplSession,
+    StatefulReplSynthesizer,
     _scan_non_nestable,
     _splice_snippet,
 )
 from effectful.handlers.llm.harness.validation.hooks import run_doctests, type_check
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
-from effectful.handlers.llm.types import Encodable
+from effectful.handlers.llm.types import Agent, Encodable, Skill
 from effectful.ops.semantics import handler
+
+from .conftest import (
+    MockCompletionHandler,
+    make_text_response,
+    make_tool_call_response,
+    offered_tools,
+)
 
 # Every contract asserted below is a contract of the `type_check` operation, not of
 # one checker behind it, so the module runs once per handler that implements it. The
@@ -567,38 +582,47 @@ def test_repl_rejects_invalid_source_at_construction():
         assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
 
 
-def test_repl_exception_is_isolated():
-    """A runtime exception is reported in the call's output; the session survives
-    and retains prior state."""
+def test_repl_exception_propagates_and_session_survives():
+    """A runtime exception propagates to the caller -- the session is the
+    primitive, and turning the raise into model-visible feedback is the tool
+    layer's job (`call_tool` + `TenacityRetryer`) -- while the session itself
+    survives with every binding made before the raise."""
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         session = ReplSession({})
         session.exec_code(_code("kept = 7"))
-        out = session.exec_code(_code("print(1 / 0)"))
-        assert "ZeroDivisionError" in out
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("print(1 / 0)"))
         assert session.exec_code(_code("print(kept)")) == "7\n"
 
 
-def test_repl_system_exit_propagates():
-    """`SystemExit` propagates, mirroring `InteractiveInterpreter.runcode`; every
-    other exception (including `KeyboardInterrupt`) is caught and surfaced as
-    output rather than escaping the call."""
+def test_repl_all_exceptions_propagate():
+    """`SystemExit` and `KeyboardInterrupt` propagate like everything else --
+    there is no swallowing tier in the session, so an interrupt genuinely
+    aborts instead of coming back as output."""
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         session = ReplSession({})
         with pytest.raises(SystemExit):
             session.exec_code(_code("raise SystemExit"))
-        out = session.exec_code(_code("raise KeyboardInterrupt"))
-        assert "KeyboardInterrupt" in out
+        with pytest.raises(KeyboardInterrupt):
+            session.exec_code(_code("raise KeyboardInterrupt"))
+        assert session.exec_code(_code("print('alive')")) == "alive\n"
 
 
 def test_repl_cross_snippet_traceback_shows_correct_source():
     """A function defined in an earlier call that raises in a later call formats
     with its *own* source line, not the later call's source -- the per-snippet
-    filename keeps each cell's source in linecache."""
+    filename keeps each cell's source in linecache, so the propagated
+    exception's traceback (which the tool layer sends to the model) resolves
+    it."""
+    import traceback as _traceback
+
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         session = ReplSession({})
         session.exec_code(_code("def boom():\n    return 1 / 0"))
-        out = session.exec_code(_code("boom()"))
-        assert "return 1 / 0" in out  # boom's real source
+        with pytest.raises(ZeroDivisionError) as exc_info:
+            session.exec_code(_code("boom()"))
+        formatted = "".join(_traceback.format_exception(exc_info.value))
+        assert "return 1 / 0" in formatted  # boom's real source
 
 
 def test_repl_new_binding_does_not_leak_into_seed_context():
@@ -613,15 +637,21 @@ def test_repl_new_binding_does_not_leak_into_seed_context():
 
 
 def test_repl_keeps_stdout_and_stderr_separate():
-    """stdout (print output) and stderr (tracebacks) accumulate in separate,
-    introspectable buffers; `exec_code` returns this call's stdout then stderr."""
+    """stdout (print output) and stderr (writes) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr.
+    Output printed before a raise stays in the session buffer -- captured, but
+    not returned, since the raise preempts the return."""
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         session = ReplSession({})
-        out = session.exec_code(_code("print('hi')\n1 / 0"))
+        out = session.exec_code(
+            _code("import sys\nprint('hi')\nsys.stderr.write('warn\\n')")
+        )
         assert session.stdout.getvalue() == "hi\n"
-        assert "ZeroDivisionError" in session.stderr.getvalue()
-        assert "hi" not in session.stderr.getvalue()  # the streams don't mix
-        assert out == "hi\n" + session.stderr.getvalue()  # returned: stdout then stderr
+        assert session.stderr.getvalue() == "warn\n"  # the streams don't mix
+        assert out == "hi\nwarn\n"  # returned: stdout then stderr
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("print('pre-raise')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\npre-raise\n"  # captured anyway
 
 
 def test_repl_runsource_routes_through_ops():
@@ -923,6 +953,80 @@ def test_restricted_still_refuses_the_way_out(label, source):
     compile time (the policy) or at run time (the guarded environment)."""
     with pytest.raises(Exception):
         _restricted_run(source, {})
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        # The two spellings reported in the issue.
+        ("exit", "exit()"),
+        ("quit", "quit()"),
+        # `BaseException` and the subclasses of it that are not `Exception`, which
+        # `safe_builtins` supplies and this environment takes back out.
+        ("raise SystemExit", "raise SystemExit(7)"),
+        ("raise KeyboardInterrupt", "raise KeyboardInterrupt"),
+        ("raise GeneratorExit", "raise GeneratorExit"),
+        ("raise BaseException", "raise BaseException('boom')"),
+        ("subclass SystemExit", "class E(SystemExit):\n    pass\nraise E(9)"),
+        # An allowed module holds the modules *it* imported as public attributes,
+        # so the allowlist has to gate the module wherever it is reached from --
+        # not just the name in the `import` statement.
+        ("uuid.os", "import uuid\nR = uuid.os"),
+        ("uuid.os.system", "import uuid\nR = uuid.os.system('echo pwned')"),
+        ("uuid.os._exit", "import uuid\nR = uuid.os._exit(0)"),
+        ("uuid.os.fork", "import uuid\nR = uuid.os.fork()"),
+        ("typing.sys.exit", "import typing\nR = typing.sys.exit(3)"),
+        ("queue.threading", "import queue\nR = queue.threading"),
+        ("json.codecs", "import json\nR = json.codecs"),
+        ("dynamic getattr for a module", "import uuid\nR = getattr(uuid, 'os')"),
+        ("dynamic getattr with a default", "import uuid\nR = getattr(uuid, 'os', 1)"),
+        # `from uuid import os` fetches the attribute with `IMPORT_FROM`, which is
+        # not rewritten to `_getattr_`; only `_guarded_import` sees it.
+        ("from-import a module", "from uuid import os\nR = os.system('echo pwned')"),
+        ("from-import sys", "from typing import sys\nR = sys.exit(4)"),
+        ("from-import threading", "from queue import threading\nR = threading"),
+    ],
+)
+def test_restricted_cannot_terminate_its_host_issue_757(label, source):
+    """#757: generated code must not be able to shut down the process running it.
+
+    `call_tool` catches `Exception`, deliberately and not `BaseException` -- so a
+    real Ctrl-C still interrupts the host rather than being reported to the model
+    as a failed tool call. That makes `SystemExit` (and the rest of `BaseException`)
+    the one thing a snippet can raise that the harness will not contain, and
+    `os._exit`/`os.fork`/`os.kill` worse still, since they do not raise at all.
+
+    So `pytest.raises(Exception)` is the assertion, not incidental to it: each of
+    these must fail as something catchable. A `SystemExit` here would not be caught
+    by this test either -- it would escape into pytest, exactly as it escapes into
+    the host program in the issue.
+    """
+    with pytest.raises(Exception):
+        _restricted_run(source, {})
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("allowed module", "import math\nR = math.sqrt(16)"),
+        ("allowed submodule", "import collections.abc\nR = collections.abc.Mapping"),
+        ("from-import a submodule", "from collections import abc\nR = abc.Mapping"),
+        ("from-import a name", "from dataclasses import dataclass\nR = dataclass"),
+        ("module attribute that is a module", "import csv\nR = csv.re.match('a', 'a')"),
+        ("Exception is still available", "R = Exception('fine')"),
+        (
+            "except Exception still works",
+            "try:\n    raise ValueError\nexcept Exception:\n    R = 1",
+        ),
+    ],
+)
+def test_restricted_module_gate_leaves_ordinary_imports_alone(label, source):
+    """The gate above is on the *module*, so an allowed module reached through
+    another allowed module (`csv.re`) is fine, and taking `Exception` out of
+    `BaseException`'s company leaves ordinary error handling untouched."""
+    ns: dict = {}
+    _restricted_run(source, ns)
+    assert "R" in ns
 
 
 def test_restricted_runs_doctests_under_the_same_policy():
@@ -1234,6 +1338,19 @@ def test_repl_checks_the_cumulative_body():
     )  # earlier binding resolves, clean
 
 
+def test_repl_failed_snippet_bindings_still_resolve():
+    """A snippet that raised at runtime stays in the cumulative splice
+    (`exec_code` records every snippet that reached execution), so a binding it
+    made *before* raising resolves in the repair cell -- the ordinary
+    read-the-error-and-fix flow must not be rejected at the decode gate. The
+    price is that bindings from statements *after* the raise are phantoms: they
+    pass the gate and fail at runtime instead, where error feedback handles
+    them."""
+    prior = ["data = [1, 2, 3]\n1 / 0\nnever_bound = 99"]
+    assert not _repl_raises(prior, "print(data[0])")  # real binding resolves
+    assert not _repl_raises(prior, "print(never_bound)")  # phantom: runtime's problem
+
+
 def test_repl_splice_skips_sourceless_anchor():
     """A Skill with no recoverable source (defined via exec/REPL/notebook) skips the
     check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
@@ -1302,3 +1419,222 @@ def test_encodable_code_rejects_star_import():
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         with pytest.raises(pydantic.ValidationError):
             _code("from os import *\nx = 1")
+
+
+# ============================================================================
+# exec_code(clear=True): model-triggered history consolidation
+#
+# Calling the REPL tool with ``clear=True`` runs the snippet as usual and, only
+# when it raises no error, drops the current call's tool-loop transcript --
+# every message after the current request -- folding the snippet's stdout into
+# the surviving user message as a note. These tests drive the real agent loop
+# offline with a `MockCompletionHandler`, matching the pattern of the
+# persistence suite.
+# ============================================================================
+
+
+@dataclasses.dataclass
+class _Keeper(Agent):
+    """A test agent with one durable field the model can promote state onto."""
+
+    x: int = 0
+
+    @Skill.define
+    def step(self, q: str) -> str:
+        """Answer {q}."""
+
+
+def _clear_call(code: str, tool_call_id: str = "call_1"):
+    return make_tool_call_response(
+        "exec_code",
+        json.dumps({"code": code, "clear": True}),
+        tool_call_id=tool_call_id,
+    )
+
+
+def _consolidation_stack(mock, *, retryer_last: bool = True):
+    """The offline agent stack in `harness()`'s order: the retryer is composed
+    last, so it is reached first and `StatefulReplSynthesizer._call_tool` sees a
+    failing snippet as a *raised* `ToolCallExecutionError`. With
+    ``retryer_last=False`` the order is inverted so the rule sees the error
+    *as a value* instead (the other shape it must handle)."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(handler(AgentLoop()))
+    stack.enter_context(handler(LiteLLMConfigurer(model="test")))
+    stack.enter_context(handler(HistoryBuilder()))
+    stack.enter_context(handler(mock))
+    stack.enter_context(handler(BuiltinExecutor()))
+    retryer = TenacityRetryer(stop=tenacity.stop_after_attempt(2))
+    if retryer_last:
+        stack.enter_context(handler(StatefulReplSynthesizer()))
+        stack.enter_context(handler(retryer))
+    else:
+        stack.enter_context(handler(retryer))
+        stack.enter_context(handler(StatefulReplSynthesizer()))
+    return stack
+
+
+def _text_of(message) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.get("text", "") for part in (content or []) if isinstance(part, dict)
+    )
+
+
+def test_clear_truncates_to_user_and_next_request_is_wellformed():
+    """A clean snippet leaves ``[system, user+note]``; the loop's next request
+    re-asks the (annotated) question with no orphaned tool message, and the
+    promoted binding on `self` survives while the REPL-only one does not."""
+    mock = MockCompletionHandler(
+        [
+            _clear_call("tmp = 41\nself.x = tmp + 1\nprint('promoted x')"),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _consolidation_stack(mock):
+        result = agent.step("go")
+
+    assert result == "done"
+    assert agent.x == 42  # promoted via `self`, outlives the cleared transcript
+    assert not hasattr(agent, "tmp")  # REPL-only names die with the session
+
+    # The durable history is the compacted view: system, annotated user, answer.
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == ["system", "user", "assistant"]
+    assert "promoted x" in _text_of(history[1])
+    assert "## Consolidated notes" in _text_of(history[1])
+
+    # The request after the clear was [system, user+note] -- well-formed, with
+    # the clearing round nowhere in it.
+    followup = mock.received_messages[1]
+    assert [m["role"] for m in followup] == ["system", "user"]
+    assert "promoted x" in _text_of(followup[1])
+
+
+def test_clear_preserves_prior_calls():
+    """The clear drops only the current call's tool loop: earlier exchanges in
+    an `Agent`'s history survive it."""
+    mock = MockCompletionHandler(
+        [
+            make_text_response("first"),
+            _clear_call("print('note')"),
+            make_text_response("second"),
+        ]
+    )
+    agent = _Keeper()
+    with _consolidation_stack(mock):
+        assert agent.step("one") == "first"
+        assert agent.step("two") == "second"
+
+    roles = [m["role"] for m in agent.__history__]
+    assert roles == ["system", "user", "assistant", "user", "assistant"]
+    assert "note" in _text_of(agent.__history__[3])
+
+
+def test_clear_on_free_skill():
+    """A free `Skill` gets a fresh history per call, so the clear compacts its
+    only exchange and the call completes normally."""
+
+    @Skill.define
+    def answer(q: str) -> str:
+        """Answer {q}."""
+
+    mock = MockCompletionHandler(
+        [
+            _clear_call("print('fine')"),
+            make_text_response("ok"),
+        ]
+    )
+    with _consolidation_stack(mock):
+        assert answer("go") == "ok"
+    assert not hasattr(answer, "__history__")
+
+
+@pytest.mark.parametrize("retryer_last", [True, False])
+def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
+    """A raising snippet truncates nothing: the traceback reaches the model as
+    a tool message, the session survives for repair, and the rule behaves the
+    same whether it observes the failure as a raised `ToolCallExecutionError`
+    (harness order) or as an error value already converted by `TenacityRetryer`
+    (inverted order)."""
+    mock = MockCompletionHandler(
+        [
+            _clear_call("self.x = 99\n1 / 0"),
+            _clear_call("print('repaired')", tool_call_id="call_2"),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _consolidation_stack(mock, retryer_last=retryer_last):
+        assert agent.step("go") == "done"
+
+    # The failed round was NOT cleared out from under the model: the request
+    # after the failure still carries the failing assistant turn and the error
+    # feedback as a tool message.
+    after_failure = mock.received_messages[1]
+    assert [m["role"] for m in after_failure] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert "ZeroDivisionError" in _text_of(after_failure[3])
+
+    # The repair's clear then landed: final durable history is compact, and the
+    # failed snippet's partial effects never survived as recorded session code.
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == ["system", "user", "assistant"]
+    assert "repaired" in _text_of(history[1])
+
+
+def test_exec_code_is_one_tool_with_a_clear_parameter():
+    """There is a single REPL tool: clearing is `exec_code`'s `clear` argument,
+    off by default, not a second tool."""
+    import inspect
+
+    tools = offered_tools({}, StatefulReplSynthesizer())
+    names = {t.__name__ for t in tools}
+    assert "exec_code" in names
+    assert "exec_and_clear" not in names
+    (tool,) = (t for t in tools if t.__name__ == "exec_code")
+    clear = inspect.signature(tool).parameters["clear"]
+    assert clear.default is False
+
+
+def test_exec_code_without_clear_leaves_history_intact():
+    """The default is the plain REPL: a call without `clear` truncates nothing,
+    so the tool round stays in the durable history."""
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("exec_code", json.dumps({"code": "print('hi')"})),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _consolidation_stack(mock):
+        assert agent.step("go") == "done"
+    roles = [m["role"] for m in agent.__history__]
+    assert roles == ["system", "user", "assistant", "tool", "assistant"]
+
+
+def test_session_records_snippets_that_raised():
+    """`exec_code` propagates exceptions -- the resilient tier is the tool
+    layer, not the session -- but records every snippet that reached
+    execution, including one that raised partway: it may have bound names
+    before the raise, and the next snippet's decode-time type check must see
+    them or a valid repair cell reading them would be rejected at the gate."""
+    with handler(BuiltinExecutor()):
+        session = ReplSession({})
+        assert session.exec_code(_code("kept = 1\nprint('ok')")) == "ok\n"
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("data = [1, 2, 3]\n1 / 0"))
+        assert session.prior_snippets == [
+            "kept = 1\nprint('ok')",
+            "data = [1, 2, 3]\n1 / 0",
+        ]
+        # The session survived the failure, and the binding made before the
+        # raise is real -- the repair cell can read it.
+        assert session.exec_code(_code("print(data[0])")) == "1\n"

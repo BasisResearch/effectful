@@ -37,8 +37,12 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
 from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
-from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
+from effectful.handlers.llm.harness.observability.rich import (
+    RichTerminalRenderer,
+    _render_content,
+)
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.synthesis.snippet import _with_note
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -472,6 +476,28 @@ def test_renderer_releases_the_live_region_after_a_failure():
 
     assert renderer._live_lock.acquire(blocking=False), "live region left held"
     renderer._live_lock.release()
+
+
+def test_renderer_shows_a_consolidated_note():
+    """The note `exec_code(clear=True)` leaves on the surviving user message must
+    reach the operator, not just the model.
+
+    It used to be delimited by a column-0 ``<consolidated>`` tag, which CommonMark
+    classifies as an ``html_block``; `rich.markdown.Markdown` registers no element
+    for that token and drops it silently, so the whole note vanished from
+    ``--render`` while the model still received it.
+    """
+    console = rich.console.Console(file=io.StringIO(), force_terminal=True, width=100)
+    noted = _with_note(
+        {"role": "user", "content": "Decide the next presses."},
+        "Recorded room 0 prefix: B",
+    )
+    console.print(_render_content(noted["content"]))
+    rendered = console.file.getvalue()
+
+    assert "Decide the next presses." in rendered
+    assert "Recorded room 0 prefix: B" in rendered
+    assert "Consolidated notes" in rendered
 
 
 # ============================================================================

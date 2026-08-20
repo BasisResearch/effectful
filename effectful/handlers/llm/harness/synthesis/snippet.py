@@ -4,7 +4,6 @@ import codeop
 import collections
 import collections.abc
 import contextlib
-import functools
 import inspect
 import io
 import linecache
@@ -16,16 +15,21 @@ import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    ToolCallExecutionError,
+    ToolResult,
     call_agent,
     call_assistant,
     call_system,
+    call_tool,
 )
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
+    DecodedToolCall,
     PromptSection,
     TypeToPydanticType,
     to_content_blocks,
@@ -67,11 +71,16 @@ class ReplSession(code.InteractiveInterpreter):
     the `exec` effect operation.  Both bindings and captured stdout/stderr
     persist across calls -- variables, imports and definitions accumulate exactly
     like a REPL -- and the session (with its buffer) is discarded as a whole when
-    it goes out of scope.  Each call returns only the output it produced; a
-    snippet that raises has its traceback appended to that output rather than
-    propagating -- mirroring `code.InteractiveInterpreter`, only `SystemExit`
-    propagates -- so failures are surfaced as text.  There is no bare-expression
-    auto-echo, so use `print()` to surface values.
+    it goes out of scope.  Each call returns only the output it produced; there
+    is no bare-expression auto-echo, so use `print()` to surface values.
+
+    A snippet that raises propagates the exception; the session itself survives
+    and keeps every binding made before the raise.  The session is the
+    *primitive* here and stays simple: the REPL experience of reading a
+    traceback and continuing is supplied a level up, where `call_tool` wraps
+    the raise in a `ToolCallExecutionError` and `TenacityRetryer` converts it
+    into feedback the model acts on next turn -- and it is what lets the
+    `exec_code` tool's ``clear=True`` mode observe success at all.
 
     Compilation -- and therefore syntax checking -- happens earlier, at the
     `Encodable[CodeType]` boundary; this session only executes.
@@ -102,16 +111,14 @@ class ReplSession(code.InteractiveInterpreter):
         return self._prior_snippets
 
     def runcode(self, code: types.CodeType) -> None:
-        # Mirrors `InteractiveInterpreter.runcode` exactly; the only difference
-        # is that `exec` here is the effect operation, so execution routes
-        # through the installed eval provider.  `showtraceback` reports failures
-        # via `self.write`, which `exec_code` has redirected into `self.stderr`.
+        # Mirrors `InteractiveInterpreter.runcode` closely; the only differences
+        # are that `exec` here is the effect operation, so execution routes
+        # through the installed eval provider, and errors propagate after writing.
         try:
             exec(code, self.locals)
-        except SystemExit:
-            raise
         except:
             self.showtraceback()
+            raise
 
     def exec_code(self, code: types.CodeType) -> str:
         """Run Python in a persistent, stateful session and return its output.
@@ -124,12 +131,15 @@ class ReplSession(code.InteractiveInterpreter):
         rebind.
 
         Output: returns this call's output -- its stdout (what `print` wrote)
-        followed by its stderr (which includes the traceback if the code raised).
-        There is NO automatic echoing of results -- a bare expression on its own
-        line (e.g. `1 + 1`) displays nothing, so call `print(...)` for anything
-        you want to see.  A snippet that raises has its traceback returned and the
-        session survives, so you can read the error and continue in the next call
-        (only `SystemExit` aborts).
+        followed by anything written to stderr.  There is NO automatic echoing
+        of results -- a bare expression on its own line (e.g. `1 + 1`) displays
+        nothing, so call `print(...)` for anything you want to see.
+
+        A snippet that raises comes back as a failed call carrying the
+        traceback.  The session and every binding made before the raise
+        survive, so read the error, fix the code, and continue in the next
+        call -- but output printed before the error is not returned, so print
+        again once it works.
 
         Provide `code` as a string of Python source.  It must be a complete,
         compilable snippet -- incomplete or invalid source is rejected before it
@@ -309,6 +319,34 @@ def _pydantic_type_code(ty):
     ]
 
 
+def _with_note(user: Message, note: str) -> Message:
+    """A copy of user message `user` with `note` appended as a trailing text block.
+
+    A copy rather than a mutation, so the annotation can never reach a message
+    object shared with anything outside the current call's transaction buffer.
+
+    The note is introduced by a Markdown heading -- the same construct
+    `~effectful.handlers.llm.harness.serialization.to_content_blocks` gives a
+    `PromptSection`, and the reason it is a heading rather than an
+    ``<xml>``-style tag: a tag at column 0 is a CommonMark ``html_block``, which
+    `rich.markdown.Markdown` has no element for and drops silently, so the note
+    reached the model but never the operator watching ``--render``. Being last
+    in the message, the heading needs no closing delimiter.
+    """
+    if not note.strip():
+        return user
+    block = f"\n\n## Consolidated notes\n\n{note.rstrip()}"
+    updated = dict(user)
+    content = updated.get("content")
+    if isinstance(content, str):
+        updated["content"] = content + block
+    else:
+        parts = list(typing.cast(collections.abc.Iterable[typing.Any], content or []))
+        parts.append({"type": "text", "text": block})
+        updated["content"] = parts
+    return typing.cast(Message, updated)
+
+
 class StatefulReplSynthesizer(ObjectInterpretation):
     """You may run arbitrary Python code in a persistent session. The code is
     executed in the context of this Skill's lexical scope (see the *Lexical
@@ -344,8 +382,43 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     @typing.final
     @Tool.define
     @classmethod
-    @functools.wraps(ReplSession.exec_code)
-    def exec_code(cls, code: types.CodeType) -> str:
+    def exec_code(cls, code: types.CodeType, clear: bool = False) -> str:
+        """Run Python in a persistent, stateful session and return its output.
+
+        This is a long-lived REPL, not a one-shot sandbox: every call runs in
+        the SAME namespace, so names you bind in one call stay available in
+        later calls within the same task.  Imports, function/class definitions
+        and variable assignments all accumulate during the session of this
+        skill.  The namespace starts seeded with the in-scope variables of the
+        surrounding context, which you may read and rebind.
+
+        Output: returns this call's output -- its stdout (what `print` wrote)
+        followed by anything written to stderr.  There is NO automatic echoing
+        of results -- a bare expression on its own line (e.g. `1 + 1`) displays
+        nothing, so call `print(...)` for anything you want to see.
+
+        A snippet that raises comes back as a failed call carrying the
+        traceback.  The session and every binding made before the raise
+        survive, so read the error, fix the code, and continue in the next
+        call -- but output printed before the error is not returned, so print
+        again once it works.
+
+        Passing ``clear=True`` consolidates: if (and only if) the snippet
+        raises no exception, every message after the current request -- the
+        tool-call transcript of this task so far -- is dropped, and what the
+        snippet printed becomes a note on the surviving request.  That note is
+        the only transcript content that survives, so print a short summary of
+        anything worth remembering that you have not stored elsewhere;
+        bindings you have assigned onto durable objects (for example fields of
+        `self`) are untouched by the clear and are the right place for
+        anything that matters.  A snippet that raises clears NOTHING.  Use it
+        once the transcript has served its purpose: write what matters onto
+        durable state, print a short note, and clear.
+
+        Provide `code` as a string of Python source.  It must be a complete,
+        compilable snippet -- incomplete or invalid source is rejected before
+        it runs.
+        """
         raise NotImplementedError("No handler")
 
     @typing.final
@@ -399,7 +472,7 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         )
 
     @implements(call_agent)
-    def _apply[**P, T](
+    def _call_agent[**P, T](
         self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
         bound_args = skill.__signature__.bind(*args, **kwargs)
@@ -408,13 +481,29 @@ class StatefulReplSynthesizer(ObjectInterpretation):
         session = ReplSession(env=env)
         with handler(
             {
-                self.exec_code: session.exec_code,
+                self.exec_code: lambda code, clear=False: session.exec_code(code),
                 self.read_lexical_variable: env.get,
                 self.repl_history: lambda: session.prior_snippets,
                 self.repl_env: lambda: session.locals,
             }
         ):
             return fwd()
+
+    @implements(call_tool)
+    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
+        """Clear history after a successful `exec_code(clear=True)`"""
+        message, result, is_final = fwd(tool_call)
+        if (
+            tool_call.tool is self.exec_code
+            and tool_call.bound_args.arguments.get("clear", False)
+            and not isinstance(result, ToolCallExecutionError)
+        ):
+            history = HistoryBuilder.get_history()
+            for i, msg in reversed(list(enumerate(history))):
+                if msg["role"] == "user":
+                    history[:] = [*history[:i], _with_note(msg, result)]
+                    break
+        return message, result, is_final
 
     @implements(call_assistant)
     def _call_assistant[T](
