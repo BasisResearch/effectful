@@ -9,6 +9,7 @@ declarations: none of them talk to a model on their own, and calling a
 
 import abc
 import collections
+import collections.abc
 import doctest
 import functools
 import inspect
@@ -19,12 +20,11 @@ import string
 import types
 import typing
 import uuid
-from collections.abc import Callable, Mapping, MutableMapping, MutableSequence
 
-from effectful.ops.types import Operation
+import effectful.ops.types
 
 
-class Tool[**P, T](Operation[P, T]):
+class Tool[**P, T](effectful.ops.types.Operation[P, T]):
     """A `Tool` is a function that may be called by a `Skill`.
 
     A `Tool` wraps a normal Python callable; its signature (parameter types
@@ -59,7 +59,9 @@ class Tool[**P, T](Operation[P, T]):
 
     """
 
-    def __init__(self, default: Callable[P, T], name: str | None = None):
+    def __init__(
+        self, default: collections.abc.Callable[P, T], name: str | None = None
+    ):
         if not default.__doc__:
             raise ValueError("Tools must have docstrings.")
         super().__init__(default, name=name)
@@ -277,7 +279,9 @@ class Skill[**P, T](Tool[P, T]):
         return result
 
     @classmethod
-    def define[**Q, V](cls, default: Callable[Q, V], *args, **kwargs) -> "Skill[Q, V]":
+    def define[**Q, V](
+        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+    ) -> "Skill[Q, V]":
         """Define a skill.
 
         `define` takes a function and can be used as a decorator.
@@ -329,7 +333,9 @@ class Skill[**P, T](Tool[P, T]):
                 frame = frame.f_back
         contexts.append(globals_proxy)
         context: collections.ChainMap[str, typing.Any] = collections.ChainMap(
-            *typing.cast(list[MutableMapping[str, typing.Any]], contexts)
+            *typing.cast(
+                list[collections.abc.MutableMapping[str, typing.Any]], contexts
+            )
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context  # type: ignore[attr-defined]
@@ -448,8 +454,12 @@ class Agent(abc.ABC):
         )
 
     @functools.cached_property
-    def __history__(self) -> MutableSequence[Mapping[str, typing.Any]]:
-        history: MutableSequence[Mapping[str, typing.Any]] = []
+    def __history__(
+        self,
+    ) -> collections.abc.MutableSequence[collections.abc.Mapping[str, typing.Any]]:
+        history: collections.abc.MutableSequence[
+            collections.abc.Mapping[str, typing.Any]
+        ] = []
         if self.__is_persistent__:
             # Deferred import: completions.py imports Agent/Skill from this
             # module, so this can only be resolved at call time, not at module
