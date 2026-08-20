@@ -657,6 +657,86 @@ class TestTenacityRetryer:
         assert tool_calls[0].tool == add_numbers
         assert result is None  # No result when there are tool calls
 
+    def test_retry_answers_every_tool_call_when_one_fails_to_decode(self):
+        """A partly-undecodable turn is still retried as a well-formed request.
+
+        Decoding abandons a turn's remaining tool calls at the first failure, but
+        the assistant message recorded for the retry advertised all of them and
+        the failure's feedback answers only one. Both OpenAI APIs require exactly
+        one output per advertised call, so an unanswered sibling turns the
+        recoverable decode error into a `BadRequestError` -- which is not in this
+        retryer's retry set, and so kills the call instead of informing it.
+        """
+        two_calls = ModelResponse(
+            id="test",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_good",
+                                "type": "function",
+                                "function": {
+                                    "name": "add_numbers",
+                                    "arguments": '{"a": 1, "b": 2}',
+                                },
+                            },
+                            {
+                                "id": "call_bad",
+                                "type": "function",
+                                "function": {
+                                    "name": "add_numbers",
+                                    "arguments": '{"a": "not", "b": "ints"}',
+                                },
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ],
+            model="test-model",
+        )
+        mock_handler = MockCompletionHandler(
+            [two_calls, make_text_response("recovered")]
+        )
+        message_sequence = [{"role": "user", "content": "test"}]
+        message_sequence_provider = {
+            HistoryBuilder.get_history: lambda: message_sequence
+        }
+
+        with (
+            handler(HistoryBuilder()),
+            handler(TenacityRetryer()),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
+            _message, _tool_calls, result = call_assistant(
+                list(message_sequence),
+                response_type=str,
+                env={"add_numbers": add_numbers},
+                tools={add_numbers},
+            )
+
+        assert mock_handler.call_count == 2
+        assert result == "recovered"
+
+        retried = mock_handler.received_messages[1]
+        advertised = [
+            call["id"]
+            for message in retried
+            if message["role"] == "assistant"
+            for call in message.get("tool_calls") or []
+        ]
+        answered = [m["tool_call_id"] for m in retried if m["role"] == "tool"]
+        assert advertised == ["call_good", "call_bad"]
+        assert sorted(answered) == sorted(advertised), (
+            f"every advertised tool call must be answered, but "
+            f"advertised={advertised} and answered={answered}"
+        )
+
     def test_codeadapt_notebook_replay_fixture(self, request):
         """Replay fixture for codeadapt higher-order tool flow."""
 
@@ -2127,19 +2207,34 @@ class TestCallToolWrapsExecutionError:
         assert result["role"] == "tool"
         assert result["tool_call_id"] == "call_ok"
 
-    def test_call_tool_returns_exec_code_error_in_output(self):
-        """An `exec_code` runtime error is reported in the returned tool message's
-        content (the traceback), not raised as a `ToolCallExecutionError`, so the
-        assistant loop continues with it as feedback."""
+    def test_call_tool_wraps_exec_code_error_and_retryer_feeds_it_back(self):
+        """An `exec_code` runtime error propagates out of the session and is
+        wrapped like any other failing tool -- and the REPL experience of
+        "traceback returned, loop continues" is supplied by composition:
+        `TenacityRetryer` converts the raise into a tool feedback message. The
+        session is not the resilient layer; the stack is."""
 
-        def body(exec_code):
+        def bare(exec_code):
             bound_args = inspect.signature(exec_code).bind(
                 pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
             )
             tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
-            return call_tool(tc)[0]
+            with pytest.raises(ToolCallExecutionError) as exc_info:
+                call_tool(tc)
+            return exc_info.value
 
-        msg = _drive_repl(body)
+        err = _drive_repl(bare)
+        assert isinstance(err.original_error, ZeroDivisionError)
+
+        def with_retryer(exec_code):
+            bound_args = inspect.signature(exec_code).bind(
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("1 / 0")
+            )
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            with handler(TenacityRetryer()):
+                return call_tool(tc)[0]
+
+        msg = _drive_repl(with_retryer)
         assert msg["role"] == "tool"
         assert msg["tool_call_id"] == "call_exec"
         assert "ZeroDivisionError" in str(msg["content"])

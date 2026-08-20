@@ -57,9 +57,38 @@ class HistoryBuilder(ObjectInterpretation):
         except (ToolCallDecodingError, ResultDecodingError) as e:
             self.append_message(e.raw_message)
             self.append_message(e.to_feedback_message(include_traceback=True))
+            if isinstance(e, ToolCallDecodingError):
+                self._answer_abandoned_tool_calls(e)
             raise
         self.append_message(message)
         return (message, tool_calls, result)
+
+    @classmethod
+    def _answer_abandoned_tool_calls(cls, e: ToolCallDecodingError) -> None:
+        """Answer the sibling calls that decoding abandoned.
+
+        `call_assistant` decodes a turn's tool calls in a loop and raises on the
+        first one that fails to validate, so the calls after it never run -- but
+        the assistant message it appends advertised all of them, and its feedback
+        answers only the one that failed. Both OpenAI APIs require exactly one
+        output per advertised call, so resending that buffer earns a
+        `BadRequestError` -- which is not in `TenacityRetryer`'s retry set -- in
+        place of the retry the feedback exists to inform.
+
+        `ResultDecodingError` needs no such padding: a result is only decoded on a
+        turn that requested no tools at all.
+        """
+        for raw_tool_call in e.raw_message.get("tool_calls") or []:
+            if raw_tool_call["id"] != e.raw_tool_call.id:
+                unanswered: Message = {
+                    "role": "tool",
+                    "tool_call_id": str(raw_tool_call["id"]),
+                    "content": (
+                        "Not executed: another tool call in the same turn failed "
+                        "to decode. Reissue this call if it is still needed."
+                    ),
+                }
+                cls.append_message(unanswered)
 
     @staticmethod
     def _tool_call_answers_request(
