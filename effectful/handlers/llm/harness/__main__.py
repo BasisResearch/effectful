@@ -147,17 +147,52 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return parser.parse_known_args(argv)
 
 
+def _needs_responses_api(model: str) -> bool:
+    """Whether `model` must be addressed through the Responses API to use tools.
+
+    OpenAI rejects function tools alongside reasoning on ``/v1/chat/completions``
+    for its GPT-5.4-and-later models (*Function tools with reasoning_effort are
+    not supported ... use /v1/responses*), and the harness always sends tools.
+    Asked about a model litellm does not classify -- another provider's, or one
+    newer than the installed litellm knows -- this answers ``False`` and leaves
+    the model string alone, so an unfamiliar name degrades to today's behaviour
+    rather than being rewritten on a guess.
+    """
+    try:
+        from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
+
+        return OpenAIGPT5Config.is_model_gpt_5_4_plus_model(
+            model
+        ) and not OpenAIGPT5Config.is_model_gpt_5_search_model(model)
+    except Exception:
+        return False
+
+
 def _provider_config(ns: argparse.Namespace) -> dict[str, typing.Any]:
     """The litellm kwargs `LiteLLMConfigurer` is built from.
 
     An unset ``--reasoning-effort`` is left out of the request entirely rather
     than forwarded as a sentinel. Every value this parameter takes is one some
-    provider rejects -- OpenAI answers ``reasoning_effort`` of ``"default"``
-    with a 400, so a sentinel default made every reasoning model unusable
-    through the launcher -- and the only universally safe way to say "whatever
-    the model does by default" is to say nothing.
+    provider rejects -- OpenAI answers ``reasoning_effort`` of ``"default"`` with
+    a 400 -- and the only universally safe way to say "whatever the model does by
+    default" is to say nothing.
+
+    Saying nothing has one consequence worth naming, because it is not obvious
+    and it is why the model string may be rewritten below. litellm routes a chat
+    completion to the Responses API only when ``reasoning_effort`` is not None
+    (``litellm.main.responses_api_bridge_check``), so omitting the parameter also
+    silently opts a GPT-5.4+ model *out* of the endpoint its tool calls require.
+    The ``openai/responses/`` prefix is litellm's own way to ask for that
+    endpoint directly, and it does not depend on the reasoning parameter -- which
+    lets the effort stay at the model's own default instead of being pinned to a
+    value nobody chose. An explicit ``--reasoning-effort`` needs none of this: it
+    triggers the bridge by itself, and is left to do so.
     """
-    config: dict[str, typing.Any] = {"model": ns.model, "tool_choice": ns.tool_choice}
+    model = ns.model
+    if ns.reasoning_effort is None and _needs_responses_api(model):
+        model = f"openai/responses/{model}"
+
+    config: dict[str, typing.Any] = {"model": model, "tool_choice": ns.tool_choice}
     if ns.reasoning_effort is not None:
         config["reasoning_effort"] = ns.reasoning_effort
     return config

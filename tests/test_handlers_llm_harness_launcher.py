@@ -99,6 +99,43 @@ def test_reasoning_effort_is_forwarded_when_asked_for():
     assert _provider_config(ns)["reasoning_effort"] == "low"
 
 
+@pytest.mark.parametrize(
+    "model", ["gpt-5-mini", "gpt-5", "gpt-4o-mini", "claude-sonnet-5", "not-a-model"]
+)
+def test_provider_config_leaves_other_models_alone(model):
+    """Only the models that need the Responses API are rewritten. An unknown
+    name is left alone rather than rewritten on a guess."""
+    ns, _ = _parse_args(["s.py", "--model", model])
+    assert _provider_config(ns)["model"] == model
+
+
+def test_gpt_5_4_plus_is_routed_to_the_responses_api():
+    """A GPT-5.4+ model with no ``--reasoning-effort`` is addressed through the
+    Responses API.
+
+    OpenAI rejects function tools alongside reasoning on
+    ``/v1/chat/completions`` for these models, and the harness always sends
+    tools -- but litellm bridges to ``/v1/responses`` only when
+    ``reasoning_effort`` is not None, so omitting the parameter (correct in
+    itself) also opts the model out of the endpoint its tool calls require.
+    """
+    ns, _ = _parse_args(["s.py", "--model", "gpt-5.6-terra"])
+    config = _provider_config(ns)
+    assert config["model"] == "openai/responses/gpt-5.6-terra"
+    assert "reasoning_effort" not in config
+
+
+def test_an_explicit_reasoning_effort_routes_itself():
+    """`reasoning_effort` triggers litellm's bridge on its own, so the model
+    name is left untouched and the requested effort is what is sent."""
+    ns, _ = _parse_args(
+        ["s.py", "--model", "gpt-5.6-terra", "--reasoning-effort", "low"]
+    )
+    config = _provider_config(ns)
+    assert config["model"] == "gpt-5.6-terra"
+    assert config["reasoning_effort"] == "low"
+
+
 def test_reasoning_effort_rejects_the_sentinel_value():
     """``"default"`` appears in the ``Literal`` on ``litellm.completion``'s
     signature but not in litellm's canonical ``REASONING_EFFORT``, and no
