@@ -194,6 +194,7 @@ def _splice_snippet(
     generated: ast.Module,
     module_ast: ast.Module,
     skill_def: ast.FunctionDef | ast.AsyncFunctionDef,
+    first_new_stmt: int = 0,
 ) -> SplicedRegion:
     """Splice REPL code -- ``generated`` -- into the anchor Skill's body, in its
     real module source, and return the modified source with the ``[lo, hi]`` line
@@ -205,9 +206,21 @@ def _splice_snippet(
     enclosing scope -- i.e. the session's seed env -- are in scope and each statement
     sees the ones before it (they are function locals). No ``return`` is appended;
     the REPL code doesn't produce the Skill's declared type, and that contract is
-    waived by ``lenient`` type checking. The whole spliced body is reported, but the
-    already-run snippets are type-clean (they passed this same check when *they* were
-    the current one), so only the new statements can raise.
+    waived by ``lenient`` type checking.
+
+    Only the current snippet is *reported*: ``first_new_stmt`` is its index in
+    ``generated.body``, and the region starts there rather than at the body's first
+    statement. The earlier snippets are still spliced, because their bindings are
+    what the current one reads -- but they must not be diagnosed again, and not
+    merely because they already passed. A function body is a stricter scope than the
+    session it stands in for: the session is one namespace, seeded with the enclosing
+    scope, where rebinding a seeded name is an ordinary assignment. Spliced into a
+    function, that same assignment makes the name *local to the whole body*, so a
+    snippet that read the seeded value before it -- and ran fine -- becomes a
+    use-before-assignment the moment a later snippet writes to it. Reporting only
+    the new statements keeps that artifact of the model out of the diagnostics.
+    (It survives in one narrow form: a single snippet that reads a seeded name and
+    then rebinds it is diagnosed, though the session would run it.)
 
     Example. For the Skill ::
 
@@ -230,13 +243,15 @@ def _splice_snippet(
     so each statement sees the Skill's ``data`` and the earlier statements'
     bindings (here ``total``).
 
-    Returns ``None`` when ``generated`` has no statements to check, or when the
-    Skill's source can't be recovered -- a Skill defined at a REPL, in a notebook, or
-    via ``exec()`` is sourceless, so we skip the check and run the code unchecked, exactly
-    as ``splice_into_source`` does for a sourceless Callable anchor. Raises ``RuntimeError``
-    only on source *drift* (source recovered but the def no longer sits where it was
+    The caller decides whether there is anything to splice at all: it skips this
+    when the Skill's source can't be recovered -- a Skill defined at a REPL, in a
+    notebook, or via ``exec()`` is sourceless, so the code runs unchecked, exactly
+    as ``splice_into_source`` does for a sourceless Callable anchor -- and when the
+    snippet contributes no statements to report on. Raises ``RuntimeError`` only on
+    source *drift* (source recovered but the def no longer sits where it was
     compiled from), which ``_recover_skill_def`` surfaces.
     """
+    assert 0 <= first_new_stmt < len(generated.body)
     skill_def.body = list(generated.body)
 
     # `skill_def` is still a node in `module_ast` (only its body changed), so its
@@ -244,7 +259,7 @@ def _splice_snippet(
     def_index = _def_nodes(module_ast).index(skill_def)
     checked_source = ast.unparse(ast.fix_missing_locations(module_ast))
     spliced = _def_nodes(ast.parse(checked_source))[def_index]
-    lo = spliced.body[0].lineno
+    lo = spliced.body[first_new_stmt].lineno
     hi = spliced.body[-1].end_lineno or lo
     return checked_source, lo, hi
 
@@ -301,10 +316,17 @@ def _pydantic_type_code(ty):
             prior = StatefulReplSynthesizer.repl_history()
             prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
             session = ast.parse(prior_src + value)
-            checked = _splice_snippet(session, module_ast, skill_def)
-            effectful.handlers.llm.harness.validation.hooks.type_check(
-                *checked, lenient=True
-            )
+            # Where the current snippet starts in the cumulative body -- the prior
+            # snippets are spliced for their bindings but reported on separately
+            # when they were current, so only this snippet's span is diagnosed.
+            # A snippet of only comments contributes no statements, and there is
+            # then nothing to splice or report.
+            first_new_stmt = len(ast.parse(prior_src).body)
+            if first_new_stmt < len(session.body):
+                effectful.handlers.llm.harness.validation.hooks.type_check(
+                    *_splice_snippet(session, module_ast, skill_def, first_new_stmt),
+                    lenient=True,
+                )
 
         return effectful.handlers.llm.harness.execution.hooks.compile(module, filename)
 

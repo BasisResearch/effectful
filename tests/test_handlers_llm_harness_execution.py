@@ -1298,17 +1298,40 @@ def _repl_anchor(readings: list[int]) -> int:
     raise NotImplementedError
 
 
-def _repl_raises(prior: list[str], snippet: str) -> bool:
-    """type_check the cumulative REPL code spliced into `_repl_anchor`'s body; True
+def _nested_repl_anchor():
+    """The same stand-in, but nested -- the shape of a Skill defined inside a
+    function, which is how the examples and most tests define one.
+
+    The difference that matters is where the seed name comes from. Above,
+    `readings` is a *parameter*, bound on entry, so a snippet may assign to it
+    freely. Here it is an *enclosing-scope* binding, and assigning to it makes it
+    local to the whole spliced body -- which is what
+    `test_repl_rebinding_a_seed_name_leaves_earlier_cells_clean` turns on.
+    """
+    readings = [12, 19, 23, 31, 8, 27]
+
+    def anchor() -> int:
+        return len(readings)
+
+    return anchor
+
+
+def _repl_raises(prior: list[str], snippet: str, anchor=_repl_anchor) -> bool:
+    """type_check the cumulative REPL code spliced into `anchor`'s body; True
     if it reports an in-region error."""
-    # Prepend the already-run snippets to the current one (as the production caller
-    # does) and splice the whole cumulative module.
+    # Prepend the already-run snippets to the current one and report only the
+    # current one's span -- both exactly as the production caller does, so these
+    # tests exercise the region it actually asks for rather than a wider one.
     prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
-    anchor_asts = _recover_skill_def(_repl_anchor)
+    anchor_asts = _recover_skill_def(anchor)
     assert anchor_asts is not None
     module_ast, skill_def = anchor_asts
-    checked = _splice_snippet(ast.parse(prior_src + snippet), module_ast, skill_def)
-    assert checked is not None
+    checked = _splice_snippet(
+        ast.parse(prior_src + snippet),
+        module_ast,
+        skill_def,
+        len(ast.parse(prior_src).body),
+    )
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         try:
             type_check(*checked, lenient=True)
@@ -1381,6 +1404,61 @@ def test_repl_checks_the_cumulative_body():
     assert not _repl_raises(
         ["c = 3"], "print(c + 1)"
     )  # earlier binding resolves, clean
+
+
+def test_repl_rebinding_a_seed_name_leaves_earlier_cells_clean():
+    """A cell may rebind a seed-env name without faulting the cell that read it.
+
+    Both cells run: the session is a single namespace, so cell 1 reads the seeded
+    `readings` and cell 2 rebinds it, exactly as reassigning any REPL variable
+    would. Spliced into a function body, though, cell 2's assignment makes
+    `readings` local to the *whole* body, and cell 1's read -- which already ran --
+    becomes a use-before-assignment. That is an artifact of modelling a namespace
+    as a function scope, and it is why only the current cell's span is reported.
+
+    The seed name has to come from an enclosing scope for this to bite, so this
+    uses `_nested_repl_anchor`; with `_repl_anchor` it is a parameter, bound on
+    entry, and assigning to it is unremarkable.
+    """
+    nested = _nested_repl_anchor()
+    reads_the_seed = "total = sum(readings)\nprint(total)"
+    rebinds_the_seed = "readings = [1, 2, 3]"
+
+    # Each cell is clean on its own ...
+    assert not _repl_raises([], reads_the_seed, anchor=nested)
+    assert not _repl_raises([], rebinds_the_seed, anchor=nested)
+    # ... and the second does not retroactively fault the first.
+    assert not _repl_raises([reads_the_seed], rebinds_the_seed, anchor=nested)
+
+    # The narrowing is only of the *reported* span: a genuine error in the
+    # current cell is still caught against the same anchor and prior cell.
+    assert _repl_raises([reads_the_seed], "oops: int = 'x'", anchor=nested)
+
+    # Both halves of the mismatch the narrowing exists for. The session runs the
+    # two cells without complaint -- it is one namespace, seeded with `readings`,
+    # and the second cell just reassigns a name ...
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"readings": [12, 19, 23, 31, 8, 27]})
+        assert session.exec_code(_code(reads_the_seed)) == "120\n"
+        session.exec_code(_code(rebinds_the_seed))
+
+    # ... while the same two cells *as a function body* really do raise, because
+    # there the assignment makes `readings` local to the whole body. The checker
+    # is right about the function; it is the function that misrepresents the
+    # session, which is why the fix narrows the reported span rather than
+    # suppressing the diagnostic.
+    namespace: dict = {}
+    exec(  # noqa: S102
+        "def outer():\n"
+        "    readings = [12, 19, 23, 31, 8, 27]\n"
+        "    def anchor():\n"
+        + "".join(f"        {line}\n" for line in reads_the_seed.splitlines())
+        + f"        {rebinds_the_seed}\n"
+        "    return anchor\n",
+        namespace,
+    )
+    with pytest.raises(UnboundLocalError):
+        namespace["outer"]()()
 
 
 def test_repl_failed_snippet_bindings_still_resolve():

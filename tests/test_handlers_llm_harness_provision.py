@@ -53,7 +53,7 @@ from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Encodable
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -776,7 +776,7 @@ class TestTenacityRetryer:
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
         ):
             result = codeadapt("generate_paragraph")
@@ -1431,7 +1431,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1451,7 +1451,7 @@ class TestCallableSynthesis:
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(4))),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
         ):
@@ -1467,7 +1467,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1484,7 +1484,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=3)),
         ):
@@ -1502,7 +1502,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1527,7 +1527,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1550,7 +1550,7 @@ class TestCallableSynthesis:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -1613,7 +1613,7 @@ class TestSynthesizeAndCall:
             handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1639,7 +1639,7 @@ class TestSynthesizeAndCall:
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1663,7 +1663,7 @@ class TestSynthesizeAndCall:
             handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1693,7 +1693,7 @@ class TestSynthesizeAndCall:
             handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1719,7 +1719,7 @@ class TestSynthesizeAndCall:
             handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1776,7 +1776,7 @@ class TestSynthesizeAndCall:
             handler(LexicalToolExtractor()),
             handler(LiteLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(MockCompletionHandler([mixed])),
         ):
@@ -1836,7 +1836,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1871,7 +1871,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -1895,7 +1895,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -1944,7 +1944,7 @@ class TestSynthesizeAndCallDoctests:
             handler(LiteLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(mock),
         ):
@@ -2160,7 +2160,7 @@ def _drive_repl(body):
         raise NotImplementedError
 
     with (
-        handler(MypyTypeChecker()),
+        handler(TyTypeChecker()),
         handler(_Loop()),
         handler(BuiltinExecutor()),
         handler(repl),
@@ -3276,7 +3276,7 @@ class TestSyntheticReaderIntegration:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LimitLLMCallsHandler(max_calls=4)),
             handler(LexicalReaders()),
@@ -3310,7 +3310,7 @@ class TestPythonReplIntegration:
         with (
             handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
-            handler(MypyTypeChecker()),
+            handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
             handler(LexicalReaders()),
             handler(StatefulReplSynthesizer()),

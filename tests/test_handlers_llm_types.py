@@ -42,7 +42,7 @@ from effectful.handlers.llm.harness.serialization import (
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -2319,7 +2319,7 @@ def _drive_repl(body):
         raise NotImplementedError
 
     with (
-        handler(MypyTypeChecker()),
+        handler(TyTypeChecker()),
         handler(_Loop()),
         handler(BuiltinExecutor()),
         handler(repl),
