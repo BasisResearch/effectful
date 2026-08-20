@@ -14,7 +14,11 @@ import pathlib
 
 import pytest
 
-from effectful.handlers.llm.harness.__main__ import _parse_args
+from effectful.handlers.llm.harness.__main__ import (
+    _parse_args,
+    _provider_config,
+    _reasoning_effort_choices,
+)
 
 EXAMPLES_DIR = (
     pathlib.Path(__file__).resolve().parent.parent / "docs" / "source" / "llm_examples"
@@ -74,6 +78,34 @@ def test_parse_args_still_rejects_a_bad_harness_flag_value():
 def test_parse_args_requires_a_script():
     with pytest.raises(SystemExit):
         _parse_args(["--model", "gpt-4o-mini"])
+
+
+def test_reasoning_effort_is_unset_unless_asked_for():
+    """No ``--reasoning-effort`` means the parameter is absent from the request.
+
+    It used to default to the sentinel ``"default"``, which was then sent on
+    every call -- and OpenAI rejects that value outright (``Unsupported value:
+    'reasoning_effort' does not support 'default' with this model``), so every
+    reasoning model was unusable through the launcher with no flag passed at
+    all.
+    """
+    ns, _ = _parse_args(["s.py", "--model", "gpt-5-mini"])
+    assert ns.reasoning_effort is None
+    assert "reasoning_effort" not in _provider_config(ns)
+
+
+def test_reasoning_effort_is_forwarded_when_asked_for():
+    ns, _ = _parse_args(["s.py", "--model", "gpt-5-mini", "--reasoning-effort", "low"])
+    assert _provider_config(ns)["reasoning_effort"] == "low"
+
+
+def test_reasoning_effort_rejects_the_sentinel_value():
+    """``"default"`` appears in the ``Literal`` on ``litellm.completion``'s
+    signature but not in litellm's canonical ``REASONING_EFFORT``, and no
+    provider accepts it. Rejecting it at the CLI beats a 400 a request later."""
+    assert "default" not in (_reasoning_effort_choices() or [])
+    with pytest.raises(SystemExit):
+        _parse_args(["s.py", "--reasoning-effort", "default"])
 
 
 def test_parser_has_abbreviation_disabled():

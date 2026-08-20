@@ -16,7 +16,6 @@ Harness flags are consumed here; other flags pass through to the script unchange
 """
 
 import argparse
-import inspect
 import os
 import pdb
 import runpy
@@ -31,27 +30,24 @@ from effectful.ops.semantics import handler
 
 
 def _reasoning_effort_choices() -> list[str] | None:
-    """The ``reasoning_effort`` values ``litellm.completion`` declares.
+    """The ``reasoning_effort`` values a provider will actually accept.
 
-    Extracted from the ``Optional[Literal[...]]`` annotation on the live
-    signature so the CLI choices track litellm exactly across upgrades. Returns
-    ``None`` (leave the flag unrestricted) if the annotation isn't a Literal we
-    can read, so a shape change in litellm degrades to accepting any string
+    Read from litellm's canonical ``REASONING_EFFORT`` alias so the CLI choices
+    track litellm across upgrades. That alias -- and not the looser ``Literal``
+    on ``litellm.completion``'s own signature, which additionally admits
+    ``"default"`` -- is the set providers are held to: OpenAI rejects
+    ``"default"`` outright with ``Unsupported value: 'reasoning_effort' does not
+    support 'default' with this model``. "Let the model decide" is spelled by
+    *omitting* the parameter, which is what this flag's ``None`` default does.
+
+    Returns ``None`` (leave the flag unrestricted) if the alias isn't a Literal
+    we can read, so a shape change in litellm degrades to accepting any string
     rather than breaking the launcher.
     """
     try:
-        annotation = (
-            inspect.signature(litellm.completion)
-            .parameters["reasoning_effort"]
-            .annotation
-        )
-        # Optional[Literal[...]] -> unwrap the Union, then read the Literal args.
-        literals = [
-            v
-            for arg in typing.get_args(annotation)
-            for v in typing.get_args(arg)
-            if isinstance(v, str)
-        ]
+        from litellm.types.llms.openai import REASONING_EFFORT
+
+        literals = [v for v in typing.get_args(REASONING_EFFORT) if isinstance(v, str)]
         return literals or None
     except Exception:
         return None
@@ -114,9 +110,10 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--reasoning-effort",
         type=str,
-        default="default",
+        default=None,
         choices=_reasoning_effort_choices(),
-        help="Reasoning effort forwarded to litellm.completion",
+        help="Reasoning effort forwarded to litellm.completion; left unset "
+        "(the model's own default) when not given",
     )
     parser.add_argument(
         "--eval-provider",
@@ -150,6 +147,22 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     return parser.parse_known_args(argv)
 
 
+def _provider_config(ns: argparse.Namespace) -> dict[str, typing.Any]:
+    """The litellm kwargs `LiteLLMConfigurer` is built from.
+
+    An unset ``--reasoning-effort`` is left out of the request entirely rather
+    than forwarded as a sentinel. Every value this parameter takes is one some
+    provider rejects -- OpenAI answers ``reasoning_effort`` of ``"default"``
+    with a 400, so a sentinel default made every reasoning model unusable
+    through the launcher -- and the only universally safe way to say "whatever
+    the model does by default" is to say nothing.
+    """
+    config: dict[str, typing.Any] = {"model": ns.model, "tool_choice": ns.tool_choice}
+    if ns.reasoning_effort is not None:
+        config["reasoning_effort"] = ns.reasoning_effort
+    return config
+
+
 def main(argv: list[str] | None = None) -> None:
     litellm.drop_params = True
     ns, script_args = _parse_args(sys.argv[1:] if argv is None else argv)
@@ -168,9 +181,7 @@ def main(argv: list[str] | None = None) -> None:
         persist_db=ns.persist_db,
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
-        model=ns.model,
-        tool_choice=ns.tool_choice,
-        reasoning_effort=ns.reasoning_effort,
+        **_provider_config(ns),
     )
     with handler(h):
         if ns.pdb:
