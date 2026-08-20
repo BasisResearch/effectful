@@ -613,7 +613,12 @@ class Search:
         if len(ok) < 2:
             return
         best = max(ok, key=lambda r: r.reward)
-        worst = min(ok, key=lambda r: r.reward)
+        # Tie-break away from `best`: `max` and `min` both return the *first*
+        # element among equals, so on a run where every rollout scores the same
+        # -- common early, before the reward spreads out -- `worst` would be the
+        # very object `best` is, the guard below would fire, and comparative
+        # reflection would be skipped in silence for the whole search.
+        worst = min(ok, key=lambda r: (r.reward, r.path == best.path))
         if best.path == worst.path:
             return
         reflection = Reflector().reflect(self._summ(best), self._summ(worst))

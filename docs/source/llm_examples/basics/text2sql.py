@@ -4,7 +4,7 @@ Demonstrates:
 - Generating SQL from natural language using ``@Skill.define``
 - Executing SQL against a real SQLite database
 - Feeding execution errors back to the LLM for iterative fixing
-- ``@Tool.define`` to expose the database schema as a tool
+- Reading the live schema out of SQLite and splicing it into the prompt
 """
 
 import argparse

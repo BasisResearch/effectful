@@ -171,9 +171,17 @@ LITERATURE: dict[str, LitEntry] = {
 }
 
 
-# ----------------------------------------------------------------------------
-# Retrieval backends. ``search`` delegates to whichever backend main() selects
-# ----------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Retrieval backends. ``search`` (below) delegates to whichever backend main()
+# selects; both populate RETRIEVED, the registry a MissingBaseline is certified
+# against, so grounding means "cite only work you actually retrieved" regardless
+# of source.
+# ---------------------------------------------------------------------------
+
+# Papers returned by ``search`` this run, keyed by citation key (a corpus key or a
+# Semantic Scholar paperId). Shared across the concurrently-running Historian and
+# Scout; plain key insertion is safe under the GIL.
+RETRIEVED: dict[str, LitEntry] = {}
 
 
 def _corpus_search(query: str, limit: int) -> dict[str, LitEntry]:
@@ -267,6 +275,14 @@ class MissingBaseline:
             "baseline would have tested that the submission leaves unchecked."
         }
     )
+
+    def __post_init__(self) -> None:
+        if self.paper_key not in RETRIEVED:
+            raise ValueError(
+                f"paper_key {self.paper_key!r} was not among the papers search "
+                f"returned this run (retrieved: {sorted(RETRIEVED)}); cite only "
+                f"omitted work you actually retrieved via the search tool"
+            )
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -386,6 +402,7 @@ class Scholar(Agent):
         topic, method, or benchmark name). Returns matching entries, each tagged
         with a citation key you can cite as ``paper_key``."""
         found = SEARCH_BACKEND(query, limit)
+        RETRIEVED.update(found)  # certify later citations against what was retrieved
         results = [
             f"[{key}] {e.title} ({e.venue} {e.date.year}) -- {e.abstract}"
             for key, e in found.items()
@@ -537,6 +554,8 @@ class Reviewer(Agent):
 
 async def review(paper_text: str, guidelines: str) -> Review:
     """Acquire context, actively verify it, then synthesize -- the two streams."""
+    RETRIEVED.clear()  # each review is grounded only in what it retrieves
+
     # Internal compression first: everything downstream reasons over the summary.
     summary = Summarizer().summarize(paper_text)
 

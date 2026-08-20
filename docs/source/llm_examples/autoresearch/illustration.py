@@ -575,9 +575,12 @@ def refine(
     Critic inspects the current render and refines the plan, which the Visualizer
     re-renders (final output I_T). Returns (round-0 image, final image, final plan).
 
-    Defaults to the paper's *fixed* T rounds -- the Critic always emits a refined
-    description P_{t+1}, as in the paper. With ``early_stop`` it may halt once the
-    Critic reports no remaining issues.
+    Runs the paper's *fixed* T rounds: the Critic always emits a refined
+    description P_{t+1}, and it is always re-rendered. Halting early on an empty
+    ``issues`` list would make the demonstration conditional on the Critic's
+    mood -- a model that reports no issues on I_0 (the common case on a simple
+    plot) would leave ``round_1.png`` unwritten and the refinement loop, the
+    thing this function exists to show, entirely unexercised.
 
     A fresh Visualizer/Critic per iteration keeps them stateless, so each render is
     judged on its own (nothing anchors on an earlier round's verdict).
@@ -585,11 +588,8 @@ def refine(
     round0 = img = render(Visualizer().visualize(plan), outdir / "round_0.png")
     for t in range(max_iter):
         critique = Critic().critique(img, task, plan)
-        if critique.issues:
-            plan = critique.refined
-            img = render(Visualizer().visualize(plan), outdir / f"round_{t + 1}.png")
-        else:
-            break
+        plan = critique.refined
+        img = render(Visualizer().visualize(plan), outdir / f"round_{t + 1}.png")
 
     return round0, img, plan
 

@@ -131,37 +131,30 @@ def main() -> None:
         default=5,
         help="Maximum rounds per game",
     )
+    # Required, with no default: the word is the Guesser's answer key, and a
+    # default would have to be written here, in the module whose source the
+    # Guesser reads. `_module_section` puts the *whole* defining module of a
+    # `Skill` into that agent's system prompt, so a built-in game list would
+    # hand `make_guess` the very word it is supposed to infer from hints.
     parser.add_argument(
         "--secret-word",
         type=str,
-        default=None,
+        required=True,
         metavar="WORD",
-        help="Secret word to guess (used with --taboo-words for a single custom game)",
+        help="Secret word the hinter must lead the guesser to without saying it",
     )
     parser.add_argument(
         "--taboo-words",
         nargs="+",
         type=str,
-        default=None,
+        required=True,
         metavar="WORD",
-        help="Taboo words the hinter may not say (used with --secret-word)",
+        help="Taboo words the hinter may not say",
     )
     args = parser.parse_args()
 
-    if (args.secret_word is None) != (args.taboo_words is None):
-        parser.error("--secret-word and --taboo-words must be given together")
-
-    if args.secret_word is not None:
-        games = [(args.secret_word, args.taboo_words)]
-    else:
-        games = [
-            ("piano", ["music", "keys", "instrument", "play"]),
-            ("volcano", ["lava", "eruption", "mountain", "hot"]),
-        ]
-
-    for secret, taboo in games:
-        print(f"\nGame: '{secret}' (taboo: {taboo})")
-        play_taboo(secret, taboo, max_rounds=args.max_rounds)
+    print(f"\nGame: '{args.secret_word}' (taboo: {args.taboo_words})")
+    play_taboo(args.secret_word, args.taboo_words, max_rounds=args.max_rounds)
 
 
 if __name__ == "__main__":

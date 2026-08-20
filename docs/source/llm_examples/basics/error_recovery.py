@@ -1,12 +1,19 @@
 """Recovering from failed LLM output: flaky tools and invalid structured output.
 
-A single task -- rate a movie after looking it up -- exercises both retry paths:
+A single task -- rate a movie after looking it up -- drives the tool retry path:
 
 Demonstrates:
 - TenacityRetryer surfacing tool exceptions back to the LLM as tool messages, so a
   flaky tool (lookup_movie) can succeed after multiple attempts
-- TenacityRetryer feeding pydantic validation errors back to the LLM so it can
-  correct structured output (a Rating) that fails validation
+- the same feedback loop standing behind structured output: a `Rating` whose
+  ``__post_init__`` rejects it comes back as a pydantic validation error for the
+  model to correct
+
+The second path is a guard, not a demonstration: the harness puts this module's
+whole source in the system prompt, ``__post_init__`` included, so the model can
+read the rule it must satisfy and usually gets a valid `Rating` first try. That
+is the guard working, not the retry failing to fire -- to watch it fire, tighten
+the rule to something the source does not spell out.
 """
 
 import argparse

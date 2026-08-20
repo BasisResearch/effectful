@@ -85,13 +85,20 @@ class Game(abc.ABC):
 
 
 class PushGame(Game):
-    """A tiny Sokoban-lite game. The player pushes a box onto a target.
+    """A tiny Sokoban-lite game. The player pushes a box onto a target."""
 
-    The true mechanics -- a move steps the player one cell; stepping into the box
-    pushes it one further; walls block both -- are *not* revealed to the agent. The
-    box can only travel rightward toward the target here, so the level has no dead
-    ends: the agent always recovers once its model is correct.
-    """
+    # The rest of the specification is a comment, not part of the docstring,
+    # because `__doc__` is *agent-visible*: `world_model_agent.py` passes it to
+    # the Physicist as the `<hint>` it is allowed to know, immediately before
+    # telling it the dynamics are hidden and must be inferred from the timeline.
+    # Anything written above this line is handed to the agent; anything below it
+    # is for the reader.
+    #
+    # The true mechanics -- a move steps the player one cell; stepping into the
+    # box pushes it one further; walls block both -- are *not* revealed to the
+    # agent. The box can only travel rightward toward the target here, so the
+    # level has no dead ends: the agent always recovers once its model is
+    # correct.
 
     rows: int
     cols: int
@@ -138,3 +145,75 @@ class PushGame(Game):
         else:
             self.player = ahead
         return self.observe(), self.box in self.targets
+
+
+@dataclasses.dataclass
+class Corridor:
+    """A button corridor: rooms in a row, each behind a hidden button code.
+
+    Not a `Game` -- it observes as prose and acts by button letter rather than
+    by grid and move -- but the same species of environment: hidden rules, a
+    visible goal. ``press`` is the whole interface. A correct press advances the
+    current room's progress ("click"); completing a code opens the door and
+    moves to the next room; a wrong press resets the room's progress ("buzz").
+
+    Living in this module rather than the driving script also keeps the
+    mechanics out of the model's view, as with `PushGame`: the system prompt
+    embeds the *skill's* module source, not this one's. The codes themselves
+    are the answer key -- bind them only in locals of the driving script's
+    ``main()``, never at module scope, which the model can read.
+    """
+
+    BUTTONS: typing.ClassVar[str] = "ABC"
+
+    codes: list[str]
+    room: int = 0
+    progress: int = 0
+    presses: int = 0
+    events: list[str] = dataclasses.field(default_factory=list)
+
+    @property
+    def solved(self) -> bool:
+        return self.room >= len(self.codes)
+
+    def press(self, button: str) -> str:
+        assert not self.solved
+        self.presses += 1
+        if button == self.codes[self.room][self.progress]:
+            self.progress += 1
+            if self.progress == len(self.codes[self.room]):
+                self.room += 1
+                self.progress = 0
+                event = (
+                    f"press {self.presses}: {button} -> CLICK; door {self.room} opens"
+                )
+            else:
+                event = f"press {self.presses}: {button} -> click (progress {self.progress})"
+        else:
+            self.progress = 0
+            event = f"press {self.presses}: {button} -> BUZZ; room {self.room} progress reset"
+        self.events.append(event)
+        return event
+
+    def observe(self) -> str:
+        recent = "\n".join(self.events[-12:]) or "(no presses yet)"
+        return (
+            f"room {self.room} of {len(self.codes)} "
+            f"(codes are {len(self.codes[0])} presses long); "
+            f"confirmed progress in this room: {self.progress}; "
+            f"total presses so far: {self.presses}\n"
+            f"recent events:\n{recent}"
+        )
+
+
+# A hand-written reference strategy for `Corridor` -- an expert-harness baseline
+# to compare a from-scratch self-improving agent against. It lives here, not in
+# the driving script, because the script's own source is embedded in the system
+# prompt: a module-level literal there would hand the from-scratch condition the
+# expert strategy verbatim and contaminate the comparison.
+CORRIDOR_EXPERT_STRATEGY = """\
+Discover each code by prefix extension: with a confirmed prefix P, try P+"A";
+a buzz resets the room, so re-enter P and try P+"B", then P+"C". Every click
+extends the confirmed prefix by one. Record each room's confirmed prefix in a
+note *immediately* -- after any clear, notes are all you have. Once a room's
+full code is known, replay it exactly; never re-derive a recorded code."""

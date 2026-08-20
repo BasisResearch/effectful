@@ -20,19 +20,6 @@ Demonstrates:
   handler scope, ``step`` backpropagates and accumulates, returning the
   walked graph and the routed per-node feedback for inspection
 - gradients accumulating on one box (``joke_guidelines``) from two uses
-
-Run with::
-
-    python -m effectful.handlers.llm.harness \\
-        docs/source/llm_examples/optimization/guidelines.py \\
-        --model gpt-4o-mini --tool-choice none
-
-``--tool-choice none`` is cosmetic but keeps the traced graph minimal: the two
-skills below are module-level, so each sees the other in lexical scope and a
-small model sometimes calls it as a tool mid-joke despite being told not to.
-The recording handler notes such calls faithfully as extra child nodes (and the backward
-pass prunes them -- they reach no parameter), but the demo reads better without
-them.
 """
 
 import argparse
@@ -93,8 +80,7 @@ def main() -> None:
         "--feedback",
         type=str,
         default=(
-            "Jokes about cats should always be about Siamese cats. "
-            "Jokes about programmers should be about coffee. "
+            "Both jokes are too wordy: each should be a single-sentence one-liner. "
             "The email should include a title for each joke."
         ),
         help="Natural-language feedback on the final email",

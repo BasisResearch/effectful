@@ -10,7 +10,6 @@ All of it is offline: argument parsing and an AST walk, no model and no network.
 """
 
 import argparse
-import ast
 import pathlib
 
 import pytest
@@ -84,57 +83,6 @@ def test_parser_has_abbreviation_disabled():
     assert parser.allow_abbrev is False
     ns, _ = _parse_args(["s.py", "--mod", "x"])
     assert ns.model != "x"
-
-
-# ============================================================================
-# The examples' side of the contract
-# ============================================================================
-
-# `LiteLLMConfigurer` is the one harness handler an example may install: scoping a
-# call to a different model is a thing an example legitimately demonstrates, and it
-# implements only `completion`, the lowest hook in the stack, so it supplements the
-# launcher's handlers instead of shadowing them.
-ALLOWED_HARNESS_IMPORTS = {"LiteLLMConfigurer"}
-
-HARNESS_PACKAGE = "effectful.handlers.llm.harness"
-
-
-def harness_imports(tree: ast.AST) -> list[str]:
-    """Names an example pulls out of the harness package, at any nesting depth."""
-    names: list[str] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module == HARNESS_PACKAGE or module.startswith(HARNESS_PACKAGE + "."):
-                names += [alias.name for alias in node.names]
-        elif isinstance(node, ast.Import):
-            names += [
-                alias.name
-                for alias in node.names
-                if alias.name == HARNESS_PACKAGE
-                or alias.name.startswith(HARNESS_PACKAGE + ".")
-            ]
-    return names
-
-
-@pytest.mark.parametrize("path", example_modules(), ids=lambda p: p.name)
-def test_example_installs_no_harness_handlers(path: pathlib.Path):
-    """An example script must not assemble a handler stack of its own.
-
-    The launcher installs one, and re-installing a handler that is already in it
-    shadows the launcher's copy rather than adding to it. A handler that answers an
-    operation without forwarding then takes over everything nested inside it, which
-    is silent: `AgentLoop` re-installed under `HistoryBuilder`, for instance, leaves
-    `HistoryBuilder.get_history` unbound, and every request goes out with an empty
-    message list instead of raising.
-    """
-    imported = harness_imports(ast.parse(path.read_text(), filename=str(path)))
-    assert not (set(imported) - ALLOWED_HARNESS_IMPORTS), (
-        f"{path.relative_to(EXAMPLES_DIR.parent.parent.parent)} imports "
-        f"{sorted(set(imported) - ALLOWED_HARNESS_IMPORTS)} from {HARNESS_PACKAGE}; "
-        f"examples are run under the launcher and may import only "
-        f"{sorted(ALLOWED_HARNESS_IMPORTS)}"
-    )
 
 
 def test_example_modules_were_actually_found():

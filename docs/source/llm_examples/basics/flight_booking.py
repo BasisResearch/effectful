@@ -1,8 +1,8 @@
-"""Flight booking with multi-agent delegation.
+"""Flight booking: composing agents by passing one's typed output to the next.
 
 Demonstrates:
-- Multi-agent delegation: a tool that internally calls a separate
-  ``@Skill.define`` (agent-to-agent delegation)
+- A standalone ``@Skill.define`` (``extract_flights``) whose typed result is
+  stored as an ``Agent`` field and spliced into a second agent's prompt
 - Programmatic validation of LLM output with retry
 - Interactive human-in-the-loop flow
 - ``Agent`` history for conversational seat selection

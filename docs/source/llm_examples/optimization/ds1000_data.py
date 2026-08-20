@@ -73,7 +73,7 @@ TRAIN_PROBLEMS: list[dict[str, Any]] = [
         "id": "scipy_718",
         "library": "Scipy",
         "prompt": "Problem:\nHow does one convert a list of Z-scores from the Z-distribution (standard normal distribution, Gaussian distribution) to left-tailed p-values? Original data is sampled from X ~ N(mu, sigma). I have yet to find the magical function in Scipy's stats module to do this, but one must be there.\nA:\n<code>\nimport scipy.stats\nimport numpy as np\nz_scores = [-3, -2, 0, 2, 2.5]\nmu = 3\nsigma = 4\n</code>\np_values = ... # put solution in this variable\nBEGIN SOLUTION\n<code>\n",
-        "code_context": 'import numpy as np\nimport pandas as pd\nimport scipy\nfrom scipy import sparse\nimport scipy.stats\nimport copy\nimport io\nfrom scipy import integrate\n\n\ndef generate_test_case(test_case_id):\n    def define_test_input(test_case_id):\n        if test_case_id == 1:\n            z_scores = [-3, -2, 0, 2, 2.5]\n            mu = 3\n            sigma = 4\n        return z_scores, mu, sigma\n\n    def generate_ans(data):\n        _a = data\n        z_scores, mu, sigma = _a\n        temp = np.array(z_scores)\n        p_values = scipy.stats.norm.cdf(temp)\n        return p_values\n\n    test_input = define_test_input(test_case_id)\n    expected_result = generate_ans(copy.deepcopy(test_input))\n    return test_input, expected_result\n\n\ndef exec_test(result, ans):\n    np.testing.assert_allclose(result, ans)\n    return 1\n\n\nexec_context = r"""\nimport numpy as np\nimport scipy.stats\nz_scores, mu, sigma = test_input\n[insert]\nresult = p_values\n"""\n\n\ndef test_execution(solution: str):\n    code = exec_context.replace("[insert]", solution)\n    for i in range(1):\n        test_input, expected_result = generate_test_case(i + 1)\n        test_env = {"test_input": test_input}\n        exec(code, test_env)\n        assert exec_test(test_env["result"], expected_result)\n',
+        "code_context": 'import numpy as np\nimport scipy\nfrom scipy import sparse\nimport scipy.stats\nimport copy\nimport io\nfrom scipy import integrate\n\n\ndef generate_test_case(test_case_id):\n    def define_test_input(test_case_id):\n        if test_case_id == 1:\n            z_scores = [-3, -2, 0, 2, 2.5]\n            mu = 3\n            sigma = 4\n        return z_scores, mu, sigma\n\n    def generate_ans(data):\n        _a = data\n        z_scores, mu, sigma = _a\n        temp = np.array(z_scores)\n        p_values = scipy.stats.norm.cdf(temp)\n        return p_values\n\n    test_input = define_test_input(test_case_id)\n    expected_result = generate_ans(copy.deepcopy(test_input))\n    return test_input, expected_result\n\n\ndef exec_test(result, ans):\n    np.testing.assert_allclose(result, ans)\n    return 1\n\n\nexec_context = r"""\nimport numpy as np\nimport scipy.stats\nz_scores, mu, sigma = test_input\n[insert]\nresult = p_values\n"""\n\n\ndef test_execution(solution: str):\n    code = exec_context.replace("[insert]", solution)\n    for i in range(1):\n        test_input, expected_result = generate_test_case(i + 1)\n        test_env = {"test_input": test_input}\n        exec(code, test_env)\n        assert exec_test(test_env["result"], expected_result)\n',
     },
 ]
 
@@ -180,11 +180,23 @@ def _assertion_detail(
 
 
 def execute_and_test(solution_code: str, code_context: str) -> ExecutionResult:
-    """Run the DS-1000 test harness against a candidate solution."""
+    """Run the DS-1000 test harness against a candidate solution.
+
+    The benchmark's own preamble is executed first and *outside* the verdict's
+    ``except``: a failure there is a broken problem definition, not a wrong
+    answer, and scoring the two the same way makes an unimportable module in
+    `code_context` read as the model failing every attempt at that problem --
+    with the resulting FAIL then backpropagated as if it were the model's to
+    learn from.
+    """
+    test_env: dict = {}
+    try:
+        exec(code_context, test_env)  # noqa: S102
+    except Exception as e:
+        raise RuntimeError(f"benchmark preamble failed to execute: {e}") from e
+
     try:
         with _timeout(30):
-            test_env: dict = {}
-            exec(code_context, test_env)  # noqa: S102
             test_env["test_execution"](solution_code)
             return ExecutionResult(passed=True)
     except TimeoutError as e:
