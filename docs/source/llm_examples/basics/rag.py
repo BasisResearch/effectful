@@ -154,7 +154,7 @@ def main() -> None:
     parser.add_argument(
         "--embedding-model",
         type=str,
-        default="lm_studio/text-embedding-embeddinggemma-300m-qat",
+        default="text-embedding-3-small",
         help="Embedding model to use",
     )
     parser.add_argument(
