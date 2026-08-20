@@ -78,6 +78,12 @@ class HistoryBuilder(ObjectInterpretation):
         `ResultDecodingError` needs no such padding: a result is only decoded on a
         turn that requested no tools at all.
         """
+        # Narrowing on `role` picks the one arm of the `Message` union that has
+        # `tool_calls` at all; the guard is what the type is, not a defensive
+        # check, since a decode failure is by construction a failure to decode a
+        # call the assistant asked for.
+        if e.raw_message["role"] != "assistant":
+            return
         for raw_tool_call in e.raw_message.get("tool_calls") or []:
             if raw_tool_call["id"] != e.raw_tool_call.id:
                 unanswered: Message = {
