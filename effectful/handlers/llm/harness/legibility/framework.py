@@ -1,6 +1,7 @@
 import inspect
 import typing
 
+import effectful.handlers.llm.types
 from effectful.handlers.llm.harness.hooks import call_system
 from effectful.handlers.llm.harness.legibility.lexical import _get_qualname
 from effectful.handlers.llm.harness.serialization import (
@@ -27,9 +28,9 @@ class FrameworkDocumenter(ObjectInterpretation):
     def _call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
-        import effectful.handlers.llm as _llm
-
-        content: list[typing.Any] = list(to_content_blocks(inspect.getdoc(_llm) or ""))
+        content: list[typing.Any] = list(
+            to_content_blocks(inspect.getdoc(effectful.handlers.llm.types) or "")
+        )
         content.extend(
             PromptSection(
                 type="prompt_section",
@@ -37,7 +38,11 @@ class FrameworkDocumenter(ObjectInterpretation):
                 content=to_content_blocks(inspect.getdoc(typ) or ""),
             )
             for typ in sorted(
-                map(lambda name: getattr(_llm, name), _llm.__all__), key=_get_qualname
+                {
+                    getattr(effectful.handlers.llm.types, name)
+                    for name in effectful.handlers.llm.types.__all__
+                },
+                key=_get_qualname,
             )
         )
         section = PromptSection(
