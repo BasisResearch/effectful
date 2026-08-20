@@ -119,6 +119,14 @@ _SAFE_DUNDER_ATTRS = frozenset(
 # `inspect`, `types`, `pickle`, `ctypes`, ...). Submodules must be listed in full,
 # since the check is on the imported name.
 #
+# This list governs *every* module that reaches generated code, not just the ones
+# it names in an `import` statement. An allowed module holds references to the
+# modules it imported itself -- `uuid.os`, `typing.sys`, `queue.threading`,
+# `json.codecs` -- so gating only `__import__` would leave `import uuid` one
+# attribute away from `os.system`. `_guarded_getattr` and `_guarded_import`
+# therefore both refuse to hand back a module that is not named here, whichever
+# module it was reached through.
+#
 # Two near-misses worth recording, so they don't get added later by analogy:
 # `io` is not here because `io.open` *is* `builtins.open`, which would hand back
 # the filesystem that omitting `open` closes; and `numpy`/`matplotlib` are not here
@@ -225,6 +233,26 @@ _EXTRA_SAFE_BUILTIN_NAMES = frozenset(
         "StopAsyncIteration",
         "TimeoutError",
         "NotImplemented",
+    }
+)
+
+# Builtins `safe_builtins` supplies that this environment takes back out: every
+# `BaseException` subclass that is not an `Exception`.
+#
+# `raise SystemExit(...)` in generated code unwinds straight through the harness
+# and out of the host program -- `call_tool` catches `Exception`, as it must, so
+# that a real Ctrl-C still interrupts the process rather than being reported to
+# the model as a failed tool call. That makes these four classes the one thing a
+# sandboxed snippet can raise that its caller will not contain, and none of them
+# is any use to the pure computation this environment is for: `Exception` and its
+# subclasses remain available in full.
+_UNSAFE_BUILTIN_NAMES = frozenset(
+    {
+        "BaseException",
+        "BaseExceptionGroup",
+        "GeneratorExit",
+        "KeyboardInterrupt",
+        "SystemExit",
     }
 )
 
@@ -535,6 +563,30 @@ def _checked_str_format(
     return formatter
 
 
+def _checked_module(value: typing.Any) -> typing.Any:
+    """Pass ``value`` through, unless it is a module outside `_ALLOWED_MODULES`.
+
+    The allowlist is a statement about which modules generated code may *hold*,
+    not merely which ones it may name in an ``import``. Every allowed module
+    carries the modules it imported itself as ordinary public attributes -- and a
+    public attribute is exactly what `_guarded_getattr` hands over without
+    further question -- so without this check ``uuid.os``, ``typing.sys``,
+    ``queue.threading`` and ``csv.re`` all read straight out of the sandbox.
+
+    The residual: this catches a module *fetched as an attribute or imported*, which
+    is how modules are actually reached. A module returned from a call would not be
+    checked -- but nothing in `_ALLOWED_MODULES` returns one.
+    """
+    if isinstance(value, types.ModuleType):
+        module_name = getattr(value, "__name__", None)
+        if module_name not in _ALLOWED_MODULES:
+            raise ImportError(
+                f"access to module {module_name!r} is not allowed in restricted "
+                f"code; the allowed modules are: {', '.join(sorted(_ALLOWED_MODULES))}"
+            )
+    return value
+
+
 def _guarded_getattr(
     obj: typing.Any, name: str, default: typing.Any = _RAISE
 ) -> typing.Any:
@@ -556,13 +608,19 @@ def _guarded_getattr(
         # blocks `string.Formatter` (it can reach attributes of whatever is
         # interpolated) and the `inspect` attributes.
         if default is _RAISE:
-            return Guards.safer_getattr_raise(obj, name)
-        return Guards.safer_getattr(obj, name, default)
-    if not _is_allowed_attribute(name):
+            value = Guards.safer_getattr_raise(obj, name)
+        else:
+            value = Guards.safer_getattr(obj, name, default)
+    elif not _is_allowed_attribute(name):
         raise AttributeError(f'"{name}" is a restricted attribute name.')
-    if default is _RAISE:
-        return getattr(obj, name)
-    return getattr(obj, name, default)
+    elif default is _RAISE:
+        value = getattr(obj, name)
+    else:
+        value = getattr(obj, name, default)
+    # Whatever the name policy said, a *module* is gated by the import allowlist:
+    # reaching one through an attribute is reaching it, and `obj` here is routinely
+    # a module that imported half the standard library to do its own job.
+    return _checked_module(value)
 
 
 def _guarded_hasattr(obj: typing.Any, name: str) -> bool:
@@ -615,7 +673,16 @@ def _guarded_import(
             f"import of {name!r} is not allowed in restricted code; "
             f"the allowed modules are: {', '.join(sorted(_ALLOWED_MODULES))}"
         )
-    return builtins.__import__(name, globals, locals, fromlist, level)
+    module = builtins.__import__(name, globals, locals, fromlist, level)
+    # ``from uuid import os`` names an allowed module and then takes an attribute
+    # off it with the ``IMPORT_FROM`` opcode -- which, unlike ``uuid.os``, is not
+    # rewritten to `_getattr_`, so this is the only place that fetch can be
+    # checked. `__import__` has already resolved each `fromlist` name (importing it
+    # as a submodule where the attribute did not already exist), so the attributes
+    # read here are the ones the statement is about to bind.
+    for attr in fromlist or ():
+        _checked_module(getattr(module, attr, None))
+    return module
 
 
 def _guarded_inplacevar(op: str, x: typing.Any, y: typing.Any) -> typing.Any:
@@ -645,6 +712,15 @@ class RestrictedPythonExecutor(ObjectInterpretation):
     time, and at run time the guarded accessors that policy's output calls into
     (`_guarded_getattr`, `_guarded_import`, ...) over a builtins namespace with no
     I/O, no introspection and no way back to `compile`/`eval`/`exec`.
+
+    It also cannot shut down the process it runs in. `call_tool` catches
+    `Exception` and not `BaseException`, so that a real Ctrl-C interrupts the host
+    rather than being handed to the model as a failed tool call -- which leaves
+    anything a snippet can raise *outside* `Exception` uncontainable. So the
+    `BaseException` subclasses that are not `Exception` are removed from the
+    builtins namespace (`_UNSAFE_BUILTIN_NAMES`), and `os`/`signal` are out of
+    reach whether named in an ``import`` or fetched off an allowed module that
+    imported them itself (`_checked_module`).
 
     Doctests are executed under the same policy as the code they exercise, so a
     model cannot smuggle past the sandbox in a docstring.
@@ -751,6 +827,8 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         restricted_builtins = dict(rglobals["__builtins__"])
         for name in _EXTRA_SAFE_BUILTIN_NAMES:
             restricted_builtins.setdefault(name, getattr(builtins, name))
+        for name in _UNSAFE_BUILTIN_NAMES:
+            restricted_builtins.pop(name, None)
         restricted_builtins["__import__"] = _guarded_import
         restricted_builtins["getattr"] = _guarded_getattr
         restricted_builtins["hasattr"] = _guarded_hasattr
