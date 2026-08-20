@@ -134,9 +134,11 @@ class Skill[**P, T](Tool[P, T]):
 
     The following skill writes limericks on a given theme:
 
-    >>> @Skill.define
-    ... def limerick(theme: str) -> str:
-    ...     \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
+    ```python
+    @Skill.define
+    def limerick(theme: str) -> str:
+        \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
+    ```
 
     ## Structured output
 
@@ -145,23 +147,26 @@ class Skill[**P, T](Tool[P, T]):
 
     For example, this skill returns integers:
 
-    >>> @Skill.define
-    ... def primes(first_digit: int) -> int:
-    ...     \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
+    ```python
+    @Skill.define
+    def primes(first_digit: int) -> int:
+        \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
+    ```
 
     Structured generation is used to constrain the LLM to return values that can be decoded without error.
 
     Skills can return complex data structures, such as dataclasses:
 
-    >>> import dataclasses
-    >>> @dataclasses.dataclass
-    ... class KnockKnockJoke:
-    ...     whos_there: str
-    ...     punchline: str
+    ```python
+    @dataclass
+    class KnockKnockJoke:
+        whos_there: str
+        punchline: str
 
-    >>> @Skill.define
-    ... def write_joke(theme: str) -> KnockKnockJoke:
-    ...     \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
+    @Skill.define
+    def write_joke(theme: str) -> KnockKnockJoke:
+        \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
+    ```
 
     Many common Python data types are decodable without additional effort.
     To register a decoder for a custom type, see `effectful.handlers.llm.encoding.type_to_encodable_type`.
