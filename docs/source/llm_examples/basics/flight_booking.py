@@ -3,7 +3,9 @@
 Demonstrates:
 - A standalone ``@Skill.define`` (``extract_flights``) whose typed result is
   stored as an ``Agent`` field and spliced into a second agent's prompt
-- Programmatic validation of LLM output with retry
+- A post-condition on a skill's return type: a ``pydantic.AfterValidator``
+  that compares the answer against the arguments the call was made with, so
+  rejecting a wrong answer and retrying is the harness's job
 - Interactive human-in-the-loop flow
 - ``Agent`` history for conversational seat selection
 """
@@ -12,7 +14,9 @@ import argparse
 import dataclasses
 import datetime
 import enum
-from typing import Literal
+from typing import Annotated, Literal
+
+import pydantic
 
 from effectful.handlers.llm import Agent, Skill
 
@@ -47,7 +51,7 @@ class FlightDetails:
     date: datetime.date  # YYYY-MM-DD
 
 
-@dataclasses.dataclass(frozen=True)
+@pydantic.dataclasses.dataclass(frozen=True)
 class SeatPreference:
     """
     User's seat preference extracted from natural language.
@@ -90,6 +94,35 @@ def extract_flights(web_page_text: str) -> list[FlightDetails]:
 
 
 # ---------------------------------------------------------------------------
+# Post-condition on the search result (plain Python, no LLM needed)
+# ---------------------------------------------------------------------------
+
+
+def matches_request(
+    flight: FlightDetails, info: pydantic.ValidationInfo
+) -> FlightDetails:
+    """Check that the flight the model chose matches the criteria it was asked for.
+
+    A skill's arguments are the validation context its answer is decoded under,
+    so a post-condition can compare that answer against the request without
+    being closed over it: ``info.context`` holds this call's ``origin``,
+    ``destination`` and ``date`` (and ``self``), whichever way the model
+    answered.  Raising rejects the answer -- the harness feeds the message back
+    and the model tries again, up to ``--num-retries`` times, after which the
+    call raises rather than returning a flight nobody asked for.
+    """
+    request = info.context or {}
+    errors = [
+        f"{field} should be {request[field]}, got {getattr(flight, field)}"
+        for field in ("origin", "destination", "date")
+        if getattr(flight, field) != request[field]
+    ]
+    if errors:
+        raise ValueError("; ".join(errors))
+    return flight
+
+
+# ---------------------------------------------------------------------------
 # Flight search agent
 # ---------------------------------------------------------------------------
 
@@ -103,7 +136,7 @@ class FlightFinder(Agent):
     @Skill.define
     def find_flight(
         self, origin: Airport, destination: Airport, date: datetime.date
-    ) -> FlightDetails:
+    ) -> Annotated[FlightDetails, pydantic.AfterValidator(matches_request)]:
         """
         Find the cheapest flight from {origin} to {destination} on {date}.
 
@@ -129,25 +162,6 @@ class SeatSelector(Agent):
 
 
 # ---------------------------------------------------------------------------
-# Validation (plain Python, no LLM needed)
-# ---------------------------------------------------------------------------
-
-
-def validate_flight(
-    flight: FlightDetails, origin: Airport, destination: Airport, date: datetime.date
-) -> list[str]:
-    """Check that the selected flight matches the requested criteria."""
-    errors = []
-    if flight.origin != origin:
-        errors.append(f"origin should be {origin}, got {flight.origin}")
-    if flight.destination != destination:
-        errors.append(f"destination should be {destination}, got {flight.destination}")
-    if flight.date != date:
-        errors.append(f"date should be {date}, got {flight.date}")
-    return errors
-
-
-# ---------------------------------------------------------------------------
 # Booking flow
 # ---------------------------------------------------------------------------
 
@@ -157,25 +171,13 @@ def book_flight(
     destination: Airport,
     date: datetime.date,
     interactive: bool = False,
-    max_retries: int = 3,
 ) -> None:
     """End-to-end flight booking with search, validation, and seat selection."""
     searcher = FlightFinder(available_flights=extract_flights(FLIGHTS_PAGE))
 
-    # --- Search with validation retry ---
-    flight = None
-    for attempt in range(max_retries):
-        candidate = searcher.find_flight(origin, destination, date)
-        errors = validate_flight(candidate, origin, destination, date)
-        if errors:
-            print(f"  [attempt {attempt}] Rejected: {'; '.join(errors)}")
-            continue
-        flight = candidate
-        break
-
-    if flight is None:
-        print("Could not find a valid flight.")
-        return
+    # --- Search (checked by `find_flight`'s post-condition, so an answer that
+    # doesn't match the request is rejected and retried before it reaches here) ---
+    flight = searcher.find_flight(origin, destination, date)
 
     print(
         f"  Found: {flight.flight_number} ${flight.price} "

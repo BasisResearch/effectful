@@ -19,6 +19,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import (
+    _IS_FINAL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     EncodedFunction,
@@ -560,16 +561,24 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 ]
                 return_type = signature.return_annotation
 
-            @pydantic.validate_call(validate_return=True)
-            def submit_solution(
-                implementation: Encodable[body_type],  # type: ignore
-            ) -> Encodable[return_type]:  # type: ignore
+            # Put the result through the same validation machinery as the direct path,
+            # under the same environment as in call_assistant
+            return_encoding: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                Encodable[return_type]  # type: ignore
+            )
+            env = skill.__context__.new_child(
+                bound_args.arguments
+                | {_TYPE_CHECK_ANCHOR_KEY: skill, _IS_FINAL_KEY: True}
+            )
+
+            def submit_solution(implementation: body_type) -> return_type:  # type: ignore
                 """
                 Answer this Skill by submitting a Python function that implements
                 it (see the "Code synthesis" section); its return value on the
                 original arguments becomes the answer.
                 """
-                return implementation(*args, **kwargs)  # type: ignore
+                result = implementation(*args, **kwargs)  # type: ignore
+                return return_encoding.validate_python(result, context=env)
 
             return super().define(submit_solution, name=cls.__toolname__)
 

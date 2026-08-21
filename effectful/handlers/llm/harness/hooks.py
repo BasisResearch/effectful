@@ -152,6 +152,22 @@ type AssistantResult[T] = tuple[
 ]
 
 
+def _answered_as_text(response_type: typing.Any) -> bool:
+    """Whether a reply of this type is the model's own text, not JSON.
+
+    True of ``str`` and of any annotated form of it. The annotations are the
+    caller's -- validators expressing a post-condition, say -- and say nothing
+    about how the answer travels: a `str` return is prose either way, and
+    constraining the reply to a JSON response format would have the model
+    escape that prose into a string literal, quotes, newlines and all. Boxing
+    the text after the fact (see `call_assistant`) runs the annotations without
+    imposing the encoding on the model.
+    """
+    while hasattr(response_type, "__metadata__"):
+        response_type = typing.get_args(response_type)[0]
+    return response_type is str
+
+
 @Operation.define
 def call_assistant[T](
     messages: collections.abc.Sequence[Message],
@@ -212,7 +228,7 @@ def call_assistant[T](
 
     response: litellm.types.utils.ModelResponse = completion(
         messages=list(messages),
-        response_format=None if response_type is str else response_format,
+        response_format=None if _answered_as_text(response_type) else response_format,
         tools=tool_specs,
     )
     choice = response.choices[0]
@@ -245,13 +261,17 @@ def call_assistant[T](
         serialized_result = message.get("content") or message.get("reasoning_content")
         assert isinstance(serialized_result, str)
         try:
-            if response_type is str:
-                result = typing.cast(T, serialized_result)
-            else:
-                result = response_format.model_validate(
-                    json.loads(serialized_result),
-                    context={**env, _IS_FINAL_KEY: True},
-                ).value
+            # A text answer is the model's own prose, and anything else is JSON
+            # shaped like the response format. Both are boxed and validated
+            # through the same model, so whatever the return annotation carries
+            # -- a caller's `pydantic.AfterValidator` post-condition, say -- runs
+            # on either kind of answer.
+            result = response_format.model_validate(
+                {"value": serialized_result}
+                if _answered_as_text(response_type)
+                else json.loads(serialized_result),
+                context={**env, _IS_FINAL_KEY: True},
+            ).value
         except Exception as e:
             raise ResultDecodingError(e, raw_message=raw_message) from e
 
