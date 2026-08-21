@@ -786,6 +786,368 @@ def test_expression_works_without_repl(poly_mod):
 
 
 # ============================================================================
+# Generic skills (issue #489, skill side): the response schema is built from
+# the return annotation, instantiated through `type[T]`-annotated arguments
+# ============================================================================
+
+_GENERIC_SKILL_SRC = '''
+import dataclasses
+from collections.abc import Callable, Sequence
+
+from effectful.handlers.llm import Skill
+
+
+@dataclasses.dataclass(eq=False)
+class Box[T]:
+    value: T
+
+
+@dataclasses.dataclass(frozen=True)
+class Item:
+    text: str
+
+
+@Skill.define
+def refine[T](box: Box[T]) -> T:
+    """Return an improved version of the value in {box}."""
+
+
+@Skill.define
+def refine_as[T](box: Box[T], typ: type[T]) -> T:
+    """Return an improved version of the value in {box}."""
+
+
+@Skill.define
+def pick[T](items: Sequence[T]) -> T:
+    """Pick the best of {items}."""
+
+
+@Skill.define
+def vpick[T](*options: T) -> T:
+    """Pick the best of {options}."""
+
+
+@Skill.define
+def kpick[T](**named: T) -> T:
+    """Pick the best of {named}."""
+
+
+@Skill.define
+def make_fn[T](typ: type[T]) -> Callable[[T], T]:
+    """Write a function transforming a value of {typ.__name__}."""
+'''
+
+
+@pytest.fixture
+def generic_mod(tmp_path, request):
+    modname = f"_generic_fixture_{request.node.name}".replace("[", "_").replace("]", "")
+    mod = _import_fixture(tmp_path, _GENERIC_SKILL_SRC, modname)
+    yield mod
+    sys.modules.pop(modname, None)
+
+
+def _run_generic(mod, skill_call, responses, *extra_handlers):
+    # Unlike `_run_scripted`'s capture handlers, extras here (e.g.
+    # `FinalBodySynthesizer`) implement `call_agent`, and `AgentLoop._call` is
+    # terminal for it -- so they must install *after* `AgentLoop` to intercept
+    # before it, as in the real `harness()` stack.
+    mock = MockCompletionHandler(responses)
+    stack = [
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="test-model")),
+        handler(HistoryBuilder()),
+        *(handler(h) for h in extra_handlers),
+        handler(TYPE_CHECKER()),
+        handler(BuiltinExecutor()),
+        handler(mock),
+    ]
+    with contextlib.ExitStack() as es:
+        for h in stack:
+            es.enter_context(h)
+        return skill_call()
+
+
+def test_generic_callable_skill_parametric_impl(generic_mod):
+    # A skill with a `type[T]` parameter and a polymorphic Callable return
+    # runs end-to-end (the `type[X]` prompt/spec encoding no longer crashes),
+    # and a *parametric* implementation satisfies the splice type check.
+    fn = _run_generic(
+        generic_mod,
+        lambda: generic_mod.make_fn(int),
+        [
+            make_text_response(
+                json.dumps(
+                    {
+                        "value": {
+                            "module_code": "def ident[U](x: U) -> U:\n    return x\n"
+                        }
+                    }
+                )
+            )
+        ],
+    )
+    assert fn(21) == 21
+
+
+def test_generic_callable_skill_concrete_impl_rejected(generic_mod):
+    # A *concrete* implementation is rejected by both checkers: the anchor's
+    # source signature promises a universally quantified `Callable[[T], T]`,
+    # and a synthesized function is held to exactly what is written -- it can
+    # (and must) be polymorphic itself, as in the test above. A skill whose
+    # per-call answers are genuinely type-specific is overpromising in its
+    # signature, not hitting a checker limitation.
+    from effectful.handlers.llm.harness.hooks import ResultDecodingError
+
+    with pytest.raises(ResultDecodingError):
+        _run_generic(
+            generic_mod,
+            lambda: generic_mod.make_fn(int),
+            [
+                make_text_response(
+                    json.dumps(
+                        {
+                            "value": {
+                                "module_code": "def dbl(x: int) -> int:\n    return x + x\n"
+                            }
+                        }
+                    )
+                )
+            ],
+        )
+
+
+def test_generic_skill_body_synthesis_parametricity(generic_mod):
+    # Via `FinalBodySynthesizer`, a parametric body passes both checkers and
+    # flows the runtime value out; a literal-returning body -- concrete where
+    # `T` is expected -- is rejected. This is the checker being right about
+    # parametricity, and it is why a value-level generic skill (textgrad's
+    # `_accumulate`) cannot be answered by code today.
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    box = generic_mod.Box(value=[1, 2, 3])
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.refine(box),
+        [
+            make_tool_call_response(
+                "submit_solution",
+                json.dumps(
+                    {"implementation": "def refine(box):\n    return box.value\n"}
+                ),
+            )
+        ],
+        FinalBodySynthesizer(),
+    )
+    assert result == [1, 2, 3]
+
+    with pytest.raises(ToolCallDecodingError):
+        _run_generic(
+            generic_mod,
+            lambda: generic_mod.refine(box),
+            [
+                make_tool_call_response(
+                    "submit_solution",
+                    json.dumps(
+                        {"implementation": "def refine(box):\n    return [9, 9]\n"}
+                    ),
+                )
+            ],
+            FinalBodySynthesizer(),
+        )
+
+
+def test_generic_skill_direct_output_decodes_instantiated(generic_mod):
+    # A `-> T` skill answered by structured output decodes as T's
+    # *instantiation*, bound through the `type[T]`-annotated argument -- the
+    # caller literally passes the type, so no structural inference is
+    # involved -- and the reply comes back as real typed values, here `Item`
+    # instances rather than raw dicts. This is what lets textgrad's
+    # `_accumulate` be written in decoded form.
+    box = generic_mod.Box(value=[generic_mod.Item(text="be kind")])
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.refine_as(box, typ=list[generic_mod.Item]),
+        [
+            make_text_response(
+                json.dumps({"value": [{"text": "be kinder"}, {"text": "cite sources"}]})
+            )
+        ],
+    )
+    assert result == [
+        generic_mod.Item(text="be kinder"),
+        generic_mod.Item(text="cite sources"),
+    ]
+    assert all(isinstance(item, generic_mod.Item) for item in result)
+
+
+def test_generic_skill_direct_output_validates_instantiated(generic_mod):
+    # The instantiation is enforced: a reply that does not fit T's binding
+    # fails decoding (the retryable kind).
+    from effectful.handlers.llm.harness.hooks import ResultDecodingError
+
+    box = generic_mod.Box(value=[generic_mod.Item(text="be kind")])
+    with pytest.raises(ResultDecodingError):
+        _run_generic(
+            generic_mod,
+            lambda: generic_mod.refine_as(box, typ=list[generic_mod.Item]),
+            [make_text_response(json.dumps({"value": [{"wrong_field": 1}]}))],
+        )
+
+
+def test_generic_skill_collection_arg_infers_instantiation(generic_mod):
+    # The best-effort second pass: type reconstruction from values is sound
+    # (if incomplete) for collections, so `Sequence[T]` called with a list of
+    # `Item`s binds `T = Item` with no explicit `type[T]` argument, and the
+    # reply decodes typed.
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.pick(
+            [generic_mod.Item(text="a"), generic_mod.Item(text="b")]
+        ),
+        [make_text_response(json.dumps({"value": {"text": "a"}}))],
+    )
+    assert result == generic_mod.Item(text="a")
+
+
+def test_unbound_type_param_response_schema_is_strict_legal(generic_mod):
+    # A leftover free type parameter must not reach the provider as a
+    # type-less schema node: OpenAI-style strict structured outputs reject
+    # those with a `BadRequestError` no retry loop can fix. The fallback asks
+    # for the value as a JSON-encoded string instead.
+    import litellm
+
+    from effectful.handlers.llm.harness.hooks import (
+        _BoxedResponse,
+        _instantiate_return_type,
+    )
+
+    box = generic_mod.Box(value=[generic_mod.Item(text="x")])
+    bound = generic_mod.refine.__signature__.bind(box)
+    bound.apply_defaults()
+    response_type = _instantiate_return_type(generic_mod.refine, bound)
+    rf = pydantic.create_model(
+        "BoxedResponse", value=Encodable[response_type], __base__=_BoxedResponse
+    )
+    schema = litellm.utils.type_to_response_format_param(rf)["json_schema"]["schema"]
+
+    def no_typeless(node):
+        # The failure shapes strict mode rejects: `{}` (e.g. JsonValue's $def)
+        # and `{"title": ...}`-only nodes (a bare TypeVar's rendering).
+        if isinstance(node, dict):
+            assert node and set(node) - {"title", "description"}, (
+                f"type-less schema node: {node}"
+            )
+            for child in node.values():
+                no_typeless(child)
+        elif isinstance(node, list):
+            for child in node:
+                no_typeless(child)
+
+    assert schema["properties"]["value"]["type"] == "string"
+    no_typeless(schema)
+
+
+def test_generic_skill_variadic_args_infer_instantiation(generic_mod):
+    # A variadic parameter's annotation describes each *element*: `*options: T`
+    # called with `Item`s binds `T = Item` (not the packed tuple type), and the
+    # reply decodes typed. Same for `**named: T` over the dict's values.
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.vpick(
+            generic_mod.Item(text="a"), generic_mod.Item(text="b")
+        ),
+        [make_text_response(json.dumps({"value": {"text": "a"}}))],
+    )
+    assert result == generic_mod.Item(text="a")
+
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.kpick(
+            first=generic_mod.Item(text="a"), second=generic_mod.Item(text="b")
+        ),
+        [make_text_response(json.dumps({"value": {"text": "b"}}))],
+    )
+    assert result == generic_mod.Item(text="b")
+
+
+def test_generic_skill_variadic_conflict_refuses_direct_reply(generic_mod):
+    # Conflicting element types leave the parameter unbound (all-or-nothing:
+    # never bound to whichever element unified first), which routes to the
+    # refusal/redirect path rather than a wrong schema. A final-answer tool is
+    # installed so the request is answerable at all (without one, the fast
+    # failure below preempts the API call entirely).
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    with pytest.raises(TypeError):
+        _run_generic(
+            generic_mod,
+            lambda: generic_mod.vpick(1, "a"),
+            [make_text_response(json.dumps({"value": 1}))],
+            FinalBodySynthesizer(),
+        )
+
+
+def test_generic_skill_without_binding_refuses_direct_reply(generic_mod):
+    # The incompleteness boundary: `T` inside an arbitrary generic dataclass
+    # (`Box[T]`) is beyond what value-driven inference can reconstruct, and a
+    # direct reply for an uninstantiated return has no sound decoding (raw
+    # JSON would hand the caller untyped data where the signature promised
+    # `T`). So decoding refuses every direct reply, with feedback naming the
+    # sound alternative. A final-answer tool is installed so the request is
+    # answerable at all (without one, the fast failure below preempts the API
+    # call entirely).
+    from effectful.handlers.llm.harness.hooks import ResultDecodingError
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    box = generic_mod.Box(value=[generic_mod.Item(text="be kind")])
+    with pytest.raises(ResultDecodingError, match="final answer"):
+        _run_generic(
+            generic_mod,
+            lambda: generic_mod.refine(box),
+            [make_text_response(json.dumps({"value": [{"text": "be kinder"}]}))],
+            FinalBodySynthesizer(),
+        )
+
+
+def test_undecodable_return_with_no_tools_fails_before_api_call(generic_mod):
+    # With no tools in the request, an undecodable response type makes every
+    # round trip a guaranteed refusal: fail fast, before any API call, with a
+    # developer-facing error the retry loop does not retry.
+    from effectful.handlers.llm.harness.serialization import _UndecodableReturn
+
+    mock = MockCompletionHandler([make_text_response("never sent")])
+    with handler(mock), pytest.raises(TypeError, match="final-answer"):
+        call_assistant([], _UndecodableReturn, {}, frozenset())
+    assert mock.call_count == 0
+
+
+def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
+    # The full redirect under the real retry loop: the model's direct reply is
+    # refused, the feedback steers it to `submit_solution`, and the synthesized
+    # (parametric) implementation's applied result is the answer.
+    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    box = generic_mod.Box(value=[generic_mod.Item(text="be kind")])
+    result = _run_generic(
+        generic_mod,
+        lambda: generic_mod.refine(box),
+        [
+            make_text_response(json.dumps({"value": [{"text": "be kinder"}]})),
+            make_tool_call_response(
+                "submit_solution",
+                json.dumps(
+                    {"implementation": "def refine(box):\n    return box.value\n"}
+                ),
+            ),
+        ],
+        FinalBodySynthesizer(),
+        TenacityRetryer(),
+    )
+    assert result == [generic_mod.Item(text="be kind")]
+
+
+# ============================================================================
 # Live model
 # ============================================================================
 

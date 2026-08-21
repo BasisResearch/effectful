@@ -391,6 +391,25 @@ def _pydantic_type_base(ty: type) -> typing.Any:
     return ty
 
 
+class _UndecodableReturn:
+    """A concrete type could not be instantiated for this value, so a direct
+    reply cannot be decoded soundly. Do not answer directly: call a tool that
+    produces a final answer instead."""
+
+
+def _fail_validation(value: typing.Any) -> typing.Any:
+    raise ValueError(inspect.getdoc(_UndecodableReturn))
+
+
+@TypeToPydanticType.register(_UndecodableReturn)
+def _pydantic_type_undecodable_return(ty: type[_UndecodableReturn]) -> typing.Any:
+    return typing.Annotated[
+        str,
+        pydantic.PlainValidator(_fail_validation, json_schema_input_type=str),
+        pydantic.Field(description=inspect.getdoc(_UndecodableReturn)),
+    ]
+
+
 class _ComplexModel(typing.TypedDict):
     real: float
     imag: float

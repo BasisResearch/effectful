@@ -27,6 +27,7 @@ from effectful.handlers.llm.harness.serialization import (
     _BoxedResponse,
     _NameAndTool,
     _render_prompt_section,
+    _UndecodableReturn,
     format_as_content_blocks,
     to_content_blocks,
 )
@@ -35,7 +36,12 @@ from effectful.handlers.llm.types import (
     Skill,
     Tool,
 )
-from effectful.internals.unification import nested_type
+from effectful.internals.unification import (
+    freetypevars,
+    nested_type,
+    substitute,
+    unify,
+)
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -175,6 +181,15 @@ def call_assistant[T](
 
     if _TYPE_CHECK_ANCHOR_KEY in env:
         tools = tools - {env[_TYPE_CHECK_ANCHOR_KEY]}
+
+    if response_type is _UndecodableReturn and not tools:
+        raise TypeError(
+            f"{inspect.getdoc(_UndecodableReturn)} -- but this request offers "
+            f"no tools, so no reply could ever decode. Install a handler that "
+            f"offers a final-answer tool (e.g. `FinalBodySynthesizer`'s "
+            f"``submit_solution``), or give the skill's signature an "
+            f"instantiation channel such as a ``type[T]`` parameter."
+        )
 
     name2tool = _advertised_names(tools)
     env = {_NAME2TOOL_KEY: name2tool, **env}
@@ -340,6 +355,81 @@ def call_system(
     )
 
 
+def _instantiate_return_type(
+    skill: Skill, bound_args: inspect.BoundArguments
+) -> typing.Any:
+    """The skill's return annotation, with type parameters instantiated from
+    the actual arguments of one call.
+
+    A generic skill -- ``def make_fn[T](typ: type[T]) -> Callable[[T], T]`` --
+    declares its return type in terms of variables the *caller* fixes, so the
+    response schema for a particular call must be built from the
+    instantiation, not the variable. The whole signature is unified against
+    the type-level image of the call's arguments, through two channels:
+
+    * A parameter annotated ``type[T]`` binds ``T`` to the very class (or
+      type alias) the caller passed -- a value-level fact, read off directly.
+      This is the channel a generic skill should prefer to declare.
+    * Every other TypeVar-carrying parameter unifies against the *inferred*
+      type of its argument (`nested_type`). Type reconstruction from values
+      is only reliable for collections and callables, so this channel is
+      strictly best-effort: any failure anywhere falls back to the original
+      annotation, leaving every type parameter unbound -- refusal, never a
+      wrong binding.
+
+    A type parameter that no channel could bind is finally bound to
+    `~effectful.handlers.llm.harness.serialization._UndecodableReturn`
+    (unless it carries a bound or constraints, which already produce a real
+    schema): there is no sound direct decoding for such a return, so its
+    response format is strict-legal but refuses every reply, with feedback
+    redirecting the model to answer through a final-answer tool (canonically
+    ``submit_solution``, whose synthesized implementation is checked against
+    the real generic signature and applied to the real arguments).
+    A binding that doesn't fit the model's reply fails response validation
+    loudly, and the retry loop reports it.
+    """
+    sig = inspect.signature(skill)
+    return_annotation = sig.return_annotation
+    if not freetypevars(return_annotation):
+        return return_annotation
+
+    try:
+        typed = sig.bind_partial()
+        for name, value in bound_args.arguments.items():
+            param = sig.parameters[name]
+            if param.annotation is inspect.Parameter.empty:
+                continue
+            if not freetypevars(param.annotation):
+                typed.arguments[name] = param.annotation
+            elif param.kind is inspect.Parameter.VAR_POSITIONAL:
+                typed.arguments[name] = tuple(nested_type(v).value for v in value)
+            elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                typed.arguments[name] = {
+                    k: nested_type(v).value for k, v in value.items()
+                }
+            elif typing.get_origin(param.annotation) is type:
+                typed.arguments[name] = type[value]
+            else:
+                typed.arguments[name] = nested_type(value).value
+        subs = unify(sig, typed, {})
+        instantiated = (
+            substitute(return_annotation, subs) if subs else return_annotation
+        )
+    except Exception:
+        instantiated = return_annotation
+
+    try:
+        leftover = {
+            tv: _UndecodableReturn
+            for tv in freetypevars(instantiated)
+            if getattr(tv, "__bound__", None) is None
+            and not getattr(tv, "__constraints__", ())
+        }
+        return substitute(instantiated, leftover) if leftover else instantiated
+    except Exception:
+        return return_annotation
+
+
 call_agent = Skill.__apply__
 """Alias for `Skill.__apply__`: the operation invoked when a `Skill` is called.
 
@@ -423,10 +513,11 @@ class AgentLoop(ObjectInterpretation):
 
         result: T | None = None
         is_final: bool = False
+        response_type = _instantiate_return_type(skill, bound_args)
         while not is_final:
             message, tool_calls, result = call_assistant(
                 list(HistoryBuilder.get_history()),
-                skill.__signature__.return_annotation,
+                response_type,
                 env,
             )
             if tool_calls:

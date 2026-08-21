@@ -234,6 +234,19 @@ def _imports_section(
     )
 
 
+def _arg_schema(annotation: typing.Any) -> str:
+    """The `Encodable` JSON schema of an argument annotation, best-effort.
+
+    A parameter type with no schema -- a TypeVar-carrying one, a ``type[X]``
+    -- degrades to its textual annotation instead of breaking the whole system
+    prompt of every skill that has it in a signature.
+    """
+    try:
+        return json.dumps(pydantic.TypeAdapter(Encodable[annotation]).json_schema())
+    except Exception:
+        return f"(no JSON schema; a Python type annotation) {annotation!r}"
+
+
 def _skill_section(skill: Skill) -> PromptSection:
     """Spec for a single `Skill`: header, prompt, arg schemas.
 
@@ -246,7 +259,7 @@ def _skill_section(skill: Skill) -> PromptSection:
         parts.append(prompt)
     args = [
         f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
-        f"    ```json\n    {json.dumps(pydantic.TypeAdapter(Encodable[p.annotation]).json_schema())}\n    ```"  # type: ignore[name-defined]
+        f"    ```json\n    {_arg_schema(p.annotation)}\n    ```"
         for name, p in skill.__signature__.parameters.items()
     ]
     if args:

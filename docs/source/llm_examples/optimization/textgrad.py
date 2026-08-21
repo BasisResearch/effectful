@@ -77,8 +77,6 @@ import graphlib
 import inspect
 import typing
 
-import pydantic
-
 from effectful.handlers.llm import Skill
 from effectful.handlers.llm.harness.hooks import (
     Message,
@@ -87,8 +85,6 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     call_user,
 )
-from effectful.handlers.llm.types import Encodable
-from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -226,22 +222,6 @@ class Target:
     name: str
     kind: typing.Literal["parameter", "result"]
     description: str
-    value: str
-
-
-@dataclasses.dataclass(frozen=True)
-class Updated:
-    """The accumulation skill's structured answer: just the updated value.
-
-    A one-field wrapper so the reply is decoded by schema rather than scraped
-    from prose. This is load-bearing, not ceremony: with a bare ``str`` return
-    there is no response format, and small models answer with their working
-    shown -- "To update the parameter based on the accumulated feedback, we
-    need to consider..." -- *as the new value*, or wrap it in the delimiters
-    the prompt used to show it. A schema'd single field leaves no room for
-    either.
-    """
-
     value: str
 
 
@@ -584,42 +564,40 @@ class TextGradOptimizer(ObjectInterpretation):
                     grads.setdefault(target, []).append(fb.feedback)
         return grads
 
-    # The str-typed `Updated.value` reply is a workaround for `Skill`
-    # signatures not supporting type variables: the natural definition is
-    # ``def _accumulate[T](self, parameter: Parameter[T]) -> T`` with ``T``
-    # bound per call from the parameter's value, which would let structured
-    # decoding produce the parameter's own type directly and delete both the
-    # wrapper and the validate-back shim in `accumulate`. (A closure-captured
-    # concrete type does not work either: the harness's synthesis path
-    # type-checks model code against the skill's *source*, where a closure
-    # variable in an annotation is statically invalid.) If generic skills
-    # land, define `_accumulate` that way.
     @Skill.define
-    def _accumulate(self, parameter: Parameter) -> Updated:
-        """Update the parameter below by applying its accumulated feedback: its
-        ``value`` is the current content, ``gradients`` are the feedback entries
-        to apply, and ``description``, when present, says what the value must
-        contain and how updates should be merged into it -- follow it.
+    def _accumulate[T](self, value: T, gradients: list[str], description: str) -> T:
+        """Update the value below by applying the accumulated feedback in
+        ``gradients``; ``description``, when non-empty, says what the value
+        must contain and how updates should be merged into it -- follow it.
 
-        <parameter>
-        {parameter}
-        </parameter>
+        <value>
+        {value}
+        </value>
+
+        <feedback>
+        {gradients}
+        </feedback>
+
+        <description>
+        {description}
+        </description>
 
         Preserve whatever the feedback does not ask to change, and keep the
-        format and shape of the current value. The updated value must contain
-        only the parameter's new content -- no commentary about the update
-        itself. Do not use any tools.
+        format and shape of the current value. Return only the value's new
+        content -- no commentary about the update itself, no delimiters around
+        it. Do not use any tools.
         """
 
     def accumulate(self, root: CallNode) -> None:
         """Fold each parameter's accumulated gradients into its value, in place.
 
         A box recorded by several nodes is updated exactly once, on the union
-        of its gradients (deduplication is by box identity). The box itself is
-        the skill's one argument -- value, description and gradients travel
-        together through its `Encodable` encoding -- but the reply is an
-        `Updated` wrapping a ``str``, so a non-``str`` value is validated back
-        into its own type from the returned JSON text.
+        of its gradients (deduplication is by box identity). The box's fields
+        travel as the skill's separate arguments, and the reply is decoded
+        directly as the value's own type: `_accumulate` is generic in the value
+        (``value: T``, returning ``T``), so the harness infers the
+        instantiation from the value actually passed and structured decoding
+        produces the updated value itself.
         """
         seen: set[int] = set()
         boxes: list[Parameter[typing.Any]] = []
@@ -631,15 +609,7 @@ class TextGradOptimizer(ObjectInterpretation):
         for box in boxes:
             if not box.gradients:
                 continue
-            updated = self._accumulate(box).value
-            adapter: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[nested_type(box.value).value]  # type: ignore
-            )
-            box.value = (
-                updated
-                if isinstance(box.value, str)
-                else adapter.validate_json(updated)
-            )
+            box.value = self._accumulate(box.value, box.gradients, box.description)
 
     def zero_grad(self, root: CallNode) -> None:
         """Clear the gradients of every `Parameter` reachable from ``root``.

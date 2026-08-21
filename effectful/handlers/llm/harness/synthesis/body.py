@@ -440,7 +440,7 @@ def _callable_type_from_signature(
             inspect.Parameter.VAR_POSITIONAL,
             inspect.Parameter.VAR_KEYWORD,
         ):
-            raise NotImplementedError(
+            raise TypeError(
                 f"Cannot synthesize a function for parameter "
                 f"'{pname}' of kind {param.kind.description}: variadic parameters "
                 "cannot be expressed as a Callable type signature."

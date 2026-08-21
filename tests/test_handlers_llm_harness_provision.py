@@ -1792,7 +1792,7 @@ class TestSynthesizeAndCall:
             """Sum the arguments."""
             raise NotHandled
 
-        with pytest.raises(NotImplementedError, match="variadic"):
+        with pytest.raises(TypeError, match="variadic"):
             FinalBodySynthesizer._SubmitSolutionTool.define(
                 variadic, variadic.__signature__.bind()
             )

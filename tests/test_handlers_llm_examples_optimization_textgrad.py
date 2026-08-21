@@ -26,7 +26,6 @@ from docs.source.llm_examples.optimization.textgrad import (
     Feedback,
     Parameter,
     TextGradOptimizer,
-    Updated,
 )
 from effectful.handlers.llm import Skill
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
@@ -187,7 +186,7 @@ def test_parameter_free_child_is_not_a_target():
             seen_targets.append(targets)
             or [Feedback(target=t.name, feedback=f"improve {t.name}") for t in targets]
         ),
-        "_accumulate": lambda parameter: Updated(str(parameter.value)),
+        "_accumulate": lambda value, gradients, description: value,
     }
     mock = MockLLM(rules)
     optimizer = TextGradOptimizer()
@@ -215,7 +214,9 @@ def optimizer_rules(updated="{value} [updated]"):
         "_compute_gradients": lambda targets, trace, output, feedback: [
             Feedback(target=t.name, feedback=f"improve {t.name}") for t in targets
         ],
-        "_accumulate": lambda parameter: Updated(updated.format(value=parameter.value)),
+        "_accumulate": lambda value, gradients, description: updated.format(
+            value=value
+        ),
     }
 
 
@@ -245,12 +246,8 @@ def test_backward_routes_and_consolidate_dedupes():
     assert email_box.value == "email guide [updated]"
     accumulations = [c for c in mock.calls if c[0] == "_accumulate"]
     assert len(accumulations) == 2
-    # The box itself is the skill's one argument, carrying value, description
-    # and gradients together.
-    assert {id(c[1]["parameter"]) for c in accumulations} == {
-        id(joke_box),
-        id(email_box),
-    }
+    # The box's fields are the skill's arguments: value, gradients, description.
+    assert {c[1]["value"] for c in accumulations} == {"joke guide", "email guide"}
 
     # zero_grad clears the parameters -- the only persistent gradient state.
     optimizer.zero_grad(graph)
@@ -296,11 +293,9 @@ def test_non_str_parameter_roundtrips_through_json():
         "_compute_gradients": lambda targets, trace, output, feedback: [
             Feedback(target="rules", feedback="add: mention coffee")
         ],
-        # The reply boundary is str: for a list-valued parameter the returned
-        # text is validated back into the value's type from JSON.
-        "_accumulate": lambda parameter: Updated(
-            json.dumps(parameter.value + ["mention coffee"])
-        ),
+        # The reply is decoded directly as the value's own type, so the rule
+        # returns the updated list itself.
+        "_accumulate": lambda value, gradients, description: value + ["mention coffee"],
     }
     mock = MockLLM(rules)
     optimizer = TextGradOptimizer()
@@ -310,7 +305,7 @@ def test_non_str_parameter_roundtrips_through_json():
         optimizer.step("needs coffee")
 
     accumulation = next(c[1] for c in mock.calls if c[0] == "_accumulate")
-    assert accumulation["parameter"] is box
+    assert accumulation["value"] == ["short jokes", "no puns"]
     assert box.value == ["short jokes", "no puns", "mention coffee"]
 
 
@@ -364,8 +359,8 @@ def test_invalid_target_is_retried():
             make_boxed_response([{"target": "bogus", "feedback": "x"}]),
             # backward, attempt 2: valid
             make_boxed_response([{"target": "guidelines", "feedback": "add: cats"}]),
-            # accumulation: structured `Updated` output
-            make_boxed_response({"value": "joke guide + cats"}),
+            # accumulation: a str-valued parameter decodes as plain text
+            make_text_response("joke guide + cats"),
         ]
     )
     h1, h2, h3, h4, h5, h6 = full_stack(mock)
