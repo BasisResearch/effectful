@@ -70,10 +70,20 @@ class LangfuseTracer(ObjectInterpretation):
 
     @implements(call_tool)
     def call_tool(self, tool_call: DecodedToolCall):
+        def encode_arg(value):
+            # Best-effort: a call decoded from a Python *expression* (see
+            # `~effectful.handlers.llm.harness.synthesis.toolcall`) binds real
+            # runtime values, which need not be encodable at all -- tracing
+            # must not fail the call over one of them.
+            try:
+                return pydantic.TypeAdapter(
+                    Encodable[nested_type(value).value]
+                ).dump_python(value, mode="json", context={})
+            except Exception:
+                return repr(value)
+
         input = {
-            name: pydantic.TypeAdapter(
-                Encodable[nested_type(value).value]  # type: ignore[misc]
-            ).dump_python(value, mode="json", context={})
+            name: encode_arg(value)
             for name, value in tool_call.bound_args.arguments.items()
         }
         with self.client.start_as_current_observation(

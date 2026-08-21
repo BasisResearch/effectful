@@ -314,6 +314,15 @@ class DecodedToolCall[T]:
     id: ToolCallID
     name: str
 
+    # The Python source this call was decoded from, when the model produced a
+    # call *expression* rather than JSON arguments (see
+    # `~effectful.handlers.llm.harness.synthesis.toolcall.CallExpression`, which
+    # narrows this to required).  `None` means the ordinary JSON pathway.  This
+    # is what `_serialize_tool_call` must emit to round-trip the call: the
+    # advertised schema for an expression call is ``{"call": <source>}``, and
+    # its evaluated `bound_args` may hold values with no JSON encoding at all.
+    source: str | None = None
+
     @property
     def result_type(self) -> type[T]:
         return inspect.signature(self.tool).return_annotation
@@ -634,6 +643,53 @@ def _validate_name_and_tool(
         raise NotImplementedError(f"Unknown tool: {name}") from e
 
 
+def _best_effort_schema(annotation: typing.Any) -> str:
+    """The `Encodable` JSON schema of ``annotation``, as a JSON string.
+
+    Best-effort: a type whose schema cannot be generated -- one carrying a
+    `TypeVar`, say (a polymorphic tool's parameter or return) -- falls back to
+    its textual annotation, which is everything that can be said about it in a
+    description.  The fallback is what lets a polymorphic tool be *described*
+    to the model at all, where schema-shaped advertisement has nothing to offer
+    (issues #489/#505).
+    """
+    try:
+        schema = pydantic.TypeAdapter(Encodable[annotation]).json_schema(
+            mode="serialization"
+        )
+    except Exception:
+        return f"`{annotation!r}` (Python type annotation; no JSON schema)"
+    return json.dumps(schema)
+
+
+def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
+    """The model-facing prose describing ``tool``: ``qualname : signature``, its
+    docstring, and the `Encodable` schema of its return type.
+
+    This is the description half of a tool advertisement, shared between the
+    JSON pathway (`_serialize_name_and_tool`, where the parameter schemas ride
+    separately as the machine-enforced ``parameters``) and the code-generation
+    pathway (`~effectful.handlers.llm.harness.synthesis.toolcall`, which sets
+    ``param_schemas=True`` so the parameter type structure the JSON ``parameters``
+    would have carried is preserved as prose instead).
+    """
+    description = (
+        f"{getattr(tool, '__qualname__', tool.__name__)} : {tool.__signature__}"
+    )
+    description += f"\n\n{textwrap.dedent(tool.__doc__ or '')}"
+    if param_schemas and tool.__signature__.parameters:
+        rows = "\n".join(
+            f"- `{param_name}`: {_best_effort_schema(param.annotation)}"
+            for param_name, param in tool.__signature__.parameters.items()
+        )
+        description += f"\n\nAnnotated JSON schema of each parameter type:\n{rows}"
+    description += (
+        f"\n\nAnnotated JSON schema of return type: "
+        f"{_best_effort_schema(tool.__signature__.return_annotation)}"
+    )
+    return description
+
+
 def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
     name, tool = value
     fields: dict[str, typing.Any] = {
@@ -647,14 +703,7 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
     )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
-    ret_schema = pydantic.TypeAdapter(
-        Encodable[tool.__signature__.return_annotation]  # type: ignore[name-defined]
-    ).json_schema(mode="serialization")
-    description = (
-        f"{getattr(tool, '__qualname__', tool.__name__)} : {tool.__signature__}"
-    )
-    description += f"\n\n{textwrap.dedent(tool.__doc__ or '')}"
-    description += f"\n\nAnnotated JSON schema of return type: {json.dumps(ret_schema)}"
+    description = _tool_description(tool)
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
             "type": "function",
@@ -728,12 +777,19 @@ def _serialize_tool_call(
     value: DecodedToolCall, info: pydantic.SerializationInfo
 ) -> dict:
     ctx = info.context or {}
-    encoded_args = {}
-    for k, v in value.bound_args.arguments.items():
-        v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[nested_type(v).value]  # type: ignore[misc]
-        )
-        encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
+    encoded_args: dict[str, typing.Any] = {}
+    if value.source is not None:
+        # Decoded from a call *expression*: what the model sent -- and what the
+        # advertised ``{"call": string}`` schema describes -- is the source, so
+        # that is what round-trips. The evaluated `bound_args` are not
+        # re-encoded; they may hold values with no JSON encoding at all.
+        encoded_args["call"] = value.source
+    else:
+        for k, v in value.bound_args.arguments.items():
+            v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                Encodable[nested_type(v).value]  # type: ignore[misc]
+            )
+            encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return OpenAIChatCompletionMessageToolCall.model_validate(
         {
             "type": "function",

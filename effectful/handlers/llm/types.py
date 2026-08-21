@@ -100,14 +100,22 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
         super().__init__(default, name=name)
 
     @classmethod
-    def define(cls, *args, **kwargs) -> "Tool[P, T]":
+    def define[**Q, V](
+        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+    ) -> "Tool[Q, V]":
         """Define a tool.
+
+        Binds the result's type parameters from ``default`` (as `Skill.define`
+        does), so a static checker sees ``Tool[<params>, <return>]`` rather
+        than an unbound ``Tool[Never, Never]`` -- which is what lets a
+        model-written call *expression* to a tool be type-checked against the
+        tool's real (possibly generic) signature.
 
         See `effectful.ops.types.Operation.define` for more information on the
         use of `Tool.define`.
 
         """
-        return typing.cast("Tool[P, T]", super().define(*args, **kwargs))
+        return typing.cast("Tool[Q, V]", super().define(default, *args, **kwargs))
 
 
 class Skill[**P, T](Tool[P, T]):

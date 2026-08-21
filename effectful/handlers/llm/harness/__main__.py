@@ -130,6 +130,18 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Handler that type-checks model-authored Python before it runs",
     )
     parser.add_argument(
+        "--tool-calling",
+        type=str,
+        default="mixed",
+        choices=["mixed", "code", "json"],
+        help=(
+            "How the model calls lexical tools: JSON arguments where a schema "
+            "can describe the tool, code for the rest (mixed); by writing a "
+            "type-checked Python call expression uniformly (code); or JSON "
+            "arguments only (json)"
+        ),
+    )
+    parser.add_argument(
         "--pdb",
         action="store_true",
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
@@ -216,6 +228,7 @@ def main(argv: list[str] | None = None) -> None:
         persist_db=ns.persist_db,
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
+        tool_calling=ns.tool_calling,
         **_provider_config(ns),
     )
     with handler(h):

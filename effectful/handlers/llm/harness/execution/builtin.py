@@ -6,6 +6,7 @@ import typing
 
 from effectful.handlers.llm.harness.execution.hooks import (
     compile,
+    eval,
     exec,
     parse,
 )
@@ -52,6 +53,19 @@ class BuiltinExecutor(ObjectInterpretation):
             dont_inherit,
             optimize,
         )
+
+    @implements(eval)
+    def eval(
+        self,
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
+    ) -> typing.Any:
+        # Evaluate in a copy (with builtins ensured): the op's contract is that
+        # binding effects are discarded, so a walrus -- or the builtins seeded
+        # here -- must not leak into the caller's env.
+        g = dict(env)
+        g.setdefault("__builtins__", __builtins__)
+        return builtins.eval(bytecode, g, g)
 
     @implements(exec)
     def exec(

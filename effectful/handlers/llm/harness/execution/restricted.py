@@ -26,6 +26,7 @@ from RestrictedPython.transformer import (
 
 from effectful.handlers.llm.harness.execution.hooks import (
     compile,
+    eval,
     exec,
     parse,
 )
@@ -874,6 +875,19 @@ class RestrictedPythonExecutor(ObjectInterpretation):
             }
         )
         return rglobals
+
+    @implements(eval)
+    def eval(
+        self,
+        bytecode: types.CodeType,
+        env: dict[str, typing.Any],
+    ) -> typing.Any:
+        # Same guarded namespace as `exec`, but no binding copy-back: the `eval`
+        # op's contract discards binding effects (the only eval-mode construct
+        # that could bind, a scope-escaping walrus, is rejected by the callers
+        # that compile expressions), so there is nothing to propagate.
+        rglobals = self._restricted_globals(env)
+        return builtins.eval(bytecode, rglobals, rglobals)
 
     @implements(exec)
     def exec(

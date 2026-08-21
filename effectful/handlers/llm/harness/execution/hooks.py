@@ -51,6 +51,36 @@ def compile(
 
 
 @Operation.define
+def eval(
+    bytecode: types.CodeType,
+    env: dict[str, typing.Any],
+) -> typing.Any:
+    """
+    Evaluate a compiled expression code object and return its value.
+
+    bytecode: A code object compiled in ``"eval"`` mode (typically produced by
+        compile(..., mode="eval")).
+    env: The namespace mapping used during evaluation.
+
+    Returns the expression's value. Binding effects are discarded: unlike
+    `exec`, ``env`` is not updated after evaluation -- the only construct that
+    could bind a name from eval-mode code is a scope-escaping walrus, and
+    callers that must not observe one reject it before compiling.
+
+    Deliberately ``(bytecode, env)``, symmetric with the sibling `exec`
+    operation, rather than `builtins.eval`'s ``(source, globals, locals)``.
+    Only `compile` mirrors its builtin, and only because `run_doctests` rebinds
+    ``doctest.compile`` to it positionally; nothing stands this operation in
+    for the builtin, ``globals=None`` ("use the caller's frame") is meaningless
+    as an effect operation, and accepting ``str`` source would collapse the
+    parse -> compile -> eval separation the operations are built on.
+    """
+    raise NotImplementedError(
+        "An eval provider must be installed in order to evaluate code."
+    )
+
+
+@Operation.define
 def exec(
     bytecode: types.CodeType,
     env: dict[str, typing.Any],

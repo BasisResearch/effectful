@@ -8,6 +8,7 @@ individually.
 import os
 import pathlib
 import typing
+import warnings
 
 import tenacity
 
@@ -33,6 +34,10 @@ from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
+from effectful.handlers.llm.harness.synthesis.toolcall import (
+    ExpressionToolCaller,
+    MixedToolCaller,
+)
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import Interpretation, coproduct
@@ -47,6 +52,7 @@ def harness(
     persist_db: str | os.PathLike[str] | None = None,
     eval_provider: typing.Literal["builtin", "restricted", "none"] = "builtin",
     type_checker: typing.Literal["mypy", "ty", "none"] = "ty",
+    tool_calling: typing.Literal["mixed", "code", "json"] = "mixed",
     **provider_config,
 ) -> Interpretation:
     """
@@ -60,9 +66,11 @@ def harness(
     context manager, decorator, or via the module CLI) installs the handlers and
     exiting removes them. The handlers, in installation order, are:
 
-    1. `AgentLoop`, `LexicalToolExtractor` and `LiteLLMConfigurer` -- the agent
-       loop, the tools it offers from a `Skill`'s lexical scope, and the model
-       backend it drives.
+    1. `AgentLoop`, the lexical tool caller (`MixedToolCaller` for
+       ``tool_calling="mixed"``, `ExpressionToolCaller` for ``"code"``,
+       `LexicalToolExtractor` for ``"json"``) and `LiteLLMConfigurer` -- the
+       agent loop, the tools it offers from a `Skill`'s lexical scope, and the
+       model backend it drives.
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `HistoryBuilder` -- accumulate the message history of a call.
@@ -95,9 +103,36 @@ def harness(
         type_checker: Which handler type-checks model-authored Python before it
             runs -- a key of `TYPE_CHECKERS` (``"mypy"``, or ``"none"`` to run
             generated code unchecked).
+        tool_calling: How the model calls the tools in a `Skill`'s lexical
+            scope. ``"mixed"`` (the default) installs `MixedToolCaller`:
+            schema-constrained JSON arguments for every tool a JSON schema can
+            describe faithfully, and the code pathway for the rest (generic,
+            variadic, or unadvertisable signatures). ``"code"`` installs
+            `ExpressionToolCaller`: uniformly, the model writes a Python call
+            expression which is type-checked in the Skill's scope and
+            evaluated. ``"json"`` installs `LexicalToolExtractor`: the classic
+            JSON-only pathway (polymorphic tools degrade to untyped argument
+            schemas there, and unadvertisable ones are skipped with a
+            warning). ``"mixed"`` and ``"code"`` require an eval provider;
+            with ``eval_provider="none"`` the stack falls back to ``"json"``
+            with a warning.
     """
+    if tool_calling != "json" and eval_provider == "none":
+        warnings.warn(
+            f'tool_calling="{tool_calling}" requires an eval provider; falling '
+            f'back to tool_calling="json"',
+            stacklevel=2,
+        )
+        tool_calling = "json"
     h: Interpretation = AgentLoop()
-    h = coproduct(h, LexicalToolExtractor())
+    h = coproduct(
+        h,
+        {
+            "mixed": MixedToolCaller,
+            "code": ExpressionToolCaller,
+            "json": LexicalToolExtractor,
+        }[tool_calling](),
+    )
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     h = coproduct(h, HistoryBuilder())

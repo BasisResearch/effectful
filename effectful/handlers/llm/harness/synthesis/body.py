@@ -537,7 +537,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
         )
 
         @classmethod
-        def define(
+        def define(  # type: ignore[override]
             cls,
             skill: Skill[..., T],
             bound_args: inspect.BoundArguments,
