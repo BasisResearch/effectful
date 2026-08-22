@@ -1,5 +1,6 @@
 """Tests for Agent mixin message sequence semantics."""
 
+import abc
 import collections.abc
 import dataclasses
 import inspect
@@ -27,6 +28,7 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalReaders,
     LexicalToolExtractor,
+    _vars_section,
 )
 from effectful.handlers.llm.harness.observability.dump import _message_text
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
@@ -2476,3 +2478,78 @@ def test_lexical_context_sees_globals_when_no_local():
         raise NotHandled
 
     assert skill_sees_global.__context__["shadow_test_value"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# Lexical scope rendering
+# ---------------------------------------------------------------------------
+
+
+type _ScopeAlias = list[str]
+
+
+class TestLexicalScopeRendering:
+    """How `_vars_section` describes each binding in the scope table."""
+
+    def _rows(self, env) -> dict[str, str]:
+        section = _vars_section(env)
+        assert section is not None
+        body = _message_text(section["content"])
+        return dict(re.findall(r"^\| `(.+?)` \| `(.+?)` \|$", body, flags=re.MULTILINE))
+
+    def test_type_valued_bindings_render_as_type_of_what_they_denote(self):
+        """A binding that is itself a type is described by that type, not by
+        its metaclass, which is the same uninformative word for every class."""
+
+        @dataclasses.dataclass
+        class Record:
+            field: int
+
+        class Abstract(abc.ABC):
+            pass
+
+        rows = self._rows(
+            {"Record": Record, "Abstract": Abstract, "Seq": collections.abc.Sequence}
+        )
+        assert rows["Record"] == f"type[{__name__}.{Record.__qualname__}]"
+        assert rows["Abstract"] == f"type[{__name__}.{Abstract.__qualname__}]"
+        assert rows["Seq"] == "type[collections.abc.Sequence]"
+
+    def test_type_forms_render_without_leaking_a_class_repr(self):
+        """Aliases, parameterized generics, unions and special forms are types
+        too, and none of them is an instance of `type`."""
+        rows = self._rows(
+            {
+                "Alias": _ScopeAlias,
+                "Items": list[int],
+                "Either": int | str,
+                "Choice": typing.Literal,
+                "Fn": collections.abc.Callable[[int], str],
+            }
+        )
+        assert rows == {
+            "Alias": "type[_ScopeAlias]",
+            "Items": "type[list[int]]",
+            "Either": "type[int | str]",
+            "Choice": "type[Literal]",
+            "Fn": "type[collections.abc.Callable[[int], str]]",
+        }
+        assert not any("<class " in t for t in rows.values())
+
+    def test_ordinary_bindings_are_described_by_their_type(self):
+        """Everything that is not a type is unaffected."""
+
+        @dataclasses.dataclass
+        class Record:
+            field: int
+
+        def helper() -> None:
+            pass
+
+        rows = self._rows(
+            {"count": 3, "names": ["a"], "helper": helper, "record": Record(1)}
+        )
+        assert rows["count"] == "int"
+        assert rows["names"] == "list"
+        assert rows["helper"] == "function"
+        assert rows["record"] == f"{__name__}.{Record.__qualname__}"

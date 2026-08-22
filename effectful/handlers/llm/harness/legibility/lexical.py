@@ -175,6 +175,28 @@ class LexicalToolExtractor(ObjectInterpretation):
         return fwd(messages, response_type, env, offered)
 
 
+def _binding_type(value: typing.Any) -> str:
+    """How to describe a binding in the lexical scope table.
+
+    A binding that *is* a type -- a class, a ``type`` alias, a parameterized
+    generic, a union, a special form -- is described as ``type[X]``, naming what
+    it denotes.  Its own type, which is what every other binding is described
+    by, is a metaclass here, and a metaclass says nothing a reader could use:
+    described that way every dataclass in scope is ``type``, every enum
+    ``enum.EnumType``, and every PEP 695 alias ``typing.TypeAliasType`` -- which
+    `inspect.formatannotation`, meant for annotations rather than classes,
+    renders as the raw ``<class 'TypeAliasType'>``.
+    """
+    if (
+        isinstance(value, type | types.GenericAlias | types.UnionType)
+        # Type aliases, special forms and type variables are not instances of
+        # any of those, and are only recognizable by where their type lives.
+        or type(value).__module__ == "typing"
+    ):
+        return f"type[{inspect.formatannotation(value)}]"
+    return inspect.formatannotation(type(value))
+
+
 def _vars_section(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> PromptSection | None:
@@ -184,7 +206,7 @@ def _vars_section(
     standard builtin (which the model knows).
     """
     rows = {
-        name: inspect.formatannotation(type(value))
+        name: _binding_type(value)
         for name, value in env.items()
         if not (name.startswith("__") and name.endswith("__"))
         and value not in vars(builtins).values()

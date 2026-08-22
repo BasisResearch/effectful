@@ -4,8 +4,9 @@ Demonstrates:
 - A pre-condition on a skill's parameter: one skill's judgement, attached to
   the annotation as ``annotated_types.Predicate`` metadata, guarding another
   skill's input wherever that input comes from
-- A post-condition on the return: a ``pydantic.AfterValidator`` whose message
-  is fed back to the model, which then answers again
+- A post-condition on the return: an ordinary Python predicate, attached the
+  same way, enforced by the decoder that reads the model's answer -- a
+  rejection is fed back to the model, which then answers again
 """
 
 import argparse
