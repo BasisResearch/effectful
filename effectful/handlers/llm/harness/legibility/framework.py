@@ -3,7 +3,6 @@ import typing
 
 import effectful.handlers.llm.types
 from effectful.handlers.llm.harness.hooks import call_system
-from effectful.handlers.llm.harness.legibility.lexical import _get_qualname
 from effectful.handlers.llm.harness.serialization import (
     PromptSection,
     to_content_blocks,
@@ -34,7 +33,7 @@ class FrameworkDocumenter(ObjectInterpretation):
         content.extend(
             PromptSection(
                 type="prompt_section",
-                title=f"`{_get_qualname(typ)}`",
+                title=f"`{inspect.formatannotation(typ)}`",
                 content=to_content_blocks(inspect.getdoc(typ) or ""),
             )
             for typ in sorted(
@@ -42,7 +41,7 @@ class FrameworkDocumenter(ObjectInterpretation):
                     getattr(effectful.handlers.llm.types, name)
                     for name in effectful.handlers.llm.types.__all__
                 },
-                key=_get_qualname,
+                key=inspect.formatannotation,
             )
         )
         section = PromptSection(

@@ -4,8 +4,10 @@ Python values are converted to the content blocks, tool schemas and JSON
 payloads exchanged with the model, and the model's output is converted back.
 """
 
+import abc
 import base64
 import collections.abc
+import contextvars
 import dataclasses
 import functools
 import inspect
@@ -15,13 +17,10 @@ import re
 import string
 import textwrap
 import typing
-from collections.abc import (
-    Callable,
-    Mapping,
-)
 
 import litellm
 import pydantic
+import typing_extensions
 from litellm import (
     ChatCompletionImageObject,
     ChatCompletionMessageToolCall,
@@ -36,7 +35,13 @@ from openai.types.chat import (
 from PIL import Image
 
 from effectful.handlers.llm.types import Encodable, Tool
-from effectful.internals.unification import GenericAlias, TypeEvaluator, nested_type
+from effectful.internals.unification import (
+    GenericAlias,
+    TypeEvaluator,
+    UnionType,
+    canonicalize,
+    nested_type,
+)
 from effectful.ops.types import Operation, Term
 
 type ToolCallID = str
@@ -347,6 +352,74 @@ class _NameAndTool(typing.NamedTuple):
     tool: Tool
 
 
+# TODO move upstream to unification.py
+@nested_type.register
+def _nested_type_alias(ty: typing.TypeAliasType):
+    return nested_type(ty.__value__)
+
+
+# TODO move upstream to unification.py
+def _expand_alias(
+    evaluator: TypeEvaluator, typ: typing.TypeAliasType, value: typing.Any
+):
+    """Evaluate what ``typ`` aliases, unless ``typ`` is already being expanded."""
+    if not hasattr(evaluator, "_expanding_aliases"):
+        setattr(evaluator, "_expanding_aliases", set())
+    seen: set[typing.Any] = getattr(evaluator, "_expanding_aliases")
+    if typ in seen:
+        return typ
+    seen.add(typ)
+    try:
+        return evaluator.evaluate(value)
+    finally:
+        seen.discard(typ)
+
+
+# TODO move upstream to unification.py
+@TypeEvaluator.evaluate.register  # type: ignore[attr-defined]
+def _evaluate_type_alias(self, typ: typing.TypeAliasType):
+    return _expand_alias(self, typ, typ.__value__)
+
+
+# TODO move upstream to unification.py
+@TypeEvaluator.evaluate.register  # type: ignore[attr-defined]
+def _evaluate_generic_alias(self, typ: GenericAlias):
+    origin, args = typing.get_origin(typ), typing.get_args(typ)
+    if isinstance(origin, typing.TypeAliasType):
+        return _expand_alias(self, typ, origin.__value__[args])
+    return origin[self.evaluate(args)]  # type: ignore[index]
+
+
+# TODO move upstream to unification.py
+_CANONICALIZING: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "_CANONICALIZING", default=frozenset()
+)
+
+
+# TODO move upstream to unification.py
+@dataclasses.dataclass(frozen=True)
+class _SelfReferentialAlias(Exception):
+    typ: typing.TypeAliasType
+
+
+# TODO move upstream to unification.py
+@canonicalize.register
+def _canonicalize_type_alias(typ: typing.TypeAliasType) -> typing.Any:
+    """Canonicalize what the alias names, unless it names itself."""
+    seen = _CANONICALIZING.get()
+    if typ in seen:
+        raise _SelfReferentialAlias(typ)
+    token = _CANONICALIZING.set(seen | {typ})
+    try:
+        return canonicalize(typ.__value__)
+    except _SelfReferentialAlias as e:
+        if e.typ is not typ:
+            raise  # another alias's recursion; the frame expanding it will catch
+        return typ
+    finally:
+        _CANONICALIZING.reset(token)
+
+
 class TypeToPydanticType(TypeEvaluator):
     """Substitute custom types with their Pydantic Annotated equivalents.
 
@@ -386,9 +459,94 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
     return ty
 
 
+@dataclasses.dataclass(frozen=True)
+class _NoEncoding:
+    """Refuses a *validation* JSON schema for a type that has no encoding."""
+
+    ty: typing_extensions.TypeForm
+
+    def __get_pydantic_json_schema__(self, schema, handler):
+        if handler.mode == "validation":
+            raise pydantic.errors.PydanticInvalidForJsonSchema(
+                f"`{inspect.formatannotation(self.ty)}` has no `Encodable` encoding, so a "
+                f"value of it can be sent to the model but not decoded from the "
+                f"model's output. Register one with `TypeToPydanticType.register` "
+                f"if the model needs to produce these."
+            )
+        return handler(schema)
+
+
+def _serialize_unencodable(value: typing.Any) -> str:
+    """Render a value whose type has no encoding, as text.
+
+    Whichever of `repr` and `str` the type actually defines, preferring `repr`
+    as the more precise of the two.  Falls back to the type's name only when it
+    defines neither, because `object.__repr__` prints an address, which differs
+    between two runs of the same conversation -- and this text goes into a
+    message history that is persisted and replayed.
+    """
+    cls = type(value)
+    if cls.__repr__ is not object.__repr__:
+        return repr(value)
+    if cls.__str__ is not object.__str__:
+        return str(value)
+    return f"<{inspect.formatannotation(cls)}>"
+
+
 @TypeToPydanticType.register(object)
-def _pydantic_type_base(ty: type) -> typing.Any:
-    return ty
+def _pydantic_type_base(ty: typing.Any) -> typing.Any:
+    """Pydantic's own handling, or a serialize-only encoding if it has none."""
+    try:
+        pydantic.TypeAdapter(ty)
+        return ty
+    except pydantic.errors.PydanticSchemaGenerationError:
+        return typing.Annotated[
+            ty,
+            pydantic.InstanceOf,
+            pydantic.PlainSerializer(_serialize_unencodable),
+            _NoEncoding(ty),
+            pydantic.WithJsonSchema(
+                {
+                    "type": "string",
+                    "description": inspect.formatannotation(ty),
+                },
+                mode="serialization",
+            ),
+        ]
+
+
+def _best_effort_schema(
+    annotation: typing_extensions.TypeForm,
+    mode: typing.Literal["validation", "serialization"] = "serialization",
+) -> dict[str, typing.Any]:
+    """The `Encodable` JSON schema of ``annotation``, or a fallback"""
+    try:
+        return pydantic.TypeAdapter(Encodable[annotation]).json_schema(mode=mode)  # type: ignore
+    except (pydantic.errors.PydanticUserError, TypeError):
+        return {"description": inspect.formatannotation(annotation)}
+
+
+@TypeToPydanticType.register(type)
+@TypeToPydanticType.register(abc.ABCMeta)
+@TypeToPydanticType.register(GenericAlias)
+@TypeToPydanticType.register(UnionType)
+def _pydantic_type_type(ty: typing.Any) -> typing.Any:
+    """Encode a type *value* as the JSON schema of what it denotes."""
+    return typing.Annotated[
+        ty,
+        pydantic.InstanceOf,
+        pydantic.PlainSerializer(_best_effort_schema),
+        pydantic.WithJsonSchema(
+            {
+                "type": "object",
+                "additionalProperties": True,
+                "description": (
+                    "A Python type, as the JSON schema of its encoding. Shown for "
+                    "reference; a type cannot be reconstructed from its schema."
+                ),
+            }
+        ),
+    ]
 
 
 class _UndecodableReturn:
@@ -503,7 +661,7 @@ def _pydantic_type_tuple(ty):
     def _decode(value):
         """Reshape the ``item_0``/``item_1``/... object form back into a positional
         tuple, leaving the tuple itself for Pydantic to validate elementwise."""
-        if isinstance(value, Mapping):
+        if isinstance(value, collections.abc.Mapping):
             return tuple(value[f"item_{i}"] for i in range(len(effective)))
         return value
 
@@ -582,7 +740,7 @@ class EncodedFunction(pydantic.BaseModel):
     )
 
 
-def _serialize_callable(value: Callable) -> dict:
+def _serialize_callable(value: collections.abc.Callable) -> dict:
     """Encode a callable back to its ``module_code`` form (source, or a stub).
 
     Emits a plain `EncodedFunction` -- which is exactly what the serialization JSON
@@ -624,7 +782,7 @@ def _serialize_callable(value: Callable) -> dict:
     return EncodedFunction(module_code=stub_code).model_dump()
 
 
-@TypeToPydanticType.register(Callable)
+@TypeToPydanticType.register(collections.abc.Callable)
 def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
@@ -653,32 +811,15 @@ def _validate_name_and_tool(
 ) -> _NameAndTool:
     if isinstance(value, _NameAndTool):
         return value
-    assert isinstance(info.context, Mapping), "Tool decoding requires context"
+    assert isinstance(info.context, collections.abc.Mapping), (
+        "Tool decoding requires context"
+    )
     value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
     name = value["function"]["name"]
     try:
         return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
     except KeyError as e:
         raise NotImplementedError(f"Unknown tool: {name}") from e
-
-
-def _best_effort_schema(annotation: typing.Any) -> str:
-    """The `Encodable` JSON schema of ``annotation``, as a JSON string.
-
-    Best-effort: a type whose schema cannot be generated -- one carrying a
-    `TypeVar`, say (a polymorphic tool's parameter or return) -- falls back to
-    its textual annotation, which is everything that can be said about it in a
-    description.  The fallback is what lets a polymorphic tool be *described*
-    to the model at all, where schema-shaped advertisement has nothing to offer
-    (issues #489/#505).
-    """
-    try:
-        schema = pydantic.TypeAdapter(Encodable[annotation]).json_schema(
-            mode="serialization"
-        )
-    except Exception:
-        return f"`{annotation!r}` (Python type annotation; no JSON schema)"
-    return json.dumps(schema)
 
 
 def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
@@ -698,13 +839,14 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     description += f"\n\n{textwrap.dedent(tool.__doc__ or '')}"
     if param_schemas and tool.__signature__.parameters:
         rows = "\n".join(
-            f"- `{param_name}`: {_best_effort_schema(param.annotation)}"
+            f"- `{param_name}`: "
+            f"{json.dumps(_best_effort_schema(param.annotation, 'validation'))}"
             for param_name, param in tool.__signature__.parameters.items()
         )
         description += f"\n\nAnnotated JSON schema of each parameter type:\n{rows}"
     description += (
         f"\n\nAnnotated JSON schema of return type: "
-        f"{_best_effort_schema(tool.__signature__.return_annotation)}"
+        f"{json.dumps(_best_effort_schema(tool.__signature__.return_annotation))}"
     )
     return description
 

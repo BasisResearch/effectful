@@ -12,7 +12,16 @@ import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import CodeType
-from typing import Annotated, Any, Literal, NamedTuple, TypedDict, TypeVar, Union
+from typing import (
+    Annotated,
+    Any,
+    Literal,
+    NamedTuple,
+    TypeAlias,
+    TypedDict,
+    TypeVar,
+    Union,
+)
 
 import litellm
 import pydantic
@@ -136,6 +145,43 @@ class _AddressModel(pydantic.BaseModel):
 class _PersonWithAddressModel(pydantic.BaseModel):
     name: str
     address: _AddressModel
+
+
+# ---------------------------------------------------------------------------
+# Module-level type aliases
+#
+# An alias is meant to be *transparent*: writing one in a signature must encode
+# exactly as writing the type it stands for.  Covered over the shapes with a
+# registered encoding of their own (tuple, complex, Image), since those are the
+# ones an alias could silently bypass -- Pydantic would still handle the type
+# natively, so the failure is a wrong wire format rather than an error.
+# ---------------------------------------------------------------------------
+
+type _PairAlias = tuple[int, str]
+type _ComplexAlias = complex
+type _ImageAlias = Image.Image
+type _PointAlias = _Point
+type _PairsAlias = list[_PairAlias]
+
+# The pre-PEP-695 spelling, which is a plain assignment: indistinguishable from
+# the type itself, and here to keep it that way. (`UP040` wants the `type`
+# keyword, which is the spelling *above* -- the old one is the point here.)
+_LegacyPairAlias: TypeAlias = tuple[int, str]  # noqa: UP040
+
+# A *generic* alias, whose encoding is reached only once it is subscripted.
+type _GenPairAlias[T] = tuple[T, T]
+type _GenImageAlias[T] = list[tuple[T, Image.Image]]
+
+# Recursive aliases, which cannot be expanded to a finite type expression. The
+# generic one is the reason expansion needs a guard rather than a special case:
+# Pydantic resolves it natively, so it works until something expands it eagerly.
+type _RecursiveAlias = int | list[_RecursiveAlias]
+type _RecursiveGenAlias[T] = T | list[_RecursiveGenAlias[T]]
+
+# Stands in for `Kernel` in `docs/source/llm_examples/optimization/kernels.py`:
+# an alias that is in a skill's lexical *scope*, so the alias object itself
+# reaches the encoding as a value.
+type _KernelAlias = Callable[[list[float]], list[float]]
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +379,25 @@ ROUNDTRIP_CASES = [
     pytest.param(tuple[Literal["x", "y"], int], ("x", 5), None, id="tuple-literal-int"),
     pytest.param(Literal["a", "b"] | None, "a", None, id="literal-or-none-some"),
     pytest.param(Literal["a", "b"] | None, None, None, id="literal-or-none-none"),
+    # --- type aliases ---
+    # Each pairs with an entry above for the type it aliases; the schemas are
+    # asserted equal in `test_type_alias_is_transparent`.
+    pytest.param(_PairAlias, (1, "hello"), None, id="alias-tuple"),
+    pytest.param(_ComplexAlias, 3 + 4j, None, id="alias-complex"),
+    pytest.param(_PointAlias, _Point(10, 20), None, id="alias-dataclass"),
+    pytest.param(
+        _PairsAlias, [(1, "a"), (2, "b")], None, id="alias-list-of-alias"
+    ),  # an alias reached through a generic, not at the top level
+    pytest.param(_LegacyPairAlias, (1, "hello"), None, id="alias-legacy-tuple"),
+    pytest.param(_GenPairAlias[int], (1, 2), None, id="alias-generic-subscripted"),
+    pytest.param(
+        Annotated[_PairAlias, "meta"], (1, "hello"), None, id="alias-annotated"
+    ),
+    # id carries "-img" so the response_format xfails above pick it up, as they
+    # do for every other image case.
+    pytest.param(
+        _ImageAlias, _make_png_image("RGB", (10, 10), "red"), None, id="alias-img"
+    ),
     # --- list ---
     pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
     pytest.param(list[str], ["hello", "world"], None, id="list-str"),
@@ -595,6 +660,9 @@ _ANNOTATABLE_TYPES = [
     pytest.param(_Coord, id="namedtuple"),
     pytest.param(Callable[[int], int], id="callable"),
     pytest.param(Tool, id="tool"),
+    # An alias is replaced wholesale by the type it names, so a caller's
+    # metadata has to survive that substitution too.
+    pytest.param(_PairAlias, id="type-alias"),
     # A free type variable: a value here, but mypy reads the subscript as a
     # type expression and wants it bound.
     pytest.param(Sequence[_T], id="generic"),  # type: ignore[valid-type]
@@ -632,19 +700,25 @@ def test_metadata_does_not_change_the_encoding_itself(ty):
 def test_metadata_does_not_make_an_unencodable_type_encodable():
     """Orthogonality in the other direction: metadata is not a way in.
 
-    A type the registry cannot encode is equally unencodable annotated, and
+    A type the registry cannot encode is equally undecodable annotated, and
     fails the same way -- so attaching a contract never turns a clear schema
     error into something subtler.
+
+    Stated on the *validation* schema rather than on building the adapter,
+    since an unencodable type is still serializable (see
+    `test_unencodable_type_serializes_but_does_not_decode`); it is being asked
+    for as model *output* that has nowhere to go.
     """
 
     class Widget:
         pass
 
     marker = pydantic.AfterValidator(lambda v: v)
-    with pytest.raises(pydantic.errors.PydanticSchemaGenerationError):
-        pydantic.TypeAdapter(Encodable[Widget])
-    with pytest.raises(pydantic.errors.PydanticSchemaGenerationError):
-        pydantic.TypeAdapter(Encodable[Annotated[Widget, marker]])
+    for ty in (Widget, Annotated[Widget, marker]):
+        with pytest.raises(
+            pydantic.errors.PydanticInvalidForJsonSchema, match="no `Encodable`"
+        ):
+            pydantic.TypeAdapter(Encodable[ty]).json_schema()
 
 
 # ============================================================================
@@ -789,6 +863,305 @@ def test_dataclass_with_encodable_tuple_field_626():
     decoded = adapter.validate_python(encoded)
     assert decoded == val
     assert "prefixItems" not in json.dumps(adapter.json_schema())
+
+
+# ============================================================================
+# Type aliases
+#
+# An alias names a type; it does not make a new one. So `Encodable` must see
+# through it -- to the *same* schema, not merely a workable one. Anything less
+# is a trap that only springs on the types with a registered encoding: those
+# are exactly the ones Pydantic would otherwise handle natively and wrongly
+# (the `prefixItems` tuple schema OpenAI's strict mode rejects, #626), so an
+# alias that stops the substitution produces a bad advertisement rather than
+# an error, and nothing complains until a provider does.
+# ============================================================================
+
+_ALIAS_TRANSPARENCY_CASES = [
+    pytest.param(_PairAlias, tuple[int, str], id="tuple"),
+    pytest.param(_ComplexAlias, complex, id="complex"),
+    pytest.param(_ImageAlias, Image.Image, id="image"),
+    pytest.param(_PointAlias, _Point, id="dataclass"),
+    pytest.param(_PairsAlias, list[tuple[int, str]], id="list-of-alias"),
+    pytest.param(_LegacyPairAlias, tuple[int, str], id="legacy"),
+    pytest.param(_KernelAlias, Callable[[list[float]], list[float]], id="callable"),
+    pytest.param(
+        Annotated[_PairAlias, "meta"],
+        Annotated[tuple[int, str], "meta"],
+        id="annotated",
+    ),
+    # The alias under a generic it did not itself introduce.
+    pytest.param(list[_PairAlias], list[tuple[int, str]], id="under-generic"),
+    # A generic alias, at the point it is applied.
+    pytest.param(_GenPairAlias[int], tuple[int, int], id="generic-subscripted"),
+    pytest.param(_GenImageAlias[str], list[tuple[str, Image.Image]], id="generic-leaf"),
+]
+
+
+@pytest.mark.parametrize("alias,target", _ALIAS_TRANSPARENCY_CASES)
+@pytest.mark.parametrize("mode", ["validation", "serialization"])
+def test_type_alias_is_transparent(alias, target, mode):
+    """`Encodable[Alias]` and `Encodable[<what it aliases>]` are the same type.
+
+    Stated on the schema rather than on a roundtrip because a roundtrip passes
+    either way: Pydantic can validate a tuple whether or not the encoding was
+    applied, and it is the shape shown to the model that differs.
+    """
+    assert pydantic.TypeAdapter(Encodable[alias]).json_schema(
+        mode=mode
+    ) == pydantic.TypeAdapter(Encodable[target]).json_schema(mode=mode)
+
+
+def test_subscripted_generic_alias_keeps_the_tuple_encoding():
+    """`type GenPair[T] = tuple[T, T]` subscripted still encodes as a tuple.
+
+    The unsubscripted alias does, so this is not about generics being
+    unsupported: the same alias loses its encoding by being *applied*.
+    """
+    schema = pydantic.TypeAdapter(Encodable[_GenPairAlias[int]]).json_schema()
+    assert "prefixItems" not in json.dumps(schema)
+
+
+def test_subscripted_generic_alias_reaches_a_registered_leaf():
+    """A registered leaf encoding survives being reached through a subscripted
+    generic alias -- `Image.Image` has no schema at all without it."""
+    pydantic.TypeAdapter(Encodable[_GenImageAlias[str]]).json_schema()
+
+
+@pytest.mark.parametrize(
+    "ty", [_RecursiveAlias, _RecursiveGenAlias[int]], ids=["plain", "generic"]
+)
+def test_recursive_alias_does_not_diverge(ty):
+    """A self-referential alias is left for Pydantic, which resolves it.
+
+    The generic case is the one that constrains the fix: it *already* worked,
+    by being passed through unexpanded, so expanding subscripted aliases had to
+    come with a guard rather than replace that pass-through.
+    """
+    schema = json.dumps(pydantic.TypeAdapter(Encodable[ty]).json_schema())
+    assert "$ref" in schema, "recursion should resolve to a reference, not inline"
+
+
+# ---------------------------------------------------------------------------
+# An alias as a *value*
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="The alias now reaches the type-expression encoding and gets a real "
+    "schema, but `Kernel` aliases a *callable*, whose schema is `EncodedFunction` "
+    "-- correct, and signature-free, as every callable schema here is. So the "
+    "encoding says 'a function' without saying `list[float]`. An alias to any "
+    "other shape (see the tuple case) comes out fully described.",
+)
+def test_type_alias_value_has_an_encoding():
+    """A type alias in a skill's lexical scope can be shown to the model.
+
+    This is the failure in the ``optimization`` example, whose ``Kernel`` is a
+    PEP 695 alias *and* the declared return type of the skill: an agent asked
+    to produce one reasonably asks what it is, and reads the name. The reader
+    (`read_lexical_variable`) is declared ``-> Any``, so there is no annotation
+    to encode the result against and `call_tool` reconstructs one from the
+    value -- the two lines below, which are what it runs. It is unguarded, so
+    the alias takes down the tool call rather than degrading, and the retries
+    spend the step.
+
+    A `TypeAliasType` is not a type, so it arrives as a value; the value that
+    would answer the question is the type it names.
+    """
+    typ = nested_type(_KernelAlias).value
+    schema = pydantic.TypeAdapter(Encodable[typ]).json_schema()
+    assert schema
+
+    encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
+        _KernelAlias, mode="json", context={}
+    )
+    # Whatever shape it takes, it has to answer the question that made the
+    # agent read the name: what does this alias stand for?
+    assert "list[float]" in json.dumps(encoded)
+
+
+# ---------------------------------------------------------------------------
+# Types as values, generally
+# ---------------------------------------------------------------------------
+
+
+class _PlainClass:
+    """A class whose ``__init__`` is unannotated, so `nested_type` reports it as
+    `type` rather than reconstructing a `Callable` signature from it -- see
+    `test_dataclass_value_routes_to_the_callable_encoding` for the other side."""
+
+    def __init__(self, n):
+        self.n = n
+
+
+# (type expression as a value, the schema its encoding should produce)
+_TYPE_VALUE_CASES = [
+    pytest.param(int, {"type": "integer"}, id="builtin-class"),
+    pytest.param(
+        list[int], {"type": "array", "items": {"type": "integer"}}, id="generic-alias"
+    ),
+    pytest.param(
+        int | str, {"anyOf": [{"type": "integer"}, {"type": "string"}]}, id="union"
+    ),
+    pytest.param(Sequence, {"type": "array", "items": {}}, id="abc"),
+    pytest.param(Any, {}, id="any"),
+]
+
+
+@pytest.mark.parametrize("value,expected", _TYPE_VALUE_CASES)
+def test_type_value_encodes_as_the_schema_of_what_it_denotes(value, expected):
+    """A type expression handed over as a value encodes as its `Encodable` schema.
+
+    The schema is the *object*, not a rendering of one, so it nests into the
+    surrounding JSON instead of arriving escaped inside a string.
+
+    Each spelling reaches the encoding as a different class -- a class and an
+    ABC through `type`, a subscripted generic through `types.GenericAlias`, a
+    union through `types.UnionType` -- so this is one law over the family
+    rather than a property of any one of them.
+    """
+    typ = nested_type(value).value
+    encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
+        value, mode="json", context={}
+    )
+    assert isinstance(encoded, dict), encoded
+    assert encoded == expected
+
+
+def test_type_value_schema_nests_rather_than_escaping():
+    """The reason the serialized value is an object: `to_content_blocks` renders
+    a nested object as readable JSON, where a string of JSON arrives escaped
+    inside another string."""
+    typ = nested_type(int).value
+    encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
+        int, mode="json", context={}
+    )
+    text = "".join(b["text"] for b in to_content_blocks(encoded))
+    assert text == '{"type": "integer"}'
+    assert "\\" not in text
+
+
+def test_class_value_is_not_encoded_as_a_function():
+    """Regression: a class is callable, so `type` is a virtual subclass of
+    `Callable` and singledispatch routed a class-as-value to the callable
+    encoding -- which recovered `int`'s *docstring* and emitted a fabricated
+    ``def int(...)``. Nothing raised; the model was simply told something
+    false about every class in its lexical scope.
+    """
+    typ = nested_type(int).value
+    encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
+        int, mode="json", context={}
+    )
+    assert "module_code" not in encoded
+    assert "def int" not in json.dumps(encoded)
+
+
+def test_dataclass_value_routes_to_the_callable_encoding():
+    """A known asymmetry, recorded rather than claimed as desirable.
+
+    `nested_type` reports a class as `type` *unless* it can reconstruct a full
+    `Callable` signature from ``__init__``, which it can for a dataclass. So a
+    dataclass handed over as a value encodes as its source -- like `_LexicalEnum`
+    above, and informative in its own right -- while `int` encodes as a type.
+    The two are not the same encoding, and evening them out means changing
+    `nested_type` rather than anything here.
+    """
+    typ = nested_type(_Point).value
+    encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
+        _Point, mode="json", context={}
+    )
+    assert "class _Point" in encoded["module_code"]
+
+
+@pytest.mark.parametrize("value", [int, list[int], int | str], ids=str)
+def test_type_value_decodes_a_real_type_but_not_its_schema(value):
+    """Validation accepts the type itself and refuses the rendering of it.
+
+    The advertised schema is an object, because a reader for one of these has
+    to be advertisable at all -- but the schema is what the model *reads*, not
+    something it can hand back and have reconstructed.
+    """
+    dec = pydantic.TypeAdapter(Encodable[nested_type(value).value])
+    assert dec.validate_python(value) is value
+    with pytest.raises(pydantic.ValidationError):
+        dec.validate_python(dec.dump_python(value, mode="json", context={}))
+
+
+def test_alias_value_does_not_satisfy_its_own_inferred_type():
+    """The cost of resolving aliases in `nested_type`, recorded.
+
+    `nested_type` reports an alias as the type of what it *aliases*, which is
+    what puts a type-expression encoding in reach of the value. The alias
+    object is not an instance of that, though, so `Encodable[nested_type(v)]`
+    no longer validates ``v`` -- the one place the decoding-is-idempotent law
+    does not hold.
+
+    It costs nothing on the paths that matter: every `nested_type` call site is
+    encoding-only, and serializing is unaffected. It would matter to a caller
+    that round-trips an alias through validation, and there is none.
+    """
+    dec = pydantic.TypeAdapter(Encodable[nested_type(_KernelAlias).value])
+    assert dec.dump_python(_KernelAlias, mode="json", context={})
+    with pytest.raises(pydantic.ValidationError):
+        dec.validate_python(_KernelAlias)
+
+
+# ---------------------------------------------------------------------------
+# The base case: a type with no encoding at all
+# ---------------------------------------------------------------------------
+
+
+class _Widget:
+    def __init__(self, n):
+        self.n = n
+
+
+class _WidgetWithRepr(_Widget):
+    def __repr__(self):
+        return f"_WidgetWithRepr(n={self.n})"
+
+
+def test_unencodable_type_serializes_but_does_not_decode():
+    """A value the registry cannot encode is still *showable*.
+
+    The two directions carry different obligations. Serializing is a
+    degradation -- worst case the model reads a `repr` -- and it happens on
+    paths that never asked the model for anything: a tool result, a value
+    spliced into a prompt, a trace. Decoding is not, because nothing rebuilds
+    an arbitrary object from that text, so the validation schema refuses
+    instead of promising a string.
+    """
+    adapter = pydantic.TypeAdapter(Encodable[_WidgetWithRepr])
+    assert (
+        adapter.dump_python(_WidgetWithRepr(1), mode="json") == "_WidgetWithRepr(n=1)"
+    )
+    assert adapter.json_schema(mode="serialization")["type"] == "string"
+    with pytest.raises(
+        pydantic.errors.PydanticInvalidForJsonSchema, match="_WidgetWithRepr"
+    ):
+        adapter.json_schema()
+
+
+def test_unencodable_value_rendering_is_stable_across_runs():
+    """The default `object.__repr__` embeds an address, and this text goes into
+    a message history that is persisted and replayed -- so it is not used."""
+    encoded = pydantic.TypeAdapter(Encodable[_Widget]).dump_python(
+        _Widget(1), mode="json"
+    )
+    assert "0x" not in encoded
+    assert encoded == pydantic.TypeAdapter(Encodable[_Widget]).dump_python(
+        _Widget(2), mode="json"
+    )
+
+
+def test_base_case_leaves_types_pydantic_already_handles_alone():
+    """The fallback is for what Pydantic *cannot* do, not a replacement for it:
+    a dataclass, a model, a builtin all keep their own schema."""
+    for ty in (_Point, _PointModel, int, list[int]):
+        schema = pydantic.TypeAdapter(Encodable[ty]).json_schema()
+        assert schema.get("type") != "string" or ty is str, ty
 
 
 # ============================================================================

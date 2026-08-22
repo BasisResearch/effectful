@@ -16,6 +16,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.serialization import (
     PromptSection,
+    _best_effort_schema,
     _NameAndTool,
     to_content_blocks,
 )
@@ -174,17 +175,6 @@ class LexicalToolExtractor(ObjectInterpretation):
         return fwd(messages, response_type, env, offered)
 
 
-def _get_qualname(cls) -> str:
-    """Module-qualified name of a type, dropping the ``builtins`` prefix."""
-    if not isinstance(cls, type):
-        return str(cls)
-    module = getattr(cls, "__module__", None)
-    name = (
-        getattr(cls, "__qualname__", None) or getattr(cls, "__name__", None) or str(cls)
-    )
-    return name if module in (None, "builtins") else f"{module}.{name}"
-
-
 def _vars_section(
     env: collections.abc.Mapping[str, typing.Any],
 ) -> PromptSection | None:
@@ -194,7 +184,7 @@ def _vars_section(
     standard builtin (which the model knows).
     """
     rows = {
-        name: _get_qualname(type(value))
+        name: inspect.formatannotation(type(value))
         for name, value in env.items()
         if not (name.startswith("__") and name.endswith("__"))
         and value not in vars(builtins).values()
@@ -234,19 +224,6 @@ def _imports_section(
     )
 
 
-def _arg_schema(annotation: typing.Any) -> str:
-    """The `Encodable` JSON schema of an argument annotation, best-effort.
-
-    A parameter type with no schema -- a TypeVar-carrying one, a ``type[X]``
-    -- degrades to its textual annotation instead of breaking the whole system
-    prompt of every skill that has it in a signature.
-    """
-    try:
-        return json.dumps(pydantic.TypeAdapter(Encodable[annotation]).json_schema())
-    except Exception:
-        return f"(no JSON schema; a Python type annotation) {annotation!r}"
-
-
 def _skill_section(skill: Skill) -> PromptSection:
     """Spec for a single `Skill`: header, prompt, arg schemas.
 
@@ -258,8 +235,8 @@ def _skill_section(skill: Skill) -> PromptSection:
     if prompt:
         parts.append(prompt)
     args = [
-        f"- `{name}` — `{_get_qualname(p.annotation)}`\n\n"
-        f"    ```json\n    {_arg_schema(p.annotation)}\n    ```"
+        f"- `{name}` — `{inspect.formatannotation(p.annotation)}`\n\n"
+        f"    ```json\n    {json.dumps(_best_effort_schema(p.annotation, 'validation'))}\n    ```"
         for name, p in skill.__signature__.parameters.items()
     ]
     if args:
@@ -282,7 +259,7 @@ def _agent_section(skill: Skill) -> PromptSection:
     )
     if isinstance(inst, Agent):
         agent_doc = inspect.getdoc(type(inst)) or ""
-        title = f"Agent `{_get_qualname(type(inst))}`"
+        title = f"Agent `{inspect.formatannotation(type(inst))}`"
         skills = set()
         for cls in type(inst).__mro__:
             for attr in vars(cls):
