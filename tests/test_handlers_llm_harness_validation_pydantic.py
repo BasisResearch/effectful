@@ -1,7 +1,7 @@
 """Tests for the contracts a caller writes into a `Skill`'s own annotations.
 
 A parameter annotated with pydantic metadata carries a *pre-condition*, run by
-`PydanticContractChecker` before the model is asked anything; a return
+`PydanticSkillArgValidator` before the model is asked anything; a return
 annotation carries a *post-condition*, run by `call_assistant` as it decodes
 the answer, where a rejection becomes retry feedback. Both are the caller's,
 and neither is part of the encoding -- which is what these tests are about: the
@@ -46,7 +46,7 @@ from effectful.handlers.llm.harness.synthesis.toolcall import (
     MixedToolCaller,
 )
 from effectful.handlers.llm.harness.validation.pydantic import (
-    PydanticContractChecker,
+    PydanticSkillArgValidator,
 )
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import fwd, handler
@@ -279,7 +279,7 @@ def _run(call, responses, *extra_handlers, caller=MixedToolCaller):
         *(handler(h) for h in extra_handlers),
         # Last of the `call_agent` handlers, so it intercepts first -- the order
         # `harness` installs it in, after `FinalBodySynthesizer`.
-        handler(PydanticContractChecker()),
+        handler(PydanticSkillArgValidator()),
         handler(TyTypeChecker()),
         handler(BuiltinExecutor()),
         handler(model),
@@ -357,7 +357,7 @@ def test_no_model_call_is_made_when_a_precondition_fails(mod):
         handler(AgentLoop()),
         handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
-        handler(PydanticContractChecker()),
+        handler(PydanticSkillArgValidator()),
         handler(model),
     ):
         with pytest.raises(pydantic.ValidationError):

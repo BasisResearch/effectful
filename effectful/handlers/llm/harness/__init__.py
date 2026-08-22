@@ -39,7 +39,7 @@ from effectful.handlers.llm.harness.synthesis.toolcall import (
     MixedToolCaller,
 )
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
-from effectful.handlers.llm.harness.validation.pydantic import PydanticContractChecker
+from effectful.handlers.llm.harness.validation.pydantic import PydanticSkillArgValidator
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import Interpretation, coproduct
 
@@ -82,8 +82,8 @@ def harness(
        (`EVAL_PROVIDERS`) and `StatefulReplSynthesizer` -- check and run
        model-authored Python.
     7. `FinalBodySynthesizer` -- synthesize a function and call it.
-    7b. `PydanticContractChecker` -- enforce the pre-conditions a caller wrote
-        into a `Skill`'s parameter annotations (if ``check_contracts``).
+    7b. `PydanticSkillArgValidator` -- enforce the pre-conditions a caller
+        wrote into a `Skill`'s parameter annotations (if ``check_contracts``).
     8. `TenacityRetryer` -- retry malformed/failing model output.
     9. `LexicalReaders` -- expose lexically-scoped tools to the model.
     10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
@@ -120,7 +120,7 @@ def harness(
             warning). ``"mixed"`` and ``"code"`` require an eval provider;
             with ``eval_provider="none"`` the stack falls back to ``"json"``
             with a warning.
-        check_contracts: Install `PydanticContractChecker`, so a `Skill`'s
+        check_contracts: Install `PydanticSkillArgValidator`, so a `Skill`'s
             arguments are validated against the pydantic metadata its parameter
             annotations carry. On by default, which makes such an annotation
             mean the same thing whether a person or a model supplied the
@@ -172,7 +172,7 @@ def harness(
         # After `FinalBodySynthesizer`, so it intercepts `call_agent` before
         # that handler does: a synthesized body is then applied to arguments a
         # pre-condition has already accepted (and possibly normalized).
-        h = coproduct(h, PydanticContractChecker())
+        h = coproduct(h, PydanticSkillArgValidator())
     h = coproduct(h, TenacityRetryer(stop=tenacity.stop_after_attempt(num_retries)))
     if persist_db is not None:
         h = coproduct(h, SQLitePersister(pathlib.Path(persist_db)))

@@ -12,7 +12,7 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 
-class PydanticContractChecker(ObjectInterpretation):
+class PydanticSkillArgValidator(ObjectInterpretation):
     """Enforces the pre-conditions a caller writes into a `Skill`'s parameters.
 
     A parameter annotated with pydantic metadata -- a
@@ -23,13 +23,28 @@ class PydanticContractChecker(ObjectInterpretation):
         def select_seat(user_input: Annotated[str, Predicate(is_seat_request)]) -> Seat:
             \"""Extract the seat from {user_input}.\"""
 
-    Nothing in Python consults that annotation, so without this handler the
-    contract holds only when a *model* supplies the argument (the tool-call
-    decoder applies the annotation as it decodes) and silently lapses when a
-    person calls the skill directly. Installed, it holds either way: the
-    argument is validated before the prompt is built, and a violation raises
+    What this handler changes is the *top-level* call -- a skill invoked from
+    Python, by a caller who wrote the annotation and can reasonably expect it
+    to mean something. Nothing in Python consults an annotation, so without
+    this handler the contract silently lapses there. Installed, the argument is
+    validated before the prompt is built, and a violation raises
     `pydantic.ValidationError` -- a `ValueError`, so ordinary handling still
     applies -- rather than reaching the model at all.
+
+    A skill the *model* calls as a tool is validated with or without this
+    handler: `call_assistant` decodes each argument through `Encodable` of the
+    parameter's own annotation, so the metadata is applied as the call is
+    decoded, before the skill is ever entered. Two consequences follow.
+
+    * For a model-supplied argument the validation happens twice -- once at
+      decode, once here -- so a pre-condition that costs something (an
+      LLM-backed predicate, say) pays it twice.
+    * The exception is the expression pathway
+      (`~effectful.handlers.llm.harness.synthesis.toolcall.ExpressionToolCaller`),
+      which evaluates a Python call expression instead of decoding JSON
+      arguments and does not apply the parameter's metadata. There this
+      handler is the only thing enforcing the contract, which is why it is
+      installed for every tool-calling mode rather than only the JSON one.
 
     Only a parameter carrying metadata of its own is touched, so a skill that
     declares no contracts is unaffected: nothing is validated, and no argument
