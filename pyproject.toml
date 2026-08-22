@@ -55,6 +55,7 @@ llm = [
   "ty",
   "pillow",
   "pydantic",
+  "annotated-types",
   "typing_extensions",
   "restrictedpython>=8.1",
   "matplotlib>=3.11.1",

@@ -142,6 +142,15 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         ),
     )
     parser.add_argument(
+        "--no-check-contracts",
+        dest="check_contracts",
+        action="store_false",
+        help=(
+            "Do not validate a Skill's arguments against the pydantic metadata "
+            "on its parameter annotations"
+        ),
+    )
+    parser.add_argument(
         "--pdb",
         action="store_true",
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
@@ -229,6 +238,7 @@ def main(argv: list[str] | None = None) -> None:
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
         tool_calling=ns.tool_calling,
+        check_contracts=ns.check_contracts,
         **_provider_config(ns),
     )
     with handler(h):

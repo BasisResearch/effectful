@@ -39,6 +39,7 @@ from effectful.handlers.llm.harness.synthesis.toolcall import (
     MixedToolCaller,
 )
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+from effectful.handlers.llm.harness.validation.pydantic import PydanticContractChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import Interpretation, coproduct
 
@@ -53,6 +54,7 @@ def harness(
     eval_provider: typing.Literal["builtin", "restricted", "none"] = "builtin",
     type_checker: typing.Literal["mypy", "ty", "none"] = "ty",
     tool_calling: typing.Literal["mixed", "code", "json"] = "mixed",
+    check_contracts: bool = True,
     **provider_config,
 ) -> Interpretation:
     """
@@ -80,6 +82,8 @@ def harness(
        (`EVAL_PROVIDERS`) and `StatefulReplSynthesizer` -- check and run
        model-authored Python.
     7. `FinalBodySynthesizer` -- synthesize a function and call it.
+    7b. `PydanticContractChecker` -- enforce the pre-conditions a caller wrote
+        into a `Skill`'s parameter annotations (if ``check_contracts``).
     8. `TenacityRetryer` -- retry malformed/failing model output.
     9. `LexicalReaders` -- expose lexically-scoped tools to the model.
     10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
@@ -116,6 +120,14 @@ def harness(
             warning). ``"mixed"`` and ``"code"`` require an eval provider;
             with ``eval_provider="none"`` the stack falls back to ``"json"``
             with a warning.
+        check_contracts: Install `PydanticContractChecker`, so a `Skill`'s
+            arguments are validated against the pydantic metadata its parameter
+            annotations carry. On by default, which makes such an annotation
+            mean the same thing whether a person or a model supplied the
+            argument. Turning it off leaves a direct Python call unchecked; a
+            model-supplied argument is still validated as the tool call is
+            decoded, and metadata on a *return* annotation is enforced by the
+            decoder either way.
     """
     if tool_calling != "json" and eval_provider == "none":
         warnings.warn(
@@ -156,6 +168,11 @@ def harness(
 
     h = coproduct(h, StatefulReplSynthesizer())
     h = coproduct(h, FinalBodySynthesizer())
+    if check_contracts:
+        # After `FinalBodySynthesizer`, so it intercepts `call_agent` before
+        # that handler does: a synthesized body is then applied to arguments a
+        # pre-condition has already accepted (and possibly normalized).
+        h = coproduct(h, PydanticContractChecker())
     h = coproduct(h, TenacityRetryer(stop=tenacity.stop_after_attempt(num_retries)))
     if persist_db is not None:
         h = coproduct(h, SQLitePersister(pathlib.Path(persist_db)))

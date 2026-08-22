@@ -1,0 +1,85 @@
+import collections.abc
+import functools
+import inspect
+import typing
+
+import pydantic
+
+from effectful.handlers.llm.harness.hooks import call_agent
+from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
+from effectful.handlers.llm.types import Encodable, Skill
+from effectful.ops.semantics import fwd
+from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+class PydanticContractChecker(ObjectInterpretation):
+    """Enforces the pre-conditions a caller writes into a `Skill`'s parameters.
+
+    A parameter annotated with pydantic metadata -- a
+    `pydantic.AfterValidator`, an `annotated_types` constraint, a
+    `pydantic.Field` -- states a contract its argument must satisfy::
+
+        @Skill.define
+        def select_seat(user_input: Annotated[str, Predicate(is_seat_request)]) -> Seat:
+            \"""Extract the seat from {user_input}.\"""
+
+    Nothing in Python consults that annotation, so without this handler the
+    contract holds only when a *model* supplies the argument (the tool-call
+    decoder applies the annotation as it decodes) and silently lapses when a
+    person calls the skill directly. Installed, it holds either way: the
+    argument is validated before the prompt is built, and a violation raises
+    `pydantic.ValidationError` -- a `ValueError`, so ordinary handling still
+    applies -- rather than reaching the model at all.
+
+    Only a parameter carrying metadata of its own is touched, so a skill that
+    declares no contracts is unaffected: nothing is validated, and no argument
+    is round-tripped through the encoding (which would copy it). The validated
+    value replaces the bound one, so a validator that *normalizes* is applied
+    rather than consulted and discarded.
+
+    Validation runs under the call environment, so a pre-condition may be
+    stated relative to the rest of the call -- ``info.context`` holds the other
+    arguments and the skill's lexical scope, exactly as it does when the
+    answer is decoded on the way back.
+
+    ## Post-conditions need no handler
+
+    The mirror image -- metadata on the *return* annotation -- is enforced by
+    the decoder itself, since `call_assistant` decodes an answer through
+    `Encodable` of the skill's declared return type and the caller's metadata
+    rides along. A rejection there is a decoding failure, which
+    `~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer` feeds
+    back to the model as the instruction for its next attempt. So this handler
+    governs the way in; the way out is contracted whether or not it is
+    installed.
+    """
+
+    @implements(call_agent)
+    def _call_agent[**P, T](
+        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        bound_args = skill.__signature__.bind(*args, **kwargs)
+        bound_args.apply_defaults()
+        annotated = {
+            name: param
+            for name, param in skill.__signature__.parameters.items()
+            if name in bound_args.arguments
+            and hasattr(param.annotation, "__metadata__")
+        }
+        env: collections.abc.Mapping[str, typing.Any] = skill.__context__.new_child(
+            bound_args.arguments | {_TYPE_CHECK_ANCHOR_KEY: skill}
+        )
+        for name, param in annotated.items():
+            encoding: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                Encodable[param.annotation]  # type: ignore[name-defined]
+            )
+            check = functools.partial(encoding.validate_python, context=env)
+            value = bound_args.arguments[name]
+            if param.kind is inspect.Parameter.VAR_POSITIONAL:
+                bound_args.arguments[name] = tuple(check(v) for v in value)
+            elif param.kind is inspect.Parameter.VAR_KEYWORD:
+                bound_args.arguments[name] = {k: check(v) for k, v in value.items()}
+            else:
+                bound_args.arguments[name] = check(value)
+
+        return fwd(skill, *bound_args.args, **bound_args.kwargs)

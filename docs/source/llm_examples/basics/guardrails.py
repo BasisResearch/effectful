@@ -1,49 +1,41 @@
 """Travel advisor with input guardrails.
 
 Demonstrates:
-- Using one skill to validate/guard input before passing it to another
-- Simple control-flow gating based on LLM classification
+- A pre-condition on a skill's parameter: one skill's judgement, attached to
+  the annotation as ``annotated_types.Predicate`` metadata, guarding another
+  skill's input wherever that input comes from
+- A post-condition on the return: a ``pydantic.AfterValidator`` whose message
+  is fed back to the model, which then answers again
 """
 
 import argparse
+import typing
+
+import annotated_types
+import pydantic
 
 from effectful.handlers.llm import Skill
 
-# ---------------------------------------------------------------------------
-# Skills
-# ---------------------------------------------------------------------------
+
+@Skill.define
+def is_safe_query(user_query: str) -> bool:
+    """
+    Determine whether the user's query is purely related to travel advice: {user_query}
+    """
+
+
+def is_concise_answer(answer: str) -> bool:
+    """Determine whether the answer is concise (<100 words)."""
+    return len(answer.split()) < 100
 
 
 @Skill.define
-def travel_query(user_query: str) -> str:
+def travel_query(
+    user_query: typing.Annotated[str, annotated_types.Predicate(is_safe_query)],
+) -> typing.Annotated[str, annotated_types.Predicate(is_concise_answer)]:
     """
     Produce a concise (<100 word) answer to: {user_query}
     """
-
-
-# ---------------------------------------------------------------------------
-# Guarded agent
-# ---------------------------------------------------------------------------
-
-
-def answer_travel_query(user_query: str) -> str:
-    """Only answer travel-related queries; reject everything else."""
-
-    @Skill.define
-    def is_safe_query(user_query: str) -> bool:
-        """
-        Determine whether the user's query is purely related to travel advice: {user_query}
-        """
-
-    if is_safe_query(user_query):
-        return travel_query(user_query)
-    else:
-        return f"Rejected: '{user_query}' is not related to travel advice."
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 
 def main() -> None:
@@ -61,7 +53,13 @@ def main() -> None:
     args = parser.parse_args()
 
     for query in args.queries:
-        print(answer_travel_query(query))
+        print(f"Query: {query}")
+        try:
+            print("Answer:", travel_query(query))
+        except pydantic.ValidationError:
+            # The guard reports only that its predicate failed, so the message
+            # a person sees is the caller's to write.
+            print(f"Rejected: '{query}' is not related to travel advice.")
 
 
 if __name__ == "__main__":

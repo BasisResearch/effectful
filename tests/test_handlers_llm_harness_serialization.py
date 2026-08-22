@@ -9,10 +9,10 @@ import inspect
 import io
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import CodeType
-from typing import Annotated, Any, Literal, NamedTuple, TypedDict, Union
+from typing import Annotated, Any, Literal, NamedTuple, TypedDict, TypeVar, Union
 
 import litellm
 import pydantic
@@ -584,6 +584,67 @@ def test_annotated_metadata_reaches_pydantic():
     assert marker in Encodable[Annotated[int, marker]].__metadata__
     with pytest.raises(pydantic.ValidationError, match="rejected"):
         pydantic.TypeAdapter(Encodable[Annotated[int, marker]]).validate_python(-1)
+
+
+_T = TypeVar("_T")
+
+_ANNOTATABLE_TYPES = [
+    pytest.param(complex, id="complex"),
+    pytest.param(tuple[int, str], id="tuple"),
+    pytest.param(list[Image.Image], id="list-of-image"),
+    pytest.param(_Coord, id="namedtuple"),
+    pytest.param(Callable[[int], int], id="callable"),
+    pytest.param(Tool, id="tool"),
+    # A free type variable: a value here, but mypy reads the subscript as a
+    # type expression and wants it bound.
+    pytest.param(Sequence[_T], id="generic"),  # type: ignore[valid-type]
+]
+
+
+@pytest.mark.parametrize("ty", _ANNOTATABLE_TYPES)
+def test_metadata_survives_every_encoded_shape(ty):
+    """The type walk rebuilds a generic type from its arguments, so a caller's
+    metadata has to be carried through rather than rebuilt away.
+
+    Checked across the shapes with a *registered* encoding of their own, since
+    those are the ones whose annotation is replaced wholesale: a validator the
+    caller attached must still be there afterwards, or a contract written on
+    such a type would silently do nothing.
+    """
+    marker = pydantic.AfterValidator(lambda v: v)
+    assert marker in Encodable[Annotated[ty, marker]].__metadata__
+
+
+@pytest.mark.parametrize("ty", _ANNOTATABLE_TYPES)
+def test_metadata_does_not_change_the_encoding_itself(ty):
+    """Annotating a type neither adds nor removes what the model is shown."""
+    marker = pydantic.AfterValidator(lambda v: v)
+    plain = pydantic.TypeAdapter(Encodable[ty])
+    annotated = pydantic.TypeAdapter(Encodable[Annotated[ty, marker]])
+    for mode in ("validation", "serialization"):
+        try:
+            expected = plain.json_schema(mode=mode)
+        except Exception:
+            continue  # a shape with no schema in this direction; nothing to compare
+        assert annotated.json_schema(mode=mode) == expected
+
+
+def test_metadata_does_not_make_an_unencodable_type_encodable():
+    """Orthogonality in the other direction: metadata is not a way in.
+
+    A type the registry cannot encode is equally unencodable annotated, and
+    fails the same way -- so attaching a contract never turns a clear schema
+    error into something subtler.
+    """
+
+    class Widget:
+        pass
+
+    marker = pydantic.AfterValidator(lambda v: v)
+    with pytest.raises(pydantic.errors.PydanticSchemaGenerationError):
+        pydantic.TypeAdapter(Encodable[Widget])
+    with pytest.raises(pydantic.errors.PydanticSchemaGenerationError):
+        pydantic.TypeAdapter(Encodable[Annotated[Widget, marker]])
 
 
 # ============================================================================

@@ -6,6 +6,8 @@ Demonstrates:
 - A post-condition on a skill's return type: a ``pydantic.AfterValidator``
   that compares the answer against the arguments the call was made with, so
   rejecting a wrong answer and retrying is the harness's job
+- A pre-condition on a skill's parameter, guarding it with a second skill's
+  judgement: an off-topic seat request is rejected before any booking happens
 - Interactive human-in-the-loop flow
 - ``Agent`` history for conversational seat selection
 """
@@ -16,6 +18,7 @@ import datetime
 import enum
 from typing import Annotated, Literal
 
+import annotated_types
 import pydantic
 
 from effectful.handlers.llm import Agent, Skill
@@ -145,16 +148,22 @@ class FlightFinder(Agent):
         """
 
 
-# ---------------------------------------------------------------------------
-# Seat selection agent
-# ---------------------------------------------------------------------------
+@Skill.define
+def is_seat_request(user_input: str) -> bool:
+    """
+    Determine whether the user's message is about where they want to sit on
+    the plane -- a seat, a row, or a seating preference: {user_input}
+    Do not use any tools.
+    """
 
 
 class SeatSelector(Agent):
     """Agent that extracts seat preferences from natural language."""
 
     @Skill.define
-    def select_seat(self, user_input: str) -> SeatPreference:
+    def select_seat(
+        self, user_input: Annotated[str, annotated_types.Predicate(is_seat_request)]
+    ) -> SeatPreference:
         """Extract the user's seat preference from their message.
 
         {user_input}
@@ -198,8 +207,15 @@ def book_flight(
         else ["I'd like a window seat with extra legroom please"]
     )
     for request in seat_requests:
-        seat = selector.select_seat(request)
-        print(f"  Seat: row {seat.row}, seat {seat.seat}")
+        try:
+            seat = selector.select_seat(request)
+            print(f"  Seat: row {seat.row}, seat {seat.seat}")
+        except pydantic.ValidationError:
+            # The pre-condition rejected the message, so the model was never
+            # asked to read a seat out of it. The predicate reports only that it
+            # failed, so the message a person sees is the caller's to write.
+            print(f"  Rejected: {request!r} is not a seat preference.")
+            return
 
     print(f"  Booked {flight.flight_number}, seat {seat.row}{seat.seat}!")
 
