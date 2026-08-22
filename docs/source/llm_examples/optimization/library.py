@@ -63,6 +63,15 @@ not reproduce of its section of the paper:
   * `packing.py`   -- circle packing, single-task search over a code artifact (5.3)
   * `prompting.py` -- prompt optimization, generalization mode (A.3)
   * `kernels.py`   -- kernel instructions, multi-task search (5.2)
+
+A fourth script implements the *successor* claim. "AVO: Agentic Variation Operators"
+(arXiv 2603.24517) argues that the single-turn proposer above is itself the bottleneck:
+confined to `Reflect`, the model cannot test a candidate, read its traceback, or revise
+before committing. AVO replaces the whole variation operator with an autonomous agent
+that holds the evaluator as a tool. `evolve_lineage` below is the small amount of
+framework that survives that change, and:
+
+  * `avo.py`       -- agentic variation on a kernel, against this engine as the control
 """
 
 import collections.abc
@@ -563,6 +572,168 @@ def optimize_anything[A, E: Example](
         evaluations=counters["evaluations"],
         proposals=counters["proposals"],
     )
+
+
+# ---------------------------------------------------------------------------
+# The agentic variation operator: single-lineage evolution.
+#
+# "AVO: Agentic Variation Operators for Autonomous Evolutionary Search" (arXiv
+# 2603.24517) makes one change to everything above, and it is a change of *scope*
+# rather than of machinery. Where `optimize_anything` decomposes variation as
+# ``Vary(P) = Generate(Sample(P))`` and confines the model to a single-turn
+# ``Generate``, AVO replaces the whole operator with one autonomous agent run,
+# ``Vary(P) = Agent(P, K, f)``: the scoring function ``f`` is a tool the agent may
+# call, so it can edit, evaluate, read the diagnostics, and revise before committing
+# anything.
+#
+# Almost none of that needs code here, which is the point. The multi-turn loop the
+# paper builds is what a `Skill` call already is, and handing over ``f`` is a `Tool`
+# in the skill's lexical scope. What *is* left for a framework is small enough to fit
+# below: hold the lineage, verify what the agent returns, and commit it if it earns a
+# place. `avo.py` supplies the agent and the domain.
+# ---------------------------------------------------------------------------
+
+
+@dataclasses.dataclass
+class Version[A]:
+    """One committed artifact in a lineage: the paper's git commit, in memory.
+
+    Only *committed* versions are recorded. Everything the agent tried and discarded
+    on the way stays inside its own variation step -- the paper's "500 optimization
+    directions" behind 40 versions -- which is why a lineage's length is a count of
+    successes rather than of work done.
+    """
+
+    index: int
+    artifact: A
+    evaluation: Evaluation
+    note: str = ""
+
+    @property
+    def score(self) -> float:
+        return self.evaluation.score
+
+
+def commits(candidate: Evaluation, incumbent: Evaluation) -> bool:
+    """The paper's commit rule: "passes correctness checks and matches or improves
+    the benchmark score relative to the best committed version so far".
+
+    Two clauses, and the first is doing real work. ``score > 0`` is the correctness
+    gate -- an evaluator in this directory scores a wrong artifact zero however fast
+    it is -- and without it the "matches" half of the second clause would happily
+    commit a broken candidate on top of a broken incumbent, forever.
+
+    "Matches" is kept rather than tightened to a strict improvement, because it is
+    what the paper says and because a lateral move is how a search leaves a plateau.
+    `evolve_lineage` separately refuses a candidate that *is* the incumbent, which is
+    the only way matching could be a pure no-op.
+
+    >>> commits(Evaluation(score=1.2), Evaluation(score=1.0))
+    True
+    >>> commits(Evaluation(score=1.0), Evaluation(score=1.0))
+    True
+    >>> commits(Evaluation(score=0.9), Evaluation(score=1.0))
+    False
+    >>> commits(Evaluation(score=0.0), Evaluation(score=0.0))
+    False
+    """
+    return candidate.score > 0.0 and candidate.score >= incumbent.score
+
+
+@dataclasses.dataclass
+class Lineage[A]:
+    """The outcome of a single-lineage run: what was committed, and what it cost.
+
+    ``evaluations`` counts only this loop's own verification calls. The agent's calls
+    to ``f`` during its variation steps are the domain's to count (see `avo.py`), and
+    they are the larger number by far -- which is precisely the currency on which an
+    agentic operator is expensive and a single-turn one is cheap, so a comparison that
+    quotes one arm's proposals against the other's evaluations is not a comparison.
+    """
+
+    versions: list[Version[A]]
+    attempts: int = 0
+    rejected: int = 0
+    evaluations: int = 0
+
+    @property
+    def seed(self) -> Version[A]:
+        return self.versions[0]
+
+    @property
+    def best(self) -> Version[A]:
+        # A commit never lowers the score, so this is the last version; taken as a
+        # maximum anyway, so the invariant is enforced rather than assumed.
+        return max(self.versions, key=lambda v: v.score)
+
+
+def evolve_lineage[A](
+    *,
+    vary: collections.abc.Callable[[A, Evaluation], A],
+    evaluator: collections.abc.Callable[[A], Evaluation],
+    seed: A,
+    budget: int,
+) -> Lineage[A]:
+    """Continuous single-lineage evolution: the paper's outer loop, which is all of
+    the framework that survives once variation becomes an agent.
+
+    Each step hands the incumbent and its evaluation to ``vary`` -- one autonomous
+    agent run -- and re-scores whatever comes back. The re-scoring is not
+    redundant. The agent has already called ``f`` itself, probably several times, but
+    the number that goes in the lineage has to be the framework's own measurement of
+    the artifact it was actually given: an agent that reports a score it did not
+    achieve, or that returns a different kernel than the one it tested, is caught here
+    rather than being taken at its word. It costs one evaluation per step.
+
+    ``vary`` raising is an ordinary outcome, not a crash: the decode-time gate rejects
+    malformed artifacts after its retries are exhausted, and the step is simply lost.
+    """
+    counters = {"evaluations": 0}
+
+    def evaluate(artifact: A) -> Evaluation:
+        counters["evaluations"] += 1
+        return evaluator(artifact)
+
+    lineage = Lineage(versions=[Version(0, seed, evaluate(seed), note="seed")])
+    print(f"[avo] seed scores {lineage.seed.score:.6g}")
+
+    for step in range(1, budget + 1):
+        incumbent = lineage.best
+        lineage.attempts += 1
+        try:
+            child = vary(incumbent.artifact, incumbent.evaluation)
+        except Exception as exc:
+            lineage.rejected += 1
+            reason = " ".join(str(exc).split())[:200]
+            print(
+                f"  step {step}: no candidate -- the variation step failed at decode "
+                f"({type(exc).__name__}: {reason})"
+            )
+            continue
+
+        if artifact_key(child) == artifact_key(incumbent.artifact):
+            lineage.rejected += 1
+            print(f"  step {step}: rejected -- returned the incumbent unchanged")
+            continue
+
+        evaluation = evaluate(child)
+        if commits(evaluation, incumbent.evaluation):
+            lineage.versions.append(
+                Version(len(lineage.versions), child, evaluation, note=f"step {step}")
+            )
+            print(
+                f"  step {step}: COMMITTED v{lineage.versions[-1].index} "
+                f"{incumbent.score:.6g} -> {evaluation.score:.6g}"
+            )
+        else:
+            lineage.rejected += 1
+            print(
+                f"  step {step}: rejected {evaluation.score:.6g} "
+                f"against the incumbent's {incumbent.score:.6g}"
+            )
+
+    lineage.evaluations = counters["evaluations"]
+    return lineage
 
 
 # ---------------------------------------------------------------------------

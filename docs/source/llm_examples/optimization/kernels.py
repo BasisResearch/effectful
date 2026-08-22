@@ -377,13 +377,22 @@ KERNEL_PERF: dict[str, tuple[int, float]] = {
 TIMING_REPEATS = 3  # best of three: the standard robust estimator for a short run
 
 
-def perf_input(task: str) -> list[float]:
+def perf_input(task: str, size: int | None = None) -> list[float]:
     """The timed case's input: deterministic pseudo-random values, so every candidate
     is timed on exactly the same work. Seeded from a checksum of the task name rather
     than its length, which silently gave two tasks the same input the moment their
-    names happened to match in length."""
+    names happened to match in length.
+
+    ``size`` overrides the task's default length, which is what lets one kernel be
+    scored on a *vector* of configurations (see `evaluate_kernel`). The seed does not
+    depend on it, so a smaller configuration is a prefix of a larger one and the
+    configurations differ only in how much work they ask for.
+    """
     rng = random.Random(zlib.crc32(task.encode()))
-    return [rng.uniform(-1.0, 1.0) for _ in range(KERNEL_PERF[task][0])]
+    return [
+        rng.uniform(-1.0, 1.0)
+        for _ in range(KERNEL_PERF[task][0] if size is None else size)
+    ]
 
 
 def check_reference_agrees() -> bool:
@@ -462,7 +471,9 @@ def _time_kernel(
     return produced, best
 
 
-def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
+def measure_speedup(
+    kernel: Kernel, task: str, size: int | None = None
+) -> tuple[float, Diagnostic]:
     """Correctness-gated speedup over the reference on the large input.
 
     This is the paper's KernelBench metric in miniature: a kernel that is wrong scores
@@ -480,7 +491,9 @@ def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
     the code having changed. Interleaving the two costs milliseconds and makes the
     number reproducible.
     """
-    values, (size, ceiling) = perf_input(task), KERNEL_PERF[task]
+    default_size, ceiling = KERNEL_PERF[task]
+    size = default_size if size is None else size
+    values = perf_input(task, size)
     expected, baseline = _time_kernel(REFERENCE[task], values, ceiling)
     try:
         produced, seconds = _time_kernel(kernel, values, ceiling)
@@ -511,36 +524,29 @@ def measure_speedup(kernel: Kernel, task: str) -> tuple[float, Diagnostic]:
     )
 
 
-def evaluate_instruction(
-    instruction: str, task: KernelTask | None, model: str
+def evaluate_kernel(
+    kernel: Kernel,
+    task: KernelTask,
+    sizes: collections.abc.Sequence[int] = (),
 ) -> Evaluation:
-    """Synthesize a kernel under the candidate instruction, check it, and time it.
+    """Score a kernel: correctness on the small cases, then speed on one or more timed
+    configurations.
 
-    The score is the measured speedup over the reference implementation, gated on
-    correctness: any failing case scores zero, however fast the code is. That is the
-    paper's KernelBench setup (correctness against the reference, then wall-clock
-    against the PyTorch baseline), and it is what gives this domain something to climb.
-    The Side Information is the failing cases with expected and actual values, the
-    measured times and speedup, the traceback if it crashed, and the code itself.
+    This is the scoring half of `evaluate_instruction`, factored out because it is the
+    whole of what an evaluator has to be. `avo.py` optimizes the kernel *directly* and
+    hands this function to its agent as a tool, so the two examples share one definition
+    of what a good kernel is -- the correctness gate, the back-to-back baseline timing,
+    and the shape of the diagnostics -- rather than each writing their own and inviting
+    the difference to be mistaken for a result.
 
-    The metrics are only read in single-task mode, where the engine's Pareto objectives
-    are an evaluation's sub-scores rather than a dataset's examples -- which is what the
-    ``--single-task`` control runs. ``score`` has to be one of them because it is the
-    number the report reads as the headline.
+    ``sizes`` is the vector of timed configurations; empty means the task's single
+    default size, which is what `evaluate_instruction` uses and what keeps this
+    script's behaviour unchanged. With several, the score is the geometric mean of the
+    per-configuration speedups -- geometric because these are ratios, so a candidate
+    that doubles one configuration and halves another has not broken even -- and each
+    configuration also becomes its own `Metric`, which is what lets a Pareto search
+    keep a candidate that wins only at one size.
     """
-    assert task is not None, "the kernel domain always has a dataset"
-    try:
-        with worker(model):
-            kernel = Programmer().write_kernel(instruction, task)
-    except Exception:
-        return Evaluation(
-            score=0.0,
-            diagnostics=[
-                Diagnostic("task", f"{task.name}: {task.spec}"),
-                Diagnostic("synthesis failed", traceback.format_exc(limit=2).strip()),
-            ],
-        )
-
     cases = KERNEL_TESTS[task.name]
     passed = 0
     missed: list[Diagnostic] = []
@@ -565,8 +571,14 @@ def evaluate_instruction(
             )
     elapsed = time.perf_counter() - start
 
-    speedup, timing = measure_speedup(kernel, task.name)
-    correct = passed == len(cases) and speedup > 0.0
+    configs = tuple(sizes) or (KERNEL_PERF[task.name][0],)
+    measured = [measure_speedup(kernel, task.name, size) for size in configs]
+    speedups = [speedup for speedup, _ in measured]
+    correct = passed == len(cases) and all(s > 0.0 for s in speedups)
+    # Geometric, not arithmetic: these are ratios. Guarded by ``correct`` because a
+    # single zero would take the whole product to zero anyway -- which is the right
+    # answer, and is what the gate below already says more legibly.
+    score = statistics.geometric_mean(speedups) if correct else 0.0
 
     # Only the first couple of failures go back: a wall of them buries the signal. Say
     # how many were withheld, so the proposer is not told a partial list is the whole one.
@@ -581,31 +593,85 @@ def evaluate_instruction(
         )
     diagnostics = [Diagnostic("task", f"{task.name}: {task.spec}")]
     diagnostics += failures or [Diagnostic("correctness", "all small cases passed")]
-    diagnostics.append(timing)
+    diagnostics += [timing for _, timing in measured]
     diagnostics.append(
         Diagnostic("small-case timing", f"{len(cases)} cases in {elapsed * 1e3:.2f}ms")
     )
     diagnostics.append(
         Diagnostic("code under test", (source_of(kernel) or "(unavailable)").strip())
     )
-    diagnostics.append(
-        Diagnostic(
-            "verdict",
-            f"correct, and {speedup:.2f}x the reference implementation's speed -- the "
+    # One configuration keeps the original wording verbatim: this script's measured
+    # numbers were produced under it, and the proposer reads this sentence.
+    if correct and len(configs) == 1:
+        verdict = (
+            f"correct, and {score:.2f}x the reference implementation's speed -- the "
             f"score IS that ratio, so a correct but ordinary implementation scores "
             f"about 1.0 and only a faster one improves"
-            if correct
-            else f"{passed}/{len(cases)} small cases passed; an incorrect kernel "
-            f"scores zero no matter how fast it is",
         )
-    )
+    elif correct:
+        verdict = (
+            f"correct, and {score:.2f}x the reference implementation's speed as a "
+            f"geometric mean over {len(configs)} configuration(s) ("
+            + ", ".join(f"{s:.2f}x at n={n}" for s, n in zip(speedups, configs))
+            + ") -- the score IS that geometric mean, so a correct but ordinary "
+            "implementation scores about 1.0 and only a faster one improves"
+        )
+    else:
+        verdict = (
+            f"{passed}/{len(cases)} small cases passed; an incorrect kernel "
+            f"scores zero no matter how fast it is"
+        )
+    diagnostics.append(Diagnostic("verdict", verdict))
     return Evaluation(
-        score=speedup if correct else 0.0,
-        metrics=[
-            Metric("score", speedup if correct else 0.0),
-            Metric("cases_passed", float(passed)),
-        ],
+        score=score,
+        metrics=[Metric("score", score)]
+        + [
+            Metric(f"speedup@{size}", speedup if correct else 0.0)
+            for speedup, size in zip(speedups, configs)
+        ]
+        + [Metric("cases_passed", float(passed))],
         diagnostics=diagnostics,
+    )
+
+
+def evaluate_instruction(
+    instruction: str, task: KernelTask | None, model: str
+) -> Evaluation:
+    """Synthesize a kernel under the candidate instruction, check it, and time it.
+
+    The score is the measured speedup over the reference implementation, gated on
+    correctness: any failing case scores zero, however fast the code is. That is the
+    paper's KernelBench setup (correctness against the reference, then wall-clock
+    against the PyTorch baseline), and it is what gives this domain something to climb.
+    The Side Information is the failing cases with expected and actual values, the
+    measured times and speedup, the traceback if it crashed, and the code itself.
+
+    The metrics are only read in single-task mode, where the engine's Pareto objectives
+    are an evaluation's sub-scores rather than a dataset's examples -- which is what the
+    ``--single-task`` control runs. ``score`` has to be one of them because it is the
+    number the report reads as the headline. They are narrowed back to the two this
+    script has always had: `evaluate_kernel` also emits a per-configuration metric,
+    which on one configuration merely restates ``score`` and would double that
+    dimension's weight in the frontier-frequency sampling.
+    """
+    assert task is not None, "the kernel domain always has a dataset"
+    try:
+        with worker(model):
+            kernel = Programmer().write_kernel(instruction, task)
+    except Exception:
+        return Evaluation(
+            score=0.0,
+            diagnostics=[
+                Diagnostic("task", f"{task.name}: {task.spec}"),
+                Diagnostic("synthesis failed", traceback.format_exc(limit=2).strip()),
+            ],
+        )
+
+    evaluation = evaluate_kernel(kernel, task)
+    return Evaluation(
+        score=evaluation.score,
+        metrics=[m for m in evaluation.metrics if m.name in ("score", "cases_passed")],
+        diagnostics=evaluation.diagnostics,
     )
 
 
