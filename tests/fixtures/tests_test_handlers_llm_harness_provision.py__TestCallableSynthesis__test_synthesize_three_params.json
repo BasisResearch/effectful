@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"from typing import Callable\\n\\ndef multiply_three_numbers(a: int, b: int, c: int) -> int:\\n    return a * b * c\"}}",
+        "content": "{\"value\":{\"code\":\"from typing import Callable\\n\\ndef multiply_three_numbers(a: int, b: int, c: int) -> int:\\n    return a * b * c\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

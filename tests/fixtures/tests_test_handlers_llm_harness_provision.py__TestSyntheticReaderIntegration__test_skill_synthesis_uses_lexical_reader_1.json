@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def above(x: float) -> bool:\\n    return x > 0.85\"}}",
+        "content": "{\"value\":{\"code\":\"def above(x: float) -> bool:\\n    return x > 0.85\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

@@ -1514,7 +1514,7 @@ class TestCallableSynthesis:
             adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
             encoded = adapter.dump_python(add_func, mode="json")
             assert isinstance(encoded, dict)
-            assert "def " in encoded["module_code"]
+            assert "def " in encoded["code"]
 
             # Decode it again and verify it still works
             decoded = adapter.validate_python(encoded)
@@ -1567,14 +1567,14 @@ class TestCallableSynthesis:
             assert multiply_three(5, 0, 10) == 0
 
 
-def make_submit_solution_response(
-    module_code: str, tool_call_id: str = "call_1"
+def make_write_and_run_body_response(
+    code: str, tool_call_id: str = "call_1"
 ) -> ModelResponse:
     """A tool-call response in which the model finalizes by calling the
-    synthesis ``submit_solution`` tool with a function it wrote."""
+    synthesis ``write_and_run_body`` tool with a function it wrote."""
     return make_tool_call_response(
-        "submit_solution",
-        json.dumps({"implementation": {"module_code": module_code}}),
+        "write_and_run_body",
+        json.dumps({"implementation": {"code": code}}),
         tool_call_id=tool_call_id,
     )
 
@@ -1594,7 +1594,7 @@ class _Doubler(Agent):
 
 class TestSynthesizeAndCall:
     """Tests for the SynthesizeAndCall handler, which answers a Skill by
-    exposing a ``submit_solution`` tool that the model calls with a synthesized
+    exposing a ``write_and_run_body`` tool that the model calls with a synthesized
     function; the function is applied to the original arguments, its value is the
     result, and the handler's `call_tool` rule marks the call final."""
 
@@ -1603,7 +1603,7 @@ class TestSynthesizeAndCall:
         to the original arguments, not the function itself."""
         mock = MockCompletionHandler(
             [
-                make_submit_solution_response(
+                make_write_and_run_body_response(
                     "def double_it(x: int) -> int:\n    return x * 2\n"
                 )
             ]
@@ -1628,7 +1628,7 @@ class TestSynthesizeAndCall:
         agent = _Doubler()
         mock = MockCompletionHandler(
             [
-                make_submit_solution_response(
+                make_write_and_run_body_response(
                     "def double(self, x: int) -> int:\n    return x * 2\n"
                 )
             ]
@@ -1678,11 +1678,11 @@ class TestSynthesizeAndCall:
         loop continues so the model can revise."""
         mock = MockCompletionHandler(
             [
-                make_submit_solution_response(
+                make_write_and_run_body_response(
                     "def double_it(x: int) -> int:\n    return x // 0\n",
                     tool_call_id="call_bad",
                 ),
-                make_submit_solution_response(
+                make_write_and_run_body_response(
                     "def double_it(x: int) -> int:\n    return x * 2\n",
                     tool_call_id="call_good",
                 ),
@@ -1705,11 +1705,11 @@ class TestSynthesizeAndCall:
 
     def test_normal_tool_calls_do_not_terminate(self):
         """A non-final tool call is fed back and the loop continues; only the
-        ``submit_solution`` call terminates."""
+        ``write_and_run_body`` call terminates."""
         mock = MockCompletionHandler(
             [
                 make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
-                make_submit_solution_response(
+                make_write_and_run_body_response(
                     "def double_it(x: int) -> int:\n    return x * 2\n"
                 ),
             ]
@@ -1729,7 +1729,7 @@ class TestSynthesizeAndCall:
         assert result == 42
         assert mock.call_count == 2
 
-    def test_submit_solution_mixed_with_normal_call_is_rejected(self):
+    def test_write_and_run_body_mixed_with_normal_call_is_rejected(self):
         """A finalizing call must be the only call in its turn: which call in a
         mixed turn is the answer is ambiguous, so the completion loop asserts
         rather than letting the trailing call overwrite the answer."""
@@ -1746,11 +1746,11 @@ class TestSynthesizeAndCall:
                                 "id": "call_submit",
                                 "type": "function",
                                 "function": {
-                                    "name": "submit_solution",
+                                    "name": "write_and_run_body",
                                     "arguments": json.dumps(
                                         {
                                             "implementation": {
-                                                "module_code": "def double_it(x: int) -> int:\n    return x * 2\n"
+                                                "code": "def double_it(x: int) -> int:\n    return x * 2\n"
                                             }
                                         }
                                     ),
@@ -1829,7 +1829,7 @@ class TestSynthesizeAndCallDoctests:
             '    """\n'
             "    return x * 3\n"
         )
-        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        mock = MockCompletionHandler([make_write_and_run_body_response(good)])
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
@@ -1861,8 +1861,8 @@ class TestSynthesizeAndCallDoctests:
         good = "def impl(x: int) -> int:\n    return x * 3\n"
         mock = MockCompletionHandler(
             [
-                make_submit_solution_response(bad, tool_call_id="bad"),
-                make_submit_solution_response(good, tool_call_id="good"),
+                make_write_and_run_body_response(bad, tool_call_id="bad"),
+                make_write_and_run_body_response(good, tool_call_id="good"),
             ]
         )
         with (
@@ -1888,7 +1888,7 @@ class TestSynthesizeAndCallDoctests:
             raise NotHandled
 
         good = "def impl(x: int) -> int:\n    return x * 3\n"
-        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        mock = MockCompletionHandler([make_write_and_run_body_response(good)])
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
@@ -1937,7 +1937,7 @@ class TestSynthesizeAndCallDoctests:
             "    return x * 2\n"
         )
         agent = Doubler()
-        mock = MockCompletionHandler([make_submit_solution_response(good)])
+        mock = MockCompletionHandler([make_write_and_run_body_response(good)])
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),

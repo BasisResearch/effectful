@@ -1054,7 +1054,7 @@ def test_class_value_is_not_encoded_as_a_function():
     encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
         int, mode="json", context={}
     )
-    assert "module_code" not in encoded
+    assert "code" not in encoded
     assert "def int" not in json.dumps(encoded)
 
 
@@ -1072,7 +1072,7 @@ def test_dataclass_value_routes_to_the_callable_encoding():
     encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
         _Point, mode="json", context={}
     )
-    assert "class _Point" in encoded["module_code"]
+    assert "class _Point" in encoded["code"]
 
 
 @pytest.mark.parametrize("value", [int, list[int], int | str], ids=str)
@@ -1308,7 +1308,7 @@ def _int_pair_anchor() -> Callable[[int, int], int]:
 
 # Callable error cases: (type, ctx, source, exc_type, anchor)
 #
-# Sources are passed as raw ``{"module_code": ...}`` dicts, not pre-built
+# Sources are passed as raw ``{"code": ...}`` dicts, not pre-built
 # ``SynthesizedFunction`` instances: structurally-invalid code (e.g. a non-function
 # last statement) is rejected by ``SynthesizedFunction``'s own field validator, so
 # building it eagerly here would raise at collection. A dict defers that validation
@@ -1317,7 +1317,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
-        {"module_code": "x = 42"},
+        {"code": "x = 42"},
         ValueError,
         None,
         id="non-function-last-stmt",
@@ -1325,7 +1325,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"module_code": "def add(a: int) -> int:\n    return a"},
+        {"code": "def add(a: int) -> int:\n    return a"},
         ValueError,
         None,
         id="wrong-param-count",
@@ -1333,7 +1333,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"module_code": "def add(a: int, b: int) -> str:\n    return str(a + b)"},
+        {"code": "def add(a: int, b: int) -> str:\n    return str(a + b)"},
         TypeError,
         _int_pair_anchor,
         id="wrong-return-type",
@@ -1341,7 +1341,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"module_code": "def add(a: int, b: int):\n    return a + b"},
+        {"code": "def add(a: int, b: int):\n    return a + b"},
         ValueError,
         None,
         id="missing-return-annotation",
@@ -1618,8 +1618,8 @@ def test_serialize_callable_does_not_reapply_synthesis_constraints(label, value)
     encoded = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).dump_python(
         value, mode="json", context={}
     )
-    assert "module_code" in encoded, label
-    assert encoded["module_code"].strip(), label
+    assert "code" in encoded, label
+    assert encoded["code"].strip(), label
 
 
 def test_serialize_callable_matches_its_declared_schema():
@@ -1646,4 +1646,4 @@ def test_serialize_tool_value_encodes_the_callable_it_is(ty):
     encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
         _tool_add, mode="json", context={}
     )
-    assert "def _tool_add" in encoded["module_code"]
+    assert "def _tool_add" in encoded["code"]

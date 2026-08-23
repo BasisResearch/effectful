@@ -203,7 +203,7 @@ def call_assistant[T](
             f"{inspect.getdoc(_UndecodableReturn)} -- but this request offers "
             f"no tools, so no reply could ever decode. Install a handler that "
             f"offers a final-answer tool (e.g. `FinalBodySynthesizer`'s "
-            f"``submit_solution``), or give the skill's signature an "
+            f"``write_and_run_body``), or give the skill's signature an "
             f"instantiation channel such as a ``type[T]`` parameter."
         )
 
@@ -294,7 +294,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     a handler of this operation applies to its own tools, not a property of the
     tool's type: see
     `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`, which
-    marks its ``submit_solution`` call final so that value becomes the Skill's
+    marks its ``write_and_run_body`` call final so that value becomes the Skill's
     result and the completion loop stops.
 
     The returned value is a :class:`ToolCallExecutionError` rather than the tool's
@@ -403,7 +403,7 @@ def _instantiate_return_type(
     schema): there is no sound direct decoding for such a return, so its
     response format is strict-legal but refuses every reply, with feedback
     redirecting the model to answer through a final-answer tool (canonically
-    ``submit_solution``, whose synthesized implementation is checked against
+    ``write_and_run_body``, whose synthesized implementation is checked against
     the real generic signature and applied to the real arguments).
     A binding that doesn't fit the model's reply fails response validation
     loudly, and the retry loop reports it.

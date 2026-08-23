@@ -735,13 +735,11 @@ def _pydantic_type_image(ty: type[Image.Image]):
 class EncodedFunction(pydantic.BaseModel):
     """A function, encoded as a string of its complete Python source."""
 
-    module_code: str = pydantic.Field(
-        ..., description="Python source defining the function."
-    )
+    code: str = pydantic.Field(..., description="Python source defining the function.")
 
 
 def _serialize_callable(value: collections.abc.Callable) -> dict:
-    """Encode a callable back to its ``module_code`` form (source, or a stub).
+    """Encode a callable back to its ``code`` form (source, or a stub).
 
     Emits a plain `EncodedFunction` -- which is exactly what the serialization JSON
     schema declares -- rather than the `SynthesizedFunction` subclass that governs
@@ -761,7 +759,7 @@ def _serialize_callable(value: collections.abc.Callable) -> dict:
         source = None
 
     if source:
-        return EncodedFunction(module_code=textwrap.dedent(source)).model_dump()
+        return EncodedFunction(code=textwrap.dedent(source)).model_dump()
 
     name = getattr(value, "__name__", None)
     docstring = inspect.getdoc(value)
@@ -779,7 +777,7 @@ def _serialize_callable(value: collections.abc.Callable) -> dict:
     """{docstring}"""
     ...
 '''
-    return EncodedFunction(module_code=stub_code).model_dump()
+    return EncodedFunction(code=stub_code).model_dump()
 
 
 @TypeToPydanticType.register(collections.abc.Callable)

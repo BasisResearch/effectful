@@ -217,7 +217,7 @@ class SynthesizedFunction(EncodedFunction):
     Structured output for function synthesis.
     """
 
-    module_code: str = pydantic.Field(
+    code: str = pydantic.Field(
         ...,
         description=textwrap.dedent("""
         A string containing the complete Python source code for the function.
@@ -240,9 +240,9 @@ class SynthesizedFunction(EncodedFunction):
     # annotations -- so its subclasses waive this and may omit the `self` receiver.
     _require_annotations: typing.ClassVar[bool] = True
 
-    @pydantic.field_validator("module_code")
+    @pydantic.field_validator("code")
     @classmethod
-    def _validate_module_code(cls, value: str) -> str:
+    def _validate_code(cls, value: str) -> str:
         module: ast.AST = ast.parse(value)
 
         if not isinstance(module, ast.Module) or not module.body:
@@ -336,9 +336,9 @@ class SynthesizedFunction(EncodedFunction):
 def _pydantic_callable(ty: typing.Any) -> typing.Any:
     """Pydantic-compatible Annotated type for a parameterized `Callable` value.
 
-    The model *produces* a function (as ``module_code``); it is synthesized,
+    The model *produces* a function (as ``code``); it is synthesized,
     type-checked in the enclosing Skill's scope, and its own doctests are run.
-    Skill-body synthesis (`submit_solution`) has its own encoding,
+    Skill-body synthesis (`write_and_run_body`) has its own encoding,
     `_pydantic_skill_body`.
     """
     typed_enc = SynthesizedFunction._create_model_from_callable_type(
@@ -350,7 +350,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         info: pydantic.ValidationInfo,
     ) -> collections.abc.Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate({"module_code": value})
+            value = typed_enc.model_validate({"code": value})
         elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
         elif isinstance(value, EncodedFunction):
@@ -365,7 +365,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
 
         filename = f"<synthesis:{id(value)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.module_code, filename
+            value.code, filename
         )
 
         if anchor is not None and _recover_skill_def(anchor) is not None:
@@ -391,7 +391,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
 
     # Distinct schemas per direction: validation (the model *produces* a function)
     # carries the synthesis instructions; serialization (the model *reads* an
-    # encoded function) shows only the `module_code` shape `_serialize_synthesized`
+    # encoded function) shows only the `code` shape `_serialize_synthesized`
     # emits, with no synthesis prose.
     return typing.Annotated[
         ty,

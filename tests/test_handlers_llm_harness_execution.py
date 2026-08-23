@@ -316,7 +316,7 @@ def test_decode_runtime_only_pydantic_model_issue_576():
             Encodable[Callable[[MyModel], MyModel]]
         ).validate_python(
             SynthesizedFunction(
-                module_code="def identity(a: MyModel) -> MyModel:\n    return a"
+                code="def identity(a: MyModel) -> MyModel:\n    return a"
             ),
             context={"MyModel": MyModel},
         )
@@ -361,7 +361,7 @@ def test_decode_with_anchor_typechecks_and_runs():
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
             SynthesizedFunction(
-                module_code="def count_a(s: str) -> int:\n    return s.count('a')"
+                code="def count_a(s: str) -> int:\n    return s.count('a')"
             ),
             context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
         )
@@ -373,9 +373,7 @@ def test_decode_with_anchor_rejects_bad_code():
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
-                SynthesizedFunction(
-                    module_code="def count_a(s: str) -> str:\n    return s"
-                ),
+                SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
                 context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
@@ -386,9 +384,7 @@ def test_decode_without_anchor_skips_typecheck():
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
-            SynthesizedFunction(
-                module_code="def count_a(s: str) -> str:\n    return s"
-            ),
+            SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
             context={},
         )
         assert callable(fn)
@@ -403,7 +399,7 @@ def test_decode_with_anchor_rejects_non_nestable():
         with pytest.raises(Exception):
             ta.validate_python(
                 SynthesizedFunction(
-                    module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+                    code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
                 ),
                 context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
@@ -411,12 +407,12 @@ def test_decode_with_anchor_rejects_non_nestable():
 
 def test_decode_without_anchor_still_rejects_non_nestable():
     # The splice-time scan is anchor-conditional, but `SynthesizedFunction` states the
-    # no-star-import rule to the model as an unconditional constraint on `module_code`
+    # no-star-import rule to the model as an unconditional constraint on `code`
     # -- so it is enforced unconditionally too, and the anchorless path rejects it just
     # as the spliced one does (here at model validation, before any provider runs).
     with pytest.raises(pydantic.ValidationError):
         SynthesizedFunction(
-            module_code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+            code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
         )
 
 
@@ -428,7 +424,7 @@ def test_decode_without_anchor_still_rejects_non_nestable():
 def test_restricted_blocks_private_attribute_access():
     """RestrictedPython blocks access to underscore-prefixed attributes by default."""
     source = SynthesizedFunction(
-        module_code="""def get_private(s: str) -> int:
+        code="""def get_private(s: str) -> int:
     return s.__class__.__name__"""
     )
     # Should raise due to restricted attribute access
@@ -448,7 +444,7 @@ def test_restricted_with_custom_policy():
         pass
 
     source = SynthesizedFunction(
-        module_code="""def add(a: int, b: int) -> int:
+        code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with (
@@ -475,7 +471,7 @@ def test_builtins_in_env_does_not_bypass_security():
 
     # Test 1: open() should not be usable even with __builtins__ in context
     source_open = SynthesizedFunction(
-        module_code="""def read_file(path: str) -> str:
+        code="""def read_file(path: str) -> str:
     return open(path).read()"""
     )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
@@ -487,7 +483,7 @@ def test_builtins_in_env_does_not_bypass_security():
 
     # Test 2: __import__ should not be usable
     source_import = SynthesizedFunction(
-        module_code="""def get_os_name() -> str:
+        code="""def get_os_name() -> str:
     os = __import__('os')
     return os.name"""
     )
@@ -500,7 +496,7 @@ def test_builtins_in_env_does_not_bypass_security():
 
     # Test 3: Verify safe code still works with dangerous context
     source_safe = SynthesizedFunction(
-        module_code="""def add(a: int, b: int) -> int:
+        code="""def add(a: int, b: int) -> int:
     return a + b"""
     )
     with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
@@ -511,7 +507,7 @@ def test_builtins_in_env_does_not_bypass_security():
 
     # Test 4: Private attribute access should still be blocked
     source_private = SynthesizedFunction(
-        module_code="""def get_class(s: str) -> str:
+        code="""def get_class(s: str) -> str:
     return s.__class__.__name__"""
     )
     with pytest.raises(Exception):
@@ -1233,12 +1229,12 @@ def test_run_doctests_requires_a_provider():
 class TestRunDoctestsThroughCallableDecode:
     """`Encodable[Callable[...]]` runs the synthesized function's doctests."""
 
-    def _decode(self, module_code: str, provider=None):
+    def _decode(self, code: str, provider=None):
         provider = provider or BuiltinExecutor()
         with handler(TYPE_CHECKER()), handler(provider):
             return pydantic.TypeAdapter(
                 Encodable[Callable[[str, str], int]]
-            ).validate_python(SynthesizedFunction(module_code=module_code), context={})
+            ).validate_python(SynthesizedFunction(code=code), context={})
 
     def test_decode_runs_passing_doctests(self):
         fn = self._decode(

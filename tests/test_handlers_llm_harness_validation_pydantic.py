@@ -14,7 +14,7 @@ The axes, and where each is covered:
   `Agent` method, multiply-annotated, context-reading (`Pre-conditions`)
 * tool-calling mode -- ``mixed``, ``code``, ``json`` (`Every tool-calling mode`)
 * answer path -- structured output, or a synthesized body through
-  ``submit_solution`` (`Post-conditions`)
+  ``write_and_run_body`` (`Post-conditions`)
 * the `str` case, where an answer is prose rather than JSON (`Text answers`)
 * orthogonality -- an unannotated skill is untouched (`Additivity`)
 
@@ -595,14 +595,14 @@ def test_post_condition_reads_the_calls_arguments_on_the_direct_path(mod):
 
 
 def test_post_condition_reads_the_calls_arguments_on_the_synthesis_path(mod):
-    """`submit_solution` validates the value its function returned under the
+    """`write_and_run_body` validates the value its function returned under the
     same environment, so a context-reading post-condition behaves identically
     whichever way the model chose to answer."""
     result, _ = _run(
         lambda: mod.choose(10),
         [
             make_tool_call_response(
-                "submit_solution",
+                "write_and_run_body",
                 json.dumps({"implementation": "def choose(lo):\n    return lo + 1\n"}),
             )
         ],
@@ -619,12 +619,12 @@ def test_post_condition_rejection_on_the_synthesis_path_is_fed_back(mod):
         lambda: mod.choose(10),
         [
             make_tool_call_response(
-                "submit_solution",
+                "write_and_run_body",
                 json.dumps({"implementation": "def choose(lo):\n    return 0\n"}),
                 tool_call_id="call_1",
             ),
             make_tool_call_response(
-                "submit_solution",
+                "write_and_run_body",
                 json.dumps({"implementation": "def choose(lo):\n    return lo + 5\n"}),
                 tool_call_id="call_2",
             ),

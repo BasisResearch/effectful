@@ -877,11 +877,7 @@ def test_generic_callable_skill_parametric_impl(generic_mod):
         [
             make_text_response(
                 json.dumps(
-                    {
-                        "value": {
-                            "module_code": "def ident[U](x: U) -> U:\n    return x\n"
-                        }
-                    }
+                    {"value": {"code": "def ident[U](x: U) -> U:\n    return x\n"}}
                 )
             )
         ],
@@ -907,7 +903,7 @@ def test_generic_callable_skill_concrete_impl_rejected(generic_mod):
                     json.dumps(
                         {
                             "value": {
-                                "module_code": "def dbl(x: int) -> int:\n    return x + x\n"
+                                "code": "def dbl(x: int) -> int:\n    return x + x\n"
                             }
                         }
                     )
@@ -930,7 +926,7 @@ def test_generic_skill_body_synthesis_parametricity(generic_mod):
         lambda: generic_mod.refine(box),
         [
             make_tool_call_response(
-                "submit_solution",
+                "write_and_run_body",
                 json.dumps(
                     {"implementation": "def refine(box):\n    return box.value\n"}
                 ),
@@ -946,7 +942,7 @@ def test_generic_skill_body_synthesis_parametricity(generic_mod):
             lambda: generic_mod.refine(box),
             [
                 make_tool_call_response(
-                    "submit_solution",
+                    "write_and_run_body",
                     json.dumps(
                         {"implementation": "def refine(box):\n    return [9, 9]\n"}
                     ),
@@ -1123,7 +1119,7 @@ def test_undecodable_return_with_no_tools_fails_before_api_call(generic_mod):
 
 def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
     # The full redirect under the real retry loop: the model's direct reply is
-    # refused, the feedback steers it to `submit_solution`, and the synthesized
+    # refused, the feedback steers it to `write_and_run_body`, and the synthesized
     # (parametric) implementation's applied result is the answer.
     from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
     from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
@@ -1135,7 +1131,7 @@ def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
         [
             make_text_response(json.dumps({"value": [{"text": "be kinder"}]})),
             make_tool_call_response(
-                "submit_solution",
+                "write_and_run_body",
                 json.dumps(
                     {"implementation": "def refine(box):\n    return box.value\n"}
                 ),

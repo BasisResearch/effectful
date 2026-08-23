@@ -167,7 +167,7 @@ def _is_python(text: str) -> bool:
 
     Detects code by *content* rather than schema/field name, so it covers every
     `Encodable` type that serializes Python as a string -- the synthesis
-    `SynthesizedFunction.module_code` field, `exec_code`'s `types.CodeType`
+    `SynthesizedFunction.code` field, `exec_code`'s `types.CodeType`
     argument, and any future code-carrying tool -- uniformly. Requires a
     multi-line string that parses as a module with at least one real statement
     (not a lone expression), which excludes prose and JSON-as-string.
@@ -185,7 +185,7 @@ def _extract_code(args: typing.Any) -> str | None:
     """Return an embedded Python source string from parsed tool-call arguments.
 
     Walks nested dicts (a synthesized callable is ``{"implementation":
-    {"module_code": ...}}``; `exec_code` is a flat ``{"code": ...}``) and returns
+    {"code": ...}}``; `exec_code` is a flat ``{"code": ...}``) and returns
     the first string value that :func:`_is_python` recognizes.
     """
     if isinstance(args, str):

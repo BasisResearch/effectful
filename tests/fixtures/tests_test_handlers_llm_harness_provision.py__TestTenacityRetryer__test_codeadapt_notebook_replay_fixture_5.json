@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"module_code\":\"def generate_paragraph() -> str:\\n    return 'The sun rose gently over the horizon as Emily decided to take a morning walk. Along the path, a small squirrel caught her attention as it practiced its art of tumbling. Further down, she crossed paths with an old friend, reminding her that life often brings the joy of rediscovery in one form or another. As she returned home, the playful antics of the neighborhood cat reminded her of the exuberance of a young lunatic.'\"}}",
+        "content": "{\"value\":{\"code\":\"def generate_paragraph() -> str:\\n    return 'The sun rose gently over the horizon as Emily decided to take a morning walk. Along the path, a small squirrel caught her attention as it practiced its art of tumbling. Further down, she crossed paths with an old friend, reminding her that life often brings the joy of rediscovery in one form or another. As she returned home, the playful antics of the neighborhood cat reminded her of the exuberance of a young lunatic.'\"}}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

@@ -57,7 +57,7 @@ def _splice_body(
     parameter list (including any ``self``) is intentionally discarded: the
     Skill's real signature is the contract.
 
-    ``generated`` is the model's whole ``module_code`` parsed to a module; its
+    ``generated`` is the model's whole ``code`` parsed to a module; its
     *last* statement is the implementation, any earlier statements are helper
     definitions/imports.  For example, given the Skill ::
 
@@ -125,7 +125,7 @@ def _splice_body(
 class SkillBody:
     """The synthesized *body* of a `Skill`, as opposed to a general `Callable`.
 
-    Used only as the type of `submit_solution`'s ``implementation`` parameter (see
+    Used only as the type of `write_and_run_body`'s ``implementation`` parameter (see
     `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`).  A `SkillBody[[P],
     R]` carries the Skill's parameter and return types exactly like a
     `Callable`, but gets its own `TypeToPydanticType` case (`_pydantic_skill_body`)
@@ -140,7 +140,7 @@ class SkillBody:
 
 
 class SynthesizedSkillBody(SynthesizedFunction):
-    """Structured output for synthesizing a `Skill`'s body (`submit_solution`).
+    """Structured output for synthesizing a `Skill`'s body (`write_and_run_body`).
 
     Decoded through `_pydantic_skill_body`: the function is type-checked against
     the enclosing Skill's source and its doctests are run with self/recursive
@@ -153,7 +153,7 @@ class SynthesizedSkillBody(SynthesizedFunction):
     Skill.
     """
 
-    module_code: str = pydantic.Field(
+    code: str = pydantic.Field(
         ...,
         description=textwrap.dedent("""
         The complete Python source implementing the Skill shown in its spec.
@@ -194,7 +194,7 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
         info: pydantic.ValidationInfo,
     ) -> Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate({"module_code": value})
+            value = typed_enc.model_validate({"code": value})
         elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
         elif callable(value):
@@ -206,9 +206,9 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.module_code)}>"
+        filename = f"<synthesis:{id(value.code)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.module_code, filename
+            value.code, filename
         )
 
         # `None` means the Skill's source can't be recovered (REPL/exec/notebook
@@ -260,7 +260,7 @@ class MethodSkillBody(SkillBody):
     """A `SkillBody` for an *instance-method* Skill.
 
     Carries the method/free distinction on the type's origin (context-free schema
-    generation reads it) so `submit_solution`'s description names the leading
+    generation reads it) so `write_and_run_body`'s description names the leading
     receiver ``self`` and the receiver is exempt from the annotation requirement --
     the model no longer has to reverse-engineer that the first parameter is ``self``.
     The Skill's real signature (which includes the receiver) remains the
@@ -282,7 +282,7 @@ class SynthesizedMethodSkillBody(SynthesizedSkillBody):
     Skill.
     """
 
-    module_code: str = pydantic.Field(
+    code: str = pydantic.Field(
         ...,
         description=textwrap.dedent("""
         The complete Python source implementing the instance-method Skill shown in
@@ -360,7 +360,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
         info: pydantic.ValidationInfo,
     ) -> Callable:
         if isinstance(value, str):
-            value = typed_enc.model_validate({"module_code": value})
+            value = typed_enc.model_validate({"code": value})
         elif isinstance(value, dict):
             value = typed_enc.model_validate(value)
         elif callable(value):
@@ -372,9 +372,9 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.module_code)}>"
+        filename = f"<synthesis:{id(value.code)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.module_code, filename
+            value.code, filename
         )
         anchor_asts = _recover_skill_def(anchor) if anchor is not None else None
         if anchor_asts is not None:
@@ -457,7 +457,7 @@ def _callable_type_from_signature(
 
 class FinalBodySynthesizer(ObjectInterpretation):
     """You may "answer" a Skill by writing code instead of producing the value
-    directly. The `submit_solution` tool accepts a single argument: a Python
+    directly. The `write_and_run_body` tool accepts a single argument: a Python
     function whose signature matches the Skill's signature (see its spec
     below). The harness applies that function to the original inputs and its
     return value becomes the answer, so write the function body as a drop-in
@@ -472,17 +472,17 @@ class FinalBodySynthesizer(ObjectInterpretation):
     stands once the Skill's doctests pass. Write just the implementation;
     any docstring you add is replaced and ignored.
 
-    A successful `submit_solution` call ends the conversation immediately: no
+    A successful `write_and_run_body` call ends the conversation immediately: no
     further turn is taken, and the value of applying your function to the
     original arguments is the Skill's answer. Because it terminates the
     conversation, it must be the *only* tool call in its turn — call any other
-    tools you need on earlier turns, and call `submit_solution` by itself once
+    tools you need on earlier turns, and call `write_and_run_body` by itself once
     you are ready to answer.
 
     This answers the *current* call only. Each call is a fresh, independent
     task: even if you already submitted a working solution earlier in this
     conversation, a prior submission is not a standing answer — you must call
-    `submit_solution` again to answer the current call. Never end a turn with
+    `write_and_run_body` again to answer the current call. Never end a turn with
     a prose summary in place of the answer; a plain message is not a valid
     response and will be rejected.
     """
@@ -498,7 +498,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
     # freely call any other tool in scope (their results are fed back as usual),
     # and it may still answer the return type directly via structured output.
     # The loop terminates when it either answers directly or calls
-    # ``submit_solution``, which this handler's `call_tool` rule marks final.
+    # ``write_and_run_body``, which this handler's `call_tool` rule marks final.
     # To force the synthesis path, pass ``tool_choice="required"``
     # (handler config is forwarded to the model request).  The function is
     # synthesized by reusing the existing ``Callable`` synthesis machinery: the
@@ -533,8 +533,8 @@ class FinalBodySynthesizer(ObjectInterpretation):
         the handler's docstring.
         """
 
-        __toolname__: typing.ClassVar[typing.Literal["submit_solution"]] = (
-            "submit_solution"
+        __toolname__: typing.ClassVar[typing.Literal["write_and_run_body"]] = (
+            "write_and_run_body"
         )
 
         @classmethod
@@ -571,7 +571,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 | {_TYPE_CHECK_ANCHOR_KEY: skill, _IS_FINAL_KEY: True}
             )
 
-            def submit_solution(implementation: body_type) -> return_type:  # type: ignore
+            def write_and_run_body(implementation: body_type) -> return_type:  # type: ignore
                 """
                 Answer this Skill by submitting a Python function that implements
                 it (see the "Code synthesis" section); its return value on the
@@ -580,7 +580,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 result = implementation(*args, **kwargs)  # type: ignore
                 return return_encoding.validate_python(result, context=env)
 
-            return super().define(submit_solution, name=cls.__toolname__)
+            return super().define(write_and_run_body, name=cls.__toolname__)
 
     @implements(call_system)
     def _call_system(
@@ -604,7 +604,7 @@ class FinalBodySynthesizer(ObjectInterpretation):
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall) -> typing.Any:
-        """Mark a *successful* ``submit_solution`` call as the Skill's answer.
+        """Mark a *successful* ``write_and_run_body`` call as the Skill's answer.
 
         Only a successful one: when `TenacityRetryer` captures a submission that
         raised -- the synthesized function errored on the real arguments -- it
