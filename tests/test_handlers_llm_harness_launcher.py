@@ -10,7 +10,11 @@ All of it is offline: argument parsing and an AST walk, no model and no network.
 """
 
 import argparse
+import ast
+import functools
 import pathlib
+import runpy
+import sys
 
 import pytest
 
@@ -32,6 +36,53 @@ def example_modules() -> list[pathlib.Path]:
         for p in EXAMPLES_DIR.rglob("*.py")
         if "__pycache__" not in p.parts and p.name != "__init__.py"
     )
+
+
+@functools.cache
+def _tree(path: pathlib.Path) -> ast.Module:
+    return ast.parse(path.read_text(), filename=str(path))
+
+
+def _defines_main(path: pathlib.Path) -> bool:
+    return any(
+        isinstance(node, ast.FunctionDef) and node.name == "main"
+        for node in _tree(path).body
+    )
+
+
+def example_scripts() -> list[pathlib.Path]:
+    """Every example that is a script -- one with a command line of its own.
+
+    The shared sibling libraries (``choreographies/library.py``,
+    ``optimization/ds1000_data.py``, ...) are modules the scripts import; they
+    define no ``main`` and there is nothing to launch.
+    """
+    return [p for p in example_modules() if _defines_main(p)]
+
+
+def _option_strings(path: pathlib.Path) -> list[str]:
+    """The ``--flags`` an example's parser declares, read off its source.
+
+    Statically, because the parser is built inside ``main()`` and reaching it
+    would mean running the example.
+    """
+    return sorted(
+        {
+            arg.value
+            for node in ast.walk(_tree(path))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            for arg in node.args
+            if isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and arg.value.startswith("--")
+        }
+    )
+
+
+def _ids(paths):
+    return [str(p.relative_to(EXAMPLES_DIR).with_suffix("")) for p in paths]
 
 
 # ============================================================================
@@ -154,6 +205,97 @@ def test_parser_has_abbreviation_disabled():
     assert ns.model != "x"
 
 
+# ============================================================================
+# The examples' side of the contract
+# ============================================================================
+
+
+@pytest.mark.parametrize("path", example_modules(), ids=_ids(example_modules()))
+def test_example_brings_no_handler_stack(path):
+    """No example assembles a harness of its own.
+
+    The scripts are written to be read, and the boilerplate they are free of is
+    the stack :func:`~effectful.handlers.llm.harness.harness` builds -- which
+    the launcher installs around them instead. An example that built its own
+    would run correctly and teach the wrong thing, and would also stop being
+    runnable under a *different* stack, which is the point of factoring it out.
+
+    Only the stack builder is off limits. Importing the handlers it is made of
+    is how an example *extends* the stack rather than replacing it, which
+    ``optimization/textgrad.py`` and ``optimization/library.py`` do
+    deliberately.
+    """
+    bound = {
+        alias.asname or alias.name
+        for node in ast.walk(_tree(path))
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+    }
+    assert "harness" not in bound, "an example imported the stack builder"
+
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(_tree(path))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name | ast.Attribute)
+    }
+    assert "harness" not in called, "an example built its own stack"
+
+
+def flagged_examples() -> list[pathlib.Path]:
+    """Example scripts that declare at least one flag of their own."""
+    return [p for p in example_scripts() if _option_strings(p)]
+
+
+@pytest.mark.parametrize("path", flagged_examples(), ids=_ids(flagged_examples()))
+def test_example_flags_survive_the_launcher_split(path):
+    """Every flag an example declares reaches the example.
+
+    :func:`test_parse_args_does_not_claim_abbreviated_script_flags` pins the
+    mechanism on invented flags; this pins it on the real ones, so a flag added
+    to the launcher that happens to collide with one an example already has
+    fails here rather than silently swallowing it.
+    """
+    flags = _option_strings(path)
+    ns, rest = _parse_args([str(path), "--model", "gpt-4o-mini", *flags])
+    assert ns.model == "gpt-4o-mini"
+    assert rest == flags
+
+
+@pytest.mark.parametrize("path", example_scripts(), ids=_ids(example_scripts()))
+def test_example_help_describes_the_example(path, monkeypatch, capsys):
+    """``<example> --help`` exits cleanly and prints the module's own summary.
+
+    Two things at once, because one implies the other's worth: the example
+    imports and builds its parser (so a broken import or a bad ``add_argument``
+    fails here, on every build, with no model involved), and what it prints is
+    the module docstring -- the ``description=__doc__`` convention, checked by
+    outcome rather than by matching the source.
+    """
+    docstring = ast.get_docstring(_tree(path))
+    assert docstring, "every example opens with a docstring saying what it shows"
+    summary = next(line for line in docstring.splitlines() if line.strip())
+
+    # Mirror the launcher: a script may import its siblings by absolute name.
+    monkeypatch.syspath_prepend(str(path.parent))
+    monkeypatch.setattr(sys, "argv", [str(path), "--help"])
+    with pytest.raises(SystemExit) as exc:
+        runpy.run_path(str(path), run_name="__main__")
+    assert exc.value.code == 0
+
+    help_text = capsys.readouterr().out
+    # argparse rewraps the description, so compare tokens rather than lines.
+    assert set(summary.split()) <= set(help_text.split())
+
+
 def test_example_modules_were_actually_found():
-    """Guard the parametrization above: an empty glob would vacuously pass."""
+    """Guard the parametrizations above: an empty glob would vacuously pass."""
     assert len(example_modules()) > 20
+    assert len(example_scripts()) > 20
+    assert set(example_scripts()) < set(example_modules()), (
+        "libraries were not excluded"
+    )
+    assert set(flagged_examples()) <= set(example_scripts())
+    # A flagless example is legitimate but should stay the exception; if the
+    # option-string walk ever stopped finding anything, this is what would say so.
+    assert len(flagged_examples()) > len(example_scripts()) - 5

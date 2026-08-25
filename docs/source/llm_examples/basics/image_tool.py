@@ -1,3 +1,11 @@
+"""Giving an agent tools that operate on images.
+
+Demonstrates:
+- An ``Agent`` subclass whose ``Tool`` methods manipulate ``PIL.Image.Image`` values
+- Passing opaque integer handles across the model boundary so images stay in Python
+- A ``Skill`` that plans a sequence of tool calls to build a composite image
+"""
+
 import argparse
 import pathlib
 
@@ -77,7 +85,7 @@ def main() -> None:
         / "chirho_logo_wide.png"
     )
 
-    parser = argparse.ArgumentParser(description=__doc__ or ImageTools.__doc__)
+    parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--image",
         type=str,
@@ -85,12 +93,21 @@ def main() -> None:
         metavar="PATH",
         help="Path to the input image to rotate-and-concatenate.",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Display the resulting image in an image viewer.",
+    )
     args = parser.parse_args()
 
     image_agent = ImageTools()
     img = Image.open(args.image)
 
-    image_agent.rotate_and_concat(img).show()
+    result = image_agent.rotate_and_concat(img)
+    print(f"Result image: {result.width}x{result.height}")
+
+    if args.interactive:
+        result.show()
 
 
 if __name__ == "__main__":

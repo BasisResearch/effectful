@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698281-TnYRLMB5WJMpjyynq1Cf",
+  "created": 1787698281,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"# Analyzing the task and previous feedback to propose the next action.\\n\\nif \\\"send email\\\" not in str(self.execution_log):\\n    # The first step should be sending an email to the team.\\n    return ProposedAction(\\n        action=ActionType.send_email,\\n        description=\\\"Send an email to the team about the lunch plans.\\\",\\n        details=\\\"Include proposed restaurants and options for the team to consider.\\\"\\n    )\\nelif \\\"create file\\\" not in str(self.execution_log):\\n    # The second step should be to create a shared document.\\n    return ProposedAction(\\n        action=ActionType.create_file,\\n        description=\\\"Create a shared document for restaurant suggestions.\\\",\\n        details=\\\"Set up a Google Doc where team members can suggest their favorite places.\\\"\\n    )\\nelif \\\"schedule meeting\\\" not in str(self.execution_log):\\n    # The final action should be to schedule a meeting.\\n    return ProposedAction(\\n        action=ActionType.schedule_meeting,\\n        description=\\\"Schedule a meeting to finalize lunch plans.\\\",\\n        details=\\\"Find a suitable time next week when everyone can discuss the restaurant options.\\\"\\n    )\\nelse:\\n    # If all actions have been completed.\\n    return ProposedAction(\\n        action=ActionType.done,\\n        description=\\\"All action steps have been completed.\\\",\\n        details=\\\"The team lunch is organized successfully.\\\"\\n    )\\n\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_lzwGYTo9O9Ya8xvvnFG5EZRm",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 336,
+    "prompt_tokens": 8697,
+    "total_tokens": 9033,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8064,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00090135,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00090135,
+      "upstream_inference_prompt_cost": 0.00069975,
+      "upstream_inference_completions_cost": 0.0002016
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

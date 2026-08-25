@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698286-ZlpRmtdHRmriw7tXserT",
+  "created": 1787698286,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"def summarize_evaluations(job_description: str, evaluations: list[dict]) -> str:\\n    qualified_candidates = [ev for ev in evaluations if ev['qualified']]\\n    unqualified_candidates = [ev for ev in evaluations if not ev['qualified']]\\n\\n    ranked_candidates = sorted(qualified_candidates, key=lambda x: x['score'], reverse=True)\\n    top_candidate = ranked_candidates[0] if ranked_candidates else None\\n\\n    summary_lines = [f\\\"Job Description: {job_description}\\\", \\\"\\\", \\\"Ranked Candidates:\\\"]\\n    for candidate in ranked_candidates:\\n        summary_lines.append(f\\\"- {candidate['name']} (Score: {candidate['score']}/10)\\\")\\n\\n    if top_candidate:\\n        summary_lines.append(f\\\"\\\\nTop Candidate: {top_candidate['name']}, Score: {top_candidate['score']}/10\\\")\\n\\n    # Concerns regarding unqualified candidates\\n    if unqualified_candidates:\\n        concerns = [f\\\"- {uc['name']}: {uc['weaknesses']}\\\" for uc in unqualified_candidates]\\n        summary_lines.append(\\\"\\\\nConcerns for Unqualified Candidates:\\\")\\n        summary_lines.extend(concerns)\\n\\n    return '\\\\n'.join(summary_lines)\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_amq2mFTVDl5o7dkEjMpAARCp",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null,
+          "reasoning": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 295,
+    "prompt_tokens": 8847,
+    "total_tokens": 9142,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8064,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00089925,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00089925,
+      "upstream_inference_prompt_cost": 0.00072225,
+      "upstream_inference_completions_cost": 0.000177
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

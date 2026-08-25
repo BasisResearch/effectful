@@ -1,0 +1,61 @@
+name: Nightly Examples
+
+# Every example in docs/source/llm_examples, run against a live model with its
+# own default arguments.
+#
+# The replayed suite (tests/test_handlers_llm_examples_basics.py, in the Test
+# workflow) already proves on every build that the examples' Python works. What
+# it cannot prove is that the prompts still get a usable answer out of a real
+# provider, which is what decays silently as models change underneath us -- so
+# that runs here, nightly, where a flake costs a re-run rather than a blocked PR.
+
+on:
+  schedule:
+    # 07:00 UTC, after the US evening and before the European morning.
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "Model to run the examples against"
+        required: false
+        default: "gpt-4o-mini"
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    # A directory's examples share a theme and a rough cost; splitting on it
+    # keeps one slow suite from delaying the rest and names the failure in the
+    # job list. `fail-fast: false` because each is an independent signal.
+    strategy:
+      fail-fast: false
+      matrix:
+        directory:
+          - basics
+          - reasoning
+          - optimization
+          - autoresearch
+          - autoformalization
+          - choreographies
+    name: "${{ matrix.directory }}"
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install Python dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Run examples
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run python scripts/run_examples.py "${{ matrix.directory }}" \
+            --model "${{ github.event.inputs.model || 'gpt-4o-mini' }}"

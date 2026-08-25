@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698301-laNWqSx2GBJv7xW0ELWG",
+  "created": 1787698301,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"def is_seat_request(user_input: str) -> bool:\\n    user_input = user_input.lower()\\n    # Identify keywords related to seat preference\\n    keywords = ['seat', 'row', 'window', 'aisle', 'extra legroom']\\n    return any(keyword in user_input for keyword in keywords)\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_6LgxlFcawMzfwEkyLwlRobnk",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 89,
+    "prompt_tokens": 9637,
+    "total_tokens": 9726,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 9472,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00078855,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00078855,
+      "upstream_inference_prompt_cost": 0.00073515,
+      "upstream_inference_completions_cost": 0.0000534
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

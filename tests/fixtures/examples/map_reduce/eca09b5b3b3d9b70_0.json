@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698282-mVI9X5zbOYuC9Y23Wsvh",
+  "created": 1787698282,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"def evaluate_resume(resume: str, job_description: str) -> Evaluation:\\n    # Evaluation of Bob Smith's resume against the job description\\n    name = \\\"Bob Smith\\\"\\n    qualified = False\\n    strengths = \\\"Strong communication skills, some experience with Flask.\\\"\\n    weaknesses = \\\"Only 3 years of Python experience, lacks professional experience with web frameworks and cloud platforms.\\\"\\n    score = 4\\n\\n    # Based on the job description, Bob does not meet the 5+ years requirement.\\n    return Evaluation(name=name, qualified=qualified, strengths=strengths, weaknesses=weaknesses, score=score)\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_IgixnkjoGgCLl4kx1xQu1zi5",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "refusal": null,
+          "reasoning": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 156,
+    "prompt_tokens": 8653,
+    "total_tokens": 8809,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8064,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00078675,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00078675,
+      "upstream_inference_prompt_cost": 0.00069315,
+      "upstream_inference_completions_cost": 0.0000936
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

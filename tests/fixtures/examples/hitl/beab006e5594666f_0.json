@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698288-uGp4EvlkELUBqUQgWoQn",
+  "created": 1787698288,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"def propose_next(self, task: str, feedback: str) -> ProposedAction:\\n    \\\"\\\"\\\"You are a task planner helping the user accomplish a goal.\\n\\n    Task: {task}\\n\\n    Feedback from the last step: {feedback}\\n\\n    Review the conversation history for previously completed actions.\\n    Propose the next action to take. If the task is complete,\\n    set action to \\\"done\\\".\\n\\n    If a previous proposal was rejected, propose something different\\n    that addresses the feedback.\\n    \\\"\\\"\\\"\\n\\n    if \\\"send email\\\" not in str(self.execution_log):\\n        return ProposedAction(\\n            action=ActionType.send_email,\\n            description=\\\"Send an email to the team about the lunch plans.\\\",\\n            details=\\\"Include proposed restaurants and options for the team to consider.\\\"\\n        )\\n    elif \\\"create file\\\" not in str(self.execution_log):\\n        return ProposedAction(\\n            action=ActionType.create_file,\\n            description=\\\"Create a shared document for restaurant suggestions.\\\",\\n            details=\\\"Set up a Google Doc where team members can suggest their favorite places.\\\"\\n        )\\n    elif \\\"schedule meeting\\\" not in str(self.execution_log):\\n        return ProposedAction(\\n            action=ActionType.schedule_meeting,\\n            description=\\\"Schedule a meeting to finalize lunch plans.\\\",\\n            details=\\\"Find a suitable time next week when everyone can discuss the restaurant options.\\\"\\n        )\\n    else:\\n        return ProposedAction(\\n            action=ActionType.done,\\n            description=\\\"All action steps have been completed.\\\",\\n            details=\\\"The team lunch is organized successfully.\\\"\\n        )\\n\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_Dz58U1eVJHK10yY6iToLZ96W",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 389,
+    "prompt_tokens": 10001,
+    "total_tokens": 10390,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8960,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00106155,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00106155,
+      "upstream_inference_prompt_cost": 0.00082815,
+      "upstream_inference_completions_cost": 0.0002334
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

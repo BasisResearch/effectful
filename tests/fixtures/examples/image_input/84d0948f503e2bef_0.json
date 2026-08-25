@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698281-KCp0xgup9UqWkIbQRSCG",
+  "created": 1787698281,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_0950b7f384",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"implementation\":{\"code\":\"def describe_image(image):\\n    # Describe the content of the image.\\n    return \\\"This is a smiley face on a bright yellow background.\\\"\"},\"compact\":\"none\"}",
+              "name": "write_and_run_body"
+            },
+            "id": "call_auWTIYhnxIiGP4jxh0lkfky6",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 54,
+    "prompt_tokens": 16113,
+    "total_tokens": 16167,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 16000,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.00124935,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.00124935,
+      "upstream_inference_prompt_cost": 0.00121695,
+      "upstream_inference_completions_cost": 0.0000324
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

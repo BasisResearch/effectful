@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698282-q0Z43kEMIqQez2NoIj1f",
+  "created": 1787698282,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"title\":\"Die Hard\"}",
+              "name": "lookup_movie"
+            },
+            "id": "call_tjjY9TZarraKL7SVQR2nexC8",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 15,
+    "prompt_tokens": 9038,
+    "total_tokens": 9053,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8960,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.0006927,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.0006927,
+      "upstream_inference_prompt_cost": 0.0006837,
+      "upstream_inference_completions_cost": 9e-6
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}

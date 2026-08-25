@@ -1,0 +1,68 @@
+{
+  "id": "gen-1787698283-vZWlOnx004zg9htmXYRZ",
+  "created": 1787698283,
+  "model": "openai/gpt-4o-mini",
+  "object": "chat.completion",
+  "system_fingerprint": "fp_07b4de2b86",
+  "choices": [
+    {
+      "finish_reason": "tool_calls",
+      "index": 0,
+      "message": {
+        "content": null,
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "index": 0,
+            "function": {
+              "arguments": "{\"i1_h\":1,\"i2_h\":2}",
+              "name": "concat_horiz"
+            },
+            "id": "call_nKoxxteutK6JwKLgQdOlVAgG",
+            "type": "function"
+          }
+        ],
+        "function_call": null,
+        "provider_specific_fields": {
+          "reasoning": null,
+          "refusal": null
+        }
+      },
+      "provider_specific_fields": {
+        "native_finish_reason": "tool_calls"
+      }
+    }
+  ],
+  "usage": {
+    "completion_tokens": 23,
+    "prompt_tokens": 8386,
+    "total_tokens": 8409,
+    "completion_tokens_details": {
+      "accepted_prediction_tokens": null,
+      "audio_tokens": 0,
+      "reasoning_tokens": 0,
+      "rejected_prediction_tokens": null,
+      "text_tokens": null,
+      "image_tokens": 0,
+      "video_tokens": null
+    },
+    "prompt_tokens_details": {
+      "audio_tokens": 0,
+      "cache_write_tokens": 0,
+      "cached_tokens": 8320,
+      "text_tokens": null,
+      "image_tokens": null,
+      "video_tokens": 0,
+      "cache_creation_tokens": 0
+    },
+    "cost": 0.0006477,
+    "is_byok": false,
+    "cost_details": {
+      "upstream_inference_cost": 0.0006477,
+      "upstream_inference_prompt_cost": 0.0006339,
+      "upstream_inference_completions_cost": 0.0000138
+    }
+  },
+  "provider": "OpenAI",
+  "service_tier": null
+}
