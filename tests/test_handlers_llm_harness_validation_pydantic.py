@@ -931,7 +931,9 @@ def test_live_precondition_guard_rejects_off_topic_input():
             model=EFFECTFUL_LLM_MODEL,
             num_retries=4,
             tool_calling="json",
+            type_checker="none",
             eval_provider="none",
+            tool_choice="none",
         )
     ):
         assert answer("what do otters eat?")

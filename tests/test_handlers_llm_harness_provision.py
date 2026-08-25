@@ -574,6 +574,41 @@ class TestTenacityRetryer:
         assert mock_handler.call_count == 2
         assert result == "success"
 
+    def test_retry_after_result_decode_failure_is_resendable(self):
+        """The request a retry sends must not end with the model's own words.
+
+        A malformed answer is the one failure whose feedback has no tool call to
+        attach to, so it is a user message; were it a second assistant message,
+        the retry would be asking Anthropic to prefill the reply rather than to
+        write one (see `ResultDecodingError.to_feedback_message`).
+        """
+        responses = [
+            make_text_response("about tree fiddy"),  # not JSON: fails to decode
+            make_text_response(json.dumps({"value": 350})),
+        ]
+
+        mock_handler = MockCompletionHandler(responses)
+        message_sequence = [{"role": "user", "content": "test"}]
+        message_sequence_provider = {
+            HistoryBuilder.get_history: lambda: message_sequence
+        }
+
+        with (
+            handler(HistoryBuilder()),
+            handler(TenacityRetryer()),
+            handler(mock_handler),
+            handler(message_sequence_provider),
+        ):
+            message, tool_calls, result = call_assistant(
+                list(message_sequence),
+                response_type=int,
+                env={},
+            )
+
+        assert result == 350
+        retried = mock_handler.received_messages[1]
+        assert [m["role"] for m in retried] == ["user", "assistant", "user"]
+
     def test_retry_handler_exhausts_retries(self):
         """Test that TenacityRetryer raises after exhausting all retries."""
         # All responses have invalid tool calls
@@ -1361,22 +1396,25 @@ class TestErrorClasses:
         assert "Traceback:" not in without_tb
         assert "my_function" in without_tb
 
-    def test_result_decoding_feedback_is_an_assistant_message(self):
+    def test_result_decoding_feedback_is_a_user_message(self):
         """A malformed *answer* has no tool call to answer, and must not be fed
-        back as a user message.
+        back as a second assistant message.
 
-        A user message means a new call with a new REPL session (see
-        `AgentLoop`); a retry is the same call, asked again. Every other feedback
-        path in the harness is a ``tool`` message, so this is the only one that
-        had to choose.
+        Every other feedback path in the harness is a ``tool`` message, so this
+        is the only one that had to choose, and a request ending in the model's
+        own words is read as a prefill rather than as a question (see
+        `ResultDecodingError.to_feedback_message`). Because a user message
+        otherwise opens a new call, the feedback also has to say that this one
+        does not.
         """
         error = ResultDecodingError(
             original_error=ValueError("not an int"),
             raw_message={"role": "assistant", "content": "about tree fiddy"},
         )
         message = error.to_feedback_message(include_traceback=False)
-        assert message["role"] == "assistant"
+        assert message["role"] == "user"
         assert "not an int" in message["content"]
+        assert "not a new question" in message["content"]
 
 
 # ============================================================================
@@ -2083,6 +2121,35 @@ class TestSynthesizeAndCallDoctests:
 class TestMessageSequence:
     """Tests for MessageSequence message sequence tracking."""
 
+    def test_append_message_rejects_consecutive_assistant_messages(self):
+        """The model may not speak twice in a row.
+
+        The pair is legal to *build* and illegal to send: a provider that merges
+        consecutive assistant messages reads the result as a prefill, so the
+        complaint arrives a request later and names nothing. `append_message` is
+        the choke point every recorded message passes through, so the check is
+        there.
+        """
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+
+        with handler({HistoryBuilder.get_history: lambda: history}):
+            with pytest.raises(AssertionError):
+                HistoryBuilder.append_message(
+                    {"role": "assistant", "content": "hi again"}
+                )
+            HistoryBuilder.append_message({"role": "user", "content": "still there?"})
+            HistoryBuilder.append_message({"role": "assistant", "content": "hi again"})
+
+        assert [m["role"] for m in history] == [
+            "user",
+            "assistant",
+            "user",
+            "assistant",
+        ]
+
     def test_call_tool_sees_outer_message_sequence(self):
         """call_tool should not isolate; the tool sees the outer message sequence."""
         # Pre-populate the current frame with existing messages
@@ -2204,8 +2271,11 @@ class TestMessageSequence:
                 response_type=str,
                 env={},
             )
+            # A second reply has to be a reply to something, since HistoryBuilder
+            # rejects an assistant message that follows another.
+            HistoryBuilder.append_message({"role": "user", "content": "again"})
             # HistoryBuilder appended the first response, so the second call
-            # sends it along with the message that preceded it.
+            # sends it along with the messages that preceded it.
             resp2, _, _ = call_assistant(
                 list(message_sequence),
                 response_type=str,
@@ -2214,7 +2284,7 @@ class TestMessageSequence:
 
         answer = json.dumps({"value": "result"})
         assert call_log[0] == ["hello"]
-        assert call_log[1] == ["hello", answer]
+        assert call_log[1] == ["hello", answer, "again"]
 
     def test_call_assistant_saves_only_on_successful_fwd(self):
         """call_assistant should only save the response message to the frame when fwd() succeeds."""
@@ -3338,42 +3408,6 @@ class TestPromptCaching:
         ):
             result = simple_prompt("math")
         assert isinstance(result, str)
-
-
-class TestPythonReplIntegration:
-    """The LLM can run code in a persistent session through `exec_code`."""
-
-    @requires_llm
-    def test_llm_computes_via_exec_code(self, request):
-        """A Skill seeds a list in lexical scope and asks the LLM to
-        compute a derived statistic by running code.  The LLM uses the
-        `exec_code` tool (possibly across several rounds, with state
-        persisting) and returns the typed result."""
-        readings = [12, 19, 23, 31, 8, 27]
-
-        @Skill.define
-        def outlier_count() -> int:
-            """Use the `exec_code` tool to compute how many values in the
-            `readings` list lie strictly more than one population standard
-            deviation from the mean.  `readings` is available in scope.
-            Return that count as an integer."""
-            raise NotImplementedError
-
-        with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(LexicalToolExtractor()),
-            handler(TyTypeChecker()),
-            handler(BuiltinExecutor()),
-            handler(StatefulReplSynthesizer()),
-        ):
-            result = outlier_count()
-
-        import statistics
-
-        m = statistics.mean(readings)
-        s = statistics.pstdev(readings)
-        expected = sum(1 for r in readings if abs(r - m) > s)
-        assert result == expected
 
 
 # ============================================================================

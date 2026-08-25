@@ -102,13 +102,19 @@ class ResultDecodingError[E: Exception](DecodingError[E]):
 
     def to_feedback_message(
         self, *, include_traceback: bool = True
-    ) -> litellm.ChatCompletionAssistantMessage:
-        """Report the failure as a continuation of the model's own turn."""
+    ) -> litellm.ChatCompletionUserMessage:
+        """Report the failure as a user message."""
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return {"role": "assistant", "content": error_message}
+        return {
+            "role": "user",
+            "content": (
+                f"{error_message}\n\nThis is not a new `Skill` call: it is the same "
+                f"call as your last reply, asked again."
+            ),
+        }
 
 
 @dataclasses.dataclass
@@ -557,8 +563,9 @@ class AgentLoop(PromptInjectingInterpretation):
     - When you answer, the call ends and its value is returned to the program,
       which goes on doing whatever it does with it.
     - A *new* user message therefore means the previous call already finished and
-      you are being asked a new question. It is not a continuation of your last
-      turn, and nothing about it is a reply to you.
+      you are being asked a new question. The one exception says so itself:
+      a user message reporting that your answer could not be decoded is
+      the *same* call, asked again, and the rest of it is the error to fix.
     - Only an `Agent` accumulates history across calls, which is why earlier user
       messages may be in view at all. For a plain `Skill` each call starts from
       an empty conversation.
@@ -607,17 +614,6 @@ class AgentLoop(PromptInjectingInterpretation):
     | 1 | Header | `<name><signature>` — identifies which skill this call is to |
     | 2 | Body | The skill's docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
     """
-
-    # The docstring above is model-facing: it is the `Harness` section this
-    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
-    # notes for a reader of the code belong in comments like this one.
-    #
-    # The two halves it describes are built by `_skill_system_prompt` and
-    # `_skill_user_prompt` below, and joined by the `call_system`/`call_user`
-    # rules. This section lands last in the harness half, since this handler is
-    # installed outermost and therefore intercepts `call_system` last -- which
-    # puts the description of the layout immediately before the task half it
-    # describes.
 
     def _skill_system_prompt(self, skill: Skill) -> PromptSection:
         """The half of the system prompt describing a call to `skill` -- the

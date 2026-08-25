@@ -34,10 +34,48 @@ class HistoryBuilder(ObjectInterpretation):
 
     @classmethod
     def append_message(cls, message: Message) -> None:
+        """Append `message` to the ambient history, if it is legal where it lands.
+
+        Both checks are about position rather than content, which is why they sit
+        here: every message the harness records passes through this method,
+        including the ones a failed attempt records on its way out, and those are
+        the ones that get a history into a shape no provider will accept.
+        """
         history = cls.get_history()
         if message["role"] == "tool":
             assert cls._tool_call_answers_request(message, history)
+        elif message["role"] == "assistant":
+            assert cls._assistant_speaks_in_turn(history), (
+                "an assistant message may not directly follow another; see "
+                "`HistoryBuilder._assistant_speaks_in_turn`"
+            )
         history.append(message)
+
+    @staticmethod
+    def _assistant_speaks_in_turn(
+        history: collections.abc.Sequence[Message],
+    ) -> bool:
+        """Whether the model may speak next: whether `history` is empty or ends
+        with something other than the model's own words.
+
+        The harness never prefills, so an assistant message directly following
+        another is always a mistake -- and a quiet one, because it is not the
+        second message that a provider objects to. Anthropic merges the pair and
+        reads the result as a prefill of the reply it is about to write, which
+        under a response format is a ``BadRequestError`` and without one is an
+        answer that continues whatever the pair ended with (see
+        `~effectful.handlers.llm.harness.hooks.ResultDecodingError.to_feedback_message`,
+        the feedback path that has to choose a role at all). Neither failure
+        names the message that caused it, and both surface a request or two after
+        the append that did.
+
+        The check is against the *last* message only, not against a general
+        alternation of roles: a turn's tool results are several messages in a row
+        (one per call), and a nested call on the same `Agent` opens with a user
+        message of its own in the middle of the enclosing turn. Both are
+        well-formed, and only the model speaking twice is not.
+        """
+        return not history or history[-1]["role"] != "assistant"
 
     @implements(call_system)
     def call_system(self, *args, **kwargs):

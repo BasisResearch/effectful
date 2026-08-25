@@ -29,7 +29,10 @@ class TenacityRetryer(PromptInjectingInterpretation):
     answer or a tool call comes back malformed -- wrong shape for the return
     type, a tool call whose arguments do not fit the signature -- you are shown
     the decoding error and asked again, with the failed reply and the error
-    visible in the conversation.
+    visible in the conversation. A malformed tool call is reported as that
+    call's result; a malformed *answer* has no call to report against, so it
+    comes back as a user message. That message is not a new question, and says
+    so: it is the same call, asked again.
 
     That budget is finite — a handful of attempts, fixed by whoever configured
     this harness — after which the error is raised to the caller and the call
