@@ -4,7 +4,6 @@ import codeop
 import collections
 import collections.abc
 import contextlib
-import inspect
 import io
 import linecache
 import types
@@ -20,19 +19,17 @@ from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    PromptInjectingInterpretation,
     ToolCallExecutionError,
     ToolResult,
     call_agent,
     call_assistant,
-    call_system,
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    PromptSection,
     TypeToPydanticType,
-    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
@@ -41,7 +38,7 @@ from effectful.handlers.llm.harness.synthesis.function import (
 )
 from effectful.handlers.llm.types import Skill, Tool
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 from effectful.ops.types import Operation
 
 
@@ -369,24 +366,41 @@ def _with_note(user: Message, note: str) -> Message:
     return typing.cast(Message, updated)
 
 
-class StatefulReplSynthesizer(ObjectInterpretation):
-    """You may run arbitrary Python code in a persistent session. The code is
-    executed in the context of this Skill's lexical scope (see the *Lexical
-    scope* table for the available names and their types). The session persists
-    across turns, so you may define variables, functions, and classes that are
-    used in later turns. The return value of the code is returned to you as the
-    result of the tool call.
+class StatefulReplSynthesizer(PromptInjectingInterpretation):
+    """You may run arbitrary Python code in a persistent session, through the
+    `exec_code` tool. The code is executed in the context of this Skill's lexical
+    scope (see the *Lexical scope* table for the available names and their
+    types). The session persists across turns, so you may define variables,
+    functions, and classes that are used in later turns.
 
-    Use the REPL only when running code actually helps — computing or verifying
-    a result, exploring data, or calling a tool. If you can answer directly, just
-    answer; do not route a plain text answer through `print(...)`.
+    What comes back is what the code *printed* — its stdout, then anything on
+    stderr. Nothing is echoed automatically: a bare expression on its own line
+    displays nothing, so `print(...)` whatever you need to see.
+
+    The `read_lexical_variable` tool reads one of those in-scope names into your
+    context on demand: this call's own arguments, and the names in the *Lexical
+    scope* table. A name from anywhere else — a local of some function you can
+    see in the module source, say — is not in scope and comes back as `null`.
+
+    Use the REPL when running code actually helps: computing or verifying a
+    result, exploring data, calling a tool, or writing something onto durable
+    state you want to survive this turn. Don't use it as a scratchpad for
+    reasoning you could just as well do in your head, and don't route a plain
+    text answer through `print(...)` — if you can simply state the answer, state
+    it.
+
+    But "state it" means state an answer you actually have. Where the task tells
+    you to compute, verify or record something, do that here rather than
+    asserting the result from reasoning alone: a wrong answer you were confident
+    in costs far more than the call you skipped.
     """
 
     # Off by default; install it where the LLM should be able to run code whose
     # state (variables, imports, definitions) survives across tool calls within a
     # single Skill invocation.  The docstring above is model-facing: it is the
     # `Harness` section this handler adds to the system prompt (see
-    # `_call_system`), so implementation notes belong in comments like this one.
+    # `PromptInjectingInterpretation`), so implementation notes belong in
+    # comments like this one.
     #
     # Scoping mirrors how `__history__` is managed for Skill calls: `_apply`
     # handles `call_agent` to introduce fresh session-bound handlers
@@ -472,26 +486,6 @@ class StatefulReplSynthesizer(ObjectInterpretation):
     def repl_env(cls) -> dict[str, typing.Any]:
         """The REPL session's current namespace, as a flat dict of name -> value"""
         return {}
-
-    @implements(call_system)
-    def _call_system(
-        self, harness_prompt: PromptSection, agent_prompt: PromptSection
-    ) -> typing.Any:
-        return fwd(
-            PromptSection(
-                type="prompt_section",
-                title=harness_prompt["title"],
-                content=[
-                    *harness_prompt["content"],
-                    PromptSection(
-                        type="prompt_section",
-                        title=type(self).__name__,
-                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                    ),
-                ],
-            ),
-            agent_prompt,
-        )
 
     @implements(call_agent)
     def _call_agent[**P, T](

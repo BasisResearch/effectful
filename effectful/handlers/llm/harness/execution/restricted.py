@@ -30,7 +30,15 @@ from effectful.handlers.llm.harness.execution.hooks import (
     exec,
     parse,
 )
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.handlers.llm.harness.hooks import (
+    PromptInjectingInterpretation,
+    call_system,
+)
+from effectful.handlers.llm.harness.serialization import (
+    PromptSection,
+    to_content_blocks,
+)
+from effectful.ops.syntax import implements
 
 # ----------------------------------------------------------------------------
 # The RestrictedPython policy: what generated code may name, touch and import
@@ -703,7 +711,7 @@ def _guarded_apply(
     return func(*args, **kwargs)
 
 
-class RestrictedPythonExecutor(ObjectInterpretation):
+class RestrictedPythonExecutor(PromptInjectingInterpretation):
     """
     Safer provider using RestrictedPython.
 
@@ -744,6 +752,43 @@ class RestrictedPythonExecutor(ObjectInterpretation):
         policy: type[RestrictingNodeTransformer] | None = None,
     ):
         self.policy = policy
+
+    def _allowed_modules_section(self) -> PromptSection:
+        """The import allowlist, rendered from the constant that enforces it.
+
+        The docstring above can name `_ALLOWED_MODULES` but not list it, and a
+        model that has to discover the allowlist by getting an `ImportError` on
+        `os` spends a turn per guess.
+        """
+        modules = "\n".join(f"- `{name}`" for name in sorted(_ALLOWED_MODULES))
+        return PromptSection(
+            type="prompt_section",
+            title="Modules you may import",
+            content=to_content_blocks(
+                "Code you write runs in a restricted environment that can import "
+                "these modules and no others. Anything else -- `os`, `sys`, "
+                "`subprocess`, `socket`, `importlib`, `inspect`, `pickle`, and "
+                "the rest -- raises `ImportError`, whether you name it in an "
+                "`import` statement or reach it as an attribute of a module that "
+                "imported it. There is also no `open`, `input`, `eval`, `exec`, "
+                "`globals`, `locals` or `dir`.\n\n" + modules
+            ),
+        )
+
+    @implements(call_system)
+    def call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
+        # Appended before delegating, so the allowlist and the docstring section
+        # the base rule adds end up adjacent.
+        return super().call_system(
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[*harness_prompt["content"], self._allowed_modules_section()],
+            ),
+            agent_prompt,
+        )
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:

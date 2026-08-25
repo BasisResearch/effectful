@@ -10,12 +10,14 @@ from effectful.handlers.llm.harness.execution.hooks import (
     exec,
     parse,
 )
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.handlers.llm.harness.hooks import PromptInjectingInterpretation
+from effectful.ops.syntax import implements
 
 
-class BuiltinExecutor(ObjectInterpretation):
-    """UNSAFE provider that handles parse, comple and exec operations
-    by shelling out to python *without* any further checks. Only use for testing.
+class BuiltinExecutor(PromptInjectingInterpretation):
+    """UNSAFE provider that handles the parse, compile and exec operations with
+    the interpreter's own builtins, in this process, *without* any further
+    checks. Only use for testing.
 
     Runs whatever it is given: type checking is a separate handler
     (`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or

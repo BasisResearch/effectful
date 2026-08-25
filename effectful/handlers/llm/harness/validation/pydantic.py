@@ -5,14 +5,17 @@ import typing
 
 import pydantic
 
-from effectful.handlers.llm.harness.hooks import call_agent
+from effectful.handlers.llm.harness.hooks import (
+    PromptInjectingInterpretation,
+    call_agent,
+)
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.types import Encodable, Skill
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 
-class PydanticSkillArgValidator(ObjectInterpretation):
+class PydanticSkillArgValidator(PromptInjectingInterpretation):
     """Enforces the pre-conditions a caller writes into a `Skill`'s parameters.
 
     A parameter annotated with pydantic metadata -- a

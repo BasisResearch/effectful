@@ -11,8 +11,8 @@ import pydantic
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    PromptInjectingInterpretation,
     call_assistant,
-    call_system,
 )
 from effectful.handlers.llm.harness.serialization import (
     PromptSection,
@@ -23,13 +23,13 @@ from effectful.handlers.llm.harness.serialization import (
 from effectful.handlers.llm.types import Agent, Encodable, Skill, Tool
 from effectful.internals.unification import nested_type
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 from effectful.ops.types import INSTANCE_OP_PREFIX
 
 logger = logging.getLogger(__name__)
 
 
-class LexicalReaders(ObjectInterpretation):
+class LexicalReaders(PromptInjectingInterpretation):
     """Some of the tools below take no arguments and simply return the current
     value of a named variable from this Skill's lexical scope (see the
     *Lexical scope* table for the available names and their types). Call such a
@@ -73,26 +73,6 @@ class LexicalReaders(ObjectInterpretation):
             tool_fn.__annotations__ = {"return": typ}
             return super().define(tool_fn)
 
-    @implements(call_system)
-    def _call_system(
-        self, harness_prompt: PromptSection, agent_prompt: PromptSection
-    ) -> typing.Any:
-        return fwd(
-            PromptSection(
-                type="prompt_section",
-                title=harness_prompt["title"],
-                content=[
-                    *harness_prompt["content"],
-                    PromptSection(
-                        type="prompt_section",
-                        title=type(self).__name__,
-                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                    ),
-                ],
-            ),
-            agent_prompt,
-        )
-
     @implements(call_assistant)
     def _call_assistant[T](
         self,
@@ -119,7 +99,7 @@ class LexicalReaders(ObjectInterpretation):
         return fwd(messages, response_type, env, readers)
 
 
-class LexicalToolExtractor(ObjectInterpretation):
+class LexicalToolExtractor(PromptInjectingInterpretation):
     """Offer the model the tools reachable from a `Skill`'s lexical scope.
 
     Unions `_tools_in_scope(env)` into the request's `tools` and forwards, so a

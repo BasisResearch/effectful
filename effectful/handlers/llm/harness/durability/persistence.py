@@ -5,14 +5,17 @@ import pickle
 import sqlite3
 import typing
 
-from effectful.handlers.llm.harness.hooks import call_agent
+from effectful.handlers.llm.harness.hooks import (
+    PromptInjectingInterpretation,
+    call_agent,
+)
 from effectful.handlers.llm.types import Agent, Skill
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 from effectful.ops.types import Operation
 
 
-class SQLitePersister(ObjectInterpretation):
+class SQLitePersister(PromptInjectingInterpretation):
     """Handler that persists `Agent` history and state to a SQLite database.
 
     Install alongside `AgentLoop`, `LiteLLMConfigurer` and `HistoryBuilder`::

@@ -10,6 +10,7 @@ from effectful.handlers.llm.harness.durability.transaction import (
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    PromptInjectingInterpretation,
     ResultDecodingError,
     ToolCallDecodingError,
     ToolCallExecutionError,
@@ -20,10 +21,10 @@ from effectful.handlers.llm.harness.hooks import (
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.handlers.llm.types import Tool
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 
-class TenacityRetryer(ObjectInterpretation):
+class TenacityRetryer(PromptInjectingInterpretation):
     """Retries LLM requests if tool call or result decoding fails.
 
     This handler intercepts `call_assistant` and catches `ToolCallDecodingError`

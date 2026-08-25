@@ -12,10 +12,10 @@ import pydantic
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.hooks import (
+    PromptInjectingInterpretation,
     ToolCallExecutionError,
     call_agent,
     call_assistant,
-    call_system,
     call_tool,
 )
 from effectful.handlers.llm.harness.serialization import (
@@ -23,11 +23,9 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
     EncodedFunction,
-    PromptSection,
     TypeToPydanticType,
     _inline_refs,
     _serialize_callable,
-    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
@@ -37,7 +35,7 @@ from effectful.handlers.llm.harness.synthesis.function import (
 )
 from effectful.handlers.llm.types import Encodable, Skill, Tool
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 
 def _splice_body(
@@ -455,22 +453,45 @@ def _callable_type_from_signature(
     return collections.abc.Callable[param_types, return_type]  # type: ignore
 
 
-class FinalBodySynthesizer(ObjectInterpretation):
-    """You may "answer" a Skill by writing code instead of producing the value
-    directly. The `write_and_run_body` tool accepts a single argument: a Python
-    function whose signature matches the Skill's signature (see its spec
-    below). The harness applies that function to the original inputs and its
-    return value becomes the answer, so write the function body as a drop-in
-    implementation of the Skill. The function may reference names from the
-    lexical scope (see the *Lexical scope* table).
+class FinalBodySynthesizer(PromptInjectingInterpretation):
+    """There are two ways to answer a Skill, and this section describes the
+    second one. You may state the answer directly, and a direct answer is
+    accepted — that is the ordinary path and often the right one. Or you may
+    *compute* the answer, by writing an implementation and submitting it with the
+    `write_and_run_body` tool. Reach for the tool when working the answer out by
+    hand would be error-prone, or when the Skill's doctests are the standard your
+    answer has to meet. When you already know the answer, just give it: do not
+    wrap a value you have in hand inside a function that ignores its arguments
+    and returns a constant.
 
-    You do not need to write a docstring or doctests: on submission the harness
-    attaches the Skill's own docstring to your function and runs *its*
-    doctests (with recursive calls to the Skill routed to your
+    Everything below is about the tool. It accepts a single argument: a Python
+    function whose signature matches the Skill's signature (the heading of the
+    task half of this prompt). The harness applies that function to the original
+    inputs and its return value becomes the answer, so write the function body as
+    a drop-in implementation of the Skill. The function may reference names from
+    the lexical scope (see the *Lexical scope* table).
+
+    In a `write_and_run_body` submission you do not need to write a docstring or
+    doctests: the harness attaches the Skill's own docstring to your function and
+    runs *its* doctests (with recursive calls to the Skill routed to your
     implementation). A solution whose doctests fail — or that errors when
     applied — is rejected and fed back to you to revise, so the answer only
-    stands once the Skill's doctests pass. Write just the implementation;
-    any docstring you add is replaced and ignored.
+    stands once the Skill's doctests pass. Write just the implementation; a
+    docstring you add *there* is replaced and ignored.
+
+    All of that applies to this tool's submissions only. A Skill whose declared
+    *return type* is itself a function is a different thing, easily confused with
+    this one: you answer it by writing the function it returns, as an ordinary
+    answer, and this tool is not involved. Two rules invert there. The signature
+    to write is the *returned* function's, taken from the return type — not the
+    Skill's own, and with no `self` receiver. And your docstring is kept rather
+    than replaced, so if the Skill asks for doctests certifying what you wrote,
+    write them: they are run, and they are what your answer is accepted on.
+
+    Whenever you answer with code, annotate every parameter and the return type.
+    An unannotated parameter is rejected at decode, however obvious its type
+    looks from the name — including a `self` you should not have written in the
+    first place.
 
     A successful `write_and_run_body` call ends the conversation immediately: no
     further turn is taken, and the value of applying your function to the
@@ -481,15 +502,13 @@ class FinalBodySynthesizer(ObjectInterpretation):
 
     This answers the *current* call only. Each call is a fresh, independent
     task: even if you already submitted a working solution earlier in this
-    conversation, a prior submission is not a standing answer — you must call
-    `write_and_run_body` again to answer the current call. Never end a turn with
-    a prose summary in place of the answer; a plain message is not a valid
-    response and will be rejected.
+    conversation, a prior submission is not a standing answer — to answer this
+    call by synthesis you must call `write_and_run_body` again.
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
-    # handler adds to the system prompt (see `_call_system`), so notes for a
-    # reader of the code belong in comments like this one.
+    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
+    # notes for a reader of the code belong in comments like this one.
     #
     # This is the declarative "CodeAdapt" workflow: the LLM writes code
     # implementing the body of the Skill rather than reasoning out the answer
@@ -581,26 +600,6 @@ class FinalBodySynthesizer(ObjectInterpretation):
                 return return_encoding.validate_python(result, context=env)
 
             return super().define(write_and_run_body, name=cls.__toolname__)
-
-    @implements(call_system)
-    def _call_system(
-        self, harness_prompt: PromptSection, agent_prompt: PromptSection
-    ) -> typing.Any:
-        return fwd(
-            PromptSection(
-                type="prompt_section",
-                title=harness_prompt["title"],
-                content=[
-                    *harness_prompt["content"],
-                    PromptSection(
-                        type="prompt_section",
-                        title=type(self).__name__,
-                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                    ),
-                ],
-            ),
-            agent_prompt,
-        )
 
     @implements(call_tool)
     def _call_tool(self, tool_call: DecodedToolCall) -> typing.Any:

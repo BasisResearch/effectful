@@ -29,13 +29,10 @@ implemented by a large language model, and call them like ordinary code.
 
 ## Tool calling and structured output
 
-During a skill call the model may take multiple turns: on each turn it can
-call any `Tool` in scope (results are fed back and the loop continues) or
-produce a final answer. The final answer is decoded to the skill's return
-type via constrained/structured generation, so non-`str` return types (ints,
-dataclasses, etc.) come back as real Python values. A handler may also mark a
-tool call as *finalizing*, letting the model "answer" by calling a tool: its
-return value becomes the result and the loop terminates.
+A skill call is a multi-turn loop, and how it runs -- how the two messages are
+assembled, when the model may call a tool, how its answer is decoded -- belongs
+to the handler implementing it: see
+`effectful.handlers.llm.harness.hooks.AgentLoop`.
 """
 
 import abc
@@ -126,8 +123,9 @@ class Skill[**P, T](Tool[P, T]):
     Apply `Skill.define` as a decorator to a fully type-annotated function or
     method whose body is either empty or `raise NotHandled`. The docstring is a
     [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
-    prompt: its `{...}` fields are filled at call time (see *Prompt assembly*
-    below) and the LLM's response is decoded to the return type.
+    prompt: its `{...}` fields are filled at call time (see
+    `effectful.handlers.llm.harness.hooks.AgentLoop`, which assembles the
+    messages) and the LLM's response is decoded to the return type.
 
     `Skill.define` validates the definition and raises if:
 
@@ -188,34 +186,6 @@ class Skill[**P, T](Tool[P, T]):
     cannot call a tool it cannot lexically see, so it should use only tools that
     are in scope and relevant to the task. Skills are themselves tools,
     enabling composition into agent workflows.
-
-    ## Prompt assembly
-
-    A call produces two messages. The **system message** is assembled once per
-    conversation, in two `#` halves — the harness the call runs under, then the
-    task itself — each ordered most-constant-first so the document caches well:
-
-    | # | Section heading | Content | Constant over |
-    | - | --------------- | ------- | ------------- |
-    | 1 | `# Harness` | What the installed handlers provide, a `##` subsection each: the framework concepts (the package overview plus a `###` per concept — `Skill`, `Tool`, `Agent`, `Encodable`) followed by one per capability handler (a Python REPL, code synthesis, readers for lexically scoped values), every one of them sourced from a real docstring | the handler stack |
-    | 2 | `# <name><signature>` | The call, introspected from this skill, as the `##` subsections below | the call |
-    | 2.1 | `## Module <name>` | Source of the skill's module (docstring if source is unavailable) | the module |
-    | 2.2 | `## Agent <cls>` (or `## Skill`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every skill sharing the instance's history (an `Agent`'s methods, or just this skill) | the instance |
-    | 2.3 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
-    | 2.4 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
-
-    Section 1 is contributed entirely by handlers, so a stack that installs none
-    of them omits it; any section that ends up empty is left out of the document
-    entirely.
-
-    The **user message** is the per-call part — only its changing values are
-    re-sent each turn; everything constant lives in the system message above. It
-    has two parts:
-
-    | # | Part | Content |
-    | - | ---- | ------- |
-    | 1 | Header | `<name><signature>` — identifies which skill this turn calls |
-    | 2 | Body | The docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
 
     """
 

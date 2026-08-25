@@ -9,12 +9,13 @@ import tempfile
 
 import ty
 
+from effectful.handlers.llm.harness.hooks import PromptInjectingInterpretation
 from effectful.handlers.llm.harness.validation.hooks import type_check
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 
 @dataclasses.dataclass
-class TyTypeChecker(ObjectInterpretation):
+class TyTypeChecker(PromptInjectingInterpretation):
     """Handler that handles type_check by shelling out to ty.
 
     Interchangeable with

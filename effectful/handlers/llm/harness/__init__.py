@@ -85,10 +85,15 @@ def harness(
     7b. `PydanticSkillArgValidator` -- enforce the pre-conditions a caller
         wrote into a `Skill`'s parameter annotations (if ``check_contracts``).
     8. `TenacityRetryer` -- retry malformed/failing model output.
-    9. `LexicalReaders` -- expose lexically-scoped tools to the model.
-    10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
-        SQLite after each successful call (if ``persist_db``).
-    11. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+    9. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
+       SQLite after each successful call (if ``persist_db``).
+    10. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+
+    `~effectful.handlers.llm.harness.legibility.lexical.LexicalReaders` is *not*
+    among them. `StatefulReplSynthesizer`, which is, already offers
+    ``read_lexical_variable`` over the same scope; installing both would
+    advertise two ways to read every binding. Install it by hand for a stack
+    that omits the REPL.
 
     Args:
         num_retries: Attempts for malformed/failing model output (via

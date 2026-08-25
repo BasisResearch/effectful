@@ -12,18 +12,16 @@ import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
     Message,
+    PromptInjectingInterpretation,
     call_assistant,
-    call_system,
 )
 from effectful.handlers.llm.harness.legibility.lexical import _tool_paths
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
-    PromptSection,
     TypeToPydanticType,
     _NameAndTool,
     _tool_description,
-    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import _recover_skill_def
 from effectful.handlers.llm.harness.synthesis.snippet import (
@@ -33,7 +31,7 @@ from effectful.handlers.llm.harness.synthesis.snippet import (
 from effectful.handlers.llm.types import Encodable, Tool
 from effectful.internals.unification import freetypevars
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 _EXPR_FILENAME_PREFIX = "<call_expr-"
 
@@ -260,7 +258,7 @@ def _pydantic_type_call_expression(ty):
     ]
 
 
-class ExpressionToolCaller(ObjectInterpretation):
+class ExpressionToolCaller(PromptInjectingInterpretation):
     """The tools of this Skill's lexical scope are called by writing Python,
     not by filling in JSON arguments. Each such tool takes a single parameter
     `call`: a string containing ONE Python expression that invokes the tool,
@@ -279,8 +277,8 @@ class ExpressionToolCaller(ObjectInterpretation):
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
-    # handler adds to the system prompt (see `_call_system`), so implementation
-    # notes belong in comments like this one.
+    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
+    # implementation notes belong in comments like this one.
     #
     # This is the code-generation replacement for
     # `~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor`
@@ -370,26 +368,6 @@ class ExpressionToolCaller(ObjectInterpretation):
             )
             tool_fn.__annotations__ = {"call": call_type, "return": typing.Any}
             return super().define(tool_fn)
-
-    @implements(call_system)
-    def _call_system(
-        self, harness_prompt: PromptSection, agent_prompt: PromptSection
-    ) -> typing.Any:
-        return fwd(
-            PromptSection(
-                type="prompt_section",
-                title=harness_prompt["title"],
-                content=[
-                    *harness_prompt["content"],
-                    PromptSection(
-                        type="prompt_section",
-                        title=type(self).__name__,
-                        content=to_content_blocks(inspect.getdoc(type(self)) or ""),
-                    ),
-                ],
-            ),
-            agent_prompt,
-        )
 
     @classmethod
     def _should_wrap(cls, tool: Tool) -> bool:

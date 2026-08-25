@@ -2,6 +2,7 @@
 
 import abc
 import collections.abc
+import contextlib
 import dataclasses
 import inspect
 import re
@@ -20,6 +21,7 @@ from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     AgentLoop,
+    PromptInjectingInterpretation,
     call_agent,
     call_system,
     call_user,
@@ -45,7 +47,7 @@ from effectful.handlers.llm.harness.serialization import (
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
 from tests.conftest import offered_tools, skill_tools
@@ -711,21 +713,85 @@ class TestSystemPromptDocument:
             "# defaulted(a: str, opts: dict = {}) -> str"
         )
 
-    def test_a_handler_documents_itself_with_its_own_docstring(self):
-        """A handler adds the section describing itself to `harness_prompt` and
-        forwards, leaving the section it was handed untouched."""
+    def _harness_text(self, *handlers) -> str:
+        """The `# Harness` half of the system prompt assembled under `handlers`.
+
+        Only that half: the task half carries the *source of the skill's module*,
+        which for a skill defined here is this test file -- so a substring
+        assertion against the whole document would match the test's own code.
+        """
 
         @Skill.define
         def standalone(topic: str) -> str:
             """Write about {topic}."""
             raise NotHandled
 
-        class Documented(ObjectInterpretation):
+        prompt = self._section("Harness", [])
+        with contextlib.ExitStack() as stack:
+            for h in handlers:
+                stack.enter_context(handler(h))
+            content = _message_text(
+                call_system(prompt, AgentLoop()._skill_system_prompt(standalone))[
+                    "content"
+                ]
+            )
+        # The document is rebuilt on the way down; no handler mutates the
+        # section it was handed.
+        assert prompt["content"] == []
+        task_heading = "# `standalone(topic: str) -> str`"
+        assert task_heading in content
+        return content[: content.index(task_heading)]
+
+    def test_a_handler_documents_itself_with_its_own_docstring(self):
+        """`PromptInjectingInterpretation` is the whole mechanism: a handler is
+        described to the model by having a docstring."""
+
+        class Documented(PromptInjectingInterpretation):
             """A capability of the harness, described for the model."""
 
+        content = self._harness_text(Documented())
+        assert "# Harness\n\n## Documented" in content
+        assert "A capability of the harness, described for the model." in content
+
+    def test_a_handler_without_its_own_docstring_says_nothing(self):
+        """`inspect.getdoc` walks the MRO, so a subclass with no docstring of its
+        own would otherwise inject the base class's -- which is addressed to a
+        reader of the code, and must never reach the model."""
+
+        class Undocumented(PromptInjectingInterpretation):
+            pass
+
+        content = self._harness_text(Undocumented())
+        assert "Undocumented" not in content
+        base_doc = inspect.getdoc(PromptInjectingInterpretation)
+        assert base_doc is not None
+        assert base_doc.splitlines()[0] not in content
+
+    def test_a_subclass_inherits_its_parent_handlers_description(self):
+        """The MRO walk is what lets a specialization restate nothing: it is
+        offered under its own name with the description it inherits."""
+
+        class Parent(PromptInjectingInterpretation):
+            """The capability, described once."""
+
+        class Child(Parent):
+            pass
+
+        content = self._harness_text(Child())
+        assert "## Child" in content
+        assert "The capability, described once." in content
+
+    def test_a_handler_may_contribute_more_than_its_docstring(self):
+        """The `FrameworkDocumenter`/`RestrictedPythonExecutor` idiom: put the
+        extra sections into `harness_prompt` and delegate to the base rule, whose
+        own section lands last of what one handler adds."""
+
+        class Generated(PromptInjectingInterpretation):
+            """What the section below is."""
+
             @implements(call_system)
-            def _call_system(self, harness_prompt, agent_prompt):
-                return fwd(
+            def call_system(self, harness_prompt, agent_prompt):
+                return super().call_system(
                     PromptSection(
                         type="prompt_section",
                         title=harness_prompt["title"],
@@ -733,27 +799,32 @@ class TestSystemPromptDocument:
                             *harness_prompt["content"],
                             PromptSection(
                                 type="prompt_section",
-                                title="Documented",
-                                content=to_content_blocks(
-                                    inspect.getdoc(type(self)) or ""
-                                ),
+                                title="Computed",
+                                content=to_content_blocks("a list built at runtime"),
                             ),
                         ],
                     ),
                     agent_prompt,
                 )
 
-        harness_prompt = self._section("Harness", [])
-        with handler(Documented()):
-            content = _message_text(
-                call_system(
-                    harness_prompt, AgentLoop()._skill_system_prompt(standalone)
-                )["content"]
-            )
+        content = self._harness_text(Generated())
+        assert content.index("## Computed") < content.index("## Generated")
+        assert "a list built at runtime" in content
+        assert "What the section below is." in content
 
-        assert "# Harness\n\n## Documented" in content
-        assert "A capability of the harness, described for the model." in content
-        assert harness_prompt["content"] == []
+    def test_sections_appear_innermost_first(self):
+        """Installation order is the only thing deciding where a handler's
+        section lands: the innermost handler intercepts first, so it appends
+        first."""
+
+        class Outer(PromptInjectingInterpretation):
+            """Outer capability."""
+
+        class Inner(PromptInjectingInterpretation):
+            """Inner capability."""
+
+        content = self._harness_text(Outer(), Inner())
+        assert content.index("## Inner") < content.index("## Outer")
 
 
 class TestAgentDocstringFallback:

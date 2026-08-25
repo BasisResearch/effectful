@@ -42,6 +42,7 @@ from effectful.internals.unification import (
     substitute,
     unify,
 )
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
@@ -458,15 +459,145 @@ Handlers install against this to intercept an agent call, alongside the other
 """
 
 
-class AgentLoop(ObjectInterpretation):
-    def _skill_system_prompt(self, skill: Skill) -> PromptSection:
-        """The half of the system prompt describing a call to `skill`.
+class PromptInjectingInterpretation(ObjectInterpretation):
+    """Base class for a handler that describes itself to the model.
 
-        Everything here is introspected from the `Skill`, and its subsections
-        are laid out most-constant-first so that the document caches well as
-        the conversation grows: the module, then the agent and its skills, then
-        the names in scope.  `call_system` puts this after the harness half,
-        which is constant over the whole process.
+    A subclass's own docstring becomes a section of the harness half of the
+    system prompt, titled with the class name.  That is the whole mechanism:
+    a handler is documented for the model by having a docstring, so what the
+    model is told about a capability and what a reader of the code is told are
+    the same text and cannot drift apart.
+
+    A handler with more to say than its docstring -- content that has to be
+    computed, like a list built from a constant -- overrides this rule, puts its
+    extra sections into `harness_prompt`, and delegates::
+
+        @implements(call_system)
+        def call_system(self, harness_prompt, agent_prompt):
+            return super().call_system(
+                PromptSection(
+                    type="prompt_section",
+                    title=harness_prompt["title"],
+                    content=[*harness_prompt["content"], self._extra_section()],
+                ),
+                agent_prompt,
+            )
+
+    The base's own section is appended last of what one handler adds, so extras
+    land immediately ahead of it.  Where a handler's sections sit relative to
+    *other* handlers' is decided by installation order alone (see `call_system`);
+    there is deliberately no per-class knob for it.
+
+    Subclassing this is what makes a docstring model-facing, so implementation
+    notes belong in comments rather than in the docstring -- see
+    `~effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer` for the
+    convention.  A subclass that has no docstring of its own contributes nothing.
+    """
+
+    @implements(call_system)
+    def call_system(
+        self, harness_prompt: PromptSection, agent_prompt: PromptSection
+    ) -> typing.Any:
+        doc = inspect.getdoc(type(self))
+        # `inspect.getdoc` walks the MRO, which is what lets a subclass inherit a
+        # parent handler's description (`MixedToolCaller` does not restate
+        # `ExpressionToolCaller`'s) -- and what would otherwise put the docstring
+        # above, addressed to a reader of this code, into the prompt of every
+        # subclass that has none of its own.
+        if not doc or doc == inspect.getdoc(PromptInjectingInterpretation):
+            return fwd(harness_prompt, agent_prompt)
+        return fwd(
+            PromptSection(
+                type="prompt_section",
+                title=harness_prompt["title"],
+                content=[
+                    *harness_prompt["content"],
+                    PromptSection(
+                        type="prompt_section",
+                        title=type(self).__name__,
+                        content=to_content_blocks(doc),
+                    ),
+                ],
+            ),
+            agent_prompt,
+        )
+
+
+class AgentLoop(PromptInjectingInterpretation):
+    """Each turn of this conversation is one request in a loop, and every message
+    you see was assembled by the harness whose capabilities the rest of this
+    prompt describes. Here is how those messages are put together.
+
+    On each turn you either call tools -- results are appended to the
+    conversation and the loop continues -- or answer. It is one or the other: a
+    turn that calls a tool is not an answer, so any answer you write alongside a
+    tool call is discarded and you will be asked again. Finish your tool calls
+    first, then answer in a turn of its own. The answer is decoded into
+    the Skill's declared return type by constrained generation, so a non-`str`
+    return type (an int, a dataclass, a list of them) comes back to the caller as
+    a real Python value rather than as prose about one. A handler may also mark
+    one of its tools *finalizing*: calling that tool ends the call, and its
+    return value is the answer (`write_and_run_body` is the canonical one).
+
+    When the return type *is* `str`, your message is not summarized or extracted
+    from -- the whole of it, verbatim, becomes the value the calling program
+    receives, and is often fed straight into something else. So write the value
+    itself, with no preamble, no sign-off and no commentary about producing it:
+    "Here is the summary you asked for:" is not a preface to the answer, it is
+    part of the answer.
+
+    ## The system message
+
+    Assembled once per conversation, in two `#` halves -- the harness the call
+    runs under, then the task itself. The task half is ordered most-constant-first,
+    so the document caches well as the conversation grows:
+
+    | # | Section heading | Content | Constant over |
+    | - | --------------- | ------- | ------------- |
+    | 1 | `# Harness` | A `##` subsection per installed handler, each sourced from that handler's own docstring, describing what this particular stack does — which of them are present varies, so read the headings rather than assuming a fixed set | the handler stack |
+    | 2 | `# <name><signature>` | The task, introspected from the skill, as the `##` subsections below | the conversation |
+    | 2.1 | `## Module <name>` | Source of the skill's module (docstring if source is unavailable) | the module |
+    | 2.2 | `## Agent <cls>` (or `## Skill`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every skill sharing the instance's history (an `Agent`'s methods, or just this skill) | the instance |
+    | 2.3 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
+    | 2.4 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
+
+    Section 1 is contributed entirely by handlers, so a stack that installs none
+    of them omits it; any section that ends up empty is left out of the document
+    entirely.
+
+    The whole system message is written once, on the first call of a
+    conversation, and kept as the conversation goes on. So for an `Agent` calling
+    several of its skills in turn, the `#` heading above is the *first* skill
+    called, which need not be the one you are answering now. It is the user
+    message, not this heading, that names the skill of the current turn; section
+    2.2 specs them all, so the one you need is there either way.
+
+    ## The user message
+
+    The per-call part -- only its changing values are re-sent each turn;
+    everything constant lives in the system message above. It has two parts:
+
+    | # | Part | Content |
+    | - | ---- | ------- |
+    | 1 | Header | `<name><signature>` — identifies which skill this turn calls |
+    | 2 | Body | The skill's docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
+    """
+
+    # The docstring above is model-facing: it is the `Harness` section this
+    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
+    # notes for a reader of the code belong in comments like this one.
+    #
+    # The two halves it describes are built by `_skill_system_prompt` and
+    # `_skill_user_prompt` below, and joined by the `call_system`/`call_user`
+    # rules. This section lands last in the harness half, since this handler is
+    # installed outermost and therefore intercepts `call_system` last -- which
+    # puts the description of the layout immediately before the task half it
+    # describes.
+
+    def _skill_system_prompt(self, skill: Skill) -> PromptSection:
+        """The half of the system prompt describing a call to `skill` -- the
+        task half laid out in this class's docstring, introspected from the
+        `Skill`.
 
         A plain method, not an operation: a handler that wants to say something
         here intercepts `call_system` and adds to the *harness* half, which is
@@ -494,12 +625,9 @@ class AgentLoop(ObjectInterpretation):
     def _skill_user_prompt(
         self, skill: Skill, env: collections.abc.Mapping[str, typing.Any]
     ) -> PromptSection:
-        """The `Skill`'s prompt -- its docstring -- applied to `env`.
-
-        This is the request itself, as opposed to the standing description of
-        the task that `_skill_system_prompt` assembles: the docstring's
-        ``{placeholders}`` are filled from the bound arguments, so it is the one
-        part of the exchange that differs per call.
+        """The `Skill`'s prompt -- its docstring -- applied to `env`: the user
+        message laid out in this class's docstring, and the one part of the
+        exchange that differs per call.
 
         Only the docstring is interpolated.  The title is a heading rendered as
         written, so a signature carrying braces -- a ``{}`` default, say --

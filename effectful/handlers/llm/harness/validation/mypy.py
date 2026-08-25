@@ -10,12 +10,13 @@ import typing
 # trigger mypy installation errors early
 import mypy.api  # noqa: F401
 
+from effectful.handlers.llm.harness.hooks import PromptInjectingInterpretation
 from effectful.handlers.llm.harness.validation.hooks import type_check
-from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.syntax import implements
 
 
 @dataclasses.dataclass
-class MypyTypeChecker(ObjectInterpretation):
+class MypyTypeChecker(PromptInjectingInterpretation):
     """Handler that handles type_check by shelling out to mypy.
 
     Independent of any executor: it says how generated code is *checked*, not how
