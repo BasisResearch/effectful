@@ -1,5 +1,6 @@
 import collections.abc
 import contextlib
+import enum
 
 from effectful.handlers.llm.harness.hooks import (
     Message,
@@ -12,6 +13,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     call_user,
 )
+from effectful.handlers.llm.harness.serialization import ToolCallID
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -39,6 +41,12 @@ class HistoryBuilder(ObjectInterpretation):
 
     @implements(call_system)
     def call_system(self, *args, **kwargs):
+        """Record the system message, but only as the first message of a history.
+
+        A history that already has content was restored or inherited, and its
+        system message is already at position zero; appending a second one would
+        leave two, which no provider accepts.
+        """
         message = fwd(*args, **kwargs)
         if not self.get_history():
             self.append_message(message)
@@ -46,12 +54,21 @@ class HistoryBuilder(ObjectInterpretation):
 
     @implements(call_user)
     def call_user(self, *args, **kwargs):
+        """Record the user message that opens a turn."""
         message = fwd(*args, **kwargs)
         self.append_message(message)
         return message
 
     @implements(call_assistant)
     def call_assistant(self, *args, **kwargs):
+        """Record the assistant's reply, including the replies that failed.
+
+        A decoding failure appends the raw message *and* the feedback describing
+        what was wrong with it, because that pair is what the next attempt reads;
+        the exception then propagates to whatever is retrying. Abandoned sibling
+        tool calls are answered first (see `_answer_abandoned_tool_calls`) so the
+        buffer stays well-formed enough to resend.
+        """
         try:
             message, tool_calls, result = fwd(*args, **kwargs)
         except (ToolCallDecodingError, ResultDecodingError) as e:
@@ -110,6 +127,13 @@ class HistoryBuilder(ObjectInterpretation):
 
     @implements(call_tool)
     def call_tool(self, *args, **kwargs):
+        """Record the tool result, including a failed call's traceback.
+
+        Every advertised call must be answered, so a raising tool still appends
+        a message before the exception continues outward: the feedback message
+        *is* that answer, and leaving the call unanswered would make the
+        conversation unresendable.
+        """
         try:
             message, result, is_final = fwd(*args, **kwargs)
         except ToolCallExecutionError as e:
@@ -119,7 +143,18 @@ class HistoryBuilder(ObjectInterpretation):
         return (message, result, is_final)
 
     @implements(call_agent)
-    def call_skill(self, skill, *args, **kwargs):
+    def call_agent(self, skill, *args, **kwargs):
+        """Run the call in a transaction over the agent's own history.
+
+        The buffer starts as a copy, so a call that raises leaves the agent's
+        history as it found it. ``write_back`` is keyed on the identity of that
+        history: the outermost call for a given agent commits, while a nested
+        call on the *same* agent -- a tool invoking another of its skills --
+        contributes to the same buffer instead of committing a second time.
+        Being inside some other agent's transaction does not count, which is
+        what keeps a cross-agent nested call from being mistaken for a
+        same-agent one.
+        """
         history: collections.abc.MutableSequence[Message] = getattr(
             skill, "__history__", []
         )
@@ -137,10 +172,24 @@ def transaction(
 ) -> collections.abc.Generator[collections.abc.MutableSequence[Message], None, None]:
     """Context manager for a message transaction.
 
-    The buffer starts as a copy of `prefix` and is only ever appended to, so
-    writing back means handing `prefix` the tail the transaction produced. The
-    split point is taken on entry, so a `prefix` that grew by some other route
-    meanwhile still receives exactly this transaction's messages.
+    The buffer starts as a copy of `prefix`, and writing back reconciles the two.
+    There are two ways a transaction can end, distinguished by whether the
+    inherited prefix survived in the buffer:
+
+    * *Appended to.* The usual case: the buffer still opens with the same message
+      objects it was seeded with, so writing back means handing `prefix` the tail
+      the transaction produced. The split point is taken on entry, so a `prefix`
+      that grew by some other route meanwhile still receives exactly this
+      transaction's messages.
+    * *Rewritten.* A compaction (see
+      `~effectful.handlers.llm.harness.durability.compaction.compact`) drops
+      messages the transaction inherited, so the buffer no longer extends its
+      seed -- it may even be shorter than it. There is no tail to hand over then;
+      the buffer *is* the new history, and appending ``buffer[start:]`` would
+      leave `prefix` uncompacted and silently discard everything the transaction
+      added. Adopt the buffer wholesale instead, keeping any concurrent growth
+      after the split point, which is the same guarantee the appending case
+      makes.
     """
     prefix = HistoryBuilder.get_history() if prefix is None else prefix
     start = len(prefix)
@@ -149,4 +198,70 @@ def transaction(
         yield buffer
 
     if write_back:
-        prefix.extend(buffer[start:])
+        # Identity, not equality: two distinct messages can compare equal (a
+        # repeated question), and what decides the case is whether these are the
+        # very objects the buffer was seeded with.
+        appended = len(buffer) >= start and all(
+            a is b for a, b in zip(buffer[:start], prefix[:start])
+        )
+        if appended:
+            prefix.extend(buffer[start:])
+        else:
+            prefix[:] = [*buffer, *prefix[start:]]
+
+
+class ClearScope(enum.StrEnum):
+    """How much of the conversation a compacting tool call drops.
+
+    ``"none"`` compacts nothing. ``"turn"`` drops the current call's earlier rounds,
+    keeping every previous call. ``"conversation"`` additionally drops those previous
+    calls, leaving the system message, the request and the asking round.
+    """
+
+    NONE = "none"
+    TURN = "turn"
+    CONVERSATION = "conversation"
+
+
+def compact_(
+    history: collections.abc.MutableSequence[Message],
+    tool_call_id: ToolCallID,
+    scope: ClearScope,
+) -> None:
+    """Compact the ambient history, keeping the request and the asking round.
+
+    `tool_call_id` identifies the call that asked, and so the round to keep: the
+    assistant message advertising it, and everything after (which is exactly the
+    tool messages answering it and its siblings, whether they were appended
+    before this one or are still to come -- truncation only ever removes messages
+    *ahead* of that assistant message, so no tool message is ever orphaned from
+    the call it answers).
+
+    The request kept is the last user message before that round -- the one this
+    call opened -- carried over untouched.
+
+    A no-op for ``scope="none"``, and whenever the shape this reads off the
+    history is not the one it expects: no assistant message advertising
+    `tool_call_id`, or no user message ahead of it. Declining is the right
+    failure here; a compaction is a courtesy, and a wrong guess about the shape
+    would corrupt the history the call still has to finish over. A conversation
+    that opens with something other than a system message simply has no head to
+    keep, which is not a failure.
+    """
+    asking, request = None, None
+    for i, message in reversed(list(enumerate(history))):
+        if message["role"] == "assistant" and any(
+            call["id"] == tool_call_id for call in message.get("tool_calls") or []
+        ):
+            for j in reversed(range(i)):
+                if history[j]["role"] == "user":
+                    asking, request = i, j
+                    break
+            break
+
+    if scope == ClearScope.NONE or asking is None or request is None:
+        return
+    elif scope == ClearScope.CONVERSATION:
+        history[:] = [history[0], history[request], *history[asking:]]
+    elif scope == ClearScope.TURN:
+        history[:] = [*history[:request], history[request], *history[asking:]]

@@ -27,15 +27,10 @@ class FrameworkDocumenter(PromptInjectingInterpretation):
     constrains *that* example, never this call.
     """
 
-    # The docstring above is model-facing (see `PromptInjectingInterpretation`);
-    # notes for a reader of the code belong in comments like this one.
-    #
-    # Unlike the capability handlers, the section this contributes is not its own
-    # docstring: it is assembled from `effectful.handlers.llm.types` and the
-    # concepts in its `__all__`, which is what keeps the prompt from drifting
-    # away from the library. It is the same for every call in the process, which
-    # is what makes it worth putting first.
+    # The docstring above is model-facing (see `PromptInjectingInterpretation`),
+    # which is why it is written as instructions rather than as description.
 
+    #: Title of the section `call_system` contributes.
     title: typing.ClassVar[str] = "The effectful LLM framework"
 
     def _concepts_section(self) -> PromptSection:
@@ -69,12 +64,21 @@ class FrameworkDocumenter(PromptInjectingInterpretation):
     def call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
-        # Prepended, where the capability handlers append: the concepts hold
-        # still for the whole process, so they belong at the front of the
-        # document whatever the handler stack around them looks like.  The
-        # docstring section the base rule adds is appended with everyone else's,
-        # so it is not adjacent to the concepts -- which is why it names that
-        # section rather than pointing at what follows it.
+        """Prepend the framework concepts, then add this class's docstring.
+
+        Unlike the capability handlers, the section contributed here is not the
+        class docstring: it is assembled from `effectful.handlers.llm.types` and
+        the concepts in its ``__all__``, which is what keeps the prompt from
+        drifting away from the library as the library changes.
+
+        It is *prepended* where the capability handlers append. The concepts
+        hold still for the whole process while the handler stack around them
+        does not, so putting them at the front of the document makes their
+        position independent of composition order. The docstring section the
+        base rule adds is appended with everyone else's and is therefore not
+        adjacent to them -- which is why it names the concepts section rather
+        than pointing at whatever follows it.
+        """
         return super().call_system(
             PromptSection(
                 type="prompt_section",

@@ -25,23 +25,24 @@ from effectful.ops.syntax import implements
 
 
 class TenacityRetryer(PromptInjectingInterpretation):
-    """Retries LLM requests if tool call or result decoding fails.
+    """A reply that cannot be decoded is not the end of the attempt. If your
+    answer or a tool call comes back malformed -- wrong shape for the return
+    type, a tool call whose arguments do not fit the signature -- you are shown
+    the decoding error and asked again, with the failed reply and the error
+    visible in the conversation.
 
-    This handler intercepts `call_assistant` and catches `ToolCallDecodingError`
-    and `ResultDecodingError`. When these errors occur, it appends error feedback
-    to the messages and retries the request. Malformed messages from retry attempts
-    are pruned from the final result.
+    That budget is finite — a handful of attempts, fixed by whoever configured
+    this harness — after which the error is raised to the caller and the call
+    fails. So a second attempt should not
+    resubmit the first one with cosmetic edits. If the same shape has already
+    been rejected once, the error is telling you the shape is wrong; change it.
+    None of these attempts leave a trace once one succeeds, so you will not see
+    the failed exchanges again in later turns.
 
-    For runtime tool execution failures (handled via `call_tool`), errors are
-    captured and returned as tool response messages.
-
-    Args:
-        catch_tool_errors: Exception type(s) to catch during tool execution.
-            Can be a single exception class or a tuple of exception classes.
-            Defaults to Exception (catches all exceptions).
-        stop: tenacity stop condition for retrying `call_assistant`. Defaults to
-            `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
-        **kwargs: Additional keyword arguments forwarded to `tenacity.Retrying`.
+    A tool that *raises* is different, and not a failure of this kind. The
+    traceback comes back as that tool's result and the conversation continues
+    normally, without consuming a retry. Read it as data about the call you
+    made -- a wrong argument, a missing file -- and make the next call.
     """
 
     call_assistant_retryer: tenacity.Retrying
@@ -53,6 +54,17 @@ class TenacityRetryer(PromptInjectingInterpretation):
         stop: tenacity.stop.stop_base = tenacity.stop_after_attempt(4),
         **kwargs,
     ):
+        """Configure the retry policy.
+
+        Args:
+            catch_tool_errors: Exception type(s) to catch during tool execution.
+                Can be a single exception class or a tuple of exception classes.
+                Defaults to Exception (catches all exceptions).
+            stop: tenacity stop condition for retrying `call_assistant`. Defaults
+                to `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
+            **kwargs: Additional keyword arguments forwarded to
+                `tenacity.Retrying`.
+        """
         self.catch_tool_errors = catch_tool_errors
         assert "retry" not in kwargs, "Cannot override retry logic of TenacityRetryer"
         assert "reraise" not in kwargs, (
@@ -68,18 +80,26 @@ class TenacityRetryer(PromptInjectingInterpretation):
         )
 
     @implements(call_assistant)
-    def _call_assistant[T](
+    def call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
         response_type: type[T],
         env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
-        # Each attempt re-reads `buffer`: the transaction makes it the ambient
-        # history for the duration, so `HistoryBuilder` appends the failed
-        # response and its error feedback there, and the next attempt sends them
-        # to the model. `write_back=False` then discards that scratch work, and
-        # only the response that finally succeeded joins the real history.
+        """Retry the request while the reply fails to decode.
+
+        `ToolCallDecodingError` and `ResultDecodingError` are the retryable
+        failures: both mean the model replied but the reply could not be turned
+        into the requested type. Anything else propagates on the first raise.
+
+        Each attempt re-reads `buffer`: the transaction makes it the ambient
+        history for the duration, so `HistoryBuilder` appends the failed
+        response and its error feedback there, and the next attempt sends them
+        to the model. `write_back=False` then discards that scratch work, and
+        only the response that finally succeeded joins the real history --
+        which is why the caller never sees the malformed attempts.
+        """
         with transaction(list(messages), write_back=False) as buffer:
             result = self.call_assistant_retryer(
                 lambda: fwd(list(buffer), response_type, env, tools)
@@ -88,7 +108,7 @@ class TenacityRetryer(PromptInjectingInterpretation):
         return result
 
     @implements(call_tool)
-    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
+    def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         """Handle tool execution with runtime error capture.
 
         Runtime errors from tool execution are captured and returned as

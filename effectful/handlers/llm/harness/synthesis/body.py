@@ -1,3 +1,39 @@
+"""Answering a `Skill` by synthesizing its body.
+
+This is the declarative "CodeAdapt" workflow: the LLM writes code implementing
+the body of the Skill rather than reasoning out the answer itself.
+`FinalBodySynthesizer` offers the synthesis tool *alongside* the Skill's normal
+completion paths rather than replacing them -- across turns the model may freely
+call any other tool in scope (their results are fed back as usual), and it may
+still answer the return type directly via structured output. The loop terminates
+when it either answers directly or calls ``write_and_run_body``. To force the
+synthesis path, pass ``tool_choice="required"``; handler config is forwarded to
+the model request.
+
+The function is synthesized by reusing the existing ``Callable`` synthesis
+machinery: the tool's argument is typed as ``Callable[[params], ret]``, so
+`call_assistant`'s tool-call decoding parses, type-checks, compiles and executes
+the model's code into a real function before it is applied. An eval provider
+(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
+`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
+must therefore be installed.
+
+Failures compose with
+`~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`: a function
+that fails to synthesize surfaces as a `ToolCallDecodingError`, and one that
+raises when applied to the inputs as a `ToolCallExecutionError`; both are fed
+back to the model as a tool message and the loop continues so it can revise::
+
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="gpt-5-mini")),
+        handler(HistoryBuilder()),
+        handler(FinalBodySynthesizer()),
+        handler(TenacityRetryer()),
+    ):
+        ...
+"""
+
 import ast
 import collections.abc
 import functools
@@ -11,6 +47,11 @@ import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
+from effectful.handlers.llm.harness.durability.transaction import (
+    ClearScope,
+    HistoryBuilder,
+    compact_,
+)
 from effectful.handlers.llm.harness.hooks import (
     PromptInjectingInterpretation,
     ToolCallExecutionError,
@@ -454,100 +495,60 @@ def _callable_type_from_signature(
 
 
 class FinalBodySynthesizer(PromptInjectingInterpretation):
-    """There are two ways to answer a Skill, and this section describes the
-    second one. You may state the answer directly, and a direct answer is
-    accepted — that is the ordinary path and often the right one. Or you may
-    *compute* the answer, by writing an implementation and submitting it with the
-    `write_and_run_body` tool. Reach for the tool when working the answer out by
-    hand would be error-prone, or when the Skill's doctests are the standard your
-    answer has to meet. When you already know the answer, just give it: do not
-    wrap a value you have in hand inside a function that ignores its arguments
-    and returns a constant.
+    """You can state a Skill's answer directly, or you can *compute* it by
+    writing an implementation and submitting it with the `write_and_run_body`
+    tool. This section is about the tool. Reach for it when
+    working the answer out by hand would be error-prone — a search, an
+    enumeration, a constraint to check against — or when the Skill's doctests are
+    the standard your answer has to meet.
 
-    Everything below is about the tool. It accepts a single argument: a Python
-    function whose signature matches the Skill's signature (the heading of the
-    task half of this prompt). The harness applies that function to the original
-    inputs and its return value becomes the answer, so write the function body as
-    a drop-in implementation of the Skill. The function may reference names from
-    the lexical scope (see the *Lexical scope* table).
+    A direct answer is also accepted, and is the right choice when you already
+    hold the value: do not wrap a value you have in hand inside a function that
+    ignores its arguments and returns a constant.
 
-    In a `write_and_run_body` submission you do not need to write a docstring or
-    doctests: the harness attaches the Skill's own docstring to your function and
-    runs *its* doctests (with recursive calls to the Skill routed to your
-    implementation). A solution whose doctests fail — or that errors when
-    applied — is rejected and fed back to you to revise, so the answer only
-    stands once the Skill's doctests pass. Write just the implementation; a
-    docstring you add *there* is replaced and ignored.
+    The tool's own description says what to submit and what the code must
+    satisfy; follow it rather than any recollection of how such a tool usually
+    works. Two things it does not tell you. Your function may reference names
+    from the lexical scope (see the *Lexical scope* table). And what your
+    submission is judged on is the Skill's doctests: the harness attaches the
+    Skill's docstring to your function and runs *its* examples, with recursive
+    calls to the Skill routed back to your implementation. A solution whose
+    doctests fail — or that raises when applied — is rejected and returned to you
+    to revise, so the answer only stands once those examples pass.
 
-    All of that applies to this tool's submissions only. A Skill whose declared
-    *return type* is itself a function is a different thing, easily confused with
-    this one: you answer it by writing the function it returns, as an ordinary
-    answer, and this tool is not involved. Two rules invert there. The signature
-    to write is the *returned* function's, taken from the return type — not the
-    Skill's own, and with no `self` receiver. And your docstring is kept rather
-    than replaced, so if the Skill asks for doctests certifying what you wrote,
-    write them: they are run, and they are what your answer is accepted on.
+    A Skill whose declared *return type* is itself a function is a different
+    thing, easily confused with this one: you answer it by writing the function
+    it returns, as an ordinary direct answer, and this tool is not involved.
+    Three rules invert there, and nothing else states them. The signature to
+    write is the *returned* function's, taken from the return type — not the
+    Skill's own, and with no `self` receiver even when the Skill is a method.
+    Every parameter and the return type must be annotated there, where for this
+    tool they are optional. And your docstring is kept rather than replaced, so
+    if the Skill asks for doctests certifying what you wrote, write them: they
+    are run, and they are what your answer is accepted on.
 
-    Whenever you answer with code, annotate every parameter and the return type.
-    An unannotated parameter is rejected at decode, however obvious its type
-    looks from the name — including a `self` you should not have written in the
-    first place.
+    A successful `write_and_run_body` call ends the call immediately: no further
+    turn is taken, and the value of applying your function to the original
+    arguments is the Skill's answer. Because it ends the call, it must be the
+    *only* tool call in its turn — call any other tools you need on earlier
+    turns, and call `write_and_run_body` by itself once you are ready to answer.
 
-    A successful `write_and_run_body` call ends the conversation immediately: no
-    further turn is taken, and the value of applying your function to the
-    original arguments is the Skill's answer. Because it terminates the
-    conversation, it must be the *only* tool call in its turn — call any other
-    tools you need on earlier turns, and call `write_and_run_body` by itself once
-    you are ready to answer.
-
-    This answers the *current* call only. Each call is a fresh, independent
-    task: even if you already submitted a working solution earlier in this
-    conversation, a prior submission is not a standing answer — to answer this
+    This answers the *current* call only. A submission is not a standing answer:
+    if an earlier user message in this conversation was a previous call that you
+    answered this way, that answer has already been returned to the program and
+    has nothing to do with the question you are being asked now. To answer this
     call by synthesis you must call `write_and_run_body` again.
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
-    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
-    # notes for a reader of the code belong in comments like this one.
-    #
-    # This is the declarative "CodeAdapt" workflow: the LLM writes code
-    # implementing the body of the Skill rather than reasoning out the answer
-    # itself.  The synthesis tool is offered *alongside* the Skill's normal
-    # completion paths rather than replacing them: across turns the model may
-    # freely call any other tool in scope (their results are fed back as usual),
-    # and it may still answer the return type directly via structured output.
-    # The loop terminates when it either answers directly or calls
-    # ``write_and_run_body``, which this handler's `call_tool` rule marks final.
-    # To force the synthesis path, pass ``tool_choice="required"``
-    # (handler config is forwarded to the model request).  The function is
-    # synthesized by reusing the existing ``Callable`` synthesis machinery: the
-    # tool's argument is typed as ``Callable[[params], ret]``, so
-    # `call_assistant`'s tool-call decoding parses, type-checks, compiles and
-    # executes the model's code into a real function before it is applied.
-    #
-    # Failures compose with `TenacityRetryer`: a function that fails to
-    # synthesize surfaces as a `ToolCallDecodingError`, and one that raises when
-    # applied to the inputs as a `ToolCallExecutionError`; both are fed back to
-    # the model as a tool message and the loop continues so it can revise::
-    #
-    #     with (
-    #         handler(AgentLoop()),
-    #         handler(LiteLLMConfigurer(model="gpt-5-mini")),
-    #         handler(HistoryBuilder()),
-    #         handler(FinalBodySynthesizer()),
-    #         handler(TenacityRetryer()),
-    #     ):
-    #         ...
-    #
-    # Requires an eval provider (e.g. `BuiltinExecutor` or
-    # `RestrictedPythonExecutor`) to be installed so the synthesized code can be
-    # compiled and executed.
+    # handler adds to the system prompt (see `PromptInjectingInterpretation`),
+    # which is why it is written as instructions rather than as description.
 
     class _SubmitSolutionTool[T](Tool[[collections.abc.Callable[..., T]], T]):
         """The `Tool` a synthesized Skill body is submitted through.
 
-        A distinct type so `_apply` can tell whether a request already carries
-        this handler's tool, and so `_call_tool` can recognize a call to it as
+        A distinct type so `call_agent` can tell whether a request already carries
+        this handler's tool, and so `call_tool` can recognize a call to it as
         the Skill's answer; the capability itself is described to the model by
         the handler's docstring.
         """
@@ -590,11 +591,21 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
                 | {_TYPE_CHECK_ANCHOR_KEY: skill, _IS_FINAL_KEY: True}
             )
 
-            def write_and_run_body(implementation: body_type) -> return_type:  # type: ignore
+            def write_and_run_body(
+                implementation: body_type,  # type: ignore
+                clear: ClearScope = ClearScope.NONE,
+            ) -> return_type:  # type: ignore
                 """
                 Answer this Skill by submitting a Python function that implements
-                it (see the "Code synthesis" section); its return value on the
-                original arguments becomes the answer.
+                it (see the `FinalBodySynthesizer` section of the system
+                prompt); its return value on the original arguments becomes the
+                answer.
+
+                `clear` compacts the conversation as the answer lands; its own
+                schema below says what each scope drops. Whichever you pick,
+                this submission survives whole -- your message, the source you
+                submit and its result -- so anything you want your later self to
+                know, write as comments in the body you submit.
                 """
                 result = implementation(*args, **kwargs)  # type: ignore
                 return return_encoding.validate_python(result, context=env)
@@ -602,27 +613,65 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
             return super().define(write_and_run_body, name=cls.__toolname__)
 
     @implements(call_tool)
-    def _call_tool(self, tool_call: DecodedToolCall) -> typing.Any:
-        """Mark a *successful* ``write_and_run_body`` call as the Skill's answer.
+    def call_tool(self, tool_call: DecodedToolCall) -> typing.Any:
+        """Mark a *successful* ``write_and_run_body`` call as the Skill's answer,
+        and honour the ``clear`` it was submitted with.
+
+        This is the rule that terminates the completion loop on the synthesis
+        path: the model is free to answer directly instead, and every other tool
+        call forwards untouched, so setting ``is_final`` here is the only thing
+        that distinguishes a submission from an ordinary tool result.
 
         Only a successful one: when `TenacityRetryer` captures a submission that
         raised -- the synthesized function errored on the real arguments -- it
         hands back the `ToolCallExecutionError` in place of a result, and that is
         no answer to finalize on. Leaving `is_final` alone there is what gives the
-        model the next turn to revise.
+        model the next turn to revise, and compacting there would throw away the
+        error it needs to do so.
+
+        The compaction runs here rather than anywhere later because there *is* no
+        later: this call ends the loop. `compact` keeps the round that asked for
+        it, which is what makes that safe -- the surviving history ends on this
+        submission and its result rather than on a request nobody answered, and
+        the source the model submitted stays in the assistant message's arguments
+        where it can read it back on the next call.
         """
         message, result, is_final = fwd(tool_call)
+        # Two decisions, not one: whether this submission *is* the answer, and
+        # how much transcript it asked to drop. Only the first may gate
+        # ``is_final`` -- folding the ``clear`` test into the same condition
+        # leaves a successful submission with the default ``clear="none"``
+        # unfinalized, and the completion loop then runs forever. `compact_` is
+        # already a no-op for that scope, so it needs no guard here.
         if isinstance(tool_call.tool, self._SubmitSolutionTool) and not isinstance(
             result, ToolCallExecutionError
         ):
+            compact_(
+                HistoryBuilder.get_history(),
+                tool_call.id,
+                tool_call.bound_args.arguments.get("clear", ClearScope.NONE),
+            )
             return message, result, True
         else:
             return message, result, is_final
 
     @implements(call_agent)
-    def _apply[**P, T](
+    def call_agent[**P, T](
         self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
+        """Offer ``write_and_run_body`` for the duration of this call.
+
+        The tool is built per call, closing over *these* bound arguments: it is
+        what applies the submitted function to them, so it cannot be shared
+        across calls. It is added by an inner `call_assistant` rule rather than
+        up front, because the request's tool set is assembled further down the
+        stack and only exists once the assistant is actually being called.
+
+        The guard makes the injection idempotent: a nested call reaching this
+        rule again with the tool already in the set forwards unchanged, so a
+        recursive Skill is not offered several generations of its own
+        submission tool.
+        """
         bound_args = skill.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
         tool = self._SubmitSolutionTool.define(skill, bound_args)

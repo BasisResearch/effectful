@@ -162,7 +162,7 @@ class LiteLLMConfigurer(ObjectInterpretation):
             cls._enforce_tool_choice(tool_choice, assembled)
 
     @implements(completion)
-    def _completion(self, *args, **kwargs):
+    def completion(self, *args, **kwargs):
         """Inject the provider's configuration (model and bound litellm kwargs)
         into the low-level request before delegating, and hold the response to
         the ``tool_choice`` that request carries.

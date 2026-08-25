@@ -89,12 +89,6 @@ def harness(
        SQLite after each successful call (if ``persist_db``).
     10. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
-    `~effectful.handlers.llm.harness.legibility.lexical.LexicalReaders` is *not*
-    among them. `StatefulReplSynthesizer`, which is, already offers
-    ``read_lexical_variable`` over the same scope; installing both would
-    advertise two ways to read every binding. Install it by hand for a stack
-    that omits the REPL.
-
     Args:
         num_retries: Attempts for malformed/failing model output (via
             `TenacityRetryer`) and, independently, for transport-level failures

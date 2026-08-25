@@ -1,3 +1,33 @@
+"""A persistent, stateful Python REPL offered to the model as a tool.
+
+`StatefulReplSynthesizer` is off by default; install it where the LLM should be
+able to run code whose state -- variables, imports, definitions -- survives
+across tool calls within a single Skill invocation.
+
+Scoping mirrors how ``__history__`` is managed for Skill calls: `call_agent`
+introduces fresh session-bound handlers (`exec_code`, `repl_history`,
+`repl_env`) for the duration of the call, and `call_assistant` injects the tool
+routed to that session. The session is therefore introduced
+and eliminated by its own handler, bounded to the Skill call by construction --
+there is no global registry of sessions, and nested Skill calls get their own
+isolated ones.
+
+That bound is the fact the model most needs and is least able to infer. It sees
+one conversation, in which an `Agent`'s earlier calls are still visible as
+earlier user messages, and nothing in the transcript distinguishes "a session
+opened here" from "a turn happened here". So the handler states it twice: once
+in general, in the class docstring that becomes its system-prompt section, and
+once concretely, in the ``REPL session`` section `call_user` attaches to every
+request -- which is also where the call's arguments are claimed as session
+bindings, since they appear in no table of the system message.
+
+The session is seeded from the Skill's lexical context and routes execution
+through the `parse`/`compile`/`exec` effect operations, so it works under any
+installed eval provider
+(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
+`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`).
+"""
+
 import ast
 import code
 import codeop
@@ -6,6 +36,7 @@ import collections.abc
 import contextlib
 import io
 import linecache
+import textwrap
 import types
 import typing
 import uuid
@@ -14,7 +45,11 @@ import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.durability.transaction import (
+    ClearScope,
+    HistoryBuilder,
+    compact_,
+)
 from effectful.handlers.llm.harness.execution.hooks import compile, exec, parse
 from effectful.handlers.llm.harness.hooks import (
     AssistantResult,
@@ -25,11 +60,14 @@ from effectful.handlers.llm.harness.hooks import (
     call_agent,
     call_assistant,
     call_tool,
+    call_user,
 )
 from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     DecodedToolCall,
+    PromptSection,
     TypeToPydanticType,
+    to_content_blocks,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
@@ -70,17 +108,6 @@ class ReplSession(code.InteractiveInterpreter):
     like a REPL -- and the session (with its buffer) is discarded as a whole when
     it goes out of scope.  Each call returns only the output it produced; there
     is no bare-expression auto-echo, so use `print()` to surface values.
-
-    A snippet that raises propagates the exception; the session itself survives
-    and keeps every binding made before the raise.  The session is the
-    *primitive* here and stays simple: the REPL experience of reading a
-    traceback and continuing is supplied a level up, where `call_tool` wraps
-    the raise in a `ToolCallExecutionError` and `TenacityRetryer` converts it
-    into feedback the model acts on next turn -- and it is what lets the
-    `exec_code` tool's ``clear=True`` mode observe success at all.
-
-    Compilation -- and therefore syntax checking -- happens earlier, at the
-    `Encodable[CodeType]` boundary; this session only executes.
     """
 
     locals: dict[str, typing.Any]
@@ -118,29 +145,24 @@ class ReplSession(code.InteractiveInterpreter):
             raise
 
     def exec_code(self, code: types.CodeType) -> str:
-        """Run Python in a persistent, stateful session and return its output.
+        """Run `code` in this session's namespace and return what it printed.
 
-        This is a long-lived REPL, not a one-shot sandbox: every call runs in the
-        SAME namespace, so names you bind in one call stay available in later
-        calls within the same task.  Imports, function/class definitions and
-        variable assignments all accumulate during the session of this skill.
-        The namespace starts seeded with the in-scope variables of the surrounding context, which you may read and
-        rebind.
+        Every snippet runs in the SAME namespace, so imports, definitions and
+        assignments accumulate: this is a REPL, not a one-shot sandbox. The
+        namespace starts seeded from the enclosing Skill call's scope (its bound
+        arguments over the Skill's lexical context), which a snippet may read and
+        rebind. Its lifetime is that call's: see `StatefulReplSynthesizer.call_agent`,
+        which creates and discards it, and the class docstring there for why the
+        model is told so twice.
 
-        Output: returns this call's output -- its stdout (what `print` wrote)
-        followed by anything written to stderr.  There is NO automatic echoing
-        of results -- a bare expression on its own line (e.g. `1 + 1`) displays
-        nothing, so call `print(...)` for anything you want to see.
+        Returns this snippet's own slice of the session's output -- stdout (what
+        `print` wrote) then stderr. There is no bare-expression auto-echo, so a
+        snippet that prints nothing returns the empty string.
 
-        A snippet that raises comes back as a failed call carrying the
-        traceback.  The session and every binding made before the raise
-        survive, so read the error, fix the code, and continue in the next
-        call -- but output printed before the error is not returned, so print
-        again once it works.
-
-        Provide `code` as a string of Python source.  It must be a complete,
-        compilable snippet -- incomplete or invalid source is rejected before it
-        runs.
+        A snippet that raises propagates; the session and every binding made
+        before the raise survive, so the next snippet can repair it. Output
+        printed before the raise is *not* returned, since the raise reaches the
+        caller in its place.
         """
         out_start = self.stdout.tell()
         err_start = self.stderr.tell()
@@ -338,95 +360,53 @@ def _pydantic_type_code(ty):
     ]
 
 
-def _with_note(user: Message, note: str) -> Message:
-    """A copy of user message `user` with `note` appended as a trailing text block.
-
-    A copy rather than a mutation, so the annotation can never reach a message
-    object shared with anything outside the current call's transaction buffer.
-
-    The note is introduced by a Markdown heading -- the same construct
-    `~effectful.handlers.llm.harness.serialization.to_content_blocks` gives a
-    `PromptSection`, and the reason it is a heading rather than an
-    ``<xml>``-style tag: a tag at column 0 is a CommonMark ``html_block``, which
-    `rich.markdown.Markdown` has no element for and drops silently, so the note
-    reached the model but never the operator watching ``--render``. Being last
-    in the message, the heading needs no closing delimiter.
-    """
-    if not note.strip():
-        return user
-    block = f"\n\n## Consolidated notes\n\n{note.rstrip()}"
-    updated = dict(user)
-    content = updated.get("content")
-    if isinstance(content, str):
-        updated["content"] = content + block
-    else:
-        parts = list(typing.cast(collections.abc.Iterable[typing.Any], content or []))
-        parts.append({"type": "text", "text": block})
-        updated["content"] = parts
-    return typing.cast(Message, updated)
-
-
 class StatefulReplSynthesizer(PromptInjectingInterpretation):
     """You may run arbitrary Python code in a persistent session, through the
-    `exec_code` tool. The code is executed in the context of this Skill's lexical
-    scope (see the *Lexical scope* table for the available names and their
-    types). The session persists across turns, so you may define variables,
-    functions, and classes that are used in later turns.
+    `exec_code` tool. Its own description states how it behaves — the namespace
+    it runs in, what it returns, what it will reject — and that description is
+    authoritative; follow it rather than any recollection of how such a tool
+    usually works. To see the value of anything in scope, `print` it.
 
-    What comes back is what the code *printed* — its stdout, then anything on
-    stderr. Nothing is echoed automatically: a bare expression on its own line
-    displays nothing, so `print(...)` whatever you need to see.
+    ## Writing onto `self`
 
-    The `read_lexical_variable` tool reads one of those in-scope names into your
-    context on demand: this call's own arguments, and the names in the *Lexical
-    scope* table. A name from anywhere else — a local of some function you can
-    see in the module source, say — is not in scope and comes back as `null`.
+    The REPL session itself lasts one call, so anything you want to keep has to go
+    somewhere the program owns rather than somewhere the session owns — `self`
+    is the usual place, and any other in-scope object works the same way. A
+    value, a note, or a function you define here:
 
-    Use the REPL when running code actually helps: computing or verifying a
-    result, exploring data, calling a tool, or writing something onto durable
-    state you want to survive this turn. Don't use it as a scratchpad for
-    reasoning you could just as well do in your head, and don't route a plain
-    text answer through `print(...)` — if you can simply state the answer, state
-    it.
+    ```python
+    # this call
+    def next_guess(prefix: str) -> str:
+        return prefix + "A"
+    self.next_guess = next_guess       # a bound function is offered as a tool later
+    self.codes["room0"] = "BBA"        # and a plain value is just there
+    ```
 
-    But "state it" means state an answer you actually have. Where the task tells
-    you to compute, verify or record something, do that here rather than
-    asserting the result from reasoning alone: a wrong answer you were confident
-    in costs far more than the call you skipped.
+    ```python
+    # a later call, new session, `next_guess` and `codes` still on self
+    print(self.codes["room0"])
+    ```
     """
-
-    # Off by default; install it where the LLM should be able to run code whose
-    # state (variables, imports, definitions) survives across tool calls within a
-    # single Skill invocation.  The docstring above is model-facing: it is the
-    # `Harness` section this handler adds to the system prompt (see
-    # `PromptInjectingInterpretation`), so implementation notes belong in
-    # comments like this one.
-    #
-    # Scoping mirrors how `__history__` is managed for Skill calls: `_apply`
-    # handles `call_agent` to introduce fresh session-bound handlers
-    # (`exec_code`, `read_lexical_variable`, `repl_history`) for the duration of
-    # the call, and `_call_assistant` injects an `exec_code` Tool routed to that
-    # session.  The session is therefore introduced and eliminated by its own
-    # handler, bounded to the Skill call by construction -- there is no global
-    # registry of sessions, and nested Skill calls get their own isolated ones.
-    #
-    # The session is seeded from the Skill's lexical context and routes
-    # execution through the `parse`/`compile`/`exec` effect operations, so it
-    # works under any installed eval provider (`BuiltinExecutor` or
-    # `RestrictedPythonExecutor`).
 
     @typing.final
     @Tool.define
     @classmethod
-    def exec_code(cls, code: types.CodeType, clear: bool = False) -> str:
-        """Run Python in a persistent, stateful session and return its output.
+    def exec_code(
+        cls, code: types.CodeType, clear: ClearScope = ClearScope.NONE
+    ) -> str:
+        """Run Python in a stateful session and return its output.
 
-        This is a long-lived REPL, not a one-shot sandbox: every call runs in
-        the SAME namespace, so names you bind in one call stay available in
-        later calls within the same task.  Imports, function/class definitions
-        and variable assignments all accumulate during the session of this
-        skill.  The namespace starts seeded with the in-scope variables of the
-        surrounding context, which you may read and rebind.
+        This is a REPL, not a one-shot sandbox: every call within THIS Skill
+        call runs in the SAME namespace, so imports, definitions and
+        assignments accumulate across your turns.  The namespace is seeded from
+        the surrounding scope -- this call's arguments and the *Lexical scope*
+        table -- which you may read and rebind.  The session ends when you
+        answer; the next request gets an empty one.  Only `self` and the
+        surrounding scope outlive it.
+
+        Your code is run, and type-checked, as if it were the body of the
+        function you are answering for, so read the names already in scope
+        instead of re-importing modules or retyping values the request gave you.
 
         Output: returns this call's output -- its stdout (what `print` wrote)
         followed by anything written to stderr.  There is NO automatic echoing
@@ -439,30 +419,17 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
         call -- but output printed before the error is not returned, so print
         again once it works.
 
-        Passing ``clear=True`` consolidates: if (and only if) the snippet
-        raises no exception, every message after the current request -- the
-        tool-call transcript of this task so far -- is dropped, and what the
-        snippet printed becomes a note on the surviving request.  That note is
-        the only transcript content that survives, so print a short summary of
-        anything worth remembering that you have not stored elsewhere;
-        bindings you have assigned onto durable objects (for example fields of
-        `self`) are untouched by the clear and are the right place for
-        anything that matters.  A snippet that raises clears NOTHING.  Use it
-        once the transcript has served its purpose: write what matters onto
-        durable state, print a short note, and clear.
+        `clear` compacts the conversation -- see its own schema below for what
+        each scope drops -- but only if the snippet raises no exception: a
+        snippet that raises clears NOTHING.
 
-        Provide `code` as a string of Python source.  It must be a complete,
-        compilable snippet -- incomplete or invalid source is rejected before
-        it runs.
-        """
-        raise NotImplementedError("No handler")
-
-    @typing.final
-    @Tool.define
-    @classmethod
-    def read_lexical_variable(cls, name: str) -> typing.Any:
-        """
-        Read the value of lexical variable ``name`` into the LLM context.
+        Whichever scope you pick, the current request and THIS call of yours
+        survive: your
+        message, the snippet you wrote and its output.  So the snippet and the
+        message you send it with are your note to your later self, and you do
+        not have to route everything through `print(...)` to keep it.  What a
+        clear cannot save is what you never wrote down at all -- and only `self`
+        survives the *next* one, so anything that must last belongs there.
         """
         raise NotImplementedError("No handler")
 
@@ -488,50 +455,123 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
         return {}
 
     @implements(call_agent)
-    def _call_agent[**P, T](
+    def call_agent[**P, T](
         self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
     ) -> T:
+        """Open a REPL session for the duration of this call.
+
+        The session's namespace is seeded from a `collections.ChainMap` of the
+        bound arguments over the Skill's lexical context, so this call's own
+        arguments shadow same-named module globals -- which is the scope the
+        model is shown, and the scope a snippet executes against.
+
+        Every session-scoped operation is bound here, inside the `handler`
+        block, so the session is created and discarded with the call. A nested
+        Skill call runs this rule again and gets a namespace of its own; nothing
+        outlives the ``with``.
+        """
         bound_args = skill.__signature__.bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = collections.ChainMap(bound_args.arguments, skill.__context__)
         session = ReplSession(env=env)
         with handler(
             {
-                self.exec_code: lambda code, clear=False: session.exec_code(code),
-                self.read_lexical_variable: env.get,
+                self.exec_code: lambda code, clear=ClearScope.NONE: session.exec_code(
+                    code
+                ),
                 self.repl_history: lambda: session.prior_snippets,
                 self.repl_env: lambda: session.locals,
             }
         ):
             return fwd()
 
+    @implements(call_user)
+    def call_user(self, user_prompt: PromptSection) -> typing.Any:
+        """Tell each request which session it opens, and what is bound in it.
+
+        Attached to the request rather than to the system message because both
+        facts are per-call: the session boundary *is* this message, and the
+        arguments named by its heading are this call's.
+
+        The section is the same text every time, so this rule
+        needs nothing from the call it decorates -- which is why it can be a rule
+        at all, rather than something `call_agent` closes over the `Skill` to
+        build.
+        """
+        session_note = textwrap.dedent("""
+        A fresh, empty Python session opens with this request and is discarded when you
+        answer it. Names you bound in an earlier request's session are gone; `self` and
+        the lexical scope are not, because they belong to the calling program rather
+        than to the session.
+
+        The parameters of the signature heading this request are bound in that session,
+        under those names and with those types -- their values are already written out
+        above, so read the names rather than retyping what you were given. The rest of
+        the namespace is the *Lexical scope* and *Imported modules* tables of the system
+        message.
+        """)
+        return fwd(
+            PromptSection(
+                type="prompt_section",
+                title=user_prompt["title"],
+                content=[
+                    *user_prompt["content"],
+                    PromptSection(
+                        type="prompt_section",
+                        title="REPL session",
+                        content=to_content_blocks(session_note),
+                    ),
+                ],
+            )
+        )
+
     @implements(call_tool)
-    def _call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
-        """Clear history after a successful `exec_code(clear=True)`"""
+    def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
+        """Compact the conversation after a successful ``exec_code(clear=...)``.
+
+        Only on success: a snippet that raised clears nothing, since the model
+        has not yet had the chance to record what mattered, and the traceback it
+        needs to repair the snippet is in the very round a clear would drop.
+
+        Forwarding first is what makes this safe to do inline. By the time
+        control returns, `HistoryBuilder` has appended this call's tool message,
+        so the round `compact` keeps is complete; and because compaction only
+        removes messages *ahead* of the assistant message that requested this
+        call, a sibling tool call answered later still finds that message and
+        cannot be orphaned.
+        """
         message, result, is_final = fwd(tool_call)
-        if (
-            tool_call.tool is self.exec_code
-            and tool_call.bound_args.arguments.get("clear", False)
-            and not isinstance(result, ToolCallExecutionError)
+        if tool_call.tool is self.exec_code and not isinstance(
+            result, ToolCallExecutionError
         ):
-            history = HistoryBuilder.get_history()
-            for i, msg in reversed(list(enumerate(history))):
-                if msg["role"] == "user":
-                    history[:] = [*history[:i], _with_note(msg, result)]
-                    break
+            compact_(
+                HistoryBuilder.get_history(),
+                tool_call.id,
+                tool_call.bound_args.arguments.get("clear", ClearScope.NONE),
+            )
         return message, result, is_final
 
     @implements(call_assistant)
-    def _call_assistant[T](
+    def call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
         response_type: type[T],
         env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
+        """Offer the REPL tools, over an env that includes the session namespace.
+
+        The session's bindings are merged *over* the request env, so a name the
+        model defined in an earlier snippet is visible to whatever the next
+        request decodes -- notably the type check a new snippet is held to,
+        which would otherwise see every such name as undefined.
+        """
         return fwd(
             messages,
             response_type,
             {**env, **self.repl_env()},
-            tools | {self.exec_code, self.read_lexical_variable},
+            tools
+            | {
+                self.exec_code,
+            },
         )

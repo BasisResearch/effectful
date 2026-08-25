@@ -44,7 +44,13 @@ class SystemPromptDumper(ObjectInterpretation):
     path: pathlib.Path
 
     @implements(call_system)
-    def _call_system(self, harness_prompt, agent_prompt):
+    def call_system(self, harness_prompt, agent_prompt):
+        """Write the assembled system message to `path`, then return it.
+
+        Forwards first, so what lands on disk is the finished prompt every
+        other handler has contributed to, not this handler's view of it. The
+        file is overwritten each time.
+        """
         message = fwd()
         self.path.write_text(_message_text(message.get("content")))
         return message

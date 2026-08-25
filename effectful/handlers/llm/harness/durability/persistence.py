@@ -1,3 +1,37 @@
+"""Checkpointing of `Agent` history and state to a SQLite database.
+
+Install `SQLitePersister` alongside `AgentLoop`, `LiteLLMConfigurer` and
+`HistoryBuilder`::
+
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer()),
+        handler(HistoryBuilder()),
+        handler(SQLitePersister(Path("./state/checkpoints.db"))),
+    ):
+        bot.ask("question")
+
+`HistoryBuilder` is what opens the transaction a call's messages accumulate in,
+so a stack without it has no history for this handler to checkpoint.
+`~effectful.handlers.llm.harness.harness` assembles all of these; assemble them
+by hand only to leave one out.
+
+It composes with `~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`::
+
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer()),
+        handler(HistoryBuilder()),
+        handler(TenacityRetryer()),
+        handler(SQLitePersister(Path("./state/checkpoints.db"))),
+    ):
+        bot.ask("question")
+
+There is deliberately no crash-recovery "handoff" note written on restore: the
+last successful checkpoint is already a complete, uncorrupted transcript, and
+the caller is expected to simply retry the request that didn't finish.
+"""
+
 import dataclasses
 import json
 import pathlib
@@ -16,61 +50,20 @@ from effectful.ops.types import Operation
 
 
 class SQLitePersister(PromptInjectingInterpretation):
-    """Handler that persists `Agent` history and state to a SQLite database.
+    """This conversation outlives the process. When a call you are answering
+    returns, the whole exchange and the agent's declared fields are written to
+    disk, and the next time this agent runs -- in a later process, days from now
+    -- they are restored. The history you are reading may therefore begin long
+    before this run started.
 
-    Install alongside `AgentLoop`, `LiteLLMConfigurer` and `HistoryBuilder`::
+    So anything you set on the agent persists, and is worth setting
+    deliberately: notes, accumulated findings, a running summary. Conversely,
+    do not re-derive what an earlier turn already established and recorded; it
+    is in front of you because it was saved, not because it was just computed.
 
-        with (
-            handler(AgentLoop()),
-            handler(LiteLLMConfigurer()),
-            handler(HistoryBuilder()),
-            handler(SQLitePersister(Path("./state/checkpoints.db"))),
-        ):
-            bot.ask("question")
-
-    `HistoryBuilder` is what opens the transaction a call's messages accumulate
-    in, so a stack without it has no history for this handler to checkpoint.
-    `harness` assembles all of these; assemble them by hand only to leave one out.
-
-    Only agents constructed with an explicit `agent_id` (see `Agent`) are
-    checkpointed -- a transient agent (the default) is never written to the
-    database, even nested inside a persisted agent's call under the same
-    handler.
-
-    Uses SQLite WAL mode for crash tolerance: if the process is killed
-    mid-write, SQLite's journal-based recovery keeps the database consistent.
-    All state is read from and written to the database directly -- there is no
-    in-memory cache to go stale.
-
-    **Automatic checkpointing**: after each outermost call for a given agent
-    *returns successfully*, its state and history are saved.
-
-    **On an exception**, nothing is saved. A `Skill` call's work happens
-    against a private copy of the agent's history that is only written back
-    on success (see `AgentLoop._call`), so an interrupted call's partial
-    exchange -- and any other in-process state not captured by `__history__`
-    (e.g. a `PythonRepl` session) -- is unrecoverable regardless of what this
-    handler does. There is deliberately no crash-recovery "handoff" note: the
-    last successful checkpoint is already a complete, uncorrupted transcript,
-    and the caller is expected to simply retry the request that didn't finish.
-
-    **Nested calls** (e.g. a tool invoking another skill on the same
-    agent) are passed through without additional checkpointing -- only the
-    outermost call per agent saves.
-
-    Composes with `TenacityRetryer`::
-
-        with (
-            handler(AgentLoop()),
-            handler(LiteLLMConfigurer()),
-            handler(HistoryBuilder()),
-            handler(TenacityRetryer()),
-            handler(SQLitePersister(Path("./state/checkpoints.db"))),
-        ):
-            bot.ask("question")
-
-    Args:
-        db_path: pathlib.Path to the SQLite database file.
+    A call that raises saves nothing. If you are heading toward an error, an
+    intermediate result you want kept should be recorded before the failure,
+    not after it.
     """
 
     db_path: pathlib.Path
@@ -88,6 +81,20 @@ class SQLitePersister(PromptInjectingInterpretation):
         return None
 
     def __init__(self, db_path: pathlib.Path) -> None:
+        """Open (creating if absent) the checkpoint database.
+
+        WAL mode buys crash tolerance: if the process is killed mid-write,
+        SQLite's journal-based recovery keeps the database consistent.
+        ``synchronous=NORMAL`` is the usual companion to WAL -- it trades an
+        fsync per commit for one per checkpoint, which is the right trade when
+        the alternative to a lost final commit is re-running the call.
+
+        All state is read from and written to the database directly, with no
+        in-memory cache to go stale, so several processes may share one file.
+
+        Args:
+            db_path: Path to the SQLite database file.
+        """
         self.db_path = pathlib.Path(db_path)
 
         with sqlite3.connect(str(self.db_path)) as conn:
@@ -144,7 +151,31 @@ class SQLitePersister(PromptInjectingInterpretation):
         }
 
     @implements(call_agent)
-    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    def call_agent[**P, T](
+        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """Checkpoint the agent after the call returns.
+
+        The save happens *after* `fwd`, so nothing is written when the call
+        raises: a `Skill` call's work happens against a private copy of the
+        agent's history that is only written back on success (see
+        `AgentLoop.call_agent`), so an interrupted call's partial exchange --
+        and any other in-process state not captured by `__history__`, such as a
+        `PythonRepl` session -- is unrecoverable regardless of what this handler
+        does.
+
+        Two gates decide whether anything is written. The skill must be bound
+        to an agent (``__history__``), and that agent must have been given an
+        explicit ``agent_id`` (see `Agent`): a transient agent, the default, is
+        never written to the database, even when nested inside a persisted
+        agent's call under this same handler.
+
+        Nested calls -- a tool invoking another skill on the same agent -- run
+        this rule too, so each writes its own checkpoint on the way out. That is
+        harmless rather than intended: the agent's history is one shared object,
+        so the enclosing call's save overwrites the nested one with a superset,
+        and the row left behind is the state as of the outermost return.
+        """
         result = fwd()
         if hasattr(skill, "__history__") and skill.__self__.__is_persistent__:  # type: ignore
             agent: Agent = skill.__self__  # type: ignore

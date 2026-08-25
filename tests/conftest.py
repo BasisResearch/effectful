@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 
 import litellm
 import pytest
@@ -60,7 +61,8 @@ def offered_tools(env, *handlers):
 
     Replaces the old ``collect_tools`` operation: tool collection now happens as
     `call_assistant` seeds its `tools` set from :func:`_tools_in_scope` and the
-    augmenting handlers (``LexicalReaders``, ``PythonRepl``, ...) union more in.
+    augmenting handlers (``StatefulReplSynthesizer``, ``FinalBodySynthesizer``,
+    ...) union more in.
     This installs a capture handler that records the tools `call_assistant`
     ultimately receives.
 
@@ -130,9 +132,25 @@ class MockCompletionHandler(ObjectInterpretation):
 
 
 def make_tool_call_response(
-    tool_name: str, tool_args: str, tool_call_id: str = "call_1"
+    tool_name: str | Sequence[tuple[str, str]],
+    tool_args: str | None = None,
+    tool_call_id: str = "call_1",
 ) -> ModelResponse:
-    """Create a ModelResponse with a tool call."""
+    """Create a ModelResponse with one tool call, or several.
+
+    The common case is one call: pass its name and JSON arguments. A turn that
+    requests *several* is a shape the harness has rules about -- a finalizing
+    call must be alone, a compacting one must not orphan its siblings -- so pass
+    a sequence of ``(name, arguments)`` pairs instead to build one. Their ids are
+    then numbered ``call_1``, ``call_2``, ... and `tool_call_id` is unused.
+    """
+    if isinstance(tool_name, str):
+        assert tool_args is not None
+        calls = [(tool_call_id, tool_name, tool_args)]
+    else:
+        calls = [
+            (f"call_{i}", name, args) for i, (name, args) in enumerate(tool_name, 1)
+        ]
     return ModelResponse(
         id="test",
         choices=[
@@ -143,10 +161,11 @@ def make_tool_call_response(
                     "content": None,
                     "tool_calls": [
                         {
-                            "id": tool_call_id,
+                            "id": call_id,
                             "type": "function",
-                            "function": {"name": tool_name, "arguments": tool_args},
+                            "function": {"name": name, "arguments": args},
                         }
+                        for call_id, name, args in calls
                     ],
                 },
                 "finish_reason": "tool_calls",

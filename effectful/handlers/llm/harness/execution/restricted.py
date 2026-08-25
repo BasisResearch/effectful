@@ -1,3 +1,31 @@
+"""A safer eval provider built on RestrictedPython.
+
+RestrictedPython is not a complete sandbox: it enforces a restricted language
+subset at compile time and expects the caller to supply a constrained exec
+environment. `RestrictedPythonExecutor` supplies that environment -- a
+`RestrictedPythonPolicy` at compile time, and at run time the guarded accessors
+that policy's output calls into (`_guarded_getattr`, `_guarded_import`, ...)
+over a builtins namespace with no I/O, no introspection and no way back to
+``compile``/``eval``/``exec``.
+
+It also cannot shut down the process it runs in. `call_tool` catches
+``Exception`` and not ``BaseException``, so that a real Ctrl-C interrupts the
+host rather than being handed to the model as a failed tool call -- which leaves
+anything a snippet can raise *outside* ``Exception`` uncontainable. So the
+``BaseException`` subclasses that are not ``Exception`` are removed from the
+builtins namespace (`_UNSAFE_BUILTIN_NAMES`), and ``os``/``signal`` are out of
+reach whether named in an ``import`` or fetched off an allowed module that
+imported them itself (`_checked_module`).
+
+Doctests are executed under the same policy as the code they exercise, so a
+model cannot smuggle past the sandbox in a docstring.
+
+The sandbox says nothing about types: install
+`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
+`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker` alongside this
+handler to type-check generated code before it is compiled and run.
+"""
+
 import ast
 import builtins
 import collections.abc
@@ -56,15 +84,13 @@ class _StdoutPrintCollector(PrintCollector):
     collector's discarded `printed` buffer."""
 
     def _call_print(self, *objects, **kwargs):
+        """Write straight to `sys.stdout`, defaulting ``file`` so an explicit
+        ``print(..., file=x)`` in generated code still goes where it asked."""
         kwargs.setdefault("file", sys.stdout)
         builtins.print(*objects, **kwargs)
 
 
-# Names the RestrictedPython transformer itself emits into compiled code -- the
-# guarded accessors (`_getattr_(x, "y")`), the print collector (`_print`), the
-# class metaclass. Generated code must not bind or read them, or it could hand
-# itself an unguarded accessor (or quietly disable one).
-_GUARD_NAMES = frozenset(
+_GUARD_NAMES: typing.Final = frozenset(
     {
         "_apply_",
         "_getattr_",
@@ -80,13 +106,12 @@ _GUARD_NAMES = frozenset(
         "__metaclass__",
     }
 )
+"""Names the RestrictedPython transformer itself emits into compiled code -- the
+guarded accessors (``_getattr_(x, "y")``), the print collector (``_print``), the
+class metaclass. Generated code must not bind or read them, or it could hand
+itself an unguarded accessor (or quietly disable one)."""
 
-# Dunder attributes generated code may read, call and define: the operator/context
-# protocols plus a few purely descriptive names. Every *other* ``__dunder__`` --
-# `__class__`, `__bases__`, `__subclasses__`, `__mro__`, `__globals__`, `__code__`,
-# `__dict__`, `__getattribute__`, `__reduce__`, ... -- is the road from sandboxed
-# code back to the interpreter, and stays closed.
-_SAFE_DUNDER_ATTRS = frozenset(
+_SAFE_DUNDER_ATTRS: typing.Final = frozenset(
     {
         "__abs__",
         "__add__",
@@ -121,28 +146,15 @@ _SAFE_DUNDER_ATTRS = frozenset(
         "__sub__",
     }
 )
+"""Dunder attributes generated code may read, call and define: the
+operator/context protocols plus a few purely descriptive names.
 
-# Modules generated code may import. Pure computation and data structures only:
-# nothing that reaches the filesystem, the network, the process, or the import
-# system itself (`os`, `sys`, `subprocess`, `socket`, `importlib`, `builtins`,
-# `inspect`, `types`, `pickle`, `ctypes`, ...). Submodules must be listed in full,
-# since the check is on the imported name.
-#
-# This list governs *every* module that reaches generated code, not just the ones
-# it names in an `import` statement. An allowed module holds references to the
-# modules it imported itself -- `uuid.os`, `typing.sys`, `queue.threading`,
-# `json.codecs` -- so gating only `__import__` would leave `import uuid` one
-# attribute away from `os.system`. `_guarded_getattr` and `_guarded_import`
-# therefore both refuse to hand back a module that is not named here, whichever
-# module it was reached through.
-#
-# Two near-misses worth recording, so they don't get added later by analogy:
-# `io` is not here because `io.open` *is* `builtins.open`, which would hand back
-# the filesystem that omitting `open` closes; and `numpy`/`matplotlib` are not here
-# because `numpy.load(..., allow_pickle=True)` executes arbitrary code. Synthesized
-# code that genuinely needs those belongs under `UnsafeEvalProvider`, not behind a
-# widened allowlist.
-_ALLOWED_MODULES = frozenset(
+Every *other* ``__dunder__`` -- ``__class__``, ``__bases__``,
+``__subclasses__``, ``__mro__``, ``__globals__``, ``__code__``, ``__dict__``,
+``__getattribute__``, ``__reduce__``, ... -- is the road from sandboxed code
+back to the interpreter, and stays closed."""
+
+_ALLOWED_MODULES: typing.Final = frozenset(
     {
         "abc",
         "array",
@@ -182,33 +194,58 @@ _ALLOWED_MODULES = frozenset(
         "uuid",
     }
 )
+"""Modules generated code may import.
 
-# `n += 1` compiles to `n = _inplacevar_("+=", n, 1)`, so the environment has to
-# supply the operators; without this every augmented assignment is a NameError.
-_INPLACE_OPS: dict[
-    str, collections.abc.Callable[[typing.Any, typing.Any], typing.Any]
-] = {
-    "+=": operator.iadd,
-    "-=": operator.isub,
-    "*=": operator.imul,
-    "/=": operator.itruediv,
-    "//=": operator.ifloordiv,
-    "%=": operator.imod,
-    "**=": operator.ipow,
-    "<<=": operator.ilshift,
-    ">>=": operator.irshift,
-    "&=": operator.iand,
-    "^=": operator.ixor,
-    "|=": operator.ior,
-    "@=": operator.imatmul,
-}
+Pure computation and data structures only: nothing that reaches the filesystem,
+the network, the process, or the import system itself (``os``, ``sys``,
+``subprocess``, ``socket``, ``importlib``, ``builtins``, ``inspect``, ``types``,
+``pickle``, ``ctypes``, ...). Submodules must be listed in full, since the check
+is on the imported name.
 
-# Builtins beyond RestrictedPython's deliberately minimal `safe_builtins`. Each is
-# pure and reaches nothing outside its arguments; the omissions are the point --
-# `open`, `input`, `compile`, `eval`, `exec`, `globals`, `locals`, `vars`, `dir`
-# and `breakpoint` are all absent, and `__import__`/`getattr`/`setattr`/`delattr`
-# are installed as guarded wrappers rather than taken from `builtins`.
-_EXTRA_SAFE_BUILTIN_NAMES = frozenset(
+This list governs *every* module that reaches generated code, not just the ones
+it names in an ``import`` statement. An allowed module holds references to the
+modules it imported itself -- ``uuid.os``, ``typing.sys``, ``queue.threading``,
+``json.codecs`` -- so gating only ``__import__`` would leave ``import uuid`` one
+attribute away from ``os.system``. `_guarded_getattr` and `_guarded_import`
+therefore both refuse to hand back a module that is not named here, whichever
+module it was reached through.
+
+Two near-misses worth recording, so they don't get added later by analogy:
+``io`` is not here because ``io.open`` *is* ``builtins.open``, which would hand
+back the filesystem that omitting ``open`` closes; and ``numpy``/``matplotlib``
+are not here because ``numpy.load(..., allow_pickle=True)`` executes arbitrary
+code. Synthesized code that genuinely needs those belongs under
+`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor`, not behind
+a widened allowlist."""
+
+_INPLACE_OPS: typing.Final[
+    collections.abc.Mapping[
+        str, collections.abc.Callable[[typing.Any, typing.Any], typing.Any]
+    ]
+] = types.MappingProxyType(
+    {
+        "+=": operator.iadd,
+        "-=": operator.isub,
+        "*=": operator.imul,
+        "/=": operator.itruediv,
+        "//=": operator.ifloordiv,
+        "%=": operator.imod,
+        "**=": operator.ipow,
+        "<<=": operator.ilshift,
+        ">>=": operator.irshift,
+        "&=": operator.iand,
+        "^=": operator.ixor,
+        "|=": operator.ior,
+        "@=": operator.imatmul,
+    }
+)
+"""The augmented-assignment operators, by symbol.
+
+``n += 1`` compiles to ``n = _inplacevar_("+=", n, 1)``, so the environment has
+to supply the operators; without this every augmented assignment is a
+``NameError``."""
+
+_EXTRA_SAFE_BUILTIN_NAMES: typing.Final = frozenset(
     {
         "all",
         "any",
@@ -244,18 +281,15 @@ _EXTRA_SAFE_BUILTIN_NAMES = frozenset(
         "NotImplemented",
     }
 )
+"""Builtins beyond RestrictedPython's deliberately minimal ``safe_builtins``.
 
-# Builtins `safe_builtins` supplies that this environment takes back out: every
-# `BaseException` subclass that is not an `Exception`.
-#
-# `raise SystemExit(...)` in generated code unwinds straight through the harness
-# and out of the host program -- `call_tool` catches `Exception`, as it must, so
-# that a real Ctrl-C still interrupts the process rather than being reported to
-# the model as a failed tool call. That makes these four classes the one thing a
-# sandboxed snippet can raise that its caller will not contain, and none of them
-# is any use to the pure computation this environment is for: `Exception` and its
-# subclasses remain available in full.
-_UNSAFE_BUILTIN_NAMES = frozenset(
+Each is pure and reaches nothing outside its arguments; the omissions are the
+point -- ``open``, ``input``, ``compile``, ``eval``, ``exec``, ``globals``,
+``locals``, ``vars``, ``dir`` and ``breakpoint`` are all absent, and
+``__import__``/``getattr``/``setattr``/``delattr`` are installed as guarded
+wrappers rather than taken from ``builtins``."""
+
+_UNSAFE_BUILTIN_NAMES: typing.Final = frozenset(
     {
         "BaseException",
         "BaseExceptionGroup",
@@ -264,12 +298,24 @@ _UNSAFE_BUILTIN_NAMES = frozenset(
         "SystemExit",
     }
 )
+"""Builtins ``safe_builtins`` supplies that this environment takes back out:
+every ``BaseException`` subclass that is not an ``Exception``.
+
+``raise SystemExit(...)`` in generated code unwinds straight through the harness
+and out of the host program -- `call_tool` catches ``Exception``, as it must, so
+that a real Ctrl-C still interrupts the process rather than being reported to
+the model as a failed tool call. That makes these four classes the one thing a
+sandboxed snippet can raise that its caller will not contain, and none of them
+is any use to the pure computation this environment is for: ``Exception`` and
+its subclasses remain available in full."""
 
 
-# Dunder *bindings* a class or module body may make. Binding these declares
-# something about the code being written; it is not a way to read a dunder
-# attribute off an object, which `_is_allowed_attribute` governs separately.
-_SAFE_DUNDER_BINDINGS = frozenset({"__all__", "__slots__"})
+_SAFE_DUNDER_BINDINGS: typing.Final = frozenset({"__all__", "__slots__"})
+"""Dunder *bindings* a class or module body may make.
+
+Binding these declares something about the code being written; it is not a way
+to read a dunder attribute off an object, which `_is_allowed_attribute` governs
+separately."""
 
 
 def _is_allowed_name(name: str) -> bool:
@@ -516,13 +562,18 @@ class RestrictedPythonPolicy(RestrictingNodeTransformer):
         return node
 
 
-_RAISE = object()
+_RAISE: typing.Final = object()
+"""`_guarded_getattr`'s sentinel default, distinguishing ``getattr(o, n)`` from
+``getattr(o, n, None)``: absent a real default, a missing attribute raises."""
 
-# `str.format`'s field names, the part before any `!conversion` or `:spec`. A field
-# that *reaches* -- `{0.__class__}`, `{0[1]}` -- is the whole reason RestrictedPython
-# refuses these methods, since the traversal happens inside CPython's formatter,
-# where the `_getattr_`/`_getitem_` rewriting cannot see it.
-_FORMAT_REACHING_CHARS = (".", "[")
+_FORMAT_REACHING_CHARS: typing.Final = (".", "[")
+"""Characters that make a ``str.format`` field *reach* past its argument.
+
+They are matched against the field name, the part before any ``!conversion`` or
+``:spec``. A field that reaches -- ``{0.__class__}``, ``{0[1]}`` -- is the whole
+reason RestrictedPython refuses these methods, since the traversal happens
+inside CPython's formatter, where the ``_getattr_``/``_getitem_`` rewriting
+cannot see it."""
 
 
 def _reject_reaching_format_fields(template: str) -> None:
@@ -712,36 +763,36 @@ def _guarded_apply(
 
 
 class RestrictedPythonExecutor(PromptInjectingInterpretation):
-    """
-    Safer provider using RestrictedPython.
+    """Code you write runs in a restricted subset of Python, not the full
+    language. What is unavailable is unavailable by design, and no amount of
+    indirection will reach it, so write within the subset rather than testing
+    its edges -- a rejected program costs a turn and tells you only what you
+    already know from here.
 
-    RestrictedPython is not a complete sandbox, but it enforces a restricted
-    language subset and expects you to provide a constrained exec environment.
-    This provider supplies that environment: a `RestrictedPythonPolicy` at compile
-    time, and at run time the guarded accessors that policy's output calls into
-    (`_guarded_getattr`, `_guarded_import`, ...) over a builtins namespace with no
-    I/O, no introspection and no way back to `compile`/`eval`/`exec`.
+    The restrictions: no file, network or process access, and no `open`,
+    `input`, `eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `dir` or
+    `breakpoint`. Imports are limited to the allowlist in the *Modules you may
+    import* section, and a module not on it stays out of reach however you get
+    to it -- naming it in an `import`,
+    or taking it off an allowed module that imported it. Introspection back into
+    the interpreter is closed: `__class__`, `__globals__`, `__code__`,
+    `__subclasses__`, `__dict__` and the rest raise, though the operator and
+    context-manager dunders you would implement on your own classes are fine.
+    Single-underscore names (`_helper`, `self._items`) are ordinary and allowed.
+    You also cannot exit the process: `SystemExit`, `KeyboardInterrupt` and the
+    other non-`Exception` classes are absent, so raise an ordinary `Exception`
+    to signal failure.
 
-    It also cannot shut down the process it runs in. `call_tool` catches
-    `Exception` and not `BaseException`, so that a real Ctrl-C interrupts the host
-    rather than being handed to the model as a failed tool call -- which leaves
-    anything a snippet can raise *outside* `Exception` uncontainable. So the
-    `BaseException` subclasses that are not `Exception` are removed from the
-    builtins namespace (`_UNSAFE_BUILTIN_NAMES`), and `os`/`signal` are out of
-    reach whether named in an ``import`` or fetched off an allowed module that
-    imported them itself (`_checked_module`).
+    Everything else is Python as you know it. Classes, closures, comprehensions,
+    generators, decorators, dataclasses, `try`/`except`, `match`, f-strings,
+    augmented assignment and `print` all work normally, and the allowed modules
+    cover the arithmetic, collections, text and serialization work this
+    environment is for. Doctests you write in a docstring are run under exactly
+    this policy too, so they are subject to the same rules as the code around
+    them.
 
-    Doctests are executed under the same policy as the code they exercise, so a
-    model cannot smuggle past the sandbox in a docstring.
-
-    The sandbox says nothing about types: install
-    `~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
-    `~effectful.handlers.llm.harness.validation.ty.TyTypeChecker` alongside this
-    handler to type-check generated code before it is compiled and run.
-
-    policy : type[RestrictingNodeTransformer], optional
-        RestrictedPython compile_restricted policy for compilation. Defaults to
-        `RestrictedPythonPolicy`.
+    A violation is reported to you as an error naming the construct, and the
+    program does not run. Read it as a boundary, not a bug to work around.
     """
 
     policy: type[RestrictingNodeTransformer] | None = None
@@ -751,6 +802,14 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
         *,
         policy: type[RestrictingNodeTransformer] | None = None,
     ):
+        """Configure the compile-time policy.
+
+        Args:
+            policy: RestrictedPython ``compile_restricted`` policy to compile
+                under. Defaults to `RestrictedPythonPolicy`, which is the policy
+                the runtime guards in this module are matched to; a replacement
+                has to keep emitting the same guard calls to stay safe.
+        """
         self.policy = policy
 
     def _allowed_modules_section(self) -> PromptSection:
@@ -779,8 +838,13 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
     def call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
-        # Appended before delegating, so the allowlist and the docstring section
-        # the base rule adds end up adjacent.
+        """Add the import allowlist, then the class docstring the base rule adds.
+
+        Appending before delegating puts `_allowed_modules_section` immediately
+        ahead of the section `PromptInjectingInterpretation` contributes, so the
+        two arrive together however the rest of the stack is composed -- which
+        is what lets the class docstring refer to the allowlist by name.
+        """
         return super().call_system(
             PromptSection(
                 type="prompt_section",
@@ -792,7 +856,13 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
 
     @implements(parse)
     def parse(self, source: str, filename: str) -> ast.Module:
-        # Keep inspect.getsource() working for dynamically-defined objects.
+        """Parse `source`, registering it under `filename` so it stays readable.
+
+        The `linecache` entry is what keeps `inspect.getsource` working for
+        objects defined by generated code, which has no file behind it. Parsing
+        itself is unrestricted -- the policy is applied in `compile`, over the
+        tree this produces.
+        """
         linecache.cache[filename] = (
             len(source),
             None,
@@ -927,10 +997,13 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
         bytecode: types.CodeType,
         env: dict[str, typing.Any],
     ) -> typing.Any:
-        # Same guarded namespace as `exec`, but no binding copy-back: the `eval`
-        # op's contract discards binding effects (the only eval-mode construct
-        # that could bind, a scope-escaping walrus, is rejected by the callers
-        # that compile expressions), so there is nothing to propagate.
+        """Evaluate `bytecode` in a guarded namespace, for its value alone.
+
+        The same namespace `exec` builds, but with no binding copy-back: the
+        operation's contract discards binding effects, and the only eval-mode
+        construct that could bind -- a scope-escaping walrus -- is rejected by
+        the callers that compile expressions, so there is nothing to propagate.
+        """
         rglobals = self._restricted_globals(env)
         return builtins.eval(bytecode, rglobals, rglobals)
 
@@ -940,15 +1013,22 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
         bytecode: types.CodeType,
         env: dict[str, typing.Any],
     ) -> None:
-        # This is also where a docstring's doctests are executed: `run_doctests`
-        # routes `doctest`'s own `exec` through this operation, so the examples run
-        # in the same guarded namespace as the code they document -- otherwise
-        # `>>> __import__("os").system(...)` in a synthesized docstring would
-        # execute with nothing restricting it at all.
-        rglobals = self._restricted_globals(env)
+        """Execute `bytecode` in a guarded namespace, copying its bindings back.
 
-        # Snapshot value identities before execution so we can copy back every
-        # *binding effect* — both new names and rebindings of seeded names.
+        Execution happens in a namespace holding the runtime guards, so `env`
+        itself is never handed to restricted code; what the code binds is copied
+        back afterwards by comparing value identities, which catches both new
+        names and rebindings of seeded ones. The sandbox's own furniture (the
+        guards, ``__builtins__``, the injected ``_print``) is excluded, being no
+        binding effect of the code.
+
+        This is also where a docstring's doctests are executed: `run_doctests`
+        routes ``doctest``'s own ``exec`` through this operation, so the examples
+        run in the same guarded namespace as the code they document -- otherwise
+        ``>>> __import__("os").system(...)`` in a synthesized docstring would
+        execute with nothing restricting it at all.
+        """
+        rglobals = self._restricted_globals(env)
         before = dict(rglobals)
         builtins.exec(bytecode, rglobals, rglobals)
 

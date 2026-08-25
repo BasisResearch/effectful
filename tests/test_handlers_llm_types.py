@@ -8,7 +8,6 @@ import inspect
 import re
 import typing
 from dataclasses import dataclass
-from pathlib import Path
 from types import CodeType
 
 import pydantic
@@ -28,7 +27,6 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
-    LexicalReaders,
     LexicalToolExtractor,
     _vars_section,
 )
@@ -1192,7 +1190,7 @@ class TestCrossAgentNestedSkillCalling:
     """A tool call that delegates to a *different* Agent must write back that
     agent's own history, not be mistaken for a same-agent nested call.
 
-    `HistoryBuilder.call_skill` keys its outermost-call detection on the
+    `HistoryBuilder.call_agent` keys its outermost-call detection on the
     identity of each agent's `__history__` (`agents_called`), so being inside
     *some* transaction is not enough to make a call look nested: only a second
     call against the same agent's history is, and a different agent invoked
@@ -2157,188 +2155,6 @@ def test_tool_forward_ref():
 
 
 # ---------------------------------------------------------------------------
-# Synthetic readers for lexical context (PR #545 finish-up)
-# ---------------------------------------------------------------------------
-
-
-# Helpers for the test matrix
-@dataclasses.dataclass
-class _SimpleDataclass:
-    x: int
-    y: str
-
-
-class _SimpleModel(pydantic.BaseModel):
-    """Pydantic model used in encodable-probe matrix tests."""
-
-    x: int
-    y: str
-
-
-class _OpaqueNoEncoder:
-    """Plain user class with no Pydantic encoder."""
-
-    pass
-
-
-def _example_unannotated(x):
-    """Unannotated function for the skip-via-catch tests."""
-    return x
-
-
-def _example_annotated(x: int) -> int:
-    """Annotated function returning x."""
-    return x
-
-
-def test_synthetic_reader_returns_captured_value():
-    """The reader closes over the value snapshot taken at construction
-    time.  In-place mutation of a mutable captured value is visible
-    (same object reference); rebinding the source name is not."""
-    captured: list[int] = [1, 2, 3]
-    tool = LexicalReaders._LexicalVariableTool.define(captured, name="x")
-    assert tool() == [1, 2, 3]
-    captured.append(4)
-    assert tool() == [1, 2, 3, 4]
-
-
-def test_synthetic_reader_snapshot_survives_rebind():
-    """Tools are constructed fresh each `call_assistant` invocation,
-    so rebinding the source name between construction and invocation
-    has no effect on the captured value."""
-    env: dict = {"x": 42}
-    tool = LexicalReaders._LexicalVariableTool.define(env["x"], name="x")
-    env["x"] = 99
-    assert tool() == 42
-
-
-def test_synthetic_reader_snapshot_survives_deletion():
-    """The closure holds the value directly, so deleting the source
-    name does not invalidate the reader."""
-    env: dict = {"x": 42}
-    tool = LexicalReaders._LexicalVariableTool.define(env["x"], name="x")
-    del env["x"]
-    assert tool() == 42
-
-
-_PROBE_OK_CASES: list[tuple[str, typing.Any]] = [
-    ("primitive_int", 42),
-    ("primitive_str", "hello"),
-    ("list_of_int", [1, 2, 3]),
-    ("dict_value", {"a": 1}),
-    ("dataclass_simple", _SimpleDataclass(x=1, y="hello")),
-    ("pydantic_model", _SimpleModel(x=1, y="hello")),
-    # `re.Pattern` and `pathlib.PosixPath` are encodable in the matrix.
-    ("re_pattern", re.compile(r"x")),
-    ("pathlib_path", Path("/tmp")),
-]
-
-
-@pytest.mark.parametrize(
-    "name,value", _PROBE_OK_CASES, ids=lambda x: x[0] if isinstance(x, tuple) else None
-)
-def test_lexical_variable_tool_returns_value(name, value):
-    """`_LexicalVariableTool` builds a Tool when `Encodable[T]`
-    schema generates; calling it returns the captured value."""
-    tool = LexicalReaders._LexicalVariableTool.define(value, name=name)
-    assert tool() is value
-
-
-# ---- Encodable-passthrough exposure (annotated callables, classes,
-# builtins, methods) ----
-
-
-def _example_method_owner_unannotated():
-    class _C:
-        def m(self):
-            return 1
-
-    return _C().m
-
-
-def _example_method_owner_annotated():
-    class _C:
-        def m(self) -> int:
-            return 1
-
-    return _C().m
-
-
-_EXPOSED_THROUGH_ENCODABLE: list[tuple[str, typing.Callable[[], typing.Any]]] = [
-    # Annotated function: nested_type → Callable[[int], int]; _pydantic_callable schema.
-    ("annotated_fn", lambda: _example_annotated),
-    # Unannotated function: nested_type → function; _pydantic_callable schema.
-    ("unannotated_fn", lambda: _example_unannotated),
-    # Plain class: nested_type → type; _pydantic_callable schema.
-    ("plain_class", lambda: type("Plain", (), {})),
-    # Builtin function.
-    ("builtin_fn", lambda: len),
-    # Bound method, annotated and unannotated.
-    ("annotated_method", _example_method_owner_annotated),
-    ("unannotated_method", _example_method_owner_unannotated),
-]
-
-
-@pytest.mark.parametrize(
-    "name,make_value",
-    _EXPOSED_THROUGH_ENCODABLE,
-    ids=lambda x: x[0] if isinstance(x, tuple) else None,
-)
-def test_collect_tools_exposes_callable_shaped_values(name, make_value):
-    """With `LexicalReaders` installed, annotated callables, classes,
-    builtins, and methods flow through Encodable's broad Callable
-    handler and become synthesis-shaped tools."""
-    value = make_value()
-    env = {name: value}
-    # The reader for `value` returns it verbatim; identify it by that value.
-    assert any(t() is value for t in offered_tools(env, LexicalReaders()))
-
-
-def test_lexical_reader_exposes_data_values():
-    """Data-shaped values are exposed as readers (positive contract).
-    Readers snapshot the value, so calling one returns the *same*
-    object that was in env at construction time."""
-    env = {
-        "x": 1,
-        "s": "hello",
-        "lst": [1, 2, 3],
-        "d": {"k": 1},
-        "model": _SimpleModel(x=1, y="hi"),
-    }
-    tools = offered_tools(env, LexicalReaders())
-    # Each value is exposed as a reader that returns the very same object.
-    for v in env.values():
-        assert any(t() is v for t in tools)
-
-
-def test_skill_tools_includes_synthetic_readers_for_locals():
-    """A skill offers synthetic readers for plain values in lexical scope
-    when `LexicalReaders` is installed."""
-    _test_data = [10, 20, 30]
-
-    @Skill.define
-    def t() -> int:
-        """Doc."""
-        raise NotHandled
-
-    # Restrict to reader tools (safe to call) rather than other in-scope tools.
-    readers = [
-        tool
-        for tool in skill_tools(t, LexicalReaders())
-        if isinstance(tool, LexicalReaders._LexicalVariableTool)
-    ]
-    assert any(reader() == [10, 20, 30] for reader in readers)
-
-
-def test_lexical_readers_handler_enables_collection():
-    """Installing `LexicalReaders` flips the gate; the same values are
-    exposed as zero-arg reader tools."""
-    env = {"x": 42, "s": "hello"}
-    tools = offered_tools(env, LexicalReaders())
-    assert {t() for t in tools} == {42, "hello"}
-
-
-# ---------------------------------------------------------------------------
 # PythonRepl handler (#678)
 # ---------------------------------------------------------------------------
 
@@ -2353,15 +2169,6 @@ def test_python_repl_exposes_exec_code():
     base tools."""
     repl = StatefulReplSynthesizer()
     assert repl.exec_code in offered_tools({"x": 1}, repl)
-
-
-def test_python_repl_composes_with_lexical_readers():
-    """Readers and the REPL tool coexist when both handlers are installed."""
-    repl = StatefulReplSynthesizer()
-    tools = offered_tools({"data": [1, 2, 3]}, LexicalReaders(), repl)
-    assert repl.exec_code in tools  # the REPL tool
-    readers = [t for t in tools if isinstance(t, LexicalReaders._LexicalVariableTool)]
-    assert any(reader() == [1, 2, 3] for reader in readers)  # the data reader
 
 
 def _drive_repl(body):

@@ -39,10 +39,13 @@ from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
 from effectful.handlers.llm.harness.observability.rich import (
     RichTerminalRenderer,
+    _message_text,
     _render_content,
 )
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
-from effectful.handlers.llm.harness.synthesis.snippet import _with_note
+from effectful.handlers.llm.harness.synthesis.snippet import (
+    StatefulReplSynthesizer,
+)
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
@@ -478,26 +481,40 @@ def test_renderer_releases_the_live_region_after_a_failure():
     renderer._live_lock.release()
 
 
-def test_renderer_shows_a_consolidated_note():
-    """The note `exec_code(clear=True)` leaves on the surviving user message must
-    reach the operator, not just the model.
+def test_renderer_shows_the_repl_session_section():
+    """What a handler appends to a request must reach the operator, not just the
+    model.
 
-    It used to be delimited by a column-0 ``<consolidated>`` tag, which CommonMark
-    classifies as an ``html_block``; `rich.markdown.Markdown` registers no element
-    for that token and drops it silently, so the whole note vanished from
-    ``--render`` while the model still received it.
+    The `REPL session` section is delimited by a Markdown heading, and that is
+    not a style choice: an earlier annotation on the user message used a column-0
+    ``<consolidated>`` tag, which CommonMark classifies as an ``html_block``.
+    `rich.markdown.Markdown` registers no element for that token and drops it
+    silently, so the text reached the model while vanishing from ``--render``.
     """
+
+    @Skill.define
+    def decide(observation: str) -> str:
+        """Decide what to do about {observation}."""
+
     console = rich.console.Console(file=io.StringIO(), force_terminal=True, width=100)
-    noted = _with_note(
-        {"role": "user", "content": "Decide the next presses."},
-        "Recorded room 0 prefix: B",
-    )
-    console.print(_render_content(noted["content"]))
+    mock = MockCompletionHandler([make_text_response("press B")])
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="test-model")),
+        handler(HistoryBuilder()),
+        handler(StatefulReplSynthesizer()),
+        handler(mock),
+    ):
+        assert decide("the next presses") == "press B"
+
+    # Off the wire rather than out of a history: a free `Skill` keeps none.
+    request = next(m for m in mock.received_messages[0] if m["role"] == "user")
+    console.print(_render_content(_message_text(request["content"])))
     rendered = console.file.getvalue()
 
-    assert "Decide the next presses." in rendered
-    assert "Recorded room 0 prefix: B" in rendered
-    assert "Consolidated notes" in rendered
+    assert "the next presses" in rendered
+    assert "REPL session" in rendered
+    assert "observation" in rendered
 
 
 # ============================================================================

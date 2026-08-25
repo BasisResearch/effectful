@@ -18,7 +18,11 @@ import tenacity
 from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.durability.transaction import (
+    ClearScope,
+    HistoryBuilder,
+    transaction,
+)
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
@@ -48,7 +52,6 @@ from .conftest import (
     MockCompletionHandler,
     make_text_response,
     make_tool_call_response,
-    offered_tools,
 )
 
 # Every contract asserted below is a contract of the `type_check` operation, not of
@@ -1541,39 +1544,127 @@ def test_encodable_code_rejects_star_import():
 
 
 # ============================================================================
-# exec_code(clear=True): model-triggered history consolidation
+# transaction(): what a completed transaction writes back to its prefix
 #
-# Calling the REPL tool with ``clear=True`` runs the snippet as usual and, only
-# when it raises no error, drops the current call's tool-loop transcript --
-# every message after the current request -- folding the snippet's stdout into
-# the surviving user message as a note. These tests drive the real agent loop
-# offline with a `MockCompletionHandler`, matching the pattern of the
-# persistence suite.
+# `HistoryBuilder.call_agent` runs every Skill call inside one of these over the
+# agent's durable `__history__`, so what compaction can express is bounded by
+# what this can write back. Plain list manipulation -- no model, no mock.
+# ============================================================================
+
+
+def _msgs(*roles: str) -> list[Any]:
+    """Distinguishable messages, one per role, tagged so identity and equality
+    both distinguish them."""
+    return [{"role": role, "tag": i} for i, role in enumerate(roles)]
+
+
+def test_transaction_writes_back_appended_messages():
+    """The ordinary case: a transaction that only appends hands its prefix the
+    tail it produced."""
+    prefix = _msgs("system", "user", "assistant")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        assert buffer == original
+        buffer.append({"role": "user", "tag": "new"})
+        buffer.append({"role": "assistant", "tag": "new"})
+    assert prefix == [
+        *original,
+        {"role": "user", "tag": "new"},
+        {"role": "assistant", "tag": "new"},
+    ]
+
+
+def test_transaction_writes_back_a_truncated_prefix():
+    """A transaction that *rewrites* the prefix it inherited -- a compaction --
+    writes the rewrite back.
+
+    The buffer ends shorter than the prefix it started from, so the
+    append-only write-back cannot express it: it would leave the prefix
+    untouched *and* drop everything this transaction added, silently losing the
+    whole call. This is the regression that gates the whole-conversation clear.
+    """
+    prefix = _msgs("system", "user", "assistant")
+    system = prefix[0]
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        buffer.append({"role": "user", "tag": "new"})
+        buffer.append({"role": "assistant", "tag": "clearing"})
+        # Keep only the system message and the request this call opened.
+        buffer[:] = [system, {"role": "user", "tag": "new"}]
+        buffer.append({"role": "assistant", "tag": "answer"})
+    assert prefix == [
+        system,
+        {"role": "user", "tag": "new"},
+        {"role": "assistant", "tag": "answer"},
+    ]
+
+
+def test_transaction_preserves_concurrent_growth():
+    """A prefix that grew by some other route during the transaction still
+    receives exactly this transaction's messages, appended after that growth."""
+    prefix = _msgs("system", "user")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        buffer.append({"role": "assistant", "tag": "mine"})
+        prefix.append({"role": "user", "tag": "theirs"})
+    assert prefix == [
+        *original,
+        {"role": "user", "tag": "theirs"},
+        {"role": "assistant", "tag": "mine"},
+    ]
+
+
+def test_transaction_write_back_false_discards_everything():
+    """`TenacityRetryer`'s scratch transaction: nothing reaches the prefix,
+    whether the buffer grew or was rewritten."""
+    prefix = _msgs("system", "user")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix, write_back=False) as buffer:
+        buffer.append({"role": "assistant", "tag": "scratch"})
+        buffer[:] = [{"role": "system", "tag": "rewritten"}]
+    assert prefix == original
+
+
+# ============================================================================
+# exec_code(clear=...): model-triggered history compaction
+#
+# Calling the REPL tool with a `clear` scope runs the snippet as usual and, only
+# when it raises no error, drops history *before* the current request and the
+# intermediate rounds *within* it. The request and the clearing round -- the
+# assistant message carrying the call, and the tool messages answering it --
+# always survive. These tests drive the real agent loop offline with a
+# `MockCompletionHandler`, matching the pattern of the persistence suite.
 # ============================================================================
 
 
 @dataclasses.dataclass
 class _Keeper(Agent):
-    """A test agent with one durable field the model can promote state onto."""
+    """A test agent with one durable field the model can promote state onto.
+
+    ``step``'s prompt splices that field, so a request rendered before the model
+    writes to it and one rendered after are distinguishable -- which is what
+    `test_clear_refreshes_the_surviving_request` turns on.
+    """
 
     x: int = 0
 
     @Skill.define
     def step(self, q: str) -> str:
-        """Answer {q}."""
+        """Answer {q}. Current x is {self.x}."""
 
 
-def _clear_call(code: str, tool_call_id: str = "call_1"):
+def _clear_call(
+    code: str, tool_call_id: str = "call_1", clear: ClearScope = ClearScope.TURN
+):
     return make_tool_call_response(
         "exec_code",
-        json.dumps({"code": code, "clear": True}),
+        json.dumps({"code": code, "clear": clear}),
         tool_call_id=tool_call_id,
     )
 
 
-def _consolidation_stack(mock, *, retryer_last: bool = True):
+def _compaction_stack(mock, *, retryer_last: bool = True):
     """The offline agent stack in `harness()`'s order: the retryer is composed
-    last, so it is reached first and `StatefulReplSynthesizer._call_tool` sees a
+    last, so it is reached first and `StatefulReplSynthesizer.call_tool` sees a
     failing snippet as a *raised* `ToolCallExecutionError`. With
     ``retryer_last=False`` the order is inverted so the rule sees the error
     *as a value* instead (the other shape it must handle)."""
@@ -1602,10 +1693,16 @@ def _text_of(message) -> str:
     )
 
 
-def test_clear_truncates_to_user_and_next_request_is_wellformed():
-    """A clean snippet leaves ``[system, user+note]``; the loop's next request
-    re-asks the (annotated) question with no orphaned tool message, and the
-    promoted binding on `self` survives while the REPL-only one does not."""
+def test_clear_keeps_the_request_and_the_asking_round():
+    """A clean snippet leaves ``[system, user, assistant, tool]``: the request,
+    and the round that asked for the clear -- the model's message, the source it
+    submitted and the output.
+
+    Nothing is extracted into a note, because nothing needs to be: the snippet is
+    verbatim in the assistant message's tool-call arguments and its output is the
+    tool message. The promoted binding on `self` survives regardless, and the
+    REPL-only one does not.
+    """
     mock = MockCompletionHandler(
         [
             _clear_call("tmp = 41\nself.x = tmp + 1\nprint('promoted x')"),
@@ -1613,29 +1710,68 @@ def test_clear_truncates_to_user_and_next_request_is_wellformed():
         ]
     )
     agent = _Keeper()
-    with _consolidation_stack(mock):
+    with _compaction_stack(mock):
         result = agent.step("go")
 
     assert result == "done"
     assert agent.x == 42  # promoted via `self`, outlives the cleared transcript
     assert not hasattr(agent, "tmp")  # REPL-only names die with the session
 
-    # The durable history is the compacted view: system, annotated user, answer.
     history = list(agent.__history__)
-    assert [m["role"] for m in history] == ["system", "user", "assistant"]
-    assert "promoted x" in _text_of(history[1])
-    assert "## Consolidated notes" in _text_of(history[1])
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",  # the turn that asked for the clear
+        "tool",  # its output
+        "assistant",  # the answer, appended after the clear
+    ]
+    # The snippet the model wrote and what it printed are both still readable.
+    assert "self.x = tmp + 1" in json.dumps(history[2])
+    assert "promoted x" in _text_of(history[3])
 
-    # The request after the clear was [system, user+note] -- well-formed, with
-    # the clearing round nowhere in it.
+    # And the request the loop sent next was that same well-formed history, with
+    # the tool message answered by the assistant message that requested it.
     followup = mock.received_messages[1]
-    assert [m["role"] for m in followup] == ["system", "user"]
-    assert "promoted x" in _text_of(followup[1])
+    assert [m["role"] for m in followup] == ["system", "user", "assistant", "tool"]
 
 
-def test_clear_preserves_prior_calls():
-    """The clear drops only the current call's tool loop: earlier exchanges in
-    an `Agent`'s history survive it."""
+def test_clear_keeps_the_request_as_it_was_sent():
+    """The request kept by a clear is the one that was actually sent, holes and
+    all -- it is not re-rendered against the state the call has since changed.
+
+    `_Keeper.step` splices ``{self.x}``, so the message that opened the call says
+    ``x is 0``; the snippet then sets it to 7. Reporting 0 is correct, because
+    the round kept directly *below* the request is the round that made it 7.
+    Re-rendering would read backwards: a request that already knew the answer,
+    above the turn that worked it out. The current value is not lost either --
+    the next call renders its own request from the state it finds, which the
+    second `step` here checks.
+    """
+    mock = MockCompletionHandler(
+        [
+            _clear_call("self.x = 7\nprint('set')"),
+            make_text_response("done"),
+            make_text_response("again"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+        assert agent.step("go again") == "again"
+
+    opening = _text_of(mock.received_messages[0][1])
+    surviving = _text_of(agent.__history__[1])
+    assert "Current x is 0" in opening
+    assert surviving == opening
+    # The write is reported by the round below the request, not by the request.
+    assert "self.x = 7" in json.dumps(agent.__history__[2])
+    # And the *next* call's request carries the new value, unprompted.
+    assert "Current x is 7" in _text_of(agent.__history__[5])
+
+
+def test_clear_turn_preserves_prior_calls():
+    """``clear="turn"`` drops only the current call's earlier rounds: previous
+    exchanges in an `Agent`'s history survive it."""
     mock = MockCompletionHandler(
         [
             make_text_response("first"),
@@ -1644,13 +1780,93 @@ def test_clear_preserves_prior_calls():
         ]
     )
     agent = _Keeper()
-    with _consolidation_stack(mock):
+    with _compaction_stack(mock):
         assert agent.step("one") == "first"
         assert agent.step("two") == "second"
 
     roles = [m["role"] for m in agent.__history__]
-    assert roles == ["system", "user", "assistant", "user", "assistant"]
-    assert "note" in _text_of(agent.__history__[3])
+    assert roles == [
+        "system",
+        "user",
+        "assistant",  # the first call, untouched
+        "user",
+        "assistant",
+        "tool",  # the second call's request and clearing round
+        "assistant",  # its answer
+    ]
+    assert "note" in _text_of(agent.__history__[5])
+
+
+def test_clear_conversation_drops_prior_calls():
+    """``clear="conversation"`` additionally drops those previous calls, leaving
+    the system message, the request and the clearing round.
+
+    This is the compaction that reaches below the enclosing transaction's start,
+    and so the end-to-end partner of
+    `test_transaction_writes_back_a_truncated_prefix`: without that write-back
+    the durable history would keep the first call *and* lose the second.
+    """
+    mock = MockCompletionHandler(
+        [
+            make_text_response("first"),
+            _clear_call("print('note')", clear=ClearScope.CONVERSATION),
+            make_text_response("second"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("QUESTION-ONE") == "first"
+        assert agent.step("QUESTION-TWO") == "second"
+
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    # Past the system message, which embeds this module's own source and so
+    # mentions both questions whatever the history holds.
+    assert "QUESTION-ONE" not in json.dumps(history[1:])  # the first call is gone
+    assert "QUESTION-TWO" in _text_of(history[1])
+    assert "note" in _text_of(history[3])
+
+
+def test_clear_alongside_a_sibling_tool_call():
+    """A clearing call in a turn that made two calls leaves a well-formed
+    history.
+
+    Compaction removes only messages *ahead* of the assistant message that
+    requested the clear, so that message is still there to answer the sibling's
+    tool result -- which `HistoryBuilder.append_message` asserts on, and which an
+    earlier truncate-to-the-request design would have orphaned.
+    """
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response(
+                [
+                    ("exec_code", json.dumps({"code": "print('a')", "clear": "turn"})),
+                    ("exec_code", json.dumps({"code": "print('b')", "clear": "none"})),
+                ]
+            ),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
+    assert "a" in _text_of(history[3]) and "b" in _text_of(history[4])
 
 
 def test_clear_on_free_skill():
@@ -1667,14 +1883,14 @@ def test_clear_on_free_skill():
             make_text_response("ok"),
         ]
     )
-    with _consolidation_stack(mock):
+    with _compaction_stack(mock):
         assert answer("go") == "ok"
     assert not hasattr(answer, "__history__")
 
 
 @pytest.mark.parametrize("retryer_last", [True, False])
 def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
-    """A raising snippet truncates nothing: the traceback reaches the model as
+    """A raising snippet compacts nothing: the traceback reaches the model as
     a tool message, the session survives for repair, and the rule behaves the
     same whether it observes the failure as a raised `ToolCallExecutionError`
     (harness order) or as an error value already converted by `TenacityRetryer`
@@ -1687,7 +1903,7 @@ def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
         ]
     )
     agent = _Keeper()
-    with _consolidation_stack(mock, retryer_last=retryer_last):
+    with _compaction_stack(mock, retryer_last=retryer_last):
         assert agent.step("go") == "done"
 
     # The failed round was NOT cleared out from under the model: the request
@@ -1702,25 +1918,49 @@ def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
     ]
     assert "ZeroDivisionError" in _text_of(after_failure[3])
 
-    # The repair's clear then landed: final durable history is compact, and the
-    # failed snippet's partial effects never survived as recorded session code.
+    # The repair's clear then landed, dropping the failed round and keeping its
+    # own; the failed snippet's partial effects never survived as session code.
     history = list(agent.__history__)
-    assert [m["role"] for m in history] == ["system", "user", "assistant"]
-    assert "repaired" in _text_of(history[1])
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert "repaired" in _text_of(history[3])
+    # Past the system message, which embeds this module's own source.
+    assert "ZeroDivisionError" not in json.dumps(history[1:])
 
 
-def test_exec_code_is_one_tool_with_a_clear_parameter():
-    """There is a single REPL tool: clearing is `exec_code`'s `clear` argument,
-    off by default, not a second tool."""
-    import inspect
+def test_request_names_the_session_and_points_at_its_arguments():
+    """The request carries a `REPL session` section: that a fresh session opens
+    with it, and that the call's arguments are bound in that session.
 
-    tools = offered_tools({}, StatefulReplSynthesizer())
-    names = {t.__name__ for t in tools}
-    assert "exec_code" in names
-    assert "exec_and_clear" not in names
-    (tool,) = (t for t in tools if t.__name__ == "exec_code")
-    clear = inspect.signature(tool).parameters["clear"]
-    assert clear.default is False
+    Both facts are per-call, which is why they live here rather than in the
+    system message -- and the arguments are claimed *nowhere* else, since the
+    `Lexical scope` table is built from the Skill's lexical context alone.
+    Without this, a model has no way to know that the value spliced into the
+    prompt is also reachable as a name, and retypes it into its snippets.
+
+    The section points at the request's own heading rather than tabulating the
+    parameters, so what it claims has to actually be there: the heading carries
+    the signature, names and annotations both.
+    """
+    mock = MockCompletionHandler([make_text_response("done")])
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+
+    request = _text_of(mock.received_messages[0][1])
+    # Unwrapped, since the section is hard-wrapped prose and these claims span
+    # its line breaks.
+    flat = " ".join(request.split())
+    assert "REPL session" in flat
+    assert "discarded when you answer it" in flat
+    assert "parameters of the signature heading this request are bound" in flat
+    # The heading the section refers to -- with `q`'s type, and no `self`.
+    assert request.lstrip().startswith("# step(q: str) -> str")
 
 
 def test_exec_code_without_clear_leaves_history_intact():
@@ -1733,7 +1973,7 @@ def test_exec_code_without_clear_leaves_history_intact():
         ]
     )
     agent = _Keeper()
-    with _consolidation_stack(mock):
+    with _compaction_stack(mock):
         assert agent.step("go") == "done"
     roles = [m["role"] for m in agent.__history__]
     assert roles == ["system", "user", "assistant", "tool", "assistant"]

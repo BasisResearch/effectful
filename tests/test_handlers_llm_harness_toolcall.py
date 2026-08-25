@@ -848,7 +848,7 @@ def generic_mod(tmp_path, request):
 
 def _run_generic(mod, skill_call, responses, *extra_handlers):
     # Unlike `_run_scripted`'s capture handlers, extras here (e.g.
-    # `FinalBodySynthesizer`) implement `call_agent`, and `AgentLoop._call` is
+    # `FinalBodySynthesizer`) implement `call_agent`, and `AgentLoop.call_agent` is
     # terminal for it -- so they must install *after* `AgentLoop` to intercept
     # before it, as in the real `harness()` stack.
     mock = MockCompletionHandler(responses)

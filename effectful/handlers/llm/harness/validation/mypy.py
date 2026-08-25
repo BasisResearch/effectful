@@ -1,3 +1,19 @@
+"""Type checking of generated code by shelling out to mypy.
+
+`MypyTypeChecker` is independent of any executor: it says how generated code is
+*checked*, not how it is parsed, compiled or run, so it is installed alongside
+whichever of those handlers a stack uses::
+
+    handler(MypyTypeChecker()), handler(BuiltinExecutor())
+
+rather than being part of one.
+
+It is interchangeable with
+`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker`, which implements
+the same operation with the same contract and is substantially faster; that
+module's docstring compares the two.
+"""
+
 import dataclasses
 import json
 import os
@@ -17,14 +33,24 @@ from effectful.ops.syntax import implements
 
 @dataclasses.dataclass
 class MypyTypeChecker(PromptInjectingInterpretation):
-    """Handler that handles type_check by shelling out to mypy.
+    """Python you write is type-checked before it is run, by mypy. Code that
+    fails the check does not execute at all: you get mypy's diagnostics back --
+    the message, the error code, the offending line -- and the turn is yours
+    again to fix them.
 
-    Independent of any executor: it says how generated code is *checked*, not how
-    it is parsed, compiled or run, so it is installed alongside whichever of those
-    handlers a stack uses (``handler(MypyTypeChecker()), handler(BuiltinExecutor())``)
-    rather than being part of one.
+    Treat that as a fast, free reviewer rather than an obstacle. Annotate what
+    you write, use the types the surrounding code declares, and read a
+    diagnostic as a claim about your code that is usually correct. Silencing one
+    with `typing.Any` or a blanket `# type: ignore` will pass the check and then
+    fail at runtime, where the error costs a whole turn instead of none.
+
+    Only the code you generate is checked; errors elsewhere in the module you
+    are working in are not yours to fix and will not block you.
     """
 
+    #: Flags added under ``lenient=True`` to waive the diagnostics that a REPL
+    #: transcript or a spliced function body provokes by construction -- see
+    #: `type_check` for what each one is for.
     lenient_flags: tuple[str, ...] = (
         "--allow-redefinition-new",
         "--local-partial-types",

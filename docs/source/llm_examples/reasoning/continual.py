@@ -17,9 +17,11 @@ agent's instance attributes:
 
 Every revision the papers route through meta-tools is an assignment to ``self``
 in ``exec_code``, and their Refiner is not a component but a *moment*: the
-consolidation turn where the agent promotes what matters onto ``self`` and
-discards the transcript it no longer needs, atomically, with the REPL tool's
-``clear=True`` mode.
+compaction call where the agent promotes what matters onto ``self`` and discards
+the transcript it no longer needs, atomically, with the REPL tool's
+``clear="conversation"`` mode. That scope, rather than ``clear="turn"``, is the
+one this task needs: a `Player`'s history spans every ``plan_presses`` call, so
+dropping only the current call's own rounds would free almost nothing.
 The schedule for that moment is itself harness content -- a sentence in the
 instructions, revisable like everything else.
 
@@ -27,11 +29,11 @@ The task is a button corridor: each room's door opens after a hidden button
 sequence, discoverable by trial (a wrong press resets the room). Codes are
 stable within a run, so what the agent writes onto ``self`` -- discovered
 codes, a discovery strategy, a solver skill -- genuinely transfers across
-consolidations: the harness carries the continuity, the transcript is
+compactions: the harness carries the continuity, the transcript is
 disposable.
 
 Conditions (`--condition`): ``scratch`` starts with empty instructions and the
-consolidation protocol only; ``expert`` starts with a hand-written strategy,
+compaction protocol only; ``expert`` starts with a hand-written strategy,
 the papers' hand-engineered-harness baseline. The minimalist baseline needs no
 code at all: run with ``--tool-choice none`` and the model must answer directly.
 """
@@ -63,9 +65,7 @@ class Player(Agent):
     hidden button sequence is entered; a wrong press resets that room's
     progress; the sequences are stable for the whole game. Your score is the
     total number of presses, so rediscovering what you already learned is the
-    main way to lose.
-
-    You improve yourself as you play. Your durable state is `self`:
+    main way to lose. Use the REPL to improve yourself as you go:
 
     - assign to `self.instructions` to rewrite your own standing strategy;
     - append `Note`s to `self.notes` for facts worth keeping (discovered codes,
@@ -73,15 +73,23 @@ class Player(Agent):
       `print(self.notes[i].body)`;
     - define reusable functions or `Skill`s in the REPL and assign them onto
       `self` (use the function's own name: `self.next_guess = next_guess`) --
-      anything bound on `self` is offered to you as a tool on later turns; if
-      one stops earning its keep, `del`ete it.
+      anything bound on `self` is offered to you as a tool on later calls,
+      whereas one merely defined in the session is gone when you answer; if one
+      stops earning its keep, `del`ete it.
 
-    Consolidate as you go: once the transcript has served its purpose -- say,
-    when a room's code is recorded in a note -- write what matters onto `self`,
-    then call `exec_code` with `clear=True`. Whatever you print in that snippet
-    is the only transcript that survives, and everything on `self` is
-    untouched. Of this turn's work, only `self` and your printed note survive a
-    clear: a code you never wrote down is a code you will pay to rediscover.
+    Do that writing *before* you answer, in the same call you learned it. The
+    observation you are shown reports only recent events, so a press whose
+    result you never wrote down is a press you will pay to make again. If this
+    request tells you something the last one did not -- a button that clicked, a
+    button that buzzed, a room completed -- record it, then answer.
+
+    Compact as you go: once the transcript has served its purpose -- say, when a
+    room's code is recorded in a note -- write what matters onto `self`, then
+    call `exec_code` with `clear="conversation"`. That leaves the request, and
+    the call you made it in: your message, the snippet and its output. Every
+    earlier call goes, and `self` is untouched. So a code recorded in a note is
+    a code you keep; a code you only ever read off the transcript is a code you
+    will pay to rediscover.
     """
 
     instructions: str = ""

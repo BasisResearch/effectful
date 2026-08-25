@@ -388,7 +388,7 @@ class RichTerminalRenderer(ObjectInterpretation):
         default_factory=lambda: rich.console.Console(file=sys.__stdout__)
     )
 
-    # Held for the lifetime of a ``Live`` region. See `_completion`.
+    # Held for the lifetime of a ``Live`` region. See `completion`.
     #
     # Constructed eagerly, in ``__init__``: the one thing this must never do is hand
     # two threads two different locks, and creating it on first use would risk
@@ -401,7 +401,7 @@ class RichTerminalRenderer(ObjectInterpretation):
     )
 
     @implements(completion)
-    def _completion(self, *args, **kwargs) -> typing.Any:
+    def completion(self, *args, **kwargs) -> typing.Any:
         """Stream and live-render this completion, or -- if another already holds
         the terminal, or if the stream breaks -- let it run unstreamed and print it
         as a settled panel.

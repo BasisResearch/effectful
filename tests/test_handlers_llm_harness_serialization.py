@@ -959,16 +959,14 @@ def test_type_alias_value_has_an_encoding():
     """A type alias in a skill's lexical scope can be shown to the model.
 
     This is the failure in the ``optimization`` example, whose ``Kernel`` is a
-    PEP 695 alias *and* the declared return type of the skill: an agent asked
-    to produce one reasonably asks what it is, and reads the name. The reader
-    (`read_lexical_variable`) is declared ``-> Any``, so there is no annotation
-    to encode the result against and `call_tool` reconstructs one from the
-    value -- the two lines below, which are what it runs. It is unguarded, so
-    the alias takes down the tool call rather than degrading, and the retries
-    spend the step.
+    PEP 695 alias *and* the declared return type of the skill. Where such an
+    alias reaches the model as a *value* rather than as an annotation, its
+    encoding is reconstructed from the value itself -- the two lines below,
+    which are what runs. That path is unguarded, so an alias with no encoding
+    takes down the whole request rather than degrading.
 
     A `TypeAliasType` is not a type, so it arrives as a value; the value that
-    would answer the question is the type it names.
+    answers "what does this alias stand for" is the type it names.
     """
     typ = nested_type(_KernelAlias).value
     schema = pydantic.TypeAdapter(Encodable[typ]).json_schema()
@@ -1601,7 +1599,7 @@ def _outer_returning_unannotated():
 
 
 class _LexicalEnum(int):
-    """Stands in for a class handed back by `read_lexical_variable` -- a *callable*,
+    """Stands in for a class reaching the model from lexical scope -- a *callable*,
     so it routes to the `Callable` serializer."""
 
 

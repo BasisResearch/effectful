@@ -52,6 +52,7 @@ from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from tests.conftest import (
+    EFFECTFUL_LLM_MODEL,
     MockCompletionHandler,
     make_text_response,
     make_tool_call_response,
@@ -897,7 +898,14 @@ def test_live_post_condition_is_repaired_on_retry():
 
     from effectful.handlers.llm.harness import harness
 
-    with handler(harness(num_retries=4, tool_calling="json", eval_provider="none")):
+    with handler(
+        harness(
+            model=EFFECTFUL_LLM_MODEL,
+            num_retries=4,
+            tool_calling="json",
+            eval_provider="none",
+        )
+    ):
         assert "otter" in describe("a river mammal").lower()
 
 
@@ -918,7 +926,14 @@ def test_live_precondition_guard_rejects_off_topic_input():
 
     from effectful.handlers.llm.harness import harness
 
-    with handler(harness(num_retries=4, tool_calling="json", eval_provider="none")):
+    with handler(
+        harness(
+            model=EFFECTFUL_LLM_MODEL,
+            num_retries=4,
+            tool_calling="json",
+            eval_provider="none",
+        )
+    ):
         assert answer("what do otters eat?")
         with pytest.raises(pydantic.ValidationError):
             answer("what is the capital of France?")

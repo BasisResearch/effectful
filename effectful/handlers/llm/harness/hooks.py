@@ -102,12 +102,13 @@ class ResultDecodingError[E: Exception](DecodingError[E]):
 
     def to_feedback_message(
         self, *, include_traceback: bool = True
-    ) -> litellm.ChatCompletionUserMessage:
+    ) -> litellm.ChatCompletionAssistantMessage:
+        """Report the failure as a continuation of the model's own turn."""
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
             error_message = f"{error_message}\n\nTraceback:\n```\n{tb}```"
-        return {"role": "user", "content": error_message}
+        return {"role": "assistant", "content": error_message}
 
 
 @dataclasses.dataclass
@@ -352,7 +353,7 @@ def call_system(
 ) -> litellm.ChatCompletionSystemMessage:
     """Assemble the system message from the two halves of the system prompt.
 
-    `agent_prompt` describes the task: the caller (`AgentLoop._call`)
+    `agent_prompt` describes the task: the caller (`AgentLoop.call_agent`)
     introspects it from the `Skill` being called.  `harness_prompt` describes
     the machinery the task runs under, and arrives empty: each installed handler
     with something to say about the harness intercepts this operation and adds the
@@ -487,23 +488,22 @@ class PromptInjectingInterpretation(ObjectInterpretation):
     land immediately ahead of it.  Where a handler's sections sit relative to
     *other* handlers' is decided by installation order alone (see `call_system`);
     there is deliberately no per-class knob for it.
-
-    Subclassing this is what makes a docstring model-facing, so implementation
-    notes belong in comments rather than in the docstring -- see
-    `~effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer` for the
-    convention.  A subclass that has no docstring of its own contributes nothing.
     """
 
     @implements(call_system)
     def call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
+        """Append this handler's own class docstring to the harness prompt.
+
+        The guard is why a subclass without a docstring stays silent:
+        `inspect.getdoc` walks the MRO, which is what lets a subclass inherit a
+        parent handler's description (`MixedToolCaller` does not restate
+        `ExpressionToolCaller`'s) -- and what would otherwise put the class
+        docstring above, addressed to a reader of this code, into the prompt of
+        every subclass that has none of its own.
+        """
         doc = inspect.getdoc(type(self))
-        # `inspect.getdoc` walks the MRO, which is what lets a subclass inherit a
-        # parent handler's description (`MixedToolCaller` does not restate
-        # `ExpressionToolCaller`'s) -- and what would otherwise put the docstring
-        # above, addressed to a reader of this code, into the prompt of every
-        # subclass that has none of its own.
         if not doc or doc == inspect.getdoc(PromptInjectingInterpretation):
             return fwd(harness_prompt, agent_prompt)
         return fwd(
@@ -525,8 +525,8 @@ class PromptInjectingInterpretation(ObjectInterpretation):
 
 class AgentLoop(PromptInjectingInterpretation):
     """Each turn of this conversation is one request in a loop, and every message
-    you see was assembled by the harness whose capabilities the rest of this
-    prompt describes. Here is how those messages are put together.
+    you see was assembled by the harness whose capabilities the sections above
+    describe. Here is how those messages are put together.
 
     On each turn you either call tools -- results are appended to the
     conversation and the loop continues -- or answer. It is one or the other: a
@@ -545,6 +545,30 @@ class AgentLoop(PromptInjectingInterpretation):
     itself, with no preamble, no sign-off and no commentary about producing it:
     "Here is the summary you asked for:" is not a preface to the answer, it is
     part of the answer.
+
+    ## Calls, turns, and what carries between them
+
+    A *call* is one invocation of a Skill by the program. A *turn* is one request
+    within it. They are not the same thing, and the conversation you are reading
+    may contain several calls:
+
+    - Each call opens with exactly one user message. Everything after it -- your
+      replies, the tool results answering them -- belongs to that call.
+    - When you answer, the call ends and its value is returned to the program,
+      which goes on doing whatever it does with it.
+    - A *new* user message therefore means the previous call already finished and
+      you are being asked a new question. It is not a continuation of your last
+      turn, and nothing about it is a reply to you.
+    - Only an `Agent` accumulates history across calls, which is why earlier user
+      messages may be in view at all. For a plain `Skill` each call starts from
+      an empty conversation.
+
+    What survives from one call to the next is exactly what lives outside the
+    conversation: `self` and the other objects of the Skill's lexical scope,
+    which belong to the program and are untouched by anything the harness does to
+    the transcript. Per-call machinery does not survive -- a REPL session, a
+    submitted implementation, any name you bound while working -- so if something
+    you worked out should still be true next time, write it onto `self`.
 
     ## The system message
 
@@ -574,12 +598,13 @@ class AgentLoop(PromptInjectingInterpretation):
 
     ## The user message
 
-    The per-call part -- only its changing values are re-sent each turn;
-    everything constant lives in the system message above. It has two parts:
+    The per-call part -- written once when the call opens, carrying only what
+    varies between calls; everything constant lives in the system message above.
+    It has two parts, plus whatever the installed handlers add below them:
 
     | # | Part | Content |
     | - | ---- | ------- |
-    | 1 | Header | `<name><signature>` — identifies which skill this turn calls |
+    | 1 | Header | `<name><signature>` — identifies which skill this call is to |
     | 2 | Body | The skill's docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
     """
 
@@ -641,7 +666,17 @@ class AgentLoop(PromptInjectingInterpretation):
         )
 
     @implements(call_agent)
-    def _call[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    def call_agent[**P, T](
+        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+    ) -> T:
+        """The terminal rule: run the completion loop that answers `skill`.
+
+        Assembles the two prompts, then alternates `call_assistant` and
+        `call_tool` until a turn produces no tool calls (the model answered) or
+        a tool call reports itself final. Everything else in the harness is a
+        handler layered over the operations this loop invokes, which is why this
+        rule forwards to nothing: it is the bottom of the stack.
+        """
         from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 
         # The harness half starts empty and is filled in by whichever handlers

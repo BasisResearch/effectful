@@ -1,3 +1,22 @@
+"""Type checking of generated code by shelling out to ty.
+
+`TyTypeChecker` is interchangeable with
+`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` -- same
+operation, same contract, a different checker behind it. ty is a compiled binary
+that needs no per-call cache and builds no module graph in this process, so a
+check costs milliseconds where mypy's costs seconds, and on the failure path it
+reports the offending line with ty's own hints rather than a line of JSON. Prefer
+it unless a stack specifically needs mypy's analysis.
+
+Either checker is independent of any executor: it says how generated code is
+*checked*, not how it is parsed, compiled or run, so it is installed alongside
+whichever of those handlers a stack uses::
+
+    handler(TyTypeChecker()), handler(BuiltinExecutor())
+
+rather than being part of one.
+"""
+
 import dataclasses
 import functools
 import os
@@ -16,21 +35,23 @@ from effectful.ops.syntax import implements
 
 @dataclasses.dataclass
 class TyTypeChecker(PromptInjectingInterpretation):
-    """Handler that handles type_check by shelling out to ty.
+    """Python you write is type-checked before it is run, by the ty type
+    checker. Code that fails the check does not execute at all: you get ty's
+    diagnostics back -- the message, the offending line, its hints -- and the
+    turn is yours again to fix them.
 
-    Interchangeable with
-    `~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` -- same
-    operation, same contract, a different checker behind it. ty is a compiled binary
-    that needs no per-call cache and builds no module graph in this process, so a
-    check costs milliseconds where mypy's costs seconds, and on the failure path it
-    reports the offending line with ty's own hints rather than a line of JSON.
+    Treat that as a fast, free reviewer rather than an obstacle. Annotate what
+    you write, use the types the surrounding code declares, and read a
+    diagnostic as a claim about your code that is usually correct. Silencing
+    one with `typing.Any` or a blanket `# type: ignore` will pass the check and
+    then fail at runtime, where the error costs a whole turn instead of none.
 
-    Independent of any executor: it says how generated code is *checked*, not how
-    it is parsed, compiled or run, so it is installed alongside whichever of those
-    handlers a stack uses (``handler(TyTypeChecker()), handler(BuiltinExecutor())``)
-    rather than being part of one.
+    Only the code you generate is checked; errors elsewhere in the module you
+    are working in are not yours to fix and will not block you.
     """
 
+    #: Rules ignored under ``lenient=True``. Deliberately short: ty already
+    #: grants most of that leniency unasked -- see `type_check`.
     lenient_ignored_rules: tuple[str, ...] = ("conflicting-declarations",)
 
     @functools.cached_property

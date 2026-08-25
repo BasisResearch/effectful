@@ -1,3 +1,36 @@
+"""Calling lexically scoped tools by writing Python expressions.
+
+`ExpressionToolCaller` is the code-generation replacement for
+`~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor`
+(issues #489/#505): instead of advertising each lexical tool with a JSON
+``parameters`` schema -- degenerate for a polymorphic tool, whose parameter
+types carry TypeVars -- every tool reachable from the Skill's scope is wrapped
+so the model must write a call *expression*. Decoding the expression does all
+the work up to the call itself (type check, callee check, argument evaluation;
+see `_pydantic_type_call_expression`), so a bad expression is a
+`ToolCallDecodingError` the retry loop feeds back. The decoded `CallExpression`
+IS a `DecodedToolCall` for the underlying tool; `call_assistant` substitutes it
+for the wrapper's call, so `call_tool` and every handler of it see the real tool
+bound to real argument values.
+
+`MixedToolCaller` is the default lexical tool caller, and narrows this to the
+tools that need it: schema-constrained JSON arguments where a schema can
+describe the tool faithfully, the expression pathway where it cannot. Everything
+but the partition predicate (`MixedToolCaller._should_wrap`) is inherited. A
+model that prefers writing code can still call any JSON tool from the REPL
+(``exec_code``) where
+`~effectful.handlers.llm.harness.synthesis.snippet.StatefulReplSynthesizer` is
+installed.
+
+Like `LexicalToolExtractor`, install either below anything else that contributes
+tools: the anchor Skill must not be wrapped (the default `call_assistant` rule
+subtracts it by identity, which cannot see through a wrapper), so it is excluded
+rather than wrapped. An eval provider
+(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
+`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
+must be installed for the `parse`/`compile`/`eval` operations.
+"""
+
 import ast
 import collections.abc
 import dataclasses
@@ -243,7 +276,7 @@ def _pydantic_type_call_expression(ty):
             ) from e
 
         # `id`/`name` belong to the enclosing raw tool call, which this
-        # argument decoder cannot see; `ExpressionToolCaller._call_assistant`
+        # argument decoder cannot see; `ExpressionToolCaller.call_assistant`
         # stamps them on when it substitutes this call for the wrapper's.
         return ty(
             tool=head, bound_args=bound_args, id="", name=head.__name__, source=value
@@ -259,48 +292,24 @@ def _pydantic_type_call_expression(ty):
 
 
 class ExpressionToolCaller(PromptInjectingInterpretation):
-    """The tools of this Skill's lexical scope are called by writing Python,
-    not by filling in JSON arguments. Each such tool takes a single parameter
-    `call`: a string containing ONE Python expression that invokes the tool,
-    for example `extend_sequence(examples, make_example())`.
+    """The tools of this Skill's lexical scope are called by writing Python, not
+    by filling in JSON arguments. Each one takes a single `call` parameter, and
+    its own description gives the exact reference to invoke it by and the
+    signature to match -- read that description rather than guessing a name off
+    the *Lexical scope* table.
 
-    The expression is type-checked and then evaluated in this Skill's lexical
-    scope, so arguments may be arbitrary Python expressions over the names in
-    the *Lexical scope* table and any bindings made in the REPL session (if one
-    is available). Write the call exactly as you would in the surrounding code;
-    each tool's own description states the exact reference to invoke it by --
-    a bare name for a module-level tool, an attribute access such as
-    `self.retrieve(...)` for a tool held by this agent. The expression must be
-    a single call to the advertised tool -- no statements, no assignments, and
-    no `:=` bindings (bind names with `exec_code` first if you need to). The
-    call's return value becomes the tool result.
+    Two things those descriptions do not tell you. The arguments inside a `call`
+    may be arbitrary Python expressions over the names in the *Lexical scope*
+    table and any bindings you have made in the REPL session, so you can write
+    `extend_sequence(examples, make_example())` rather than only literals. And
+    the expression must be a single call to the advertised tool -- no
+    statements, no assignments, no `:=` bindings (bind names with `exec_code`
+    first if you need them).
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
-    # handler adds to the system prompt (see `PromptInjectingInterpretation`), so
-    # implementation notes belong in comments like this one.
-    #
-    # This is the code-generation replacement for
-    # `~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor`
-    # (issues #489/#505): instead of advertising each lexical tool with a JSON
-    # `parameters` schema -- degenerate for a polymorphic tool, whose parameter
-    # types carry TypeVars -- every tool reachable from the Skill's scope is
-    # wrapped so the model must write a call *expression*. Decoding the
-    # expression does all the work up to the call itself (type check, callee
-    # check, argument evaluation; see `_pydantic_type_call_expression`), so a
-    # bad expression is a `ToolCallDecodingError` the retry loop feeds back.
-    # The decoded `CallExpression` IS a `DecodedToolCall` for the underlying
-    # tool; `_call_assistant` substitutes it for the wrapper's call, so
-    # `call_tool` and every handler of it see the real tool bound to real
-    # argument values.
-    #
-    # Like `LexicalToolExtractor`, install it below anything else that
-    # contributes tools: the anchor Skill must not be wrapped (the default
-    # `call_assistant` rule subtracts it by identity, which cannot see through
-    # a wrapper), so it is excluded here rather than wrapped.
-    #
-    # Requires an eval provider (`BuiltinExecutor` or
-    # `RestrictedPythonExecutor`) for the `parse`/`compile`/`eval` operations.
+    # handler adds to the system prompt (see `PromptInjectingInterpretation`),
+    # which is why it is written as instructions rather than as description.
 
     @typing.final
     class _ExpressionToolCallTool[T](Tool[[CallExpression], T]):
@@ -339,7 +348,7 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
             call_type.__expected_tool__ = tool  # see `CallExpression`
 
             def tool_fn(call: CallExpression) -> typing.Any:
-                # Normally never reached: `ExpressionToolCaller._call_assistant`
+                # Normally never reached: `ExpressionToolCaller.call_assistant`
                 # substitutes the decoded `CallExpression` -- itself a
                 # `DecodedToolCall` for the underlying tool -- for the wrapper's
                 # call, so `call_tool` applies the tool directly. Kept
@@ -379,17 +388,29 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
         return True
 
     @implements(call_assistant)
-    def _call_assistant[T](
+    def call_assistant[T](
         self,
         messages: collections.abc.Sequence[Message],
         response_type: type[T],
         env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
-        # Offer the lexical tools only, wrapped per `_should_wrap`; tools
-        # arriving via `tools` are other handlers' own (REPL access, synthesis,
-        # readers) and pass through unwrapped, as does the anchor Skill (see
-        # the class comment).
+        """Wrap the lexical tools, then unwrap the calls the model made to them.
+
+        Only the *lexical* tools are wrapped, and only those `_should_wrap`
+        selects: tools arriving via `tools` are other handlers' own (REPL
+        access, synthesis, readers) and pass through untouched, as does the
+        anchor Skill, which must stay recognizable by identity to the default
+        rule that subtracts it.
+
+        On the way back, each wrapper call is replaced by the `CallExpression`
+        it decoded -- itself a `DecodedToolCall`, for the *underlying* tool
+        bound to real argument values -- stamped with the outer call's id and
+        name so the transcript still lines up with what the model sent. Every
+        `call_tool` handler (the default rule, retryers, tracers) therefore sees
+        the actual call rather than the wrapper's. This handler is innermost, so
+        the substitution happens before any of them run.
+        """
         anchor = env.get(_TYPE_CHECK_ANCHOR_KEY)
         offered = {
             self._ExpressionToolCallTool.define(t, path) if self._should_wrap(t) else t
@@ -397,12 +418,6 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
             if t is not anchor
         }
         message, tool_calls, result = fwd(messages, response_type, env, tools | offered)
-        # Substitute each wrapper call with the `CallExpression` it decoded --
-        # itself a `DecodedToolCall`, for the *underlying* tool bound to real
-        # argument values -- stamped with the outer call's id/name, so every
-        # `call_tool` handler (the default rule, retryers, tracers) sees the
-        # actual call rather than the wrapper's. This handler is innermost, so
-        # the substitution happens before any of them.
         tool_calls = [
             dataclasses.replace(tc.bound_args.arguments["call"], id=tc.id, name=tc.name)
             if isinstance(tc.tool, self._ExpressionToolCallTool)
@@ -413,32 +428,27 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
 
 
 class MixedToolCaller(ExpressionToolCaller):
-    """Most tools of this Skill's lexical scope are ordinary tools: call them
-    by name with JSON arguments matching their schema. Tools whose signatures
-    a JSON schema cannot capture -- generic (type-variable) parameters,
-    variadic `*args`/`**kwargs`, or parameter types with no JSON encoding --
-    are instead called by writing Python: such a tool takes a single `call`
-    parameter, a string containing ONE Python expression that invokes it, and
-    its description states the exact reference to use (for example
-    `self.retrieve(...)`).
+    """Most tools in this Skill's lexical scope are ordinary tools: call them by
+    name with JSON arguments matching their schema. Tools whose signatures a
+    JSON schema cannot capture -- generic (type-variable) parameters, variadic
+    `*args`/`**kwargs`, or parameter types with no JSON encoding -- are instead
+    called by writing Python, and take a single `call` parameter holding one
+    Python expression that invokes them.
 
-    A `call` expression is type-checked and then evaluated in this Skill's
-    lexical scope, so its arguments may be arbitrary Python expressions over
-    the names in the *Lexical scope* table and any bindings made in the REPL
-    session (if one is available). It must be a single call to the advertised
-    tool -- no statements, no assignments, and no `:=` bindings (bind names
-    with `exec_code` first if you need to). Either way, the call's return
-    value becomes the tool result.
+    Which mode a tool uses is fixed by its signature, not by your preference,
+    and its own description tells you which it is and what to write -- read that
+    rather than guessing from the *Lexical scope* table.
+
+    One thing those descriptions do not tell you: the arguments inside a `call`
+    may be arbitrary Python expressions over the names in the *Lexical scope*
+    table and any bindings you have made in the REPL session, so you can write
+    `extend_sequence(examples, make_example())` rather than only literals. The
+    expression must still be a single call to the advertised tool -- no
+    statements, no assignments, no `:=` bindings (bind names with `exec_code`
+    first if you need them).
     """
 
     # The docstring above is model-facing (see `ExpressionToolCaller`).
-    #
-    # The default lexical tool caller: schema-constrained JSON arguments where
-    # a schema can describe the tool faithfully (`_should_wrap` is False), the
-    # expression pathway where it cannot. Everything but the partition
-    # predicate -- wrapping, decode, `CallExpression` substitution -- is
-    # inherited. A model that prefers writing code can still call any JSON
-    # tool from the REPL (`exec_code`) when that handler is installed.
 
     @classmethod
     def _should_wrap(cls, tool: Tool) -> bool:

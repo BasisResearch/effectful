@@ -61,9 +61,8 @@ def _reject_param_count_mismatch(fn: collections.abc.Callable, ty: typing.Any) -
 # itself -- rides in the Pydantic decoding context, alongside the lexical
 # environment. `decode` reads it to type-check a synthesized function against the
 # Skill's source (recovered from the Skill via `inspect.unwrap`); absent
-# (tool-argument decoding) means skip. Deliberately not a valid identifier so
-# `LexicalReaders` skips it (no tool leak) and it can never collide with a lexical
-# name.
+# (tool-argument decoding) means skip. Deliberately not a valid identifier, so it
+# can never collide with a lexical name.
 def _def_nodes(
     module: ast.Module,
 ) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:

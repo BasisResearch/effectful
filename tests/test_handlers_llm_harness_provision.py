@@ -28,7 +28,10 @@ from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.durability.transaction import (
+    ClearScope,
+    HistoryBuilder,
+)
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import (
     AgentLoop,
@@ -43,7 +46,6 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
-    LexicalReaders,
     LexicalToolExtractor,
     _tools_in_scope,
 )
@@ -1213,7 +1215,7 @@ class TestForcedToolChoice:
     def test_enclosed_tool_choice_wins(self):
         """Only the `tool_choice` litellm is actually sent is enforced.
 
-        `_completion` merges as ``{**self.config, **kwargs}``, so the enclosed
+        `LiteLLMConfigurer.completion` merges as ``{**self.config, **kwargs}``, so the enclosed
         provider's ``auto`` is what leaves for the model -- and an enclosing
         ``required`` that never made it into the request must not be held
         against the response.
@@ -1358,6 +1360,23 @@ class TestErrorClasses:
         assert "Traceback:" in with_tb
         assert "Traceback:" not in without_tb
         assert "my_function" in without_tb
+
+    def test_result_decoding_feedback_is_an_assistant_message(self):
+        """A malformed *answer* has no tool call to answer, and must not be fed
+        back as a user message.
+
+        A user message means a new call with a new REPL session (see
+        `AgentLoop`); a retry is the same call, asked again. Every other feedback
+        path in the harness is a ``tool`` message, so this is the only one that
+        had to choose.
+        """
+        error = ResultDecodingError(
+            original_error=ValueError("not an int"),
+            raw_message={"role": "assistant", "content": "about tree fiddy"},
+        )
+        message = error.to_feedback_message(include_traceback=False)
+        assert message["role"] == "assistant"
+        assert "not an int" in message["content"]
 
 
 # ============================================================================
@@ -1568,13 +1587,13 @@ class TestCallableSynthesis:
 
 
 def make_write_and_run_body_response(
-    code: str, tool_call_id: str = "call_1"
+    code: str, tool_call_id: str = "call_1", clear: str = "none"
 ) -> ModelResponse:
     """A tool-call response in which the model finalizes by calling the
     synthesis ``write_and_run_body`` tool with a function it wrote."""
     return make_tool_call_response(
         "write_and_run_body",
-        json.dumps({"implementation": {"code": code}}),
+        json.dumps({"implementation": {"code": code}, "clear": clear}),
         tool_call_id=tool_call_id,
     )
 
@@ -1622,6 +1641,45 @@ class TestSynthesizeAndCall:
         assert result == 42
         assert mock.call_count == 1
 
+    def test_default_clear_still_finalizes(self):
+        """A successful submission ends the call whatever its ``clear`` says.
+
+        Finalizing and compacting are separate decisions, and only the first may
+        gate ``is_final``. Testing the default scope specifically because it is
+        the one a conflated condition drops: ``clear="none"`` compacts nothing,
+        so a rule that finalizes only when it compacted leaves every ordinary
+        submission unfinalized.
+
+        The second response is unreachable and exists to make that failure
+        *fail*: `MockCompletionHandler` repeats its last response forever, so a
+        loop that will not terminate hangs the suite rather than reporting
+        anything. With a second response the loop consumes it, answers "99", and
+        the assertions below say so.
+        """
+        mock = MockCompletionHandler(
+            [
+                make_write_and_run_body_response(
+                    "def double_it(x: int) -> int:\n    return x * 2\n",
+                    clear=ClearScope.NONE,
+                ),
+                make_text_response(json.dumps({"value": 99})),
+            ]
+        )
+        with (
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="test-model")),
+            handler(HistoryBuilder()),
+            handler(FinalBodySynthesizer()),
+            handler(TyTypeChecker()),
+            handler(BuiltinExecutor()),
+            handler(mock),
+        ):
+            result = double_it(21)
+
+        assert result == 42
+        assert mock.call_count == 1
+
     def test_value_recorded_as_tool_message(self):
         """The computed value enters history as a tool result, and is never
         fabricated as assistant content."""
@@ -1653,6 +1711,71 @@ class TestSynthesizeAndCall:
         # The model never generated the value itself.
         assistant_messages = [m for m in messages if m["role"] == "assistant"]
         assert all("42" not in str(m.get("content") or "") for m in assistant_messages)
+
+    def test_clear_keeps_the_finalizing_round(self):
+        """``write_and_run_body(clear="conversation")`` compacts and still
+        finalizes, leaving a history that ends on an answer.
+
+        A finalizing call ends the loop the moment it succeeds, so there is no
+        later turn to append anything: a compaction that dropped this round would
+        leave the durable history ending on a request nobody answered, and the
+        next call would put a second request straight after it. Keeping the round
+        also keeps the submitted source, which is where a model is told to leave
+        notes for its later self.
+        """
+        agent = _Doubler()
+        mock = MockCompletionHandler(
+            [
+                make_write_and_run_body_response(
+                    "def double(self, x: int) -> int:\n    return x * 2\n"
+                ),
+                make_write_and_run_body_response(
+                    "def double(self, x: int) -> int:\n"
+                    "    # NOTE-TO-SELF: doubling is just x * 2\n"
+                    "    return x * 2\n",
+                    tool_call_id="call_2",
+                    clear="conversation",
+                ),
+                make_write_and_run_body_response(
+                    "def double(self, x: int) -> int:\n    return x * 2\n",
+                    tool_call_id="call_3",
+                ),
+            ]
+        )
+        stack = (
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="test-model")),
+            handler(HistoryBuilder()),
+            handler(FinalBodySynthesizer()),
+            handler(TyTypeChecker()),
+            handler(BuiltinExecutor()),
+            handler(mock),
+        )
+        with contextlib.ExitStack() as ctx:
+            for h in stack:
+                ctx.enter_context(h)
+            assert agent.double(1) == 2
+            assert agent.double(21) == 42
+            # A third call still assembles a well-formed request over the
+            # compacted history rather than stacking a second user message on an
+            # unanswered one.
+            assert agent.double(5) == 10
+
+        history = list(agent.__history__)
+        # The first call is gone; the second's round survived whole, and the
+        # third appended on top of it.
+        assert [m["role"] for m in history] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "user",
+            "assistant",
+            "tool",
+        ]
+        assert "NOTE-TO-SELF" in json.dumps(history[2])
+        assert "42" in str(history[3]["content"])
 
     def test_direct_structured_answer_is_allowed(self):
         """The synthesis tool is offered alongside, not instead of, direct
@@ -2689,7 +2812,7 @@ class TestAgentCrossSkillRecovery:
 class TestAgentSystemMessageDeduplication:
     """Regression tests for system message duplication bug.
 
-    When AgentLoop._call copies the history, call_system replaces the
+    When AgentLoop.call_agent copies the history, call_system replaces the
     system message in the copy. Previously, history.update(history_copy) was
     used to merge back, which is additive — it didn't remove the stale system
     message key deleted from the copy. This caused multiple system messages to
@@ -2919,7 +3042,7 @@ class TestPromptCaching:
         provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -2944,7 +3067,7 @@ class TestPromptCaching:
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -2972,7 +3095,7 @@ class TestPromptCaching:
         provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3005,7 +3128,7 @@ class TestPromptCaching:
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3033,7 +3156,7 @@ class TestPromptCaching:
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3061,7 +3184,7 @@ class TestPromptCaching:
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3089,7 +3212,7 @@ class TestPromptCaching:
         provider = LiteLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer._completion has to run and forward into
+        # provider: LiteLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3217,77 +3340,6 @@ class TestPromptCaching:
         assert isinstance(result, str)
 
 
-# ---------------------------------------------------------------------------
-# Synthetic readers — integration (PR #545 finish-up)
-# ---------------------------------------------------------------------------
-
-
-class TestSyntheticReaderIntegration:
-    """The LLM can read lexical context through synthetic reader tools."""
-
-    @requires_llm
-    def test_llm_reads_lexical_value(self, request):
-        """Skill asks LLM to inspect _known_data and report its sum.
-        The synthetic reader for _known_data is available in the tools
-        array; the LLM should call it, see [10,20,30,40,50], and report
-        the sum (150)."""
-        _known_data = [10, 20, 30, 40, 50]
-
-        @Skill.define
-        def report_sum() -> int:
-            """Use the `_known_data` tool to read the list of numbers,
-            then return their sum as an integer."""
-            raise NotImplementedError
-
-        with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(LexicalToolExtractor()),
-            handler(LexicalReaders()),
-        ):
-            result = report_sum()
-
-        assert isinstance(result, int)
-        assert result == sum(_known_data)  # 150
-
-    @requires_llm
-    def test_skill_synthesis_uses_lexical_reader(self, request):
-        """A Skill that synthesizes a callable grounds its output
-        in a lexical value exposed as a synthetic reader.
-
-        The Skill asks the LLM to write a lambda comparing its
-        argument against `threshold`; the LLM must call the `threshold`
-        reader to inspect the value before emitting code.
-        """
-        threshold = 0.85
-
-        @Skill.define
-        def make_above_threshold() -> Callable[[float], bool]:
-            """Use the `threshold` reader tool to inspect its current
-            float value, then emit a single Python function definition:
-
-                def above(x: float) -> bool:
-                    return x > <the value you read>
-
-            The function definition MUST be the last and only statement.
-            Do not emit any other code, no trailing assignment, no
-            imports, no comments after the function."""
-            raise NotImplementedError
-
-        with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-            handler(LexicalToolExtractor()),
-            handler(TyTypeChecker()),
-            handler(BuiltinExecutor()),
-            handler(LimitLLMCallsHandler(max_calls=4)),
-            handler(LexicalReaders()),
-        ):
-            fn = make_above_threshold()
-
-        assert fn(0.9) is True
-        assert fn(0.5) is False
-        assert fn(threshold) is False
-
-
 class TestPythonReplIntegration:
     """The LLM can run code in a persistent session through `exec_code`."""
 
@@ -3312,7 +3364,6 @@ class TestPythonReplIntegration:
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
-            handler(LexicalReaders()),
             handler(StatefulReplSynthesizer()),
         ):
             result = outlier_count()

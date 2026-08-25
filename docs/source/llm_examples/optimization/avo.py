@@ -265,8 +265,7 @@ class VariationAgent(Agent):
 
     Two things are worth remembering across the whole run, because you are the same
     agent each time: which optimizations actually paid, and which looked promising and
-    did not. Say so when you answer, and if the transcript gets long, consolidate it
-    with the REPL's ``clear=True`` after printing what you want to keep.
+    did not. Say so when you answer, and if the transcript gets long, compact it.
     """
 
     def __init__(

@@ -27,6 +27,13 @@ class LangfuseTracer(ObjectInterpretation):
 
     @implements(completion)
     def completion(self, *args, **kwargs):
+        """Trace one model request as a Langfuse *generation* observation.
+
+        Request parameters, the resolved model and the token usage are recorded
+        alongside the messages, since a trace whose cost cannot be attributed is
+        most of the reason to have one. The tools go in the input only when the
+        request carried any, keeping a plain completion's trace readable.
+        """
         messages = kwargs.get("messages")
         if kwargs.get("tools") is not None:
             gen_input = {"tools": kwargs["tools"], "messages": messages}
@@ -70,11 +77,15 @@ class LangfuseTracer(ObjectInterpretation):
 
     @implements(call_tool)
     def call_tool(self, tool_call: DecodedToolCall):
+        """Trace one tool call as a Langfuse *tool* observation.
+
+        The arguments are encoded best-effort, falling back to ``repr``: a call
+        decoded from a Python *expression* binds real runtime values, which need
+        not be encodable at all, and tracing must never be the thing that fails
+        a call.
+        """
+
         def encode_arg(value):
-            # Best-effort: a call decoded from a Python *expression* (see
-            # `~effectful.handlers.llm.harness.synthesis.toolcall`) binds real
-            # runtime values, which need not be encodable at all -- tracing
-            # must not fail the call over one of them.
             try:
                 return pydantic.TypeAdapter(
                     Encodable[nested_type(value).value]
@@ -97,7 +108,13 @@ class LangfuseTracer(ObjectInterpretation):
             return message, result, is_final
 
     @implements(call_agent)
-    def call_skill(self, skill: Skill, *args, **kwargs):
+    def call_agent(self, skill: Skill, *args, **kwargs):
+        """Trace one Skill call as a Langfuse *agent* observation.
+
+        This is the observation the completions and tool calls of the call nest
+        under, so a trace mirrors the call structure -- including nested Skill
+        calls, which appear as child agents.
+        """
         bound = inspect.signature(skill).bind(*args, **kwargs)
         bound.apply_defaults()
         agent_input = {

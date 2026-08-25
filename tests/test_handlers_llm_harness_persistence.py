@@ -429,7 +429,7 @@ class TestAutomaticCheckpointing:
     def test_nothing_saved_on_exception(self, tmp_path):
         """An unhandled error mid-call leaves no checkpoint at all -- there is
         nothing meaningful to save: the failed call's own history never
-        touched `agent.__history__` (see `AgentLoop._call`), so a
+        touched `agent.__history__` (see `AgentLoop.call_agent`), so a
         checkpoint taken at that point would just be an empty/stale row."""
         db_path = tmp_path / "checkpoints.db"
 
@@ -514,11 +514,13 @@ class TestNestingAndPersistence:
         bot = _NestingBot(__agent_id__="nest1")
 
         # There's no separate `save()` to spy on (checkpoint-writing is
-        # inlined into `_call`), so count checkpoint-connection opens
-        # instead: one to lazily load history on the very first access (via
-        # `Skill.__get__`, when `bot.outer` is first bound), and one to
-        # write the checkpoint after the outermost call returns -- the
-        # nested call must not trigger a third, independent open.
+        # inlined into `SQLitePersister.call_agent`), so count
+        # checkpoint-connection opens instead: one to lazily load history on
+        # the very first access (via `Skill.__get__`, when `bot.outer` is first
+        # bound), and one per returning call to write the checkpoint. The
+        # assertion below is a lower bound because the nested call writes its
+        # own checkpoint too; what matters is the row the outermost call leaves
+        # behind, which is what the history-length assertion checks.
         connection_opens = 0
 
         def _count_opens():

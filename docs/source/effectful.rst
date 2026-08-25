@@ -126,6 +126,7 @@ Execution
 .. automodule:: effectful.handlers.llm.harness.execution.restricted
    :members:
    :undoc-members:
+   :private-members:
 
 Validation
 ~~~~~~~~~~
@@ -135,6 +136,10 @@ Validation
    :undoc-members:
 
 .. automodule:: effectful.handlers.llm.harness.validation.hooks
+   :members:
+   :undoc-members:
+
+.. automodule:: effectful.handlers.llm.harness.validation.pydantic
    :members:
    :undoc-members:
 
@@ -162,6 +167,10 @@ Synthesis
    :undoc-members:
 
 .. automodule:: effectful.handlers.llm.harness.synthesis.body
+   :members:
+   :undoc-members:
+
+.. automodule:: effectful.handlers.llm.harness.synthesis.toolcall
    :members:
    :undoc-members:
 
