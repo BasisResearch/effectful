@@ -15,6 +15,7 @@ Langfuse server, no network.
 import concurrent.futures
 import io
 import json
+import re
 import threading
 
 import langfuse
@@ -39,8 +40,12 @@ from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
 from effectful.handlers.llm.harness.observability.rich import (
     RichTerminalRenderer,
+    _is_python,
     _message_text,
+    _panel_key,
+    _partial_panel,
     _render_content,
+    _render_tool_call,
 )
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.snippet import (
@@ -333,6 +338,191 @@ def test_renderer_streams_reasoning_and_tool_calls():
         assert role in output
     assert "you are a helpful assistant" in output
     assert "add_numbers" in output
+
+
+def test_renderer_prints_each_message_once():
+    """A conversation is printed as it happens, not re-printed per request.
+
+    Every request carries the whole history, so a renderer that draws all of it
+    draws the same panels again on each turn. That is not merely redundant: the
+    frame outgrows the terminal, `rich.live.Live` erases a frame by rewinding the
+    cursor over it, and a rewind is clamped at the top of the screen -- so past
+    that size each refresh leaves a full copy of the conversation behind. A
+    three-turn example run emitted 7,208 lines carrying 335 distinct ones.
+    """
+    renderer = RichTerminalRenderer(
+        console=rich.console.Console(file=io.StringIO(), force_terminal=True, width=100)
+    )
+    history = [
+        {"role": "system", "content": "SYSTEM_PROMPT_MARKER"},
+        {"role": "user", "content": "USER_PROMPT_MARKER"},
+    ]
+    with handler(_StreamingCodeHandler()), handler(renderer):
+        first = completion(messages=history, model="test-model")
+        # The next request carries what the loop appends: this turn, verbatim
+        # (`call_assistant` dumps the same message), and its tool result.
+        history = [
+            *history,
+            first.choices[0].message.model_dump(mode="json"),
+            {"role": "tool", "tool_call_id": "call_1", "content": "TOOL_RESULT_MARKER"},
+        ]
+        completion(messages=history, model="test-model")
+
+    output = _plain(renderer.console.file.getvalue())
+    assert output.count("SYSTEM_PROMPT_MARKER") == 1
+    assert output.count("USER_PROMPT_MARKER") == 1
+    assert output.count("TOOL_RESULT_MARKER") == 1
+
+
+def test_messages_are_told_apart_by_what_they_render_as():
+    """A turn re-serialized on its way into the next request is the same panel.
+
+    Which is why "already printed" is decided on the rendering and not on the
+    dict: a turn reaches the next request's history through handlers that may
+    rebuild it -- the decoding-error path replays a rejected turn into the
+    retry's history -- and bookkeeping no panel displays must not make the same
+    panel print twice.
+    """
+    turn = {
+        "role": "assistant",
+        "content": "here goes",
+        "tool_calls": [
+            {
+                "id": "call_1",
+                "type": "function",
+                "function": {"name": "exec_code", "arguments": _ARGS},
+            }
+        ],
+    }
+    replayed = {**turn, "provider_specific_fields": {"trace": "abc"}, "audio": None}
+    assert _panel_key(turn) == _panel_key(replayed)
+
+    # What a panel *does* show still tells two messages apart.
+    assert _panel_key(turn) != _panel_key({**turn, "content": "here goes again"})
+    assert _panel_key(turn) != _panel_key({**turn, "role": "user"})
+
+
+def test_the_live_window_reports_everything_it_has_hidden():
+    """The tally counts what the turn has put out of view, not what the window did.
+
+    The source is clipped to a fixed number of lines before it is laid out, so
+    everything the window itself hides past that point is the same handful of
+    wrapped rows however long the turn grows. Reporting only that -- as this did
+    -- leaves a count that stalls and dips instead of climbing.
+    """
+    console = rich.console.Console(
+        file=io.StringIO(), force_terminal=True, width=100, height=20
+    )
+    counts = []
+    for total in (10, 50, 100, 200, 400):
+        partial = {
+            "content": "\n".join(f"line {i}" for i in range(total)),
+            "reasoning_content": "",
+            "tool_calls": {},
+        }
+        with console.capture() as capture:
+            console.print(_partial_panel(partial, height=12))
+        found = re.search(r"\(\+(\d+) earlier lines\)", _plain(capture.get()))
+        counts.append(int(found.group(1)) if found else 0)
+
+    assert counts == sorted(counts), f"the tally went backwards: {counts}"
+    assert counts[-1] > counts[0]
+    # It tracks the turn: nearly all of a 400-line one is out of view by then.
+    assert counts[-1] >= 400 - 20, counts
+
+
+def test_renderer_keeps_the_live_region_within_the_screen():
+    """No frame may be taller than the terminal it is redrawn on.
+
+    This is the invariant the whole layout serves, and it is checked where it is
+    decided: `rich` erases the previous frame by emitting one cursor-up per row
+    of it, so a frame that asks to rewind further than the screen is exactly the
+    frame the terminal cannot erase.
+
+    The payload is one enormous *single line*, because that is the shape a source
+    line limit cannot bound and the streamed one actually takes: tool-call
+    arguments arrive as one line of JSON that word-wraps across dozens of rows.
+    Only the console can say how tall that is.
+    """
+    height = 20
+    buffer = io.StringIO()
+    console = rich.console.Console(
+        file=buffer, force_terminal=True, width=100, height=height
+    )
+    args = json.dumps({"note": f"FIRST_ROW_MARKER{'x' * 4000}LAST_ROW_MARKER"})
+
+    class _WideTurn(ObjectInterpretation):
+        @implements(completion)
+        def _completion(self, *args_, **kwargs):
+            return iter([_delta_chunk(tool_calls=_tool_call_delta("note_it", args))])
+
+    with handler(_WideTurn()), handler(RichTerminalRenderer(console=console)):
+        completion(messages=[{"role": "user", "content": "q"}], model="test-model")
+
+    # Each erase is a carriage return and one `cursor up` per row above the last.
+    erases = re.findall(r"\r\x1b\[2K(?:\x1b\[1A\x1b\[2K)*", buffer.getvalue())
+    rewound = [erase.count("\x1b[1A") + 1 for erase in erases]
+    assert rewound, "expected the live region to have been redrawn at all"
+    assert max(rewound) <= height
+
+    # The window keeps the end of what is arriving, which is what is watched.
+    live = _plain(buffer.getvalue()[: buffer.getvalue().index("LAST_ROW_MARKER")])
+    assert "FIRST_ROW_MARKER" not in live
+
+
+def test_partial_python_is_recognised_as_code_at_every_prefix():
+    """Source still arriving is recognised as source, the way partial JSON parses.
+
+    Mid-stream a snippet is a syntax error by construction -- a function whose
+    body has not arrived, a docstring not yet closed -- so the question asked of
+    finished source, *does this parse*, answers no for most of the time a model
+    spends writing one. Asked instead whether it could still become Python, as
+    `codeop` answers it for a REPL, it holds throughout.
+    """
+    code = (
+        "import itertools\n\n"
+        "def can_make(numbers, target):\n"
+        '    """Whether target is reachable from numbers."""\n'
+        "    for a, b in itertools.combinations(numbers, 2):\n"
+        "        if a + b == target:\n"
+        "            return True\n"
+        "    return False\n"
+    )
+    prefixes = [code[:n] for n in range(1, len(code) + 1) if "\n" in code[:n]]
+    assert all(_is_python(prefix, partial=True) for prefix in prefixes)
+    # Whereas most of them do not parse, which is what the settled test asks.
+    assert sum(_is_python(prefix) for prefix in prefixes) < len(prefixes) // 2
+
+    # What is not source stays not source, at every prefix of it. A `{` opening
+    # a dict literal is the interesting one: it *is* a valid Python prefix.
+    for other in (
+        "Let me think about this.\nI will brute force it.\nThen answer.\n",
+        '{\n  "numbers": [3, 6, 25, 50],\n  "target": 147\n}\n',
+        "# Plan\n\n- brute force it\n- check the result\n",
+    ):
+        assert not any(
+            _is_python(other[:n], partial=True)
+            for n in range(1, len(other) + 1)
+            if "\n" in other[:n]
+        ), other
+
+
+def test_streamed_tool_call_arguments_render_as_code_before_they_are_complete():
+    """Half-arrived arguments are shown as what they are becoming.
+
+    A tool call's arguments are a JSON document delivered a few characters at a
+    time, so for the whole of the interesting part -- a model writing a function
+    -- the raw fragment is an unterminated string of escaped source. Closing what
+    the fragment left open recovers the payload as it stands.
+    """
+    args = json.dumps({"code": "import itertools\n\ndef f():\n    return 1\n"})
+    console = rich.console.Console(file=io.StringIO(), force_terminal=True, width=100)
+    call, _ = _render_tool_call("exec_code", args[:-20], streaming=True)
+    console.print(call)
+
+    output = _plain(console.file.getvalue())
+    assert "import itertools" in output
+    assert "\\n" not in output, "arguments shown as escaped JSON rather than as code"
 
 
 class _ConcurrentProbe(ObjectInterpretation):
