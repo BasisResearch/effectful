@@ -248,7 +248,7 @@ def transaction(
             prefix[:] = [*buffer, *prefix[start:]]
 
 
-class ClearScope(enum.StrEnum):
+class CompactionScope(enum.StrEnum):
     """How much of the conversation a compacting tool call drops.
 
     ``"none"`` compacts nothing. ``"turn"`` drops the current call's earlier rounds,
@@ -264,7 +264,7 @@ class ClearScope(enum.StrEnum):
 def compact_(
     history: collections.abc.MutableSequence[Message],
     tool_call_id: ToolCallID,
-    scope: ClearScope,
+    scope: CompactionScope,
 ) -> None:
     """Compact the ambient history, keeping the request and the asking round.
 
@@ -297,9 +297,9 @@ def compact_(
                     break
             break
 
-    if scope == ClearScope.NONE or asking is None or request is None:
+    if scope == CompactionScope.NONE or asking is None or request is None:
         return
-    elif scope == ClearScope.CONVERSATION:
+    elif scope == CompactionScope.CONVERSATION:
         history[:] = [history[0], history[request], *history[asking:]]
-    elif scope == ClearScope.TURN:
+    elif scope == CompactionScope.TURN:
         history[:] = [*history[:request], history[request], *history[asking:]]

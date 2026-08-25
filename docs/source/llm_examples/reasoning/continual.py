@@ -19,7 +19,7 @@ Every revision the papers route through meta-tools is an assignment to ``self``
 in ``exec_code``, and their Refiner is not a component but a *moment*: the
 compaction call where the agent promotes what matters onto ``self`` and discards
 the transcript it no longer needs, atomically, with the REPL tool's
-``clear="conversation"`` mode. That scope, rather than ``clear="turn"``, is the
+``compact="conversation"`` mode. That scope, rather than ``compact="turn"``, is the
 one this task needs: a `Player`'s history spans every ``plan_presses`` call, so
 dropping only the current call's own rounds would free almost nothing.
 The schedule for that moment is itself harness content -- a sentence in the
@@ -85,7 +85,7 @@ class Player(Agent):
 
     Compact as you go: once the transcript has served its purpose -- say, when a
     room's code is recorded in a note -- write what matters onto `self`, then
-    call `exec_code` with `clear="conversation"`. That leaves the request, and
+    call `exec_code` with `compact="conversation"`. That leaves the request, and
     the call you made it in: your message, the snippet and its output. Every
     earlier call goes, and `self` is untouched. So a code recorded in a note is
     a code you keep; a code you only ever read off the transcript is a code you

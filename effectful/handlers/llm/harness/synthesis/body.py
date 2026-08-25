@@ -48,7 +48,7 @@ import pydantic
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.durability.transaction import (
-    ClearScope,
+    CompactionScope,
     HistoryBuilder,
     compact_,
 )
@@ -593,7 +593,7 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
 
             def write_and_run_body(
                 implementation: body_type,  # type: ignore
-                clear: ClearScope = ClearScope.NONE,
+                compact: CompactionScope = CompactionScope.NONE,
             ) -> return_type:  # type: ignore
                 """
                 Answer this Skill by submitting a Python function that implements
@@ -601,7 +601,7 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
                 prompt); its return value on the original arguments becomes the
                 answer.
 
-                `clear` compacts the conversation as the answer lands; its own
+                `compact` compacts the conversation as the answer lands; its own
                 schema below says what each scope drops. Whichever you pick,
                 this submission survives whole -- your message, the source you
                 submit and its result -- so anything you want your later self to
@@ -615,7 +615,7 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
     @implements(call_tool)
     def call_tool(self, tool_call: DecodedToolCall) -> typing.Any:
         """Mark a *successful* ``write_and_run_body`` call as the Skill's answer,
-        and honour the ``clear`` it was submitted with.
+        and honour the ``compact`` it was submitted with.
 
         This is the rule that terminates the completion loop on the synthesis
         path: the model is free to answer directly instead, and every other tool
@@ -637,19 +637,13 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
         where it can read it back on the next call.
         """
         message, result, is_final = fwd(tool_call)
-        # Two decisions, not one: whether this submission *is* the answer, and
-        # how much transcript it asked to drop. Only the first may gate
-        # ``is_final`` -- folding the ``clear`` test into the same condition
-        # leaves a successful submission with the default ``clear="none"``
-        # unfinalized, and the completion loop then runs forever. `compact_` is
-        # already a no-op for that scope, so it needs no guard here.
         if isinstance(tool_call.tool, self._SubmitSolutionTool) and not isinstance(
             result, ToolCallExecutionError
         ):
             compact_(
                 HistoryBuilder.get_history(),
                 tool_call.id,
-                tool_call.bound_args.arguments.get("clear", ClearScope.NONE),
+                tool_call.bound_args.arguments.get("compact", CompactionScope.NONE),
             )
             return message, result, True
         else:

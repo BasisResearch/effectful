@@ -46,7 +46,7 @@ import pydantic
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
 from effectful.handlers.llm.harness.durability.transaction import (
-    ClearScope,
+    CompactionScope,
     HistoryBuilder,
     compact_,
 )
@@ -392,7 +392,7 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
     @Tool.define
     @classmethod
     def exec_code(
-        cls, code: types.CodeType, clear: ClearScope = ClearScope.NONE
+        cls, code: types.CodeType, compact: CompactionScope = CompactionScope.NONE
     ) -> str:
         """Run Python in a stateful session and return its output.
 
@@ -419,16 +419,16 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
         call -- but output printed before the error is not returned, so print
         again once it works.
 
-        `clear` compacts the conversation -- see its own schema below for what
+        `compact` compacts the conversation -- see its own schema below for what
         each scope drops -- but only if the snippet raises no exception: a
-        snippet that raises clears NOTHING.
+        snippet that raises compacts NOTHING.
 
         Whichever scope you pick, the current request and THIS call of yours
         survive: your
         message, the snippet you wrote and its output.  So the snippet and the
         message you send it with are your note to your later self, and you do
         not have to route everything through `print(...)` to keep it.  What a
-        clear cannot save is what you never wrote down at all -- and only `self`
+        compaction cannot save is what you never wrote down at all -- and only `self`
         survives the *next* one, so anything that must last belongs there.
         """
         raise NotImplementedError("No handler")
@@ -476,8 +476,8 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
         session = ReplSession(env=env)
         with handler(
             {
-                self.exec_code: lambda code, clear=ClearScope.NONE: session.exec_code(
-                    code
+                self.exec_code: lambda code, compact=CompactionScope.NONE: (
+                    session.exec_code(code)
                 ),
                 self.repl_history: lambda: session.prior_snippets,
                 self.repl_env: lambda: session.locals,
@@ -527,7 +527,7 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
 
     @implements(call_tool)
     def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
-        """Compact the conversation after a successful ``exec_code(clear=...)``.
+        """Compact the conversation after a successful ``exec_code(compact=...)``.
 
         Only on success: a snippet that raised clears nothing, since the model
         has not yet had the chance to record what mattered, and the traceback it
@@ -547,7 +547,7 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
             compact_(
                 HistoryBuilder.get_history(),
                 tool_call.id,
-                tool_call.bound_args.arguments.get("clear", ClearScope.NONE),
+                tool_call.bound_args.arguments.get("compact", CompactionScope.NONE),
             )
         return message, result, is_final
 

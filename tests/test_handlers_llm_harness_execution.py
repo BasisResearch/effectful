@@ -19,7 +19,7 @@ from RestrictedPython import RestrictingNodeTransformer
 
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import (
-    ClearScope,
+    CompactionScope,
     HistoryBuilder,
     transaction,
 )
@@ -1624,18 +1624,6 @@ def test_transaction_write_back_false_discards_everything():
     assert prefix == original
 
 
-# ============================================================================
-# exec_code(clear=...): model-triggered history compaction
-#
-# Calling the REPL tool with a `clear` scope runs the snippet as usual and, only
-# when it raises no error, drops history *before* the current request and the
-# intermediate rounds *within* it. The request and the clearing round -- the
-# assistant message carrying the call, and the tool messages answering it --
-# always survive. These tests drive the real agent loop offline with a
-# `MockCompletionHandler`, matching the pattern of the persistence suite.
-# ============================================================================
-
-
 @dataclasses.dataclass
 class _Keeper(Agent):
     """A test agent with one durable field the model can promote state onto.
@@ -1652,12 +1640,14 @@ class _Keeper(Agent):
         """Answer {q}. Current x is {self.x}."""
 
 
-def _clear_call(
-    code: str, tool_call_id: str = "call_1", clear: ClearScope = ClearScope.TURN
+def _compact_call(
+    code: str,
+    tool_call_id: str = "call_1",
+    compact: CompactionScope = CompactionScope.TURN,
 ):
     return make_tool_call_response(
         "exec_code",
-        json.dumps({"code": code, "clear": clear}),
+        json.dumps({"code": code, "compact": compact}),
         tool_call_id=tool_call_id,
     )
 
@@ -1705,7 +1695,7 @@ def test_clear_keeps_the_request_and_the_asking_round():
     """
     mock = MockCompletionHandler(
         [
-            _clear_call("tmp = 41\nself.x = tmp + 1\nprint('promoted x')"),
+            _compact_call("tmp = 41\nself.x = tmp + 1\nprint('promoted x')"),
             make_text_response("done"),
         ]
     )
@@ -1749,7 +1739,7 @@ def test_clear_keeps_the_request_as_it_was_sent():
     """
     mock = MockCompletionHandler(
         [
-            _clear_call("self.x = 7\nprint('set')"),
+            _compact_call("self.x = 7\nprint('set')"),
             make_text_response("done"),
             make_text_response("again"),
         ]
@@ -1770,12 +1760,12 @@ def test_clear_keeps_the_request_as_it_was_sent():
 
 
 def test_clear_turn_preserves_prior_calls():
-    """``clear="turn"`` drops only the current call's earlier rounds: previous
+    """``compact="turn"`` drops only the current call's earlier rounds: previous
     exchanges in an `Agent`'s history survive it."""
     mock = MockCompletionHandler(
         [
             make_text_response("first"),
-            _clear_call("print('note')"),
+            _compact_call("print('note')"),
             make_text_response("second"),
         ]
     )
@@ -1797,8 +1787,8 @@ def test_clear_turn_preserves_prior_calls():
     assert "note" in _text_of(agent.__history__[5])
 
 
-def test_clear_conversation_drops_prior_calls():
-    """``clear="conversation"`` additionally drops those previous calls, leaving
+def test_compact_conversation_drops_prior_calls():
+    """``compact="conversation"`` additionally drops those previous calls, leaving
     the system message, the request and the clearing round.
 
     This is the compaction that reaches below the enclosing transaction's start,
@@ -1809,7 +1799,7 @@ def test_clear_conversation_drops_prior_calls():
     mock = MockCompletionHandler(
         [
             make_text_response("first"),
-            _clear_call("print('note')", clear=ClearScope.CONVERSATION),
+            _compact_call("print('note')", compact=CompactionScope.CONVERSATION),
             make_text_response("second"),
         ]
     )
@@ -1846,8 +1836,14 @@ def test_clear_alongside_a_sibling_tool_call():
         [
             make_tool_call_response(
                 [
-                    ("exec_code", json.dumps({"code": "print('a')", "clear": "turn"})),
-                    ("exec_code", json.dumps({"code": "print('b')", "clear": "none"})),
+                    (
+                        "exec_code",
+                        json.dumps({"code": "print('a')", "compact": "turn"}),
+                    ),
+                    (
+                        "exec_code",
+                        json.dumps({"code": "print('b')", "compact": "none"}),
+                    ),
                 ]
             ),
             make_text_response("done"),
@@ -1869,8 +1865,8 @@ def test_clear_alongside_a_sibling_tool_call():
     assert "a" in _text_of(history[3]) and "b" in _text_of(history[4])
 
 
-def test_clear_on_free_skill():
-    """A free `Skill` gets a fresh history per call, so the clear compacts its
+def test_compact_on_free_skill():
+    """A free `Skill` gets a fresh history per call, so the compaction compacts its
     only exchange and the call completes normally."""
 
     @Skill.define
@@ -1879,7 +1875,7 @@ def test_clear_on_free_skill():
 
     mock = MockCompletionHandler(
         [
-            _clear_call("print('fine')"),
+            _compact_call("print('fine')"),
             make_text_response("ok"),
         ]
     )
@@ -1897,8 +1893,8 @@ def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
     (inverted order)."""
     mock = MockCompletionHandler(
         [
-            _clear_call("self.x = 99\n1 / 0"),
-            _clear_call("print('repaired')", tool_call_id="call_2"),
+            _compact_call("self.x = 99\n1 / 0"),
+            _compact_call("print('repaired')", tool_call_id="call_2"),
             make_text_response("done"),
         ]
     )
@@ -1964,7 +1960,7 @@ def test_request_names_the_session_and_points_at_its_arguments():
 
 
 def test_exec_code_without_clear_leaves_history_intact():
-    """The default is the plain REPL: a call without `clear` truncates nothing,
+    """The default is the plain REPL: a call without compaction truncates nothing,
     so the tool round stays in the durable history."""
     mock = MockCompletionHandler(
         [

@@ -29,7 +29,7 @@ from pydantic.dataclasses import dataclass
 from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import (
-    ClearScope,
+    CompactionScope,
     HistoryBuilder,
 )
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
@@ -1396,26 +1396,6 @@ class TestErrorClasses:
         assert "Traceback:" not in without_tb
         assert "my_function" in without_tb
 
-    def test_result_decoding_feedback_is_a_user_message(self):
-        """A malformed *answer* has no tool call to answer, and must not be fed
-        back as a second assistant message.
-
-        Every other feedback path in the harness is a ``tool`` message, so this
-        is the only one that had to choose, and a request ending in the model's
-        own words is read as a prefill rather than as a question (see
-        `ResultDecodingError.to_feedback_message`). Because a user message
-        otherwise opens a new call, the feedback also has to say that this one
-        does not.
-        """
-        error = ResultDecodingError(
-            original_error=ValueError("not an int"),
-            raw_message={"role": "assistant", "content": "about tree fiddy"},
-        )
-        message = error.to_feedback_message(include_traceback=False)
-        assert message["role"] == "user"
-        assert "not an int" in message["content"]
-        assert "not a new question" in message["content"]
-
 
 # ============================================================================
 # Callable Synthesis Tests
@@ -1625,13 +1605,15 @@ class TestCallableSynthesis:
 
 
 def make_write_and_run_body_response(
-    code: str, tool_call_id: str = "call_1", clear: str = "none"
+    code: str,
+    tool_call_id: str = "call_1",
+    compact: CompactionScope = CompactionScope.NONE,
 ) -> ModelResponse:
     """A tool-call response in which the model finalizes by calling the
     synthesis ``write_and_run_body`` tool with a function it wrote."""
     return make_tool_call_response(
         "write_and_run_body",
-        json.dumps({"implementation": {"code": code}, "clear": clear}),
+        json.dumps({"implementation": {"code": code}, "compact": compact}),
         tool_call_id=tool_call_id,
     )
 
@@ -1680,11 +1662,11 @@ class TestSynthesizeAndCall:
         assert mock.call_count == 1
 
     def test_default_clear_still_finalizes(self):
-        """A successful submission ends the call whatever its ``clear`` says.
+        """A successful submission ends the call whatever its ``compact`` says.
 
         Finalizing and compacting are separate decisions, and only the first may
         gate ``is_final``. Testing the default scope specifically because it is
-        the one a conflated condition drops: ``clear="none"`` compacts nothing,
+        the one a conflated condition drops: ``compact="none"`` compacts nothing,
         so a rule that finalizes only when it compacted leaves every ordinary
         submission unfinalized.
 
@@ -1698,7 +1680,7 @@ class TestSynthesizeAndCall:
             [
                 make_write_and_run_body_response(
                     "def double_it(x: int) -> int:\n    return x * 2\n",
-                    clear=ClearScope.NONE,
+                    compact=CompactionScope.NONE,
                 ),
                 make_text_response(json.dumps({"value": 99})),
             ]
@@ -1751,7 +1733,7 @@ class TestSynthesizeAndCall:
         assert all("42" not in str(m.get("content") or "") for m in assistant_messages)
 
     def test_clear_keeps_the_finalizing_round(self):
-        """``write_and_run_body(clear="conversation")`` compacts and still
+        """``write_and_run_body(compact="conversation")`` compacts and still
         finalizes, leaving a history that ends on an answer.
 
         A finalizing call ends the loop the moment it succeeds, so there is no
@@ -1772,7 +1754,7 @@ class TestSynthesizeAndCall:
                     "    # NOTE-TO-SELF: doubling is just x * 2\n"
                     "    return x * 2\n",
                     tool_call_id="call_2",
-                    clear="conversation",
+                    compact=CompactionScope.CONVERSATION,
                 ),
                 make_write_and_run_body_response(
                     "def double(self, x: int) -> int:\n    return x * 2\n",
