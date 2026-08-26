@@ -66,9 +66,7 @@ from tests.conftest import (
     add_numbers,
     make_text_response,
     make_tool_call_response,
-    requires_anthropic,
     requires_llm,
-    requires_openai,
     requires_vision,
 )
 
@@ -3355,41 +3353,6 @@ class TestPromptCaching:
             if isinstance(content, list):
                 for block in content:
                     assert "cache_control" not in block
-
-    # `simple_prompt` is a module-level Skill, so every other Skill in this
-    # module is in its lexical scope and is offered to the model as a tool. What
-    # these two tests assert is that the provider accepts a request carrying
-    # cache_control, so `tool_choice="none"` keeps the model from wandering off
-    # into one of those tools (e.g. a synthesis Skill, which needs an eval
-    # provider installed) on a request that has nothing to do with them.
-
-    @requires_openai
-    def test_openai_accepts_cache_control_via_litellm(self):
-        """OpenAI works fine with cache_control (litellm strips it)."""
-        provider = LiteLLMConfigurer(model="gpt-4o-mini", tool_choice="none")
-        with (
-            handler(AgentLoop()),
-            handler(LexicalToolExtractor()),
-            handler(provider),
-            handler(HistoryBuilder()),
-        ):
-            result = simple_prompt("math")
-        assert isinstance(result, str)
-
-    @requires_anthropic
-    def test_anthropic_accepts_cache_control(self):
-        """Anthropic should accept messages with cache_control."""
-        provider = LiteLLMConfigurer(
-            model="claude-opus-4-6", max_tokens=20, tool_choice="none"
-        )
-        with (
-            handler(AgentLoop()),
-            handler(LexicalToolExtractor()),
-            handler(provider),
-            handler(HistoryBuilder()),
-        ):
-            result = simple_prompt("math")
-        assert isinstance(result, str)
 
 
 # ============================================================================

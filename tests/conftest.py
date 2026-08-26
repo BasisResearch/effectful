@@ -28,16 +28,6 @@ requires_vision = pytest.mark.skipif(
     reason=f"Model {EFFECTFUL_LLM_MODEL} does not support vision",
 )
 
-requires_openai = pytest.mark.skipif(
-    not os.environ.get("OPENAI_API_KEY"),
-    reason="No API key configured for OpenAI",
-)
-
-requires_anthropic = pytest.mark.skipif(
-    not os.environ.get("ANTHROPIC_API_KEY"),
-    reason="No API key configured for Anthropic",
-)
-
 # ============================================================================
 # Finding the example scripts
 #
