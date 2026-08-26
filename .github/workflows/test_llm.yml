@@ -36,5 +36,45 @@ jobs:
           EFFECTFUL_LLM_MODEL: ${{ matrix.model }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        # `-m "not example"`, not `--ignore`: the shell expands the glob into
+        # explicit paths, and pytest collects an explicitly-named file even when
+        # --ignore names it. Deselecting by mark is what actually holds.
         run: |
-          uv run pytest tests/test_handlers_llm_* -v -n logical
+          uv run pytest tests/test_handlers_llm_* -v -n logical -m "not example"
+
+  # The basics/ examples, run live the way a reader runs them. This is the only
+  # place a PR finds out that an example stopped working end to end -- the Test
+  # workflow has no API key, so it can only check that they import and parse
+  # their flags. The rest of docs/source/llm_examples is marked nightly_example
+  # and runs in the nightly workflow; only basics/ is cheap enough to gate on.
+  #
+  # One job, not the matrix above: running the same examples against the same
+  # model on two Pythons costs twice the tokens to learn the same thing.
+  examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: "basics examples (live)"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --all-extras --dev
+
+      - name: Run the basics examples
+        env:
+          EFFECTFUL_LLM_MODEL: gpt-4o-mini
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run pytest tests/test_handlers_llm_examples.py -v -n logical \
+            -m "not nightly_example"

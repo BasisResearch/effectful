@@ -96,6 +96,10 @@ select = ["F", "I", "PERF", "UP"]
 [tool.pytest.ini_options]
 addopts = "--doctest-modules --dist loadgroup"
 testpaths = ["./effectful", "./tests"]
+markers = [
+    "example: runs a docs example end to end against a live model",
+    "nightly_example: a docs example too slow or costly to run on every pull request",
+]
 
 [tool.mypy]
 ignore_missing_imports = true

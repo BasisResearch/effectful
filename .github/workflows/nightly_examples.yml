@@ -3,11 +3,11 @@ name: Nightly Examples
 # Every example in docs/source/llm_examples, run against a live model with its
 # own default arguments.
 #
-# The replayed suite (tests/test_handlers_llm_examples_basics.py, in the Test
-# workflow) already proves on every build that the examples' Python works. What
-# it cannot prove is that the prompts still get a usable answer out of a real
-# provider, which is what decays silently as models change underneath us -- so
-# that runs here, nightly, where a flake costs a re-run rather than a blocked PR.
+# Pull requests get two cheaper checks: the Test workflow proves every example
+# still imports and parses its flags (no API key needed), and the LLM
+# Integration Tests workflow runs basics/ live. This is where the rest -- the
+# agent searches and multi-round pipelines marked nightly_example -- get run,
+# nightly, where a flake costs a re-run rather than a blocked PR.
 
 on:
   schedule:
@@ -23,21 +23,7 @@ on:
 jobs:
   examples:
     runs-on: ubuntu-latest
-    # A directory's examples share a theme and a rough cost; splitting on it
-    # keeps one slow suite from delaying the rest and names the failure in the
-    # job list. `fail-fast: false` because each is an independent signal.
-    strategy:
-      fail-fast: false
-      matrix:
-        directory:
-          - basics
-          - reasoning
-          - optimization
-          - autoresearch
-          - autoformalization
-          - choreographies
-    name: "${{ matrix.directory }}"
-    timeout-minutes: 120
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +31,7 @@ jobs:
         uses: astral-sh/setup-uv@v7
         with:
           enable-cache: true
+          python-version: "3.13"
 
       - name: Set up Python
         run: uv python install
@@ -52,10 +39,12 @@ jobs:
       - name: Install Python dependencies
         run: uv sync --all-extras --dev
 
-      - name: Run examples
+      # No -m filter: the nightly is the run that covers everything. Each
+      # example is a subprocess, so xdist gets real parallelism across them.
+      - name: Run every example
         env:
+          EFFECTFUL_LLM_MODEL: ${{ github.event.inputs.model || 'gpt-4o-mini' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          uv run python scripts/run_examples.py "${{ matrix.directory }}" \
-            --model "${{ github.event.inputs.model || 'gpt-4o-mini' }}"
+          uv run pytest tests/test_handlers_llm_examples.py -v -n logical

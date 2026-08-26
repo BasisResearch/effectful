@@ -1,4 +1,7 @@
+import ast
+import functools
 import os
+import pathlib
 from collections.abc import Sequence
 
 import litellm
@@ -34,6 +37,81 @@ requires_anthropic = pytest.mark.skipif(
     not os.environ.get("ANTHROPIC_API_KEY"),
     reason="No API key configured for Anthropic",
 )
+
+# ============================================================================
+# Finding the example scripts
+#
+# Shared by the launcher suite, which checks the examples statically, and the
+# examples suite, which runs them. Both need the same answer to "what is an
+# example, and what is it called", and neither should be the one that owns it.
+# ============================================================================
+
+EXAMPLES_DIR = (
+    pathlib.Path(__file__).resolve().parent.parent / "docs" / "source" / "llm_examples"
+)
+
+
+@functools.cache
+def example_tree(path: pathlib.Path) -> ast.Module:
+    """The parsed source of an example, cached across the tests that walk it."""
+    return ast.parse(path.read_text(), filename=str(path))
+
+
+def example_modules() -> list[pathlib.Path]:
+    """Every example module, including the shared sibling libraries."""
+    return sorted(
+        p
+        for p in EXAMPLES_DIR.rglob("*.py")
+        if "__pycache__" not in p.parts and p.name != "__init__.py"
+    )
+
+
+def example_scripts() -> list[pathlib.Path]:
+    """Every example that is a script -- one with a command line of its own.
+
+    The shared sibling libraries (``choreographies/library.py``,
+    ``optimization/ds1000_data.py``, ...) are modules the scripts import; they
+    define no ``main`` and there is nothing to launch.
+    """
+    return [
+        p
+        for p in example_modules()
+        if any(
+            isinstance(node, ast.FunctionDef) and node.name == "main"
+            for node in example_tree(p).body
+        )
+    ]
+
+
+def example_option_strings(path: pathlib.Path) -> list[str]:
+    """The ``--flags`` an example's parser declares, read off its source.
+
+    Statically, because the parser is built inside ``main()`` and reaching it
+    would mean running the example.
+    """
+    return sorted(
+        {
+            arg.value
+            for node in ast.walk(example_tree(path))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument"
+            for arg in node.args
+            if isinstance(arg, ast.Constant)
+            and isinstance(arg.value, str)
+            and arg.value.startswith("--")
+        }
+    )
+
+
+def example_id(path: pathlib.Path) -> str:
+    """``basics/conversation`` -- the name an example is known by in a test id."""
+    return str(path.relative_to(EXAMPLES_DIR).with_suffix(""))
+
+
+def example_ids(paths: Sequence[pathlib.Path]) -> list[str]:
+    return [example_id(p) for p in paths]
+
 
 UNIMPLEMENTED_SUBSTRINGS = [
     "infer.JitTrace_ELBO",

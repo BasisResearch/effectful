@@ -597,15 +597,16 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
             ) -> return_type:  # type: ignore
                 """
                 Answer this Skill by submitting a Python function that implements
-                it (see the `FinalBodySynthesizer` section of the system
-                prompt); its return value on the original arguments becomes the
-                answer.
+                it (see the `FinalBodySynthesizer` section of the system prompt);
+                its return value on the original arguments becomes the answer.
 
                 `compact` compacts the conversation as the answer lands; its own
                 schema below says what each scope drops. Whichever you pick,
                 this submission survives whole -- your message, the source you
                 submit and its result -- so anything you want your later self to
                 know, write as comments in the body you submit.
+
+                WHEN TOOL CALLS ARE REQUIRED, THIS MAY BE THE ONLY WAY TO END THE TURN!
                 """
                 result = implementation(*args, **kwargs)  # type: ignore
                 return return_encoding.validate_python(result, context=env)

@@ -11,7 +11,6 @@ All of it is offline: argument parsing and an AST walk, no model and no network.
 
 import argparse
 import ast
-import functools
 import pathlib
 import runpy
 import sys
@@ -23,67 +22,13 @@ from effectful.handlers.llm.harness.__main__ import (
     _provider_config,
     _reasoning_effort_choices,
 )
-
-EXAMPLES_DIR = (
-    pathlib.Path(__file__).resolve().parent.parent / "docs" / "source" / "llm_examples"
+from tests.conftest import (
+    example_ids,
+    example_modules,
+    example_option_strings,
+    example_scripts,
+    example_tree,
 )
-
-
-def example_modules() -> list[pathlib.Path]:
-    """Every example module, including the shared sibling libraries."""
-    return sorted(
-        p
-        for p in EXAMPLES_DIR.rglob("*.py")
-        if "__pycache__" not in p.parts and p.name != "__init__.py"
-    )
-
-
-@functools.cache
-def _tree(path: pathlib.Path) -> ast.Module:
-    return ast.parse(path.read_text(), filename=str(path))
-
-
-def _defines_main(path: pathlib.Path) -> bool:
-    return any(
-        isinstance(node, ast.FunctionDef) and node.name == "main"
-        for node in _tree(path).body
-    )
-
-
-def example_scripts() -> list[pathlib.Path]:
-    """Every example that is a script -- one with a command line of its own.
-
-    The shared sibling libraries (``choreographies/library.py``,
-    ``optimization/ds1000_data.py``, ...) are modules the scripts import; they
-    define no ``main`` and there is nothing to launch.
-    """
-    return [p for p in example_modules() if _defines_main(p)]
-
-
-def _option_strings(path: pathlib.Path) -> list[str]:
-    """The ``--flags`` an example's parser declares, read off its source.
-
-    Statically, because the parser is built inside ``main()`` and reaching it
-    would mean running the example.
-    """
-    return sorted(
-        {
-            arg.value
-            for node in ast.walk(_tree(path))
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "add_argument"
-            for arg in node.args
-            if isinstance(arg, ast.Constant)
-            and isinstance(arg.value, str)
-            and arg.value.startswith("--")
-        }
-    )
-
-
-def _ids(paths):
-    return [str(p.relative_to(EXAMPLES_DIR).with_suffix("")) for p in paths]
-
 
 # ============================================================================
 # Splitting the command line
@@ -210,7 +155,7 @@ def test_parser_has_abbreviation_disabled():
 # ============================================================================
 
 
-@pytest.mark.parametrize("path", example_modules(), ids=_ids(example_modules()))
+@pytest.mark.parametrize("path", example_modules(), ids=example_ids(example_modules()))
 def test_example_brings_no_handler_stack(path):
     """No example assembles a harness of its own.
 
@@ -227,7 +172,7 @@ def test_example_brings_no_handler_stack(path):
     """
     bound = {
         alias.asname or alias.name
-        for node in ast.walk(_tree(path))
+        for node in ast.walk(example_tree(path))
         if isinstance(node, ast.ImportFrom)
         for alias in node.names
     }
@@ -235,7 +180,7 @@ def test_example_brings_no_handler_stack(path):
 
     called = {
         node.func.id if isinstance(node.func, ast.Name) else node.func.attr
-        for node in ast.walk(_tree(path))
+        for node in ast.walk(example_tree(path))
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name | ast.Attribute)
     }
@@ -244,10 +189,12 @@ def test_example_brings_no_handler_stack(path):
 
 def flagged_examples() -> list[pathlib.Path]:
     """Example scripts that declare at least one flag of their own."""
-    return [p for p in example_scripts() if _option_strings(p)]
+    return [p for p in example_scripts() if example_option_strings(p)]
 
 
-@pytest.mark.parametrize("path", flagged_examples(), ids=_ids(flagged_examples()))
+@pytest.mark.parametrize(
+    "path", flagged_examples(), ids=example_ids(flagged_examples())
+)
 def test_example_flags_survive_the_launcher_split(path):
     """Every flag an example declares reaches the example.
 
@@ -256,13 +203,13 @@ def test_example_flags_survive_the_launcher_split(path):
     to the launcher that happens to collide with one an example already has
     fails here rather than silently swallowing it.
     """
-    flags = _option_strings(path)
+    flags = example_option_strings(path)
     ns, rest = _parse_args([str(path), "--model", "gpt-4o-mini", *flags])
     assert ns.model == "gpt-4o-mini"
     assert rest == flags
 
 
-@pytest.mark.parametrize("path", example_scripts(), ids=_ids(example_scripts()))
+@pytest.mark.parametrize("path", example_scripts(), ids=example_ids(example_scripts()))
 def test_example_help_describes_the_example(path, monkeypatch, capsys):
     """``<example> --help`` exits cleanly and prints the module's own summary.
 
@@ -272,7 +219,7 @@ def test_example_help_describes_the_example(path, monkeypatch, capsys):
     the module docstring -- the ``description=__doc__`` convention, checked by
     outcome rather than by matching the source.
     """
-    docstring = ast.get_docstring(_tree(path))
+    docstring = ast.get_docstring(example_tree(path))
     assert docstring, "every example opens with a docstring saying what it shows"
     summary = next(line for line in docstring.splitlines() if line.strip())
 

@@ -14,6 +14,8 @@ import dataclasses
 import functools
 import typing
 
+import annotated_types
+
 from effectful.handlers.llm import Skill
 
 # ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ class Evaluation:
     qualified: bool
     strengths: str
     weaknesses: str
-    score: typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+    score: typing.Annotated[int, annotated_types.Ge(1), annotated_types.Le(10)]
 
 
 # ---------------------------------------------------------------------------

@@ -48,7 +48,7 @@ class Airport(enum.StrEnum):
 @dataclasses.dataclass(frozen=True)
 class FlightDetails:
     flight_number: str
-    price: int
+    price: Annotated[int, pydantic.Field(gt=0)]
     origin: Airport  # three-letter airport code
     destination: Airport  # three-letter airport code
     date: datetime.date  # YYYY-MM-DD
@@ -64,7 +64,7 @@ class SeatPreference:
     Rows 14 and 20 also have extra legroom.
     """
 
-    row: int  # 1-30
+    row: Annotated[int, pydantic.Field(ge=1, le=30)]  # 1-30
     seat: Literal["A", "B", "C", "D", "E", "F"]
 
 
