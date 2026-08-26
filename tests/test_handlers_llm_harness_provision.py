@@ -3461,3 +3461,89 @@ class TestScopedModelOverride:
                 assert count() == 7
 
         assert mock.call_count == 2
+
+
+# ============================================================================
+# What the assembled stack offers the model
+# ============================================================================
+
+
+class _CaptureTools(ObjectInterpretation):
+    """Answer any request with `text`, recording the tools it was sent."""
+
+    def __init__(self, text: str = "ok"):
+        self.text = text
+        self.tools: list[dict] = []
+
+    @implements(completion)
+    def _completion(self, *args, **kwargs):
+        self.tools = list(kwargs.get("tools") or [])
+        return make_text_response(self.text)
+
+
+def _offered_tool_names(**harness_kwargs) -> set[str]:
+    """The tool names a `Skill` call under ``harness(**harness_kwargs)`` sends."""
+    from effectful.handlers.llm.harness import harness
+
+    @Skill.define
+    def ask(q: str) -> str:
+        """Answer {q}."""
+
+    capture = _CaptureTools()
+    with handler(harness(model="test", **harness_kwargs)), handler(capture):
+        assert ask("hi") == "ok"
+    return {t["function"]["name"] for t in capture.tools}
+
+
+@pytest.mark.parametrize("eval_provider", ["builtin", "restricted"])
+def test_synthesis_tools_are_offered_when_an_executor_can_run_them(eval_provider):
+    offered = _offered_tool_names(eval_provider=eval_provider, tool_calling="json")
+    assert {"exec_code", "write_and_run_body"} <= offered
+
+
+def test_no_synthesis_tools_are_offered_without_an_executor():
+    """``eval_provider="none"`` must not advertise a tool nothing can decode.
+
+    `StatefulReplSynthesizer` and `FinalBodySynthesizer` each offer one --
+    ``exec_code`` and ``write_and_run_body`` -- and each needs an executor to
+    turn the model's source into something runnable. Offered without one, a
+    model that calls either (which it may do however firmly the prompt tells it
+    not to) has its own well-formed tool call fail to decode with
+    ``NotImplementedError: An eval provider must be installed in order to parse
+    code``. That is what made ``test_live_post_condition_is_repaired_on_retry``
+    fail on one Python version and pass on the other in the same CI run: the
+    difference was which way the model went, not anything about the stack.
+    """
+    offered = _offered_tool_names(eval_provider="none", tool_calling="json")
+    assert not {"exec_code", "write_and_run_body"} & offered
+
+
+@pytest.mark.parametrize("tool_calling", ["mixed", "code"])
+def test_code_tool_calling_without_an_executor_is_rejected(tool_calling):
+    """A code pathway with nothing to run the code is refused at construction.
+
+    `ValueError` rather than an assertion, so the guard survives ``python -O``:
+    with assertions stripped, this configuration would build a stack whose tool
+    caller offers the model a code pathway that nothing underneath can execute,
+    and the failure would surface much later and further away.
+    """
+    from effectful.handlers.llm.harness import harness
+
+    with pytest.raises(ValueError, match="needs an eval provider"):
+        harness(model="test", tool_calling=tool_calling, eval_provider="none")
+
+
+@pytest.mark.parametrize(
+    "tool_calling,eval_provider",
+    [
+        ("json", "none"),
+        ("json", "builtin"),
+        ("mixed", "builtin"),
+        ("code", "restricted"),
+    ],
+)
+def test_supported_tool_calling_and_executor_pairs_build(tool_calling, eval_provider):
+    """The guard rejects one combination, not the neighbouring ones."""
+    from effectful.handlers.llm.harness import harness
+
+    assert harness(model="test", tool_calling=tool_calling, eval_provider=eval_provider)

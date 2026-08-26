@@ -266,7 +266,7 @@ def compact_(
     tool_call_id: ToolCallID,
     scope: CompactionScope,
 ) -> None:
-    """Compact the ambient history, keeping the request and the asking round.
+    """Compact a history in-place, keeping the request and the asking round.
 
     `tool_call_id` identifies the call that asked, and so the round to keep: the
     assistant message advertising it, and everything after (which is exactly the

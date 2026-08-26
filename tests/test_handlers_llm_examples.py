@@ -75,6 +75,15 @@ class Override:
 
 
 OVERRIDES: dict[str, Override] = {
+    "basics/flight_booking": Override(
+        timeout=10 * 60,
+        why=(
+            "it re-asks the model until the answer matches the request, which is "
+            "the thing it demonstrates, so it runs several times longer than its "
+            "siblings -- measured at ~4 minutes and killed twice by the 3-minute "
+            "default before this override existed"
+        ),
+    ),
     "autoformalization/formalization": Override(skip=Skip.LEAN),
     "reasoning/aime2024": Override(
         args=("least-beautiful-base",),
