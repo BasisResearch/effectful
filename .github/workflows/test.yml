@@ -26,7 +26,9 @@ jobs:
           - name: numpyro
             paths: tests/test_handlers_numpyro*.py
           - name: llm
-            paths: tests/test_handlers_llm*.py
+            paths: tests/test_handlers_llm*.py -k "not mypy"
+          - name: llm-mypy
+            paths: tests/test_handlers_llm*.py -k "mypy"
           - name: examples
             paths: tests/test_examples_*.py
           - name: core

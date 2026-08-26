@@ -12,9 +12,12 @@ jobs:
   test-llm:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
         model: ["gpt-4o-mini"]
+        mypy: ["mypy", "not mypy"]
+    name: "test-llm (py ${{ matrix.python-version }}, ${{ matrix.mypy }})"
     steps:
       - uses: actions/checkout@v4
 
@@ -40,7 +43,8 @@ jobs:
         # explicit paths, and pytest collects an explicitly-named file even when
         # --ignore names it. Deselecting by mark is what actually holds.
         run: |
-          uv run pytest tests/test_handlers_llm_* -v -n logical -m "not example"
+          uv run pytest tests/test_handlers_llm_* -v -n logical \
+            -m "not example" -k "${{ matrix.mypy }}"
 
   # The basics/ examples, run live the way a reader runs them. This is the only
   # place a PR finds out that an example stopped working end to end -- the Test
