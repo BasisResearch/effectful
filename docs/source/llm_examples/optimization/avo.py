@@ -44,117 +44,6 @@ Demonstrates:
   domain cannot make that a test of anything
 - Transfer (``--transfer``): the same agent, with its accumulated history, adapting its
   kernel to a sibling task -- the paper's 30-minute MHA -> GQA episode
-
-What this example does not do
------------------------------
-
-It does not test the paper's claim, and the domain is why. AVO's mechanism is that the
-model can *measure instead of guessing*, so it can only show up as a score difference
-where guessing is bad. Here guessing is nearly optimal: any competent model knows in
-advance that numpy beats a Python loop and that a one-pass variance beats two sweeps,
-so the single-turn control's first blind proposal already lands on the top rung of the
-ladder below. The independent variable is held near-constant by construction, and the
-measured result -- the control matching the agent -- is what that setup can produce
-whether or not agentic variation is worth anything.
-
-That is a property of the domain that was predictable before the runs, not a finding
-from them. What would make the comparison informative is a domain where the model's
-prior ranking of the options is *wrong*, so that only measurement can correct it. One
-was measured while choosing this task and rejected for the wrong reason -- it made the
-headline speedup small -- and it is the better design:
-
-    count_smaller_before, reference = a ``bisect.insort`` loop
-        n= 10000   reference 4.0ms     a Fenwick tree scores 0.60x
-        n= 30000   reference 28.2ms    ... 1.26x
-        n=100000   reference 317.9ms   ... 3.63x
-
-A Fenwick tree is the textbook answer and a model proposes it confidently, but it
-*loses* below about n=30k, because ``insort``'s C-level memmove beats a Python-level
-log-n loop until the array is large. The optimum is a hybrid whose crossover point is a
-fact about the machine that cannot be reasoned to, only measured -- which is the regime
-the paper is actually in, and where an agent holding the evaluator should beat a blind
-proposer. Two caveats would still apply to such a run: one run per arm cannot separate
-anything through the noise floor described below, and at a handful of steps even a good
-domain mostly shows its first jump.
-
-So what follows is a demonstration that the machinery works, and a null result about a
-domain too easy to distinguish the operators.
-
-The task and its headroom
--------------------------
-
-``zscore`` stands in for multi-head attention: standardize a list of floats, with a
-degenerate case (zero standard deviation) that a fast implementation can get wrong.
-The reference implementation in `kernels.py` -- three explicit Python loops -- is the
-baseline the score is a ratio against, and it has a real optimization ladder, measured
-here before any model was involved:
-
-    builtin ``sum`` + a comprehension          1.1x
-    one-pass variance (sum and sum of squares) 2.2x
-    numpy                                      2.8x - 3.3x
-
-The ladder matters because it makes the correctness cliff *load-bearing* rather than
-decorative. The one-pass rung computes the variance as ``E[x^2] - E[x]^2``, which goes
-slightly negative on constant input; unguarded, ``sqrt`` of it is a domain error or a
-NaN, and the degenerate small case fails. The fastest arithmetic is exactly the
-arithmetic that breaks the edge case, which is the shape of the paper's own story
-about branchless rescaling.
-
-``l2_normalize`` is the transfer target -- the "GQA" of this example. It shares the
-shape (one statistic over the whole input, then an elementwise scale, with a
-zero-denominator degenerate case), so the lesson transfers; it does not share the
-answer, and its own best rung is ``math.hypot`` rather than numpy.
-
-What the numbers are
---------------------
-
-Measured on 2026-08-22 with gpt-5.5, one run per arm, on ``zscore``. The score is the
-geometric mean speedup over the reference implementation across the three input sizes:
-
-    AVO, 4 variation steps      1.007 -> 3.635   (4 proposals, 29 evaluator calls, 217s)
-      4 of 4 steps committed, 0 rejected
-    EVO control, 10 iterations  1.016 -> 3.725   (10 proposals, 11 evaluator calls)
-    transfer to l2_normalize    0.990 -> 2.972   (1 step, history intact)
-
-The two arms land in the same place, and the right conclusion is that this domain
-cannot tell them apart -- not that one operator beat the other. Three observations say
-why the numbers cannot carry more than that, and one says what they *do* show.
-
-*Both arms converged on the same algorithm.* The two winning kernels were written
-independently and are the same program: fill a float64 array with ``np.fromiter``,
-compute the variance in one pass from a dot product rather than a second sweep, guard
-the non-positive case, then centre and scale the array in place. When blind guessing
-and careful measurement produce the same artifact, no comparison between them is
-measuring the difference between blind guessing and careful measurement. This is the
-concrete form of the objection above, and it is also what `packing.py` reports of its
-own SI ablation: on a task whose ceiling is one competent artifact from the seed, the
-thing being ablated has nothing to do.
-
-*The difference is inside the noise floor anyway.* The seed is the reference
-implementation timed against itself, so it is 1.0 by construction, and it measured 1.007
-in one arm and 1.016 in the other -- a spread of about 1.6% on a quantity that cannot
-really vary. The arms differ by 2.5%. One run each, through that floor, ranks nothing.
-
-*The control was not matched on evaluator calls.* It was to be run at 28 iterations to
-match AVO's 29 and was cut to 10 for wall-clock, so it reached its number with less
-search than the matched comparison would have given it. This would matter if the
-comparison were load-bearing; it is not, for the two reasons above.
-
-*What the agent's self-certification did buy is visible, just not in the score.* Every
-one of AVO's 4 steps committed and none was rejected: the agent measured its candidate
-before returning it, so the framework's verification never caught it out. The control
-proposes blind and has its proposals rejected on scoring. That is the mechanism working
-as advertised -- it converts evaluator calls into a higher hit rate -- and on this
-domain the hit rate was not the binding constraint.
-
-The trajectory has the paper's shape in miniature: one large jump (1.007 -> 3.437 on
-the first step, the whole of the ladder above) and then grinding in the third digit
-(3.474, 3.609, 3.635). The agent beat the best rung measured by hand -- 3.3x for
-straightforward numpy -- by finding ``np.fromiter`` and an in-place scale.
-
-An earlier 2-step run at ``--step-budget 4`` scored 0.999 -> 2.804 and lost one of its
-two steps to the type-alias landmine described in the simplifications below, which is
-what that note is counting.
 """
 
 # Simplifications vs. the source:
@@ -199,15 +88,6 @@ what that note is counting.
 #   is a few percent (visible in the seed's own score, which is 1.0 by construction and
 #   does not measure as exactly 1.0). Differences smaller than that are noise, and the
 #   report says so rather than ranking the arms.
-# - A variation step can be lost to a harness limitation rather than to anything the
-#   agent did: ``Kernel`` is a PEP 695 type alias, and a `TypeAliasType` *value* has no
-#   `Encodable` schema, so an agent that reads it out of its lexical scope to find out
-#   what it must return gets a `PydanticSchemaGenerationError` instead of an answer,
-#   five times over, and the step ends with no candidate. The prompt now states the
-#   signature outright so there is no reason to look, but the landmine is still there
-#   for any example whose scope contains a type alias, and the run below reports how
-#   many steps it cost. Encoding a type alias as the type it aliases would fix it in
-#   the library; nothing in this example can.
 # - Both arms see this module's source, because the harness puts it in the system
 #   prompt. The test cases and the reference implementation are therefore *not* hidden
 #   from either arm, whatever `kernels.py` says about its own: the enforceable
@@ -285,9 +165,8 @@ class VariationAgent(Agent):
     def evaluate(self, kernel: Kernel) -> Evaluation:
         """Score a candidate kernel: correctness first, then speed.
 
-        The kernel must take a ``list[float]`` and return a ``list[float]``. It is run
-        against hidden correctness cases -- including degenerate inputs the
-        specification mentions -- and then timed on several large inputs against the
+        The kernel is run against hidden correctness cases -- including degenerate inputs
+        the specification mentions -- and then timed on several large inputs against the
         reference implementation. The score is the geometric mean of the per-size
         speedups, and an incorrect kernel scores zero however fast it is.
 
@@ -359,10 +238,8 @@ class VariationAgent(Agent):
           arithmetic is often exactly the arithmetic that gets them wrong.
 
         Return a kernel that you have MEASURED to be correct and at least as fast as
-        the one you were given -- an ordinary function taking a ``list[float]`` and
-        returning a ``list[float]``, which is all the ``Kernel`` annotation means. It
-        is re-scored after you return it, and it is rejected if it does not hold up --
-        so returning something you did not evaluate wastes the step.
+        the one you were given. It is re-scored after you return it, and it is rejected
+        if it does not hold up so returning something you did not evaluate wastes the step.
 
         Your function's docstring MUST contain doctests certifying its contract, and
         they are run before your answer is accepted. Write at least one that checks the
@@ -370,46 +247,6 @@ class VariationAgent(Agent):
         the doctest prompt (three ``>`` characters and a space; it is spelled out
         rather than shown so that this instruction is not itself collected as a test).
         """
-
-
-# ---------------------------------------------------------------------------
-# The EVO control: the same domain through the single-turn proposer.
-# ---------------------------------------------------------------------------
-
-
-@Skill.define
-def propose_kernel(current: Kernel, feedback: list[Rollout]) -> Kernel:
-    """You are a reflective optimizer. Rewrite this kernel to be faster.
-
-    <current_kernel>
-    {current}
-    </current_kernel>
-
-    Here is how it scored, including the speedup at each input size and any failing
-    cases:
-
-    <feedback>
-    {feedback}
-    </feedback>
-
-    Diagnose what is costing the most, then write a faster kernel that computes exactly
-    the same thing -- including on the degenerate inputs, since an incorrect kernel
-    scores zero however fast it is.
-
-    Your function's docstring MUST contain doctests certifying its contract, prefixing
-    each input line with the doctest prompt (three ``>`` characters and a space).
-    """
-
-
-# A bare `Skill`, not an `Agent`: statelessness *is* the EVO condition. `kernels.py`
-# gets the same effect by constructing a fresh `Proposer()` every iteration, and
-# spelling it as a module-level function makes the contrast with `VariationAgent`
-# structural rather than a matter of where the constructor call sits.
-
-
-# ---------------------------------------------------------------------------
-# Running the two arms.
-# ---------------------------------------------------------------------------
 
 
 def run_avo(args: argparse.Namespace) -> tuple[Lineage[Kernel], VariationAgent]:
@@ -440,6 +277,30 @@ def run_evo(args: argparse.Namespace, rng: random.Random) -> Result:
     -- so the frontier can hold a candidate that wins only at one input size, which is
     the mode's whole purpose.
     """
+
+    @Skill.define
+    def propose_kernel(current: Kernel, feedback: list[Rollout]) -> Kernel:
+        """You are a reflective optimizer. Rewrite this kernel to be faster.
+
+        <current_kernel>
+        {current}
+        </current_kernel>
+
+        Here is how it scored, including the speedup at each input size and any failing
+        cases:
+
+        <feedback>
+        {feedback}
+        </feedback>
+
+        Diagnose what is costing the most, then write a faster kernel that computes exactly
+        the same thing -- including on the degenerate inputs, since an incorrect kernel
+        scores zero however fast it is.
+
+        Your function's docstring MUST contain doctests certifying its contract, prefixing
+        each input line with the doctest prompt (three ``>`` characters and a space).
+        """
+
     return optimize_anything(
         evaluator=lambda kernel, _: evaluate_kernel(kernel, TASK, CONFIGS),
         proposer=propose_kernel,
@@ -520,15 +381,6 @@ def report_avo(lineage: Lineage[Kernel], agent: VariationAgent, seconds: float) 
     print((source_of(lineage.best.artifact) or repr(lineage.best.artifact)).rstrip())
 
 
-# The two arms are compared in the header rather than by a function here. They run in
-# separate processes -- one invocation per arm, which is what keeps their handler stacks
-# and their agents genuinely independent -- so nothing in a single run holds both
-# numbers, and a `compare()` that could never be called would be worse than prose. Both
-# arms print their score, their proposals and their evaluator calls, which is what the
-# comparison needs; the seed each one prints is the same artifact timed afresh, and the
-# spread between the two is the only variance estimate either affords.
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -594,12 +446,6 @@ def main() -> None:
         print(f"  reference implementation: {before.score:.4g}")
         print(f"  adapted kernel:           {after.score:.4g}")
         print(f"  [{speedups_of(after)}]")
-        print(
-            "\n  What this does and does not show: the agent kept its history, so a "
-            "gain here is consistent with transfer -- but a model that never saw the "
-            "first task could also write a fast kernel for this one, and this example "
-            "does not run that control."
-        )
 
 
 if __name__ == "__main__":
