@@ -16,7 +16,7 @@ import argparse
 import dataclasses
 import datetime
 import enum
-from typing import Annotated, Literal
+from typing import Annotated
 
 import annotated_types
 import pydantic
@@ -54,6 +54,15 @@ class FlightDetails:
     date: datetime.date  # YYYY-MM-DD
 
 
+class Seat(enum.StrEnum):
+    A = "A"
+    B = "B"
+    C = "C"
+    D = "D"
+    E = "E"
+    F = "F"
+
+
 @pydantic.dataclasses.dataclass(frozen=True)
 class SeatPreference:
     """
@@ -64,8 +73,8 @@ class SeatPreference:
     Rows 14 and 20 also have extra legroom.
     """
 
-    row: Annotated[int, pydantic.Field(ge=1, le=30)]  # 1-30
-    seat: Literal["A", "B", "C", "D", "E", "F"]
+    row: Annotated[int, pydantic.Field(ge=1, le=30)]
+    seat: Seat
 
 
 # ---------------------------------------------------------------------------
