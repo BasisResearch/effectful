@@ -157,7 +157,7 @@ def _vars_section(
     body = "\n".join(f"| `{n}` | `{t}` |" for n, t in sorted(rows.items()))
     return PromptSection(
         type="prompt_section",
-        title="Lexical scope",
+        title="Variables already in scope that do not need to be re-defined:",
         content=to_content_blocks(f"| name | type |\n| --- | --- |\n{body}"),
     )
 
@@ -181,7 +181,7 @@ def _imports_section(
     body = "\n".join(f"| `{n}` | `{m}` |" for n, m in sorted(rows.items()))
     return PromptSection(
         type="prompt_section",
-        title="Imported modules",
+        title="Modules already in scope that do not need to be re-imported:",
         content=to_content_blocks(f"| name | module |\n| --- | --- |\n{body}"),
     )
 

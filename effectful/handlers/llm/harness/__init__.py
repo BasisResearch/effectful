@@ -125,10 +125,6 @@ def harness(
             warning). ``"mixed"`` and ``"code"`` require an eval provider:
             combining either with ``eval_provider="none"`` raises `ValueError`
             rather than silently degrading.
-
-    Raises:
-        ValueError: If ``tool_calling`` is ``"mixed"`` or ``"code"`` and
-            ``eval_provider`` is ``"none"``.
         check_contracts: Install `PydanticSkillArgValidator`, so a `Skill`'s
             arguments are validated against the pydantic metadata its parameter
             annotations carry. On by default, which makes such an annotation
@@ -137,6 +133,10 @@ def harness(
             model-supplied argument is still validated as the tool call is
             decoded, and metadata on a *return* annotation is enforced by the
             decoder either way.
+
+    Raises:
+        ValueError: If ``tool_calling`` is ``"mixed"`` or ``"code"`` and
+            ``eval_provider`` is ``"none"``.
     """
     h: Interpretation = AgentLoop()
 
