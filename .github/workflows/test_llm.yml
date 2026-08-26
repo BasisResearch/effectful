@@ -39,21 +39,11 @@ jobs:
           EFFECTFUL_LLM_MODEL: ${{ matrix.model }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        # `-m "not example"`, not `--ignore`: the shell expands the glob into
-        # explicit paths, and pytest collects an explicitly-named file even when
-        # --ignore names it. Deselecting by mark is what actually holds.
         run: |
           uv run pytest tests/test_handlers_llm_* -v -n logical \
             -m "not example" -k "${{ matrix.mypy }}"
 
-  # The basics/ examples, run live the way a reader runs them. This is the only
-  # place a PR finds out that an example stopped working end to end -- the Test
-  # workflow has no API key, so it can only check that they import and parse
-  # their flags. The rest of docs/source/llm_examples is marked nightly_example
-  # and runs in the nightly workflow; only basics/ is cheap enough to gate on.
-  #
-  # One job, not the matrix above: running the same examples against the same
-  # model on two Pythons costs twice the tokens to learn the same thing.
+  # The basics/ examples, run live the way a reader runs them.
   examples:
     runs-on: ubuntu-latest
     timeout-minutes: 30
