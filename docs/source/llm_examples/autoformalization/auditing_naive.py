@@ -1,11 +1,3 @@
-"""The naive audit arm: one call, a verdict, and a sentence.
-
-Alone in a module because a skill's system prompt includes the source of its
-defining module, so agents sharing a file are shown each other's prompts and
-types. The arms differ, so they do not share a file.
-"""
-
-import dataclasses
 import enum
 
 import pydantic.dataclasses
@@ -14,6 +6,13 @@ from effectful.handlers.llm import Skill
 
 
 class NaiveVerdict(enum.StrEnum):
+    """
+    - **JUSTIFIED** if a theorem's statement expresses the requirement (it
+        may be stronger, that's fine).
+    - **NOT_JUSTIFIED** if there is a meaningful discrepancy: a theorem is
+        weaker, proves something different, is vacuous, or misses key aspects.
+    """
+
     JUSTIFIED = "JUSTIFIED"
     NOT_JUSTIFIED = "NOT_JUSTIFIED"
 
@@ -22,15 +21,8 @@ class NaiveVerdict(enum.StrEnum):
 class NaiveJudgement:
     """A verdict and a sentence of justification."""
 
-    verdict: NaiveVerdict = dataclasses.field(
-        metadata={
-            "description": "JUSTIFIED if the theorem captures the requirement, "
-            "NOT_JUSTIFIED if there is a meaningful discrepancy."
-        }
-    )
-    explanation: str = dataclasses.field(
-        metadata={"description": "Brief explanation of your verdict."}
-    )
+    verdict: NaiveVerdict
+    explanation: str
 
     @property
     def match(self) -> bool:
@@ -56,11 +48,6 @@ class NaiveAuditor:
         ```
 
         ## Instructions
-
-        - **JUSTIFIED** if the theorem's statement expresses the requirement (it
-          may be stronger, that's fine).
-        - **NOT_JUSTIFIED** if there is a meaningful discrepancy: the theorem is
-          weaker, proves something different, is vacuous, or misses key aspects.
 
         Invariant hypotheses (e.g. ``Inv m``) are expected and normal -- don't
         count them as discrepancies. A theorem that extracts a concrete

@@ -3,21 +3,11 @@
 Two agents read Lean theorem statements and judge whether they express a
 natural-language requirement, plus the typed values that cross the model
 boundary.
-
-**This module is deliberately small, and that is the point.** The harness builds
-a skill's system prompt partly from the source of the module the skill is
-defined in (see the prompt-assembly table in
-`effectful.handlers.llm.types.Skill`), so everything sharing a file with an
-`Agent` is shown to it verbatim. Keeping these two agents in a module of their
-own is what makes it true that the informalizer sees a Lean statement and nothing
-else. Nothing here knows anything about the material being audited; `auditing.py`
-imports this module and is never imported by it. The two single-call ablations
-live in `auditing_single` and `auditing_naive` for the same reason: their prompts
-differ from these, and a shared module would show each arm the others'.
 """
 
 import dataclasses
 import enum
+import typing
 
 import pydantic.dataclasses
 
@@ -30,7 +20,22 @@ class Verdict(enum.StrEnum):
 
 
 class Weakening(enum.StrEnum):
-    """How a theorem can fail to mean its requirement -- the blog's taxonomy."""
+    """
+    How a theorem can fail to mean its requirement -- the blog's taxonomy.
+    'none' when and only when the theorem expresses the requirement.
+    Others are the ways a proved theorem can still miss:
+
+        1. **tautology** -- the conclusion restates a hypothesis, or holds for
+           every value of the types involved, so nothing is established.
+        2. **weakened-conclusion** -- the theorem guarantees less than was asked
+           (a looser bound, a weaker relation).
+        3. **narrowed-scope** -- the theorem only covers a subset of the
+           cases the requirement describes.
+        4. **missing-case** -- the requirement asks for several things and the
+           theorem delivers some of them.
+        5. **wrong-property** -- the theorem is about something else, however
+           adjacent.
+    """
 
     NONE = "none"
     TAUTOLOGY = "tautology"
@@ -40,15 +45,15 @@ class Weakening(enum.StrEnum):
     WRONG_PROPERTY = "wrong-property"
 
 
-# ---------------------------------------------------------------------------
-# Types crossing the model boundary. A field's ``metadata={"description": ...}``
-# is inlined by pydantic into that field's JSON schema and rendered into the
-# system prompt, so per-field guidance reaches the model through the type and no
-# prompt has to restate it.
-# ---------------------------------------------------------------------------
-
-
 class Strength(enum.StrEnum):
+    """
+    'trivial' if the conclusion restates a hypothesis or
+    holds for every value of the types involved regardless (e.g. a
+    natural number being non-negative, or both sides of an equation
+    being the same term); 'weak' if it says very little; 'moderate' if
+    it is a substantive claim; 'strong' if it constrains behaviour sharply.
+    """
+
     TRIVIAL = "trivial"
     WEAK = "weak"
     MODERATE = "moderate"
@@ -87,55 +92,32 @@ class Informalization:
             "etc."
         }
     )
-    strength: Strength = dataclasses.field(
-        metadata={
-            "description": "'trivial' if the conclusion restates a hypothesis or "
-            "holds for every value of the types involved regardless (e.g. a "
-            "natural number being non-negative, or both sides of an equation "
-            "being the same term); 'weak' if it says very little; 'moderate' if "
-            "it is a substantive claim; 'strong' if it constrains behaviour "
-            "sharply."
-        }
-    )
-    confidence: float = dataclasses.field(
-        metadata={"description": "0-1, how sure you are this reading is faithful."}
-    )
+    strength: Strength
+    confidence: typing.Annotated[float, pydantic.Field(ge=0, le=1)]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
 class Comparison:
     """Pass 2's verdict on one requirement/theorem pair.
 
+    ``match`` is True only if the theorem expresses the whole of the requirement.
+    A theorem that is stronger than the requirement still matches;
+    one that is weaker, narrower, or about something else does not.
+
     ``__post_init__`` certifies the verdict is internally coherent before it is
     ever returned: a match is exactly a `Weakening.NONE`, and a mismatch has to
-    say what is wrong. An incoherent answer raises, and `TenacityRetryer` hands
-    the message back to the model as the next turn -- so "matches, but it's a
-    tautology" is not a verdict this pipeline can emit.
+    say what is wrong. An incoherent answer raises.
     """
 
-    match: bool = dataclasses.field(
-        metadata={
-            "description": "True only if the theorem expresses the whole of the "
-            "requirement. A theorem that is stronger than the requirement still "
-            "matches; one that is weaker, narrower, or about something else "
-            "does not."
-        }
-    )
-    weakening: Weakening = dataclasses.field(
-        metadata={
-            "description": "The category of divergence: 'none' when and only when "
-            "match is true."
-        }
-    )
+    match: bool
+    weakening: Weakening
     discrepancy: str = dataclasses.field(
         metadata={
             "description": "What the requirement asks for that the theorem does "
             "not deliver. Empty when match is true."
         }
     )
-    explanation: str = dataclasses.field(
-        metadata={"description": "Brief reasoning for the verdict."}
-    )
+    explanation: str
 
     def __post_init__(self) -> None:
         if self.match and self.weakening is not Weakening.NONE:
@@ -158,14 +140,6 @@ class Comparison:
     @property
     def verdict(self) -> Verdict:
         return Verdict.CONFIRMED if self.match else Verdict.DISPUTED
-
-
-# ---------------------------------------------------------------------------
-# Pass 1. `informalize` takes a Lean statement and nothing else: there is no
-# parameter for a requirement, this Agent's history contains no turn in which
-# one appeared, and no Tool in scope can go and find one. That is the entire
-# separation -- not an instruction the model is trusted to obey.
-# ---------------------------------------------------------------------------
 
 
 class Informalizer:
@@ -194,13 +168,6 @@ class Informalizer:
         """
 
 
-# ---------------------------------------------------------------------------
-# Pass 2. This agent does see the requirement -- comparing is its job. What it
-# gets from pass 1 is a reading of the formal statement produced in ignorance of
-# that requirement, so agreement between them is evidence.
-# ---------------------------------------------------------------------------
-
-
 class Comparator:
     """You check whether a formal theorem carries the weight a natural-language
     requirement puts on it. You assume the proof is correct: you are not auditing
@@ -225,19 +192,6 @@ class Comparator:
         **Back-translation** -- what the statement says, according to a reader
         who was shown the statement alone and never saw the requirement above:
         {back_translation}
-
-        Watch for the ways a proved theorem can still miss:
-
-        1. **tautology** -- the conclusion restates a hypothesis, or holds for
-           every value of the types involved, so nothing is established.
-        2. **weakened-conclusion** -- the theorem guarantees less than was asked
-           (a looser bound, a weaker relation).
-        3. **narrowed-scope** -- the theorem only covers a subset of the
-           cases the requirement describes.
-        4. **missing-case** -- the requirement asks for several things and the
-           theorem delivers some of them.
-        5. **wrong-property** -- the theorem is about something else, however
-           adjacent.
 
         A theorem *stronger* than the requirement still matches; do not flag
         rephrasing. But if the back-translation rates the statement trivial, the
