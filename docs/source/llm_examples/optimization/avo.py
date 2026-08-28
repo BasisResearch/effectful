@@ -117,7 +117,7 @@ from docs.source.llm_examples.optimization.library import (
     optimize_anything,
     source_of,
 )
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # The timed configurations: the paper scores each kernel on a vector of benchmark
 # shapes, and keeping several here is what stops a candidate from winning by being
@@ -132,7 +132,7 @@ TASK = TASKS["zscore"]
 TRANSFER_TASK = TASKS["l2_normalize"]
 
 
-class VariationAgent(Agent):
+class VariationAgent:
     """You are a performance engineer optimizing one small Python kernel, over a long
     run in which you will be asked for improvements repeatedly.
 
@@ -154,7 +154,6 @@ class VariationAgent(Agent):
         configs: collections.abc.Sequence[int] = CONFIGS,
         step_budget: int = 6,
     ):
-        super().__init__()
         self.task = task
         self.configs = tuple(configs)
         self.step_budget = step_budget

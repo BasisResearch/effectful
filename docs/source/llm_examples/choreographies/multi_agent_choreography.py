@@ -50,7 +50,7 @@ from docs.source.llm_examples.choreographies.library import (
     scatter,
     step,
 )
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 DEFAULT_TEST_TIMEOUT = 60
 """Seconds a generated test file gets before the reviewer gives up on it."""
@@ -98,15 +98,15 @@ class ReviewResult(TypedDict):
 # ---------------------------------------------------------------------------
 
 
-class ArchitectAgent(Agent):
+class ArchitectAgent:
     """You are a software architect. Given a project specification, you break
     it into individual module implementation tasks. Each task should specify
     the module filename, its public API, and what tests to write.
     Be concrete and specific — the coder will follow your spec exactly.
     """
 
-    def __init__(self, output_dir: pathlib.Path, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, output_dir: pathlib.Path, *, __agent_id__: str):
+        self.__agent_id__ = __agent_id__
         self.output_dir = output_dir
 
     @Tool.define
@@ -129,14 +129,14 @@ class ArchitectAgent(Agent):
         {project_spec}"""
 
 
-class CoderAgent(Agent):
+class CoderAgent:
     """You are an expert Python developer. Given a module specification,
     you write clean, well-documented Python code. You also write thorough
     test files. Output ONLY the Python source code, no markdown fences.
     """
 
-    def __init__(self, output_dir: pathlib.Path, **kwargs):
-        super().__init__(**kwargs)
+    def __init__(self, output_dir: pathlib.Path, *, __agent_id__: str):
+        self.__agent_id__ = __agent_id__
         self.output_dir = output_dir
 
     @Tool.define
@@ -163,7 +163,7 @@ class CoderAgent(Agent):
         {module_spec}"""
 
 
-class ReviewerAgent(Agent):
+class ReviewerAgent:
     """You are a senior code reviewer. You review Python modules for
     correctness, style, edge cases, and test coverage. You judge a module by
     running its tests, not only by reading it. Be specific about issues and
@@ -174,9 +174,10 @@ class ReviewerAgent(Agent):
         self,
         output_dir: pathlib.Path,
         test_timeout: float = DEFAULT_TEST_TIMEOUT,
-        **kwargs,
+        *,
+        __agent_id__: str,
     ):
-        super().__init__(**kwargs)
+        self.__agent_id__ = __agent_id__
         self.output_dir = output_dir
         self.test_timeout = test_timeout
 

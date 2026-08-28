@@ -60,7 +60,7 @@ class Note:
 
 
 @dataclasses.dataclass
-class Player(Agent):
+class Player:
     """You are playing a button corridor. Each room's door opens only after its
     hidden button sequence is entered; a wrong press resets that room's
     progress; the sequences are stable for the whole game. Your score is the

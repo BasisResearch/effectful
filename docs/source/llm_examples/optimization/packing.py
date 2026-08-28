@@ -216,7 +216,7 @@ from docs.source.llm_examples.optimization.library import (
     report,
     source_of,
 )
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -403,7 +403,7 @@ SEED_REFINER = (
 )
 
 
-class Proposer(Agent):
+class Proposer:
     """You are a reflective optimizer. You are shown the current artifact, the score
     it achieved, and diagnostic side information explaining *why* it scored that way,
     and you return a strictly better artifact. You do not mutate blindly: you first

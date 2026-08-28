@@ -90,7 +90,7 @@ from docs.source.llm_examples.optimization.library import (
     report,
     worker,
 )
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -262,7 +262,7 @@ def evaluate_prompt(prompt: str, task: Writing | None, model: str) -> Evaluation
     )
 
 
-class Proposer(Agent):
+class Proposer:
     """You are a reflective optimizer. You are shown the current prompt, the score it
     achieved, and diagnostic side information explaining *why* it scored that way, and
     you return a better prompt. You do not mutate blindly: you first read the

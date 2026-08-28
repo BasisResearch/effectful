@@ -11,10 +11,10 @@ import pathlib
 
 from PIL import Image
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 
-class ImageTools(Agent):
+class ImageTools:
     """You are an image processing agent."""
 
     _image_to_handle: dict[int, int]

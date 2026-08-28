@@ -45,11 +45,11 @@ from library import (  # noqa: F401
     acp_write_text_file,
 )
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 @dataclasses.dataclass
-class Assistant(Agent):
+class Assistant:
     """A coding assistant working inside the user's editor.
 
     Your reply is shown to the user in their editor and rendered as Markdown, so

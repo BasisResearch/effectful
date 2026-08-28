@@ -55,11 +55,11 @@ from docs.source.llm_examples.reasoning.gridworlds import (
     State,
     Transition,
 )
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 @dataclasses.dataclass
-class Physicist(Agent):
+class Physicist:
     """Reverse-engineers the game by writing its ``step`` rule as Python code."""
 
     hint: str

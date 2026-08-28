@@ -109,7 +109,7 @@ import time
 
 import pydantic
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of a
@@ -343,7 +343,7 @@ class Memory:
 # ---------------------------------------------------------------------------
 
 
-class Designer(Agent):
+class Designer:
     """You are the Design & Decompose agent that opens the pipeline. Instead of writing
     one monolithic script, you break the task into a short, ordered pipeline of modules
     (stages), and for each module you propose a few concrete implementation strategies
@@ -363,7 +363,7 @@ class Designer(Agent):
         """
 
 
-class Implementer(Agent):
+class Implementer:
     """You are the Implement agent, an expert Python programmer. You answer by writing
     code, not prose: you turn one module of the design into a function that transforms
     a tour, and the harness compiles and runs it. You read the module's intent and the
@@ -407,7 +407,7 @@ class Implementer(Agent):
         """
 
 
-class Reflector(Agent):
+class Reflector:
     """You are the Comparative Reflection agent. You look at two finished branches --
     one that scored well and one that scored poorly -- and you diagnose *why* the good
     one won, distilling a single transferable lesson a future implementer can reuse.

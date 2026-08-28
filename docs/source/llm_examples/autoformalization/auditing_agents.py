@@ -21,7 +21,7 @@ import enum
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 class Verdict(enum.StrEnum):
@@ -168,7 +168,7 @@ class Comparison:
 # ---------------------------------------------------------------------------
 
 
-class Informalizer(Agent):
+class Informalizer:
     """You read Lean 4 theorem statements and say, in plain English, exactly what
     they guarantee. You are a translator, not a sympathetic reader: you report
     what the statement says, never what you imagine it was for. You are not shown
@@ -201,7 +201,7 @@ class Informalizer(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Comparator(Agent):
+class Comparator:
     """You check whether a formal theorem carries the weight a natural-language
     requirement puts on it. You assume the proof is correct: you are not auditing
     the proof, you are auditing the claim. You are strict -- a theorem that is

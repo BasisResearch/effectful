@@ -15,7 +15,7 @@ import inspect
 from collections.abc import Callable
 from typing import Literal
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 
 @Skill.define
@@ -28,7 +28,7 @@ def story_funny(topic: str) -> str:
     """Write a funny, humorous story about {topic}. Do not use any tools."""
 
 
-class TripPlanner(Agent):
+class TripPlanner:
     """Plans a trip to a city with good weather and tells a story about visiting it."""
 
     @Tool.define

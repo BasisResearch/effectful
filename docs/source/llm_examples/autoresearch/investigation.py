@@ -53,7 +53,7 @@ import dataclasses
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # The research task and its canonical evaluator (the ground truth)
@@ -363,7 +363,7 @@ def _relevance(query: str, ref: Reference) -> int:
     return sum(text.count(term) for term in query.lower().split())
 
 
-class Investigator(Agent):
+class Investigator:
     """You are the Problem Investigator opening an autonomous research project. You
     survey the available literature and frame the problem -- what kind of task it is
     and which known results bear on it -- before any solution is attempted."""
@@ -405,7 +405,7 @@ APPROACHES: list[str] = [
 ]
 
 
-class Solver(Agent):
+class Solver:
     """You are a careful algorithm designer and expert Python programmer. You
     answer by writing code, not prose: you implement the solution as a function
     and let the evaluator judge it."""
@@ -498,7 +498,7 @@ def critique_coherence(paper: Paper) -> Critique:
 
 
 @dataclasses.dataclass
-class Writer(Agent):
+class Writer:
     """Writes the paper as structured, evidence-bound claims. Holds the discovered
     solution; the Encodable bridge splices its source into the prompt via
     ``{self.solution}``, so the method claim is written against the real code."""

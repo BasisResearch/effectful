@@ -93,7 +93,7 @@ import pydantic
 from matplotlib.figure import Figure
 from PIL import Image
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # A field's ``metadata={"description": ...}`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
@@ -382,7 +382,7 @@ def render(plot: PlottingFn, path: pathlib.Path) -> Image.Image:
 # ---------------------------------------------------------------------------
 
 
-class Retriever(Agent):
+class Retriever:
     """You are the Retriever Agent that opens the pipeline. You perform generative
     retrieval: rank the reference exemplars by how well their *visual structure* and
     research domain match the task -- prioritizing diagram structure over topic
@@ -412,7 +412,7 @@ class Retriever(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Planner(Agent):
+class Planner:
     """You are the Planner Agent, the cognitive core. By in-context learning from the
     retrieved exemplars, you translate the source context and caption into a detailed,
     structured description of the target plot -- transcribing the data exactly so the
@@ -439,7 +439,7 @@ class Planner(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Stylist(Agent):
+class Stylist:
     """You are the Stylist Agent, a design consultant. You first distill a reusable
     aesthetic guideline from the reference set, then apply it to restyle the planner's
     description into a publication-quality, stylistically optimized plan."""
@@ -473,7 +473,7 @@ class Stylist(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Visualizer(Agent):
+class Visualizer:
     """You are the Visualizer Agent, an expert Matplotlib programmer. You answer by
     writing code: you turn a plan into a function that draws the plot, and the harness
     renders it. You never reason the figure out in prose -- you draw it."""
@@ -529,7 +529,7 @@ class Visualizer(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Critic(Agent):
+class Critic:
     """You are the Critic Agent. You close the refinement loop: you look at the
     actually-rendered plot, judge it against the source context and caption, and hand
     the Visualizer a refined plan that fixes what you saw."""

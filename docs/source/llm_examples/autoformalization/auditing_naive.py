@@ -10,7 +10,7 @@ import enum
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 class NaiveVerdict(enum.StrEnum):
@@ -37,7 +37,7 @@ class NaiveJudgement:
         return self.verdict is NaiveVerdict.JUSTIFIED
 
 
-class NaiveAuditor(Agent):
+class NaiveAuditor:
     """You check whether verified Lean theorems correctly formalize the natural
     language requirements they are said to capture."""
 

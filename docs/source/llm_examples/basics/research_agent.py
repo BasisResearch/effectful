@@ -14,7 +14,7 @@ import urllib.parse
 
 import requests
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Search tool
@@ -77,7 +77,7 @@ class QualityJudgment:
 # ---------------------------------------------------------------------------
 
 
-class Researcher(Agent):
+class Researcher:
     """Agent that answers research questions using web search, refining on feedback."""
 
     @Skill.define

@@ -15,7 +15,7 @@ idioms:
 
   * Tool visibility is decided by class, not by prompt. The single ``search``
     Tool lives on a ``Scholar`` base class, so it reaches the Historian and
-    Baseline Scout that subclass it (via the Agent MRO) but is *structurally
+    Baseline Scout that subclass it (via the MRO) but is *structurally
     invisible* to the toolless Summarizer, Question/Answer Generators, and
     Reviewer -- they hold no ``Scholar`` instance, so nothing in their lexical
     scope offers them a tool. This is the paper's split between "context
@@ -47,7 +47,7 @@ idioms:
     (ICLR emphasizes novelty, NeurIPS rigor) and only the final synthesis shifts.
 
 Demonstrates:
-- A shared Tool on a base ``Agent`` class, offered to subclass skills via the
+- A shared Tool on a base class, offered to subclass skills via the
   MRO but invisible to the sibling toolless agents -- tool scoping as
   encapsulation, so no skill needs a "do not use tools" instruction
 - Decode-time certification of structured output against a ground-truth index,
@@ -99,7 +99,7 @@ import typing
 import pydantic
 import requests
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
@@ -366,7 +366,7 @@ class Review:
 # ---------------------------------------------------------------------------
 
 
-class Summarizer(Agent):
+class Summarizer:
     """You are the Summary Agent. You compress a dense submission into the
     review-oriented structure a reviewer actually reasons over, mitigating the
     "lost in the middle" effect by keeping claims, method, and evidence and
@@ -389,9 +389,9 @@ class Summarizer(Agent):
 # ---------------------------------------------------------------------------
 
 
-class Scholar(Agent):
+class Scholar:
     """Base for agents that read the literature. The ``search`` tool defined here
-    is inherited (via the Agent MRO) by every ``Scholar`` subclass's skills,
+    is inherited (via the MRO) by every ``Scholar`` subclass's skills,
     and by nothing else: the closed-book agents hold no ``Scholar`` instance, so
     it never enters their lexical scope. One shared tool, scoped to exactly the
     agents that should search."""
@@ -450,7 +450,7 @@ class BaselineScout(Scholar):
         """
 
 
-class QuestionGenerator(Agent):
+class QuestionGenerator:
     """You are the Question Generator. You turn the gathered context into a few
     sharp, specific probing questions aimed at a submission's weakest points."""
 
@@ -471,7 +471,7 @@ class QuestionGenerator(Agent):
         """
 
 
-class AnswerGenerator(Agent):
+class AnswerGenerator:
     """You are the Answer Generator, interrogating one claim like a skeptical
     reviewer: self-answer from the paper, then check that answer against the
     external context and record where they diverge."""
@@ -513,7 +513,7 @@ GUIDELINES: dict[str, str] = {
 
 
 @dataclasses.dataclass
-class Reviewer(Agent):
+class Reviewer:
     """You are the Review Generator. ``guidelines`` decouples investigation from
     reporting: you write up the same gathered evidence under whichever venue's
     emphasis is in scope, so swapping the venue reweights the review without

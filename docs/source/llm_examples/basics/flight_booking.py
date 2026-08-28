@@ -21,7 +21,7 @@ from typing import Annotated
 import annotated_types
 import pydantic
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 # ---------------------------------------------------------------------------
 # Structured output types
@@ -55,6 +55,8 @@ class FlightDetails:
 
 
 class Seat(enum.StrEnum):
+    """Seats A and F are window seats. Seats C and D are aisle seats."""
+
     A = "A"
     B = "B"
     C = "C"
@@ -68,7 +70,6 @@ class SeatPreference:
     """
     User's seat preference extracted from natural language.
 
-    Seats A and F are window seats. Seats C and D are aisle seats.
     Row 1 is the front row with extra legroom.
     Rows 14 and 20 also have extra legroom.
     """
@@ -140,7 +141,7 @@ def matches_request(
 
 
 @dataclasses.dataclass
-class FlightFinder(Agent):
+class FlightFinder:
     """Agent that finds flights matching user criteria."""
 
     available_flights: list[FlightDetails]
@@ -166,7 +167,7 @@ def is_seat_request(user_input: str) -> bool:
     """
 
 
-class SeatSelector(Agent):
+class SeatSelector:
     """Agent that extracts seat preferences from natural language."""
 
     @Skill.define

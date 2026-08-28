@@ -11,7 +11,7 @@ import argparse
 import dataclasses
 import enum
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -36,7 +36,7 @@ class Guess:
 
 
 @dataclasses.dataclass
-class Hinter(Agent):
+class Hinter:
     """Agent that gives hints about a secret word without saying it."""
 
     secret_word: str
@@ -69,7 +69,7 @@ class Hinter(Agent):
         """
 
 
-class Guesser(Agent):
+class Guesser:
     """Agent that tries to guess the secret word from hints."""
 
     @Skill.define

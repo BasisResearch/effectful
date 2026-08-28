@@ -14,7 +14,7 @@ import dataclasses
 import litellm
 import numpy as np
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Vector index
@@ -122,7 +122,7 @@ def build_index(documents: list[str], embedding_model: str) -> VectorIndex:
 
 
 @dataclasses.dataclass
-class RAGAgent(Agent):
+class RAGAgent:
     """Answers a question grounded in the vector index via a retrieval tool."""
 
     index: VectorIndex

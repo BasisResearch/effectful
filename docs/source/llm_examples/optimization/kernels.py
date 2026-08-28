@@ -176,7 +176,7 @@ from docs.source.llm_examples.optimization.library import (
     source_of,
     worker,
 )
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 # A kernel is one list-to-list transform; every task in the family shares this
 # signature so a single instruction can drive all of them.
@@ -415,7 +415,7 @@ def check_reference_agrees() -> bool:
 SEED_INSTRUCTION = "Write a Python function that implements the specification."
 
 
-class Programmer(Agent):
+class Programmer:
     """You are an expert Python programmer. You implement exactly the specification
     you are given, following the engineering instruction you are handed, and you
     answer with code rather than prose."""
@@ -675,7 +675,7 @@ def evaluate_instruction(
     )
 
 
-class Proposer(Agent):
+class Proposer:
     """You are a reflective optimizer. You are shown the current instruction, the
     scores the code written under it achieved, and diagnostic side information
     explaining *why*, and you return a better instruction. You do not mutate blindly:

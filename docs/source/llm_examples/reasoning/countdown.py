@@ -5,10 +5,10 @@ In-context learning to solve problems with code across a conversation.
 import argparse
 import collections.abc
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
-class CountdownSolver(Agent):
+class CountdownSolver:
     """
     You are a careful problem solver and an expert Python programmer. You answer by
     writing code, not by reasoning in prose alone: problems that are error-prone to

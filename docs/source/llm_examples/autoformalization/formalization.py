@@ -71,7 +71,7 @@ Demonstrates:
 - A ContextVar carrying per-goal compile state (preamble + goal), read ambiently
   by ``LeanProof.__post_init__`` and the ``check`` tool, scoped to the pipeline
   (the ``WORKSPACE``/``CUTOFF`` idiom of ``scientist_one``/``paper_orchestra``)
-- A class-scoped compiler tool offered to the formalizing agents via the Agent MRO
+- A class-scoped compiler tool offered to the formalizing agents via the MRO
   and invisible to the closed-book planning/review agents (``scholar_peer.py``)
 - An AND-OR DAG with hierarchical memoization, DFS backtracking, an LLM reviewer
   as a search filter, and a state-writer acyclicity guard -- the paper's Figure 1
@@ -111,7 +111,7 @@ import textwrap
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # The Lean compiler -- the ground truth every proof is certified against. This is
@@ -366,12 +366,12 @@ class ReviewVerdict:
 
 # ---------------------------------------------------------------------------
 # The compiler-in-the-loop base class. The `check` tool is defined here, so it
-# reaches the FormalProver and SketchAgent (via the Agent MRO) and is invisible to
+# reaches the FormalProver and SketchAgent (via the MRO) and is invisible to
 # the closed-book NLProver, BlueprintAgent, and Reviewer.
 # ---------------------------------------------------------------------------
 
 
-class LeanAgent(Agent):
+class LeanAgent:
     """Base for agents that write Lean against the live compiler. The ``check`` tool
     defined here compiles a candidate tactic block for the goal in scope and returns
     Lean's messages, so a formalizing agent can iterate against real compiler feedback
@@ -402,7 +402,7 @@ class LeanAgent(Agent):
 # ---------------------------------------------------------------------------
 
 
-class NLProver(Agent):
+class NLProver:
     """You are the informal reasoner. You write a short, rigorous natural-language
     proof of a statement -- the mathematical argument, not Lean code -- for a
     formalizer to translate. Closed-book: you hold no compiler tool."""
@@ -451,7 +451,7 @@ class FormalProver(LeanAgent):
 # ---------------------------------------------------------------------------
 
 
-class BlueprintAgent(Agent):
+class BlueprintAgent:
     """You are the blueprint planner. When a goal resists direct proof, you propose
     a decomposition: intermediate lemmas that are each strictly simpler or more
     general than the goal, such that the goal follows easily once they hold. Closed-
@@ -502,7 +502,7 @@ class SketchAgent(LeanAgent):
         """
 
 
-class Reviewer(Agent):
+class Reviewer:
     """You are the decomposition reviewer -- a planning-level search filter. Compiler
     verification only checks that a sketch is well-typed, not that its decomposition
     makes progress: a sketch can compile while proposing a subgoal no simpler than the

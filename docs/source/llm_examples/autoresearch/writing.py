@@ -36,7 +36,7 @@ idioms:
 
   * Tools are scoped by class. Only the Literature Review Agent holds the
     ``web_search`` Tool; the Outline, Plotting, Section, and
-    Refinement agents subclass a bare ``Agent`` and are closed-book by
+    Refinement agents define no Tool at all and are closed-book by
     construction -- no "do not search" instruction needed, because nothing in their
     lexical scope is a Tool (the encapsulation idiom of ``scholar_peer.py``).
 
@@ -100,7 +100,7 @@ import typing
 
 import pydantic
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
@@ -462,7 +462,7 @@ class Review:
         )
 
 
-class OutlineAgent(Agent):
+class OutlineAgent:
     """You are the Outline Agent that opens the pipeline. You synthesize
     unstructured pre-writing materials into one structured outline that every other
     agent will play from: a visualization plan, a targeted literature-search
@@ -479,7 +479,7 @@ class OutlineAgent(Agent):
         """
 
 
-class LiteratureReviewAgent(Agent):
+class LiteratureReviewAgent:
     """You are the Literature Review Agent. You run a two-move discovery loop --
     *identify* candidate prior work with web search, and *verify* it by citing it:
     every ``Citation`` you build is authenticated as it is constructed, and one that
@@ -513,7 +513,7 @@ class LiteratureReviewAgent(Agent):
         """
 
 
-class PlottingAgent(Agent):
+class PlottingAgent:
     """You are the Plotting Agent. You execute a visualization plan, turning each
     planned figure into a self-contained LaTeX figure with a context-aware caption:
     statistical plots grounded in the experimental log's numbers, and conceptual
@@ -533,7 +533,7 @@ class PlottingAgent(Agent):
         """
 
 
-class SectionWriter(Agent):
+class SectionWriter:
     """You are the Section Writing Agent. You draft the remaining core sections on
     top of the literature reviewer's Introduction and Related Work, build tables
     from the experimental log, integrate the generated figures, and assemble a
@@ -562,7 +562,7 @@ class SectionWriter(Agent):
 
 
 @dataclasses.dataclass
-class Reviewer(Agent):
+class Reviewer:
     """You are AgentReview, a simulated peer reviewer who scores one manuscript on
     its own merits. A method on an ``Agent`` rather than a module-level Skill: a
     module-level ``@Skill.define`` lands in every other skill's lexical scope
@@ -586,7 +586,7 @@ class Reviewer(Agent):
         """
 
 
-class ContentRefiner(Agent):
+class ContentRefiner:
     """You are the Content Refinement Agent. Given a reviewer's verdict, you revise
     the manuscript to address the one named weakness -- and only that -- changing as
     little else as possible so the revision is a targeted improvement, not a

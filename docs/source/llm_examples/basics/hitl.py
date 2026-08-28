@@ -12,7 +12,7 @@ import argparse
 import dataclasses
 import enum
 
-from effectful.handlers.llm import Agent, Skill, Tool
+from effectful.handlers.llm import Skill, Tool
 
 # ---------------------------------------------------------------------------
 # Structured output
@@ -39,7 +39,7 @@ class ProposedAction:
 
 
 @dataclasses.dataclass
-class Planner(Agent):
+class Planner:
     """Agent that proposes actions one at a time for human approval."""
 
     execution_log: list[str] = dataclasses.field(default_factory=list)

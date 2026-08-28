@@ -10,11 +10,11 @@ Demonstrates:
 import argparse
 import dataclasses
 
-from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm import Skill
 
 
 @dataclasses.dataclass
-class ChatBot(Agent):
+class ChatBot:
     """Conversational agent that remembers the conversation so far."""
 
     bot_name: str
