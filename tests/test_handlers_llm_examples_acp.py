@@ -47,6 +47,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
+    _NameAndTool,
     _serialize_name_and_tool,
     to_content_blocks,
 )
@@ -290,7 +291,9 @@ def _tool_schema(tool: Tool) -> dict:
     is the point: `_ensure_strict_json_schema` is what closes the objects and moves
     every property into ``required``, and both are what the tests below are about.
     """
-    return _serialize_name_and_tool((tool.__name__, tool))["function"]["parameters"]
+    return _serialize_name_and_tool(_NameAndTool(tool.__name__, tool))["function"][
+        "parameters"
+    ]
 
 
 def _plan_tool_taking(step_type: type) -> Tool:
