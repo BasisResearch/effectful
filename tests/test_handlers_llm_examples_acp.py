@@ -1375,19 +1375,34 @@ def test_a_cancelled_prompt_answers_cancelled_rather_than_failing():
     """
 
     class _Slow(ObjectInterpretation):
-        """A model slow enough that a cancellation can land while it is thinking."""
+        """A model slow enough that a cancellation can land while it is thinking.
+
+        ``thinking`` is set from the worker thread as the request begins, so the
+        test can cancel *during* the completion by construction rather than by a
+        sleep that a loaded runner can outpace -- too early and the flag is read
+        at the pre-completion checkpoint instead, ending the turn before any
+        tool call was announced.
+        """
 
         def __init__(self, responses):
             self.responses = list(responses)
+            self.thinking = threading.Event()
 
         @implements(completion)
         def _completion(self, messages=None, **kwargs):
+            self.thinking.set()
             time.sleep(0.3)
             return (
                 self.responses.pop(0) if len(self.responses) > 1 else self.responses[0]
             )
 
     client = _FakeClient(permission="allow_once")
+    slow = _Slow(
+        [
+            make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
+            make_text_response("not cancelled after all"),
+        ]
+    )
 
     async def drive():
         server = await _serve(client)
@@ -1395,22 +1410,16 @@ def test_a_cancelled_prompt_answers_cancelled_rather_than_failing():
         turn = asyncio.ensure_future(
             server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
         )
-        await asyncio.sleep(0.05)  # let the worker get as far as the model
+        assert await _until(lambda: slow.thinking.is_set()), (
+            "the worker never reached the model, so this would not be "
+            "cancelling mid-completion"
+        )
         await server.cancel(session_id)
         response = await turn
         await server.close_session(session_id)
         return response
 
-    with handler(
-        _stack(
-            _Slow(
-                [
-                    make_tool_call_response("add_numbers", '{"a": 1, "b": 2}'),
-                    make_text_response("not cancelled after all"),
-                ]
-            )
-        )
-    ):
+    with handler(_stack(slow)):
         response = asyncio.run(drive())
 
     assert response.stop_reason == "cancelled"

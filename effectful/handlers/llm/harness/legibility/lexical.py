@@ -173,17 +173,6 @@ class ImplicitToolExtractor(LexicalToolExtractor):
     environment together.
     """
 
-    # The docstring above is model-facing (see `PromptInjectingInterpretation`):
-    # it *replaces* `LexicalToolExtractor`'s section, so it restates that
-    # message and adds the implicit-wrapping part.
-    #
-    # Which callables qualify is decided by `_implicit_tool_candidate` (a
-    # classmethod, so a subclass can widen or narrow it) ANDed with the
-    # optional constructor ``predicate`` (which can only narrow). The
-    # conventions the heuristic makes load-bearing: prefix orchestration
-    # helpers with ``_`` to keep them out of the model's hands, and document
-    # and annotate the functions you mean to publish.
-
     def __init__(
         self,
         predicate: collections.abc.Callable[[types.FunctionType], bool] | None = None,

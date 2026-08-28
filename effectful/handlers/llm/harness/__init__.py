@@ -168,14 +168,6 @@ def harness(
             f'eval_provider="builtin" or "restricted", or tool_calling="json".'
         )
 
-    # The tool pipeline composes: the caller (added first, so it runs last)
-    # transforms the lexical tools that the extractor (added above it, so it
-    # runs first and forwards into it) discovered and unioned into `tools`.
-    # With a caller installed, the extractor must not pre-filter unadvertisable
-    # tools (json_only=False): the caller wraps exactly those. Under
-    # tool_collection="none" there is no extractor, so the caller (still
-    # installed, per tool_calling) has nothing lexical to wrap and every tool
-    # the model sees is one another handler injected.
     if tool_calling == "auto":
         h = coproduct(h, MixedToolCaller())
     elif tool_calling == "code":

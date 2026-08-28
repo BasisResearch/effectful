@@ -2662,14 +2662,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
 
         # `run_agent`'s parameters are named from the client's point of view: the stream
         # the client reads is the one this agent writes.
-        #
-        # `use_unstable_protocol` is load-bearing, not optimism: the SDK's router marks
-        # `session/close`, `session/fork` and `session/resume` unstable, and without the
-        # flag it answers all three with `method_not_found` however completely they are
-        # implemented here. Form elicitation, which `acp_ask_user` rests on, is unstable
-        # in the same sense -- "not part of the spec yet, and may be removed or changed
-        # at any point" -- so an editor is entitled to drop it, which is why every one
-        # of those features asks before using it rather than assuming.
         await acp.run_agent(
             self,
             input_stream=writer,
