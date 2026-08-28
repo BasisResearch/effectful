@@ -55,8 +55,8 @@ def harness(
     persist_db: str | os.PathLike[str] | None = None,
     eval_provider: typing.Literal["builtin", "restricted", "none"] = "builtin",
     type_checker: typing.Literal["mypy", "ty", "none"] = "ty",
-    tool_calling: typing.Literal["mixed", "code", "json"] = "mixed",
-    implicit_tools: bool = False,
+    tool_calling: typing.Literal["auto", "code", "json"] = "auto",
+    tool_collection: typing.Literal["none", "explicit", "auto"] = "explicit",
     check_contracts: bool = True,
     **provider_config,
 ) -> Interpretation:
@@ -73,11 +73,12 @@ def harness(
 
     1. `AgentLoop`, the tool pipeline and `LiteLLMConfigurer` -- the agent
        loop, the tools it offers from a `Skill`'s lexical scope, and the model
-       backend it drives. The pipeline is a lexical tool *extractor*
-       (`ImplicitToolExtractor` if ``implicit_tools`` else
-       `LexicalToolExtractor`), plus, above it, the tool *caller* it feeds
-       (`MixedToolCaller` for ``tool_calling="mixed"``, `ExpressionToolCaller`
-       for ``"code"``, none for ``"json"``).
+       backend it drives. The pipeline is a lexical tool *extractor* chosen by
+       ``tool_collection`` (`LexicalToolExtractor` for ``"explicit"``,
+       `ImplicitToolExtractor` for ``"auto"``, nothing for ``"none"``), plus,
+       above it, the tool *caller* it feeds (`MixedToolCaller` for
+       ``tool_calling="auto"``, `ExpressionToolCaller` for ``"code"``, none
+       for ``"json"``).
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `HistoryBuilder` -- accumulate the message history of a call.
@@ -119,26 +120,32 @@ def harness(
             runs: ``"ty"`` (`TyTypeChecker`, the default), ``"mypy"``
             (`MypyTypeChecker`), or ``"none"`` to run generated code unchecked.
         tool_calling: How the model calls the tools in a `Skill`'s lexical
-            scope. ``"mixed"`` (the default) installs `MixedToolCaller`:
-            schema-constrained JSON arguments for every tool a JSON schema can
-            describe faithfully, and the code pathway for the rest (generic,
-            variadic, or unadvertisable signatures). ``"code"`` installs
-            `ExpressionToolCaller`: uniformly, the model writes a Python call
-            expression which is type-checked in the Skill's scope and
-            evaluated. ``"json"`` installs `LexicalToolExtractor`: the classic
-            JSON-only pathway (polymorphic tools degrade to untyped argument
+            scope. ``"auto"`` (the default) installs `MixedToolCaller`, which
+            picks per tool: schema-constrained JSON arguments for every tool a
+            JSON schema can describe faithfully, and the code pathway for the
+            rest (generic, variadic, or unadvertisable signatures). ``"code"``
+            installs `ExpressionToolCaller`: uniformly, the model writes a
+            Python call expression which is type-checked in the Skill's scope
+            and evaluated. ``"json"`` is the classic JSON-only pathway with no
+            caller at all (polymorphic tools degrade to untyped argument
             schemas there, and unadvertisable ones are skipped with a
-            warning). ``"mixed"`` and ``"code"`` require an eval provider:
+            warning). ``"auto"`` and ``"code"`` require an eval provider:
             combining either with ``eval_provider="none"`` raises `ValueError`
             rather than silently degrading.
-        implicit_tools: Install `ImplicitToolExtractor` instead of
-            `LexicalToolExtractor`, so ordinary functions and methods in a
-            `Skill`'s lexical scope that look deliberately published -- public
-            name, docstring, complete annotations (see
-            `ImplicitToolExtractor._implicit_tool_candidate`) -- are offered
-            as tools with no ``Tool.define`` decorator. Off by default: it
-            makes naming conventions load-bearing (prefix orchestration
-            helpers with ``_`` to keep them out of the model's hands).
+        tool_collection: Which tools are *collected* from a `Skill`'s lexical
+            scope, as opposed to how they are called. ``"explicit"`` (the
+            default) installs `LexicalToolExtractor`: the `Tool`/`Skill`
+            values in scope, and those held by in-scope `Agent`\\ s. ``"auto"``
+            installs `ImplicitToolExtractor` instead, which additionally wraps
+            ordinary functions and methods that look deliberately published --
+            public name, docstring, complete annotations (see
+            `ImplicitToolExtractor._implicit_tool_candidate`) -- with no
+            ``Tool.define`` decorator; it makes naming conventions
+            load-bearing (prefix orchestration helpers with ``_`` to keep them
+            out of the model's hands). ``"none"`` installs no extractor at
+            all: the model sees only the tools the harness itself injects
+            (``exec_code``, ``write_and_run_body``), never the surrounding
+            scope's.
         check_contracts: Install `PydanticSkillArgValidator`, so a `Skill`'s
             arguments are validated against the pydantic metadata its parameter
             annotations carry. On by default, which makes such an annotation
@@ -149,7 +156,7 @@ def harness(
             decoder either way.
 
     Raises:
-        ValueError: If ``tool_calling`` is ``"mixed"`` or ``"code"`` and
+        ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
             ``eval_provider`` is ``"none"``.
     """
     h: Interpretation = AgentLoop()
@@ -165,18 +172,19 @@ def harness(
     # transforms the lexical tools that the extractor (added above it, so it
     # runs first and forwards into it) discovered and unioned into `tools`.
     # With a caller installed, the extractor must not pre-filter unadvertisable
-    # tools (json_only=False): the caller wraps exactly those.
-    if tool_calling == "mixed":
+    # tools (json_only=False): the caller wraps exactly those. Under
+    # tool_collection="none" there is no extractor, so the caller (still
+    # installed, per tool_calling) has nothing lexical to wrap and every tool
+    # the model sees is one another handler injected.
+    if tool_calling == "auto":
         h = coproduct(h, MixedToolCaller())
     elif tool_calling == "code":
         h = coproduct(h, ExpressionToolCaller())
     json_only = tool_calling == "json"
-    h = coproduct(
-        h,
-        ImplicitToolExtractor(json_only=json_only)
-        if implicit_tools
-        else LexicalToolExtractor(json_only=json_only),
-    )
+    if tool_collection == "explicit":
+        h = coproduct(h, LexicalToolExtractor(json_only=json_only))
+    elif tool_collection == "auto":
+        h = coproduct(h, ImplicitToolExtractor(json_only=json_only))
 
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())

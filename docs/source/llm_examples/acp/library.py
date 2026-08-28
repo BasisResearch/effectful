@@ -549,7 +549,13 @@ class ACPSession[A: Agent]:
         else:
             self.loop.call_soon_threadsafe(self.updates.put_nowait, update)
 
-    def call[T](self, coro: typing.Coroutine[typing.Any, typing.Any, T]) -> T:
+    def call[T](
+        self,
+        coro: typing.Coroutine[typing.Any, typing.Any, T],
+        *,
+        orphan: collections.abc.Callable[[concurrent.futures.Future], None]
+        | None = None,
+    ) -> T:
         """Run a client request on the event loop and wait for the editor's answer.
 
         Used for the requests whose *answer* the worker needs -- a permission
@@ -573,16 +579,42 @@ class ACPSession[A: Agent]:
         leaves the user, rather than a clock, deciding when a silent editor has waited
         long enough.
 
+        Cancellation normally also cancels the request itself -- the polite thing
+        for a permission dialog the user has just walked away from. ``orphan`` is
+        for the requests where that would *lose* something: a cancelled
+        ``terminal/create`` was already sent, the editor allocates the terminal
+        and answers, and an agent that cancelled the answer has leaked a terminal
+        it never learned the id of. With ``orphan`` given, cancellation leaves the
+        request running and attaches the callback to its eventual completion, so
+        the caller can dispose of whatever the answer turns out to be.
+
         Raises:
             SessionCancelled: If the turn was cancelled while waiting.
         """
         future = asyncio.run_coroutine_threadsafe(coro, self.loop)
         while True:
             if self.cancel.is_set():
-                future.cancel()
+                if orphan is None:
+                    future.cancel()
+                else:
+                    future.add_done_callback(orphan)
                 raise SessionCancelled
             with contextlib.suppress(concurrent.futures.TimeoutError):
                 return future.result(timeout=self.poll_interval)
+
+    def detach(
+        self, coro: typing.Coroutine[typing.Any, typing.Any, typing.Any]
+    ) -> None:
+        """Send a client request without waiting for -- or ever cancelling -- it.
+
+        For requests that are obligations rather than questions: the answer is
+        not needed and the sending must not depend on the turn's fate. Releasing
+        a terminal is the canonical case -- it belongs to *whichever* way the
+        turn ends, so tying it to an interruptible wait would let the very
+        cancellation that ends a command also revoke the release it owes.
+        """
+        with contextlib.suppress(RuntimeError):  # a loop already shut down
+            asyncio.run_coroutine_threadsafe(coro, self.loop)
 
     async def flush(self) -> None:
         """Wait until every notification produced so far has reached the editor.
@@ -882,6 +914,22 @@ class ACPToolRuntime(PromptInjectingInterpretation):
             raise NotImplementedError(
                 "this editor cannot run terminal commands on your behalf"
             )
+
+        def release_orphan(created: concurrent.futures.Future) -> None:
+            # A cancellation that lands *during* `terminal/create` interrupts the
+            # wait below before the terminal id is ever known -- but the request
+            # was already sent, so the editor allocates a terminal and answers.
+            # Without this, that answer is discarded and the terminal leaks: the
+            # `finally` cannot release an id the agent never learned. (Exactly
+            # this interleaving is routine on a loaded runner, where the user's
+            # cancel overtakes a worker that has only just announced the call.)
+            if not created.cancelled() and created.exception() is None:
+                self.session.detach(
+                    self.session.client.release_terminal(
+                        self.session.session_id, created.result().terminal_id
+                    )
+                )
+
         terminal = self.session.call(
             self.session.client.create_terminal(
                 self.session.session_id,
@@ -890,7 +938,8 @@ class ACPToolRuntime(PromptInjectingInterpretation):
                 # Without this the command runs wherever the editor happened to spawn
                 # this process, which is not the project the user opened.
                 cwd=self.session.cwd or None,
-            )
+            ),
+            orphan=release_orphan,
         ).terminal_id
         # Hand the terminal to the editor before waiting on it: this is the one thing
         # in the protocol that renders *while* it happens. The alternative -- what this
@@ -907,7 +956,11 @@ class ACPToolRuntime(PromptInjectingInterpretation):
                 self.session.client.terminal_output(self.session.session_id, terminal)
             )
         finally:
-            self.session.call(
+            # `detach`, not `call`: the release is owed however the turn ended,
+            # and must not itself be revoked by the cancellation that ended it
+            # (nor, on the way out of a *successful* command, may a late cancel
+            # be allowed to discard the output by raising here).
+            self.session.detach(
                 self.session.client.release_terminal(self.session.session_id, terminal)
             )
         status = (

@@ -2166,8 +2166,8 @@ def test_cancelling_a_running_command_still_releases_its_terminal():
     """ACP has the client hold a terminal until the agent releases it, so an unwind
     that skipped the release would leak one per cancelled command.
 
-    It survives because `ACPSession.call` schedules the request before it reads the
-    cancel flag: the release is *sent* and simply not waited for.
+    It survives because the release goes out through `ACPSession.detach`: sent
+    regardless of how the turn ended, and never itself cancelled.
     """
     client = _HangingTerminal()
     (response, _) = _cancelled_mid_tool(
@@ -2179,6 +2179,64 @@ def test_cancelling_a_running_command_still_releases_its_terminal():
     assert response.stop_reason == "cancelled"
     assert client.created == ["sleep"]
     assert client.released == ["term-1"], "a cancelled command must not leak a terminal"
+
+
+def test_cancelling_during_terminal_creation_still_releases_it(monkeypatch):
+    """The narrower window: the cancel is already set when the worker reaches the
+    `terminal/create` call itself.
+
+    `ACPSession.call` schedules the request before it reads the flag, so the create
+    is *sent* -- the editor allocates a terminal and answers -- but the wait raises
+    before the agent ever learns the terminal id, and the tool's `finally` cannot
+    release an id it never had. The `orphan` callback on the create is what turns
+    that answer into a release instead of a leak.
+
+    This interleaving is forced here rather than raced for, because racing is
+    exactly how it hid: on an idle machine the worker reaches the (protected) exit
+    wait before a 10ms poll can cancel, and only a loaded CI runner ever lost --
+    deterministically enough to fail every Linux build while every laptop passed.
+    """
+    orig_call = library.ACPSession.call
+
+    def cancel_lands_first(self, coro, **kwargs):
+        # The user's cancel overtook the worker between announcing the tool
+        # call and asking for the terminal.
+        if "create_terminal" in getattr(coro, "__qualname__", ""):
+            self.cancel.set()
+        return orig_call(self, coro, **kwargs)
+
+    monkeypatch.setattr(library.ACPSession, "call", cancel_lands_first)
+
+    client = _HangingTerminal()
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response(
+                acp_run_terminal_command.__name__,
+                '{"command": "sleep", "args": ["600"]}',
+            ),
+            make_text_response("the cancelled turn should never reach this"),
+        ]
+    )
+
+    async def body(server, session_id, opened):
+        session = server.sessions[session_id]
+        session.mode_id = library.AUTO
+        turn = asyncio.create_task(
+            server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
+        )
+        response = await asyncio.wait_for(turn, timeout=10)
+        assert await _until(lambda: client.released), (
+            "the orphaned create's answer was never turned into a release"
+        )
+        return response
+
+    with handler(_stack(mock)):
+        response = _in_session(
+            body, client, caps=schema.ClientCapabilities(terminal=True)
+        )
+    assert response.stop_reason == "cancelled"
+    assert client.created == ["sleep"]
+    assert client.released == ["term-1"], "a terminal created under a cancel leaked"
 
 
 def test_a_new_session_offers_its_modes():

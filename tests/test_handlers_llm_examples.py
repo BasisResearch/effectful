@@ -109,14 +109,6 @@ OVERRIDES: dict[str, Override] = {
         args=("--limit", "1"),
         why="--limit is the example's own documented cheap smoke test",
     ),
-    "autoresearch/investigation": Override(
-        args=("--implicit-tools",),
-        why=(
-            "the example demonstrates the implicit style -- no Agent bases, no "
-            "Tool.define decorators -- and its own docstring says to run it "
-            "under --implicit-tools, without which its skills have no tools"
-        ),
-    ),
 }
 
 

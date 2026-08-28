@@ -275,6 +275,16 @@ def _run(call, responses, *extra_handlers, caller=MixedToolCaller):
     stack = [
         handler(AgentLoop()),
         handler(caller()),
+        # A tool *caller* transforms the lexical tools an extractor discovered
+        # beneath it (see `synthesis/toolcall.py`), so the mixed/code modes
+        # need one installed above (json_only=False: the caller wraps what the
+        # JSON pathway cannot advertise). In the json mode `caller` *is* the
+        # extractor, and adding a second would defeat its advertisement probe.
+        *(
+            [handler(LexicalToolExtractor(json_only=False))]
+            if issubclass(caller, ExpressionToolCaller)
+            else []
+        ),
         handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         *(handler(h) for h in extra_handlers),

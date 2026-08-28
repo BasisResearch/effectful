@@ -3481,7 +3481,7 @@ def test_no_synthesis_tools_are_offered_without_an_executor():
     assert not {"exec_code", "write_and_run_body"} & offered
 
 
-@pytest.mark.parametrize("tool_calling", ["mixed", "code"])
+@pytest.mark.parametrize("tool_calling", ["auto", "code"])
 def test_code_tool_calling_without_an_executor_is_rejected(tool_calling):
     """A code pathway with nothing to run the code is refused at construction.
 
@@ -3501,7 +3501,7 @@ def test_code_tool_calling_without_an_executor_is_rejected(tool_calling):
     [
         ("json", "none"),
         ("json", "builtin"),
-        ("mixed", "builtin"),
+        ("auto", "builtin"),
         ("code", "restricted"),
     ],
 )
@@ -3510,3 +3510,48 @@ def test_supported_tool_calling_and_executor_pairs_build(tool_calling, eval_prov
     from effectful.handlers.llm.harness import harness
 
     assert harness(model="test", tool_calling=tool_calling, eval_provider=eval_provider)
+
+
+@pytest.mark.parametrize(
+    "tool_collection,declared,implicit",
+    [
+        ("none", False, False),
+        ("explicit", True, False),
+        ("auto", True, True),
+    ],
+)
+def test_tool_collection_selects_the_lexical_extractor(
+    tool_collection, declared, implicit
+):
+    """``tool_collection`` decides what is *collected* from the Skill's scope:
+    nothing (``"none"`` -- only the harness's own tools are offered), the
+    declared `Tool`/`Skill` values (``"explicit"``), or additionally the
+    qualifying plain functions (``"auto"``)."""
+    from effectful.handlers.llm import Tool
+    from effectful.handlers.llm.harness import harness
+
+    @Tool.define
+    def declared_helper(x: int) -> int:
+        """Add one."""
+        return x + 1
+
+    def implicit_helper(x: int) -> int:
+        """Double x."""
+        return x * 2
+
+    @Skill.define
+    def ask(q: str) -> str:
+        """Answer {q}."""
+
+    capture = _CaptureTools()
+    with (
+        handler(harness(model="test", tool_collection=tool_collection)),
+        handler(capture),
+    ):
+        assert ask("hi") == "ok"
+    offered = {t["function"]["name"] for t in capture.tools}
+
+    assert ("declared_helper" in offered) == declared
+    assert ("implicit_helper" in offered) == implicit
+    # The harness's own tools are offered regardless of collection.
+    assert {"exec_code", "write_and_run_body"} <= offered

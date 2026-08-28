@@ -132,22 +132,26 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser.add_argument(
         "--tool-calling",
         type=str,
-        default="mixed",
-        choices=["mixed", "code", "json"],
+        default="auto",
+        choices=["auto", "code", "json"],
         help=(
             "How the model calls lexical tools: JSON arguments where a schema "
-            "can describe the tool, code for the rest (mixed); by writing a "
+            "can describe the tool, code for the rest (auto); by writing a "
             "type-checked Python call expression uniformly (code); or JSON "
             "arguments only (json)"
         ),
     )
     parser.add_argument(
-        "--implicit-tools",
-        action="store_true",
+        "--tool-collection",
+        type=str,
+        default="explicit",
+        choices=["none", "explicit", "auto"],
         help=(
-            "Offer qualifying plain functions and methods in a Skill's lexical "
-            "scope as tools, with no Tool.define decorator (installs "
-            "ImplicitToolExtractor)"
+            "Which tools are collected from a Skill's lexical scope: the "
+            "declared Tool/Skill values (explicit); those plus qualifying "
+            "plain functions and methods, no Tool.define decorator needed "
+            "(auto); or nothing from the scope at all, leaving only the "
+            "harness's own tools (none)"
         ),
     )
     parser.add_argument(
@@ -247,7 +251,7 @@ def main(argv: list[str] | None = None) -> None:
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
         tool_calling=ns.tool_calling,
-        implicit_tools=ns.implicit_tools,
+        tool_collection=ns.tool_collection,
         check_contracts=ns.check_contracts,
         **_provider_config(ns),
     )
