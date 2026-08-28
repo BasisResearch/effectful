@@ -142,6 +142,15 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         ),
     )
     parser.add_argument(
+        "--implicit-tools",
+        action="store_true",
+        help=(
+            "Offer qualifying plain functions and methods in a Skill's lexical "
+            "scope as tools, with no Tool.define decorator (installs "
+            "ImplicitToolExtractor)"
+        ),
+    )
+    parser.add_argument(
         "--no-check-contracts",
         dest="check_contracts",
         action="store_false",
@@ -238,6 +247,7 @@ def main(argv: list[str] | None = None) -> None:
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
         tool_calling=ns.tool_calling,
+        implicit_tools=ns.implicit_tools,
         check_contracts=ns.check_contracts,
         **_provider_config(ns),
     )

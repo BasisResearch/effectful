@@ -28,6 +28,7 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.legibility.lexical import (
     LexicalToolExtractor,
+    _tool_paths,
     _vars_section,
 )
 from effectful.handlers.llm.harness.observability.dump import _message_text
@@ -2431,3 +2432,155 @@ class TestLexicalScopeRendering:
         assert rows["names"] == "list"
         assert rows["helper"] == "function"
         assert rows["record"] == f"{__name__}.{Record.__qualname__}"
+
+
+class TestAutoAgentify:
+    """Defining a `Skill` method is sufficient for a class to behave as an
+    `Agent`: `Skill.__set_name__` grafts `Agent`'s attributes onto the class
+    and registers it as a virtual subclass, so explicit inheritance is
+    optional."""
+
+    def test_plain_class_becomes_agent(self):
+        class Bot:
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        bot = Bot()
+        assert isinstance(bot, Agent)
+        assert issubclass(Bot, Agent)
+        assert bot.__history__ == []
+        # The bound skill shares the instance's history, exactly as it would
+        # under explicit inheritance.
+        assert bot.ask.__history__ is bot.__history__
+
+    def test_dataclass_becomes_agent_with_per_instance_history(self):
+        @dataclass
+        class NamedBot:
+            name: str
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """You are {self.name}. Answer: {q}"""
+
+        a, b = NamedBot("a"), NamedBot("b")
+        assert isinstance(a, Agent) and isinstance(b, Agent)
+        assert a.__history__ is not b.__history__
+        assert a.ask.__history__ is a.__history__
+
+    def test_agent_id_protocol_works_without_inheritance(self):
+        class Bot:
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        transient = Bot()
+        assert not transient.__is_persistent__
+        assert transient.__agent_id__.startswith("EPHEMERAL-")
+
+        persistent = Bot()
+        persistent.__agent_id__ = "stable-id"
+        assert persistent.__is_persistent__
+
+    def test_explicit_agent_subclass_is_not_reinjected(self):
+        class Classic(Agent):
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        # The attributes stay where Agent defined them; nothing is copied onto
+        # the subclass itself.
+        assert "__history__" not in vars(Classic)
+        assert "__is_persistent__" not in vars(Classic)
+        assert Classic().ask.__history__ is not None
+
+    def test_user_defined_history_is_not_clobbered(self):
+        marker: list = []
+
+        class CustomBot:
+            @property
+            def __history__(self):
+                return marker
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        assert CustomBot().__history__ is marker
+
+    def test_subclass_of_auto_agentified_class(self):
+        class Base:
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        class Sub(Base):
+            pass
+
+        sub = Sub()
+        assert isinstance(sub, Agent)
+        assert sub.ask.__history__ is sub.__history__
+
+    def test_fully_slotted_class_is_left_alone(self):
+        """Instances without a `__dict__` cannot hold Agent state (the
+        `__history__` cache, bound skills, the lazy `__agent_id__`), so a
+        `__slots__`-only class is neither injected nor registered -- in
+        particular, harness scope walks must not mistake its instances for
+        Agents (`_tool_paths` calls `vars()` on every Agent in scope)."""
+
+        class SlottedBot:
+            __slots__ = ("name",)
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        assert not issubclass(SlottedBot, Agent)
+        assert "__history__" not in vars(SlottedBot)
+        bot = SlottedBot()
+        assert not isinstance(bot, Agent)
+        assert _tool_paths({"bot": bot}) == {}  # walked as a plain binding
+
+    def test_slotted_class_keeping_dict_is_agentified(self):
+        class DictSlotBot:
+            __slots__ = ("name", "__dict__")
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+
+        bot = DictSlotBot()
+        assert isinstance(bot, Agent)
+        assert bot.ask.__history__ is bot.__history__
+
+    def test_history_accumulates_across_calls(self):
+        @dataclass
+        class ChattyBot:
+            name: str
+
+            @Skill.define
+            def send(self, user_input: str) -> str:
+                """Friendly bot named {self.name}. User writes: {user_input}"""
+
+        mock = MockCompletionHandler(
+            [
+                make_text_response("Hello!"),
+                make_text_response("You said hi."),
+            ]
+        )
+        bot = ChattyBot("Ada")
+        with (
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="test-model")),
+            handler(HistoryBuilder()),
+            handler(mock),
+        ):
+            bot.send("hi")
+            bot.send("what did I say?")
+
+        # The second request replays the first exchange from the shared history.
+        assert len(mock.received_messages[1]) > len(mock.received_messages[0])
+        # Both exchanges landed in the shared history (plus the system message).
+        roles = [m["role"] for m in bot.__history__]
+        assert roles.count("user") == 2 and roles.count("assistant") == 2

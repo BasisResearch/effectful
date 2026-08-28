@@ -712,7 +712,6 @@ def investigate(
     max_revisions: int = 2,
     audit_votes: int = 3,
 ) -> tuple[Paper, dict[str, AuditVerdict]]:
-    """Literature grounding -> discovery -> writing -> post-hoc audit."""
     ws = Workspace(references=list(REFERENCES))
     token = WORKSPACE.set(ws)  # bind the bundle for this pipeline's dynamic extent
     try:
@@ -752,7 +751,7 @@ def investigate(
 # ---------------------------------------------------------------------------
 
 
-def demo_fabrication() -> None:
+def _demo_fabrication() -> None:
     """Show the by-construction guarantee actually *firing*: a fabricated claim is
     not a well-typed ``Claim``, and under the harness that rejection is fed back
     (via ``TenacityRetryer``) so the model must ground the claim before it stands.
@@ -852,7 +851,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.demo_fabrication:
-        demo_fabrication()
+        _demo_fabrication()
         return
 
     task = Task(numbers=tuple(args.numbers), target=args.target)

@@ -22,6 +22,9 @@ implemented by a large language model, and call them like ordinary code.
 - **`Agent`** — a class mixin giving each instance a persistent message history,
   so its `Skill` methods accumulate conversation context across calls.
   Instance attributes are available in prompts via `{self.attr}`.
+  Any class defining a `Skill` method acquires this behavior automatically
+  (see `Skill.__set_name__`); inheriting `Agent` explicitly is optional, and
+  remains the spelling static type checkers understand.
 
 - **`Encodable`** — the type-driven JSON bridge used internally to encode Python
   values into the model's context and decode the model's output (structured
@@ -279,6 +282,32 @@ class Skill[**P, T](Tool[P, T]):
                 f"{{{skill.__signature__}}} or lexical scope."
             )
 
+    def __set_name__(self, owner: type, name: str) -> None:
+        """Auto-agentify the class this skill is defined in.
+
+        Defining a `Skill` method is sufficient for its class to behave as an
+        `Agent`: this hook (called by Python at class creation, before any
+        decorator such as `dataclass` wraps the class) grafts `Agent`'s
+        behavior onto ``owner`` without touching its MRO. Two steps, because
+        virtual subclassing affects only ``isinstance``/``issubclass``, never
+        attribute lookup:
+
+        - copy `Agent`'s class-level descriptors (``__history__``,
+          ``__is_persistent__``) onto ``owner``, unless something in its MRO
+          already provides them;
+        - ``Agent.register(owner)``, so ``isinstance(obj, Agent)`` checks
+          (here and in the harness) recognize its instances.
+        """
+        super().__set_name__(owner, name)
+        if issubclass(owner, Agent):
+            return
+        if issubclass(owner, effectful.ops.types.Term) or owner.__dictoffset__ == 0:
+            return
+        for attr in ("__history__", "__is_persistent__"):
+            if not any(attr in vars(k) for k in owner.__mro__):
+                setattr(owner, attr, Agent.__dict__[attr])
+        Agent.register(owner)
+
     def __get__[S](self, instance: S | None, owner: type[S] | None = None):
         if hasattr(self, "_name_on_instance") and hasattr(
             instance, self._name_on_instance
@@ -373,9 +402,19 @@ Template = Skill
 class Agent(abc.ABC):
     """Mixin that gives each instance a persistent LLM message history.
 
-    Subclass and decorate methods with `Skill.define`.
-    Each instance accumulates messages across calls so the LLM sees
-    prior conversation context.
+    Decorate methods with `Skill.define`. Each instance accumulates messages
+    across calls so the LLM sees prior conversation context.
+
+    Subclassing `Agent` is optional: any class that defines a `Skill` method
+    in its body acquires this behavior automatically -- `Skill.__set_name__`
+    copies `Agent`'s attributes onto the class and registers it as a virtual
+    subclass, so ``isinstance(obj, Agent)`` holds for its instances. Explicit
+    inheritance remains supported and is what static type checkers understand
+    (an auto-agentified class's ``__agent_id__``/``__history__`` are invisible
+    to them). Skills attached to a class after creation via ``setattr``,
+    classes containing only `Tool` methods, and fully ``__slots__``-ed classes
+    (whose instances have no ``__dict__`` to hold the history) are not
+    auto-agentified.
 
     Agents compose freely with `dataclasses.dataclass` and other
     base classes.  Instance attributes are available in skill

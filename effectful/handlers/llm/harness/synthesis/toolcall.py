@@ -1,13 +1,15 @@
 """Calling lexically scoped tools by writing Python expressions.
 
-`ExpressionToolCaller` is the code-generation replacement for
-`~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor`
-(issues #489/#505): instead of advertising each lexical tool with a JSON
-``parameters`` schema -- degenerate for a polymorphic tool, whose parameter
-types carry TypeVars -- every tool reachable from the Skill's scope is wrapped
-so the model must write a call *expression*. Decoding the expression does all
-the work up to the call itself (type check, callee check, argument evaluation;
-see `_pydantic_type_call_expression`), so a bad expression is a
+`ExpressionToolCaller` is the code-generation *transformation stage* over the
+lexical tools an extractor
+(`~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor` or
+``ImplicitToolExtractor``) discovered (issues #489/#505): instead of leaving
+each lexical tool advertised with a JSON ``parameters`` schema -- degenerate
+for a polymorphic tool, whose parameter types carry TypeVars -- every lexical
+tool arriving in the request's ``tools`` is replaced by a wrapper so the model
+must write a call *expression*. Decoding the expression does all the work up
+to the call itself (type check, callee check, argument evaluation; see
+`_pydantic_type_call_expression`), so a bad expression is a
 `ToolCallDecodingError` the retry loop feeds back. The decoded `CallExpression`
 IS a `DecodedToolCall` for the underlying tool; `call_assistant` substitutes it
 for the wrapper's call, so `call_tool` and every handler of it see the real tool
@@ -22,10 +24,12 @@ model that prefers writing code can still call any JSON tool from the REPL
 `~effectful.handlers.llm.harness.synthesis.snippet.StatefulReplSynthesizer` is
 installed.
 
-Like `LexicalToolExtractor`, install either below anything else that contributes
-tools: the anchor Skill must not be wrapped (the default `call_assistant` rule
-subtracts it by identity, which cannot see through a wrapper), so it is excluded
-rather than wrapped. An eval provider
+Install either caller *above* an extractor -- the extractor is the sole source
+of lexical tools, so a caller without one beneath it has nothing to wrap --
+and below anything else that contributes tools: tools arriving from other
+handlers pass through untouched, and the anchor Skill must not be wrapped (the
+default `call_assistant` rule subtracts it by identity, which cannot see
+through a wrapper), so it is excluded rather than wrapped. An eval provider
 (`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
 `~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
 must be installed for the `parse`/`compile`/`eval` operations.
@@ -35,6 +39,7 @@ import ast
 import collections.abc
 import dataclasses
 import inspect
+import types
 import typing
 import uuid
 
@@ -241,7 +246,25 @@ def _pydantic_type_call_expression(ty):
 
         head = _eval_node(call_node.func, filename, env)
         if expected is not None:
-            if head is not expected:
+            # An implicitly wrapped tool's advertised reference names the *raw*
+            # callable -- that is what the scope binds -- so the callee
+            # evaluates to the underlying function, or, for a method, to a
+            # fresh bound method (`self.helper` is a new MethodType on every
+            # access, which is why the target comparison is `==`:
+            # `MethodType.__eq__` compares `__func__`/`__self__`). Either way
+            # the call is *to this tool*, and the decoded call carries the
+            # wrapper `Tool`, which is what downstream `call_tool` handlers
+            # must see.
+            target = getattr(expected, "__implicit_target__", None)
+            if head is expected or (
+                target is not None
+                and (
+                    head is target
+                    or (isinstance(head, types.MethodType) and head == target)
+                )
+            ):
+                head = expected
+            else:
                 raise ValueError(
                     f"the expression must be a call to the tool "
                     f"{expected.__name__!r} it was submitted for, but its callee "
@@ -395,13 +418,23 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
         env: collections.abc.Mapping[str, typing.Any],
         tools: collections.abc.Set[Tool] = frozenset(),
     ) -> AssistantResult[T]:
-        """Wrap the lexical tools, then unwrap the calls the model made to them.
+        """Wrap the lexical tools among ``tools``, then unwrap the calls the
+        model made to them.
 
-        Only the *lexical* tools are wrapped, and only those `_should_wrap`
-        selects: tools arriving via `tools` are other handlers' own (REPL
-        access, synthesis, readers) and pass through untouched, as does the
-        anchor Skill, which must stay recognizable by identity to the default
-        rule that subtracts it.
+        The lexical tools arrive pre-populated by the extractor installed
+        beneath this handler; which of ``tools`` count as lexical is decided by
+        re-walking the scope (`_tool_paths`). Explicitly declared tools are
+        found in the walk directly; an implicitly wrapped one is found through
+        its ``__implicit_target__`` -- the env binds the *raw* callable, not
+        the wrapper, so the walk's ``wrap`` hook resolves each raw binding back
+        to the wrapper in ``tools`` that stands for it (``==``, because a bound
+        method is a fresh object on every attribute access). Each lexical tool
+        `_should_wrap` selects is *replaced* by its expression wrapper (never
+        offered alongside it); the rest pass through untouched: tools other
+        handlers contributed (REPL access, synthesis, readers), lexical tools
+        the JSON pathway can advertise faithfully (under `MixedToolCaller`),
+        and the anchor Skill, which must stay recognizable by identity to the
+        default rule that subtracts it.
 
         On the way back, each wrapper call is replaced by the `CallExpression`
         it decoded -- itself a `DecodedToolCall`, for the *underlying* tool
@@ -412,12 +445,36 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
         the substitution happens before any of them run.
         """
         anchor = env.get(_TYPE_CHECK_ANCHOR_KEY)
-        offered = {
-            self._ExpressionToolCallTool.define(t, path) if self._should_wrap(t) else t
-            for t, path in _tool_paths(env).items()
-            if t is not anchor
-        }
-        message, tool_calls, result = fwd(messages, response_type, env, tools | offered)
+        wrapper_by_target = {}
+        for t in tools:
+            target = getattr(t, "__implicit_target__", None)
+            if target is not None:
+                wrapper_by_target[target] = t
+
+        def resolve(obj: typing.Any) -> Tool | None:
+            try:
+                return wrapper_by_target.get(obj)
+            except TypeError:  # unhashable binding; certainly not a target
+                return None
+
+        paths = _tool_paths(env, wrap=resolve if wrapper_by_target else None)
+        offered = set()
+        for t in tools:
+            if t is anchor:
+                # Excluded rather than wrapped: the default rule subtracts the
+                # anchor by identity, which cannot see through a wrapper --
+                # dropping it here keeps every handler below this one seeing
+                # the same set it did when this handler sourced the lexical
+                # tools itself.
+                continue
+            path = paths.get(t)
+            if path is not None and self._should_wrap(t):
+                offered.add(self._ExpressionToolCallTool.define(t, path))
+            else:
+                offered.add(t)
+        message, tool_calls, result = fwd(
+            messages, response_type, env, frozenset(offered)
+        )
         tool_calls = [
             dataclasses.replace(tc.bound_args.arguments["call"], id=tc.id, name=tc.name)
             if isinstance(tc.tool, self._ExpressionToolCallTool)

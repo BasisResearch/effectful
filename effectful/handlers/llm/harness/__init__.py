@@ -20,7 +20,10 @@ from effectful.handlers.llm.harness.execution.restricted import (
 )
 from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
-from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
+from effectful.handlers.llm.harness.legibility.lexical import (
+    ImplicitToolExtractor,
+    LexicalToolExtractor,
+)
 from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
 from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
 from effectful.handlers.llm.harness.observability.rich import (
@@ -53,6 +56,7 @@ def harness(
     eval_provider: typing.Literal["builtin", "restricted", "none"] = "builtin",
     type_checker: typing.Literal["mypy", "ty", "none"] = "ty",
     tool_calling: typing.Literal["mixed", "code", "json"] = "mixed",
+    implicit_tools: bool = False,
     check_contracts: bool = True,
     **provider_config,
 ) -> Interpretation:
@@ -67,11 +71,13 @@ def harness(
     context manager, decorator, or via the module CLI) installs the handlers and
     exiting removes them. The handlers, in installation order, are:
 
-    1. `AgentLoop`, the lexical tool caller (`MixedToolCaller` for
-       ``tool_calling="mixed"``, `ExpressionToolCaller` for ``"code"``,
-       `LexicalToolExtractor` for ``"json"``) and `LiteLLMConfigurer` -- the
-       agent loop, the tools it offers from a `Skill`'s lexical scope, and the
-       model backend it drives.
+    1. `AgentLoop`, the tool pipeline and `LiteLLMConfigurer` -- the agent
+       loop, the tools it offers from a `Skill`'s lexical scope, and the model
+       backend it drives. The pipeline is a lexical tool *extractor*
+       (`ImplicitToolExtractor` if ``implicit_tools`` else
+       `LexicalToolExtractor`), plus, above it, the tool *caller* it feeds
+       (`MixedToolCaller` for ``tool_calling="mixed"``, `ExpressionToolCaller`
+       for ``"code"``, none for ``"json"``).
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `HistoryBuilder` -- accumulate the message history of a call.
@@ -125,6 +131,14 @@ def harness(
             warning). ``"mixed"`` and ``"code"`` require an eval provider:
             combining either with ``eval_provider="none"`` raises `ValueError`
             rather than silently degrading.
+        implicit_tools: Install `ImplicitToolExtractor` instead of
+            `LexicalToolExtractor`, so ordinary functions and methods in a
+            `Skill`'s lexical scope that look deliberately published -- public
+            name, docstring, complete annotations (see
+            `ImplicitToolExtractor._implicit_tool_candidate`) -- are offered
+            as tools with no ``Tool.define`` decorator. Off by default: it
+            makes naming conventions load-bearing (prefix orchestration
+            helpers with ``_`` to keep them out of the model's hands).
         check_contracts: Install `PydanticSkillArgValidator`, so a `Skill`'s
             arguments are validated against the pydantic metadata its parameter
             annotations carry. On by default, which makes such an annotation
@@ -147,12 +161,22 @@ def harness(
             f'eval_provider="builtin" or "restricted", or tool_calling="json".'
         )
 
+    # The tool pipeline composes: the caller (added first, so it runs last)
+    # transforms the lexical tools that the extractor (added above it, so it
+    # runs first and forwards into it) discovered and unioned into `tools`.
+    # With a caller installed, the extractor must not pre-filter unadvertisable
+    # tools (json_only=False): the caller wraps exactly those.
     if tool_calling == "mixed":
         h = coproduct(h, MixedToolCaller())
     elif tool_calling == "code":
         h = coproduct(h, ExpressionToolCaller())
-    elif tool_calling == "json":
-        h = coproduct(h, LexicalToolExtractor())
+    json_only = tool_calling == "json"
+    h = coproduct(
+        h,
+        ImplicitToolExtractor(json_only=json_only)
+        if implicit_tools
+        else LexicalToolExtractor(json_only=json_only),
+    )
 
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())

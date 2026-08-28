@@ -31,7 +31,11 @@ from effectful.handlers.llm.harness.hooks import (
     call_assistant,
     call_tool,
 )
-from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
+from effectful.handlers.llm.harness.hooks import completion as completion_op
+from effectful.handlers.llm.harness.legibility.lexical import (
+    ImplicitToolExtractor,
+    LexicalToolExtractor,
+)
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
@@ -201,7 +205,12 @@ def poly_mod(tmp_path, request):
 
 
 def _run_scripted(
-    mod, responses, *extra_handlers, repl: bool = False, caller=ExpressionToolCaller
+    mod,
+    responses,
+    *extra_handlers,
+    repl: bool = False,
+    caller=ExpressionToolCaller,
+    extractor=LexicalToolExtractor,
 ):
     """Run ``mod.grow([1, 2, 3])`` against a scripted model.
 
@@ -215,6 +224,11 @@ def _run_scripted(
         *(handler(h) for h in extra_handlers),
         handler(AgentLoop()),
         handler(caller()),
+        # The extractor discovers the lexical tools the caller transforms, so
+        # it must intercept `call_assistant` first: installed above the caller.
+        # json_only=False because a caller is present: unadvertisable tools
+        # must survive discovery to be expression-wrapped.
+        handler(extractor(json_only=False)),
         handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(TYPE_CHECKER()),
@@ -586,35 +600,41 @@ def test_505_generic_tool_in_scope_does_not_break_unrelated_skill(poly_mod):
     assert result == "just text"
 
 
-def test_json_mode_skips_unadvertisable_tool(poly_mod):
+def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
     # Under the JSON pathway a tool whose advertisement cannot be encoded is
     # skipped (with a warning) instead of breaking every request it is merely
-    # in scope for. (A *generic* tool still advertises there, but degraded to
-    # untyped `{}` parameter schemas -- the #489 decode ambiguity the
-    # expression pathway exists to fix.)
-    captured: set = set()
+    # in scope for. The skip happens at encoding time, in `call_assistant`'s
+    # default rule, so it is observed at the `completion` boundary: the tool
+    # stays in the offered *set* (the expression pathway, when installed,
+    # could still wrap it) but never reaches the model's advertisement. (A
+    # *generic* tool still advertises there, but degraded to untyped `{}`
+    # parameter schemas -- the #489 decode ambiguity the expression pathway
+    # exists to fix.)
+    advertised: list[list] = []
 
-    class _Capture(ObjectInterpretation):
-        @implements(call_assistant)
-        def _ca(self, messages, response_type, env, tools=frozenset()):
-            captured.update(tools)
-            return fwd(messages, response_type, env, tools)
+    class _SpecCapture(ObjectInterpretation):
+        @implements(completion_op)
+        def _c(self, *args, **kwargs):
+            advertised.append(kwargs.get("tools") or [])
+            return fwd(*args, **kwargs)
 
     mock = MockCompletionHandler([make_text_response("just text")])
     with (
-        # `_Capture` first: innermost, so it sees the tool set after the
-        # later-installed extractor has contributed (and skipped) its tools.
-        handler(_Capture()),
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
         handler(LiteLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(mock),
+        handler(_SpecCapture()),
     ):
         assert poly_mod.grow([1, 2, 3]) == "just text"
-    names = {t.__name__ for t in captured}
+    names = {spec["function"]["name"] for specs in advertised for spec in specs}
     assert "other_tool" in names and "extend_sequence" in names
     assert "op_tool" not in names
+    assert any(
+        "op_tool" in record.message and record.levelname == "WARNING"
+        for record in caplog.records
+    )
 
 
 # ============================================================================
@@ -1161,6 +1181,7 @@ def test_live_polymorphic_tool_call(poly_mod, caller):
     stack = [
         handler(AgentLoop()),
         handler(caller()),
+        handler(LexicalToolExtractor(json_only=False)),
         handler(LiteLLMConfigurer(model=EFFECTFUL_LLM_MODEL)),
         handler(HistoryBuilder()),
         handler(TYPE_CHECKER()),
@@ -1175,3 +1196,293 @@ def test_live_polymorphic_tool_call(poly_mod, caller):
     # The prompt directs the model to use the tools; at least one call went
     # through the expression pathway with correctly typed arguments.
     assert poly_mod.calls
+
+
+# ============================================================================
+# `ImplicitToolExtractor`: plain functions and methods offered as tools
+# ============================================================================
+
+_IMPLICIT_SRC = '''
+from collections.abc import Sequence
+from dataclasses import dataclass
+
+from effectful.handlers.llm import Skill
+
+calls = []
+
+
+def double(x: int) -> int:
+    """Double x."""
+    calls.append(("double", x))
+    return x * 2
+
+
+def first[T](xs: Sequence[T]) -> T:
+    """Return the first element of xs."""
+    calls.append(("first", list(xs)))
+    return xs[0]
+
+
+def _hidden(x: int) -> int:
+    """Never offered: underscore-prefixed."""
+    return x
+
+
+def undocumented(x: int) -> int:
+    return x
+
+
+def main() -> None:
+    """Never offered: the entry-point name is reserved."""
+
+
+@dataclass
+class Helper:  # not an Agent subclass: auto-agentified by its Skill method
+    """A helper whose plain method qualifies as an implicit tool."""
+
+    tag: str
+
+    def label(self, x: int) -> str:
+        """Attach the tag to x."""
+        calls.append(("label", x))
+        return f"{self.tag}:{x}"
+
+    @staticmethod
+    def shout(word: str) -> str:
+        """Uppercase a word."""
+        calls.append(("shout", word))
+        return word.upper()
+
+    @classmethod
+    def describe(cls, x: int) -> str:
+        """Render x with the class name."""
+        calls.append(("describe", x))
+        return f"{cls.__name__}:{x}"
+
+    @Skill.define
+    def go(self, q: str) -> str:
+        """Do {q}"""
+
+
+helper = Helper(tag="h")
+
+
+@Skill.define
+def grow(examples: Sequence[int]) -> str:
+    """Use the available tools on {examples}, then summarize."""
+'''
+
+
+@pytest.fixture
+def implicit_mod(tmp_path, request):
+    modname = f"_implicit_fixture_{request.node.name}".replace("[", "_").replace(
+        "]", ""
+    )
+    mod = _import_fixture(tmp_path, _IMPLICIT_SRC, modname)
+    yield mod
+    sys.modules.pop(modname, None)
+
+
+def test_implicit_wrappers_are_stable_across_requests(implicit_mod):
+    ext = ImplicitToolExtractor()
+    env = vars(implicit_mod)
+    once = ext._lexical_tool_paths(env)
+    twice = ext._lexical_tool_paths(env)
+    assert set(once) == set(twice)  # same Tool objects, by identity
+    by_path = {p: t for t, p in once.items()}
+    assert {
+        "double",
+        "first",
+        "helper.label",
+        "helper.shout",
+        "helper.describe",
+        "helper.go",
+        "grow",
+    } <= set(by_path)
+    assert {"_hidden", "undocumented", "main", "calls"}.isdisjoint(by_path)
+
+
+def test_implicit_static_and_class_methods_are_callable_tools(implicit_mod):
+    ext = ImplicitToolExtractor()
+    by_path = {p: t for t, p in ext._lexical_tool_paths(vars(implicit_mod)).items()}
+
+    # A staticmethod is reached as the plain underlying function, so its
+    # wrapper's target holds by identity.
+    shout = by_path["helper.shout"]
+    assert shout.__implicit_target__ is implicit_mod.helper.shout
+    assert shout("hi") == "HI"
+
+    # A classmethod is reached as a method bound to the *class*; the wrapper
+    # wraps that binding directly (fresh binding per access, so `==`).
+    describe = by_path["helper.describe"]
+    assert describe.__implicit_target__ == implicit_mod.helper.describe
+    assert describe(3) == "Helper:3"
+
+
+def test_implicit_classmethod_wrappers_are_per_class(implicit_mod):
+    # Subclasses share the underlying function but bind it to themselves; each
+    # bound class gets its own wrapper, calling with its own `cls`.
+    Sub = type("SubHelper", (implicit_mod.Helper,), {})
+    ext = ImplicitToolExtractor()
+    base_paths = {p: t for t, p in ext._lexical_tool_paths(vars(implicit_mod)).items()}
+    sub_paths = {
+        p: t for t, p in ext._lexical_tool_paths({"sub": Sub(tag="s")}).items()
+    }
+    base_tool, sub_tool = base_paths["helper.describe"], sub_paths["sub.describe"]
+    assert base_tool is not sub_tool
+    assert base_tool(1) == "Helper:1"
+    assert sub_tool(1) == "SubHelper:1"
+    # Cached per (function, class): a second scan reuses both wrappers.
+    again = {p: t for t, p in ext._lexical_tool_paths({"sub": Sub(tag="s")}).items()}
+    assert again["sub.describe"] is sub_tool
+
+
+def test_implicit_mixed_partition(implicit_mod):
+    # Under `ImplicitToolExtractor` + `MixedToolCaller`, a schema-describable
+    # implicit tool is offered raw (JSON arguments) and a generic one as an
+    # expression wrapper -- the same partition explicit tools get -- with the
+    # wrapped lexical tool *replaced*, never offered alongside its wrapper.
+    captured: set = set()
+
+    class _Capture(ObjectInterpretation):
+        @implements(call_assistant)
+        def _ca(self, messages, response_type, env, tools=frozenset()):
+            captured.update(tools)
+            return fwd(messages, response_type, env, tools)
+
+    _run_scripted(
+        implicit_mod,
+        [make_text_response("done")],
+        _Capture(),
+        caller=MixedToolCaller,
+        extractor=ImplicitToolExtractor,
+    )
+    wrapped = {
+        t.__name__
+        for t in captured
+        if isinstance(t, ExpressionToolCaller._ExpressionToolCallTool)
+    }
+    raw = {t.__name__ for t in captured} - wrapped
+    assert "double" in raw and "label" in raw
+    assert "first" in wrapped
+    for absent in ("_hidden", "undocumented", "main", "grow"):
+        assert absent not in wrapped | raw
+    # Replacement, not duplication: one advertised tool per implicit callable.
+    assert sum(t.__name__ == "double" for t in captured) == 1
+    assert sum(t.__name__ == "first" for t in captured) == 1
+
+
+def test_implicit_tool_called_via_json(implicit_mod):
+    result = _run_scripted(
+        implicit_mod,
+        [
+            make_tool_call_response("double", json.dumps({"x": 3})),
+            make_text_response("doubled"),
+        ],
+        caller=MixedToolCaller,
+        extractor=ImplicitToolExtractor,
+    )
+    assert result == "doubled"
+    assert ("double", 3) in implicit_mod.calls
+
+
+def test_implicit_generic_tool_called_via_expression(implicit_mod):
+    # The expression names the *raw* function -- that is what the scope binds --
+    # and the decoder resolves it to the implicit wrapper via its
+    # `__implicit_target__` (identity, for a free function).
+    result = _run_scripted(
+        implicit_mod,
+        [_call("first([4, 5])", tool_name="first"), make_text_response("picked")],
+        caller=MixedToolCaller,
+        extractor=ImplicitToolExtractor,
+    )
+    assert result == "picked"
+    assert ("first", [4, 5]) in implicit_mod.calls
+
+
+def test_implicit_method_tool_called_via_expression(implicit_mod):
+    # `helper.label` evaluates to a *fresh* bound method on every access, so
+    # the decoder's target comparison is `==` (MethodType compares
+    # `__func__`/`__self__`), not identity.
+    result = _run_scripted(
+        implicit_mod,
+        [_call("helper.label(3)", tool_name="label"), make_text_response("labelled")],
+        caller=ExpressionToolCaller,
+        extractor=ImplicitToolExtractor,
+    )
+    assert result == "labelled"
+    assert ("label", 3) in implicit_mod.calls
+
+
+def test_implicit_classmethod_tool_called_via_expression(implicit_mod):
+    # Same `==` resolution as instance methods, but the fresh binding is to
+    # the *class* (`helper.describe` binds the classmethod to `Helper`).
+    result = _run_scripted(
+        implicit_mod,
+        [
+            _call("helper.describe(2)", tool_name="describe"),
+            make_text_response("described"),
+        ],
+        caller=ExpressionToolCaller,
+        extractor=ImplicitToolExtractor,
+    )
+    assert result == "described"
+    assert ("describe", 2) in implicit_mod.calls
+
+
+def test_expression_to_wrong_implicit_tool_rejected(implicit_mod):
+    # Submitting tool A's wrapper with an expression that calls tool B is still
+    # a decode error under the relaxed callee check.
+    with pytest.raises(ToolCallDecodingError):
+        _run_scripted(
+            implicit_mod,
+            [_call("double(3)", tool_name="first")],
+            caller=ExpressionToolCaller,
+            extractor=ImplicitToolExtractor,
+        )
+
+
+def test_lexical_extractor_offers_no_implicit_tools(implicit_mod):
+    # Opt-in preserved: the plain extractor discovers only declared tools.
+    captured: set = set()
+
+    class _Capture(ObjectInterpretation):
+        @implements(call_assistant)
+        def _ca(self, messages, response_type, env, tools=frozenset()):
+            captured.update(tools)
+            return fwd(messages, response_type, env, tools)
+
+    _run_scripted(
+        implicit_mod,
+        [make_text_response("done")],
+        _Capture(),
+        caller=MixedToolCaller,
+        extractor=LexicalToolExtractor,
+    )
+    names = {t.__name__ for t in captured}
+    assert "double" not in names and "label" not in names
+    assert "go" in names  # the Skill method is a declared tool
+
+
+def test_caller_without_extractor_offers_no_lexical_tools(poly_mod):
+    # The new contract, asserted explicitly: the callers are transformers over
+    # `tools`, so without an extractor beneath them nothing lexical is offered.
+    captured: set = set()
+
+    class _Capture(ObjectInterpretation):
+        @implements(call_assistant)
+        def _ca(self, messages, response_type, env, tools=frozenset()):
+            captured.update(tools)
+            return fwd(messages, response_type, env, tools)
+
+    mock = MockCompletionHandler([make_text_response("just text")])
+    with (
+        handler(_Capture()),
+        handler(AgentLoop()),
+        handler(MixedToolCaller()),
+        handler(LiteLLMConfigurer(model="test-model")),
+        handler(HistoryBuilder()),
+        handler(mock),
+    ):
+        assert poly_mod.grow([1, 2, 3]) == "just text"
+    assert not {t.__name__ for t in captured} & {"extend_sequence", "other_tool"}

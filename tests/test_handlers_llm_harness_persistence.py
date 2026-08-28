@@ -706,3 +706,60 @@ class TestThreadSafety:
         conn.close()
         assert integrity == "ok"
         assert count == 16
+
+
+class TestAutoAgentifiedPersistence:
+    """A class that never inherits `Agent` -- auto-agentified by its `Skill`
+    method (see `Skill.__set_name__`) -- follows the same persistence protocol
+    as an explicit subclass."""
+
+    def test_checkpoint_round_trip_without_inheritance(self, tmp_path):
+        @dataclasses.dataclass
+        class _ImplicitBot:  # deliberately not Agent
+            __agent_id__: str = ""
+            counter: int = 0
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+                raise NotHandled
+
+        assert issubclass(_ImplicitBot, Agent)
+
+        db_path = tmp_path / "checkpoints.db"
+        with (
+            handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
+            handler(SQLitePersister(db_path)),
+        ):
+            bot = _ImplicitBot(__agent_id__="implicit1", counter=7)
+            bot.ask("hi")
+
+        row = _load_row(db_path, "implicit1")
+        assert row is not None
+        assert json.loads(row[1]) == list(bot.__history__)
+        assert pickle.loads(row[0])["counter"] == 7
+
+        # A fresh instance with the same id restores state and history lazily.
+        with handler(SQLitePersister(db_path)):
+            revived = _ImplicitBot(__agent_id__="implicit1")
+            assert list(revived.__history__) == list(bot.__history__)
+            assert revived.counter == 7
+
+    def test_transient_instance_is_never_checkpointed(self, tmp_path):
+        @dataclasses.dataclass
+        class _ImplicitBot:
+            __agent_id__: str = ""
+
+            @Skill.define
+            def ask(self, q: str) -> str:
+                """Answer: {q}"""
+                raise NotHandled
+
+        db_path = tmp_path / "checkpoints.db"
+        with (
+            handler(_FakeAgentCalls([("hi", "hello!", "hello!")])),
+            handler(SQLitePersister(db_path)),
+        ):
+            _ImplicitBot().ask("hi")  # no agent id: transient
+
+        assert not db_path.exists() or _load_row(db_path, "") is None
