@@ -59,10 +59,15 @@ llm = [
   "typing_extensions",
   "restrictedpython>=8.1",
   "matplotlib>=3.11.1",
+  "agent-client-protocol",
+  "fastmcp",
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
     "effectful[torch,pyro,jax,numpyro,llm,prettyprinter]",
+    # For the ACP example under docs/source/llm_examples/acp, which serves an Agent
+    # to an editor over the Agent Client Protocol. Imported as `acp`.
+    "agent-client-protocol>=0.12,<0.13",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",

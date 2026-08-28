@@ -62,6 +62,7 @@ class Skip(enum.StrEnum):
     """Why an example is not run here."""
 
     LEAN = "needs a Lean 4 + Mathlib toolchain (see the module docstring)"
+    NO_COMMAND_LINE = "is not run from a command line (see its own docstring)"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -85,6 +86,17 @@ OVERRIDES: dict[str, Override] = {
         ),
     ),
     "autoformalization/formalization": Override(skip=Skip.LEAN),
+    "acp/assistant": Override(
+        skip=Skip.NO_COMMAND_LINE,
+        why=(
+            "it is an ACP server: stdio is a JSON-RPC conversation with an editor, "
+            "not a terminal. Launched here it reads EOF from a stdin nobody is "
+            "writing to, shuts down cleanly and exits zero without ever reaching a "
+            "model -- a pass that tests nothing, which is worse than a failure. Its "
+            "coverage is tests/test_handlers_llm_examples_acp.py, which drives the "
+            "same server through a fake editor with no model at all"
+        ),
+    ),
     "reasoning/aime2024": Override(
         args=("least-beautiful-base",),
         why="its parser requires one of several problem subcommands",
