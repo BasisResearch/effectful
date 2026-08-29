@@ -55,18 +55,22 @@ each of which has a test:
 """
 
 import asyncio
+import base64
 import collections.abc
 import concurrent.futures
 import contextlib
 import dataclasses
 import datetime
 import functools
+import io
 import json
 import os
 import sqlite3
 import sys
 import threading
 import typing
+import urllib.parse
+import urllib.request
 import uuid
 
 import acp
@@ -75,6 +79,7 @@ import acp.schema
 import litellm
 import pydantic
 import pydantic_core
+from PIL import Image
 
 from effectful.handlers.llm import Agent, Encodable, Tool
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
@@ -132,6 +137,17 @@ type ElicitationProperty = (
 # ---------------------------------------------------------------------------
 
 
+READ_RESULT_LIMIT_LINES = 1000
+"""How many lines a read may return before it is truncated with a notice.
+
+The bound that keeps one tool call from swallowing a conversation's budget: a
+read lands in the history and is re-sent with every request after, so an
+unbounded read of a large file is a large recurring cost incurred in one call.
+The notice tells the model how to page with ``line``/``limit``; a model that
+passes its own ``limit`` has chosen a size, and is not second-guessed.
+"""
+
+
 @Tool.define
 def acp_read_text_file(
     path: str, line: int | None = None, limit: int | None = None
@@ -141,7 +157,9 @@ def acp_read_text_file(
     Reads through the user's editor, so it sees unsaved changes in an open buffer
     -- use it in preference to opening the file yourself. `path` must be
     absolute. `line` is a 1-based line to start from, and `limit` a maximum
-    number of lines to return; pass neither to read the whole file.
+    number of lines to return; pass neither to read from the start. A long
+    read with no `limit` is truncated after 1000 lines, with a notice saying
+    how to read on from where it stopped.
     """
     raise RuntimeError("missing handler")
 
@@ -785,15 +803,34 @@ class ACPToolRuntime(PromptInjectingInterpretation):
     def acp_read_text_file(
         self, path: str, line: int | None = None, limit: int | None = None
     ) -> str:
+        """Read through the editor, truncating an unbounded read of a long file.
+
+        Only a read the model left unbounded is truncated: an explicit `limit`
+        already asked the editor for a bounded answer, and cutting it further
+        would make the parameter mean less than it says. The notice names the
+        line to continue from, so paging costs the model no arithmetic.
+        """
         if not self.session.fs_capabilities.read_text_file:
             raise NotImplementedError(
                 "this editor cannot read files on your behalf; ask the user instead"
             )
-        return self.session.call(
+        content = self.session.call(
             self.session.client.read_text_file(
                 self.session.session_id, path, line=line, limit=limit
             )
         ).content
+        if limit is not None:
+            return content
+        lines = content.splitlines(keepends=True)
+        if len(lines) <= READ_RESULT_LIMIT_LINES:
+            return content
+        start = line or 1
+        shown = start + READ_RESULT_LIMIT_LINES - 1
+        total = start - 1 + len(lines)
+        return "".join(lines[:READ_RESULT_LIMIT_LINES]) + (
+            f"\n[truncated: showing lines {start}..{shown} of {total}; call again "
+            f"with line={shown + 1} (and a limit, if you like) for the rest]"
+        )
 
     @implements(acp_write_text_file)
     def acp_write_text_file(self, path: str, content: str) -> str:
@@ -1888,54 +1925,167 @@ def _replay(
             )
 
 
-SLASH_COMMANDS: tuple[acp.schema.AvailableCommand, ...] = (
-    acp.schema.AvailableCommand(
-        name="clear",
-        description="Forget the conversation so far, keeping this session open.",
-    ),
-    acp.schema.AvailableCommand(
-        name="status",
-        description="Show the mode, model and directories this session is using.",
-    ),
-    acp.schema.AvailableCommand(
-        name="mode",
-        description="Switch how much this agent may do without asking.",
-        # A command may take an argument, and the hint is what the editor shows
-        # after the name while the user is typing it.
-        input=acp.schema.AvailableCommandInput(
-            acp.schema.UnstructuredCommandInput(
-                hint=" | ".join(mode.id for mode in SESSION_MODES)
-            )
+@dataclasses.dataclass(frozen=True)
+class SlashCommand:
+    """One ``/name`` command: what the editor is told about it, and what runs it.
+
+    The pairing is the point. A command exists in two conversations -- it is
+    *advertised* (`available_commands_update`, so the editor can offer it while the
+    user types) and it is *dispatched* (`EffectfulACPAgent._command`, when a prompt
+    arrives spelling it) -- and holding both halves in one value is what makes
+    those agree by construction. Kept as separate lists, adding a command to one
+    and forgetting the other would produce an editor offering something answered
+    with "Unknown command", and nothing anywhere would fail.
+    """
+
+    spec: acp.schema.AvailableCommand
+    """The advertisement: name, description, and the input hint, if any."""
+
+    run: collections.abc.Callable[["EffectfulACPAgent", ACPSession, str], str]
+    """The behaviour: handed the server, the session and the argument text."""
+
+
+def _run_clear(server: "EffectfulACPAgent", session: ACPSession, argument: str) -> str:
+    session.agent.__history__.clear()
+    return "Cleared. I have forgotten the conversation up to here."
+
+
+def _run_status(server: "EffectfulACPAgent", session: ACPSession, argument: str) -> str:
+    roots = "\n".join(f"- `{root}`" for root in session.roots) or "- (none)"
+    mode = next(
+        (m.name for m in SESSION_MODES if m.id == session.mode_id),
+        session.mode_id,
+    )
+    model = session.model or "as configured at launch"
+    return (
+        f"**Mode** {mode}\n\n**Model** {model}\n\n"
+        f"**Directories**\n{roots}\n\n"
+        f"**Messages so far** {len(session.agent.__history__)}"
+    )
+
+
+def _run_mode(server: "EffectfulACPAgent", session: ACPSession, mode_id: str) -> str:
+    """``/mode`` with no argument reports; with one, switches.
+
+    The editor's own picker sends `session/set_config_option`, and this sends
+    nothing -- it is already inside the agent. What it must do instead is *say* the
+    mode changed, on both channels a client might be listening to:
+    `current_mode_update` for one that reads `modes`, and the config options for
+    one that reads those.
+    """
+    offered = {mode.id: mode for mode in SESSION_MODES}
+    if not mode_id:
+        return "\n".join(
+            [f"**Mode** {offered[session.mode_id].name}", ""]
+            + [f"- `/mode {mode.id}` — {mode.description}" for mode in SESSION_MODES]
+        )
+    if mode_id not in offered:
+        return (
+            f"No such mode `{mode_id}`. Try "
+            f"{', '.join(f'`{mode_id}`' for mode_id in offered)}."
+        )
+    session.mode_id = mode_id
+    session.notify(
+        acp.schema.CurrentModeUpdate(
+            session_update="current_mode_update", current_mode_id=mode_id
+        )
+    )
+    session.notify(
+        acp.schema.ConfigOptionUpdate(
+            session_update="config_option_update",
+            config_options=server._config_options(session),
+        )
+    )
+    return f"Mode is now **{offered[mode_id].name}**. {offered[mode_id].description}"
+
+
+_SLASH_COMMANDS: dict[str, SlashCommand] = {
+    command.spec.name: command
+    for command in (
+        SlashCommand(
+            spec=acp.schema.AvailableCommand(
+                name="clear",
+                description="Forget the conversation so far, keeping this session open.",
+            ),
+            run=_run_clear,
         ),
-    ),
+        SlashCommand(
+            spec=acp.schema.AvailableCommand(
+                name="status",
+                description="Show the mode, model and directories this session is using.",
+            ),
+            run=_run_status,
+        ),
+        SlashCommand(
+            spec=acp.schema.AvailableCommand(
+                name="mode",
+                description="Switch how much this agent may do without asking.",
+                # A command may take an argument, and the hint is what the editor
+                # shows after the name while the user is typing it. Derived from
+                # `SESSION_MODES`, as everything mode-shaped is.
+                input=acp.schema.AvailableCommandInput(
+                    acp.schema.UnstructuredCommandInput(
+                        hint=" | ".join(mode.id for mode in SESSION_MODES)
+                    )
+                ),
+            ),
+            run=_run_mode,
+        ),
+    )
+}
+"""Every command, dispatch and advertisement together. See `SlashCommand`."""
+
+SLASH_COMMANDS: tuple[acp.schema.AvailableCommand, ...] = tuple(
+    command.spec for command in _SLASH_COMMANDS.values()
 )
+"""The advertised half of `_SLASH_COMMANDS`, in the shape the notification takes."""
 
 
-def _prompt_text(prompt: list[ContentBlock]) -> str:
-    """Flatten a prompt into the string a `Skill` takes as its argument.
+class Attachment(pydantic.BaseModel):
+    """A file or resource attached by reference URI"""
+
+    uri: str
+
+    @pydantic.field_validator("uri")
+    @classmethod
+    def _as_path(cls, uri: str) -> str:
+        """
+        A ``file:`` URI becomes the plain path the read tool takes.
+        Anything else is passed through unchanged for the agent to interpret.
+        """
+        parsed = urllib.parse.urlsplit(uri)
+        if parsed.scheme == "file":
+            return urllib.request.url2pathname(parsed.path)
+        return uri
+
+
+def _prompt_parts(
+    prompt: list[ContentBlock],
+) -> tuple[str, list[Attachment], list[Image.Image]]:
+    """Split a prompt into the arguments the agent's ``prompt`` skill takes.
 
     Two block kinds are baseline -- every agent must handle them, with no capability
-    to negotiate:
+    to negotiate -- and one is claimed (``image``):
 
-    * ``text``, the user's own words.
-    * ``resource_link``, a *reference* to a file rather than its contents. It becomes
-      the path, so the model can decide to open it with `acp_read_text_file` -- which
-      reads through the editor and therefore sees unsaved changes, whereas inlining
-      the file here would freeze a copy the user may already have edited.
+    * ``text``, the user's own words, joined into the prose argument.
+    * ``resource_link``, a *reference* to a file rather than its contents. It
+      becomes an `Attachment` -- the path, so the model can decide to open it with
+      `acp_read_text_file`, which reads through the editor and therefore sees
+      unsaved changes. Inlining a file here would freeze a stale copy into the
+      conversation and pay its tokens on every request after, whether or not the
+      answer ever needed it.
+    * ``image``, decoded into the `PIL.Image.Image` the skill accepts -- when it
+      carries its data. One that is only a URI is refused: nothing here fetches.
 
-    A third is negotiated, and this agent claims it (`embedded_context`):
-
-    * ``resource``, a file's contents inlined by the editor. This is how a client's
-      "attach this file" affordance usually arrives, and unlike a link there is
-      nothing to fetch -- the text is right there, so it is spliced in, marked with
-      the URI it came from.
-
-    Anything else is refused rather than dropped: an image, an audio clip, or an
-    embedded resource whose payload is a `blob` rather than text -- base64 bytes this
-    agent has no way to read, and the one part of `embedded_context` it cannot honour.
-    A client that sends one must be told, not quietly answered as though the
-    attachment were never there. Silently discarding an attachment is the failure mode
-    that looks like success.
+    Everything else is refused rather than dropped -- an audio clip, and notably
+    ``resource``, a file's contents inlined by the editor. This agent deliberately
+    does not claim `embedded_context`, and a conforming client then sends links
+    instead (ACP: capabilities not claimed are unsupported, and clients MUST
+    restrict prompt content accordingly), which is the whole point: the flat fee
+    for attaching a large file becomes one line, and reading it back is bounded
+    and on demand. A non-conforming block is refused so the client is told, not
+    quietly answered as though the attachment were never there. Silently
+    discarding an attachment is the failure mode that looks like success.
 
     Raises:
         RequestError: If the prompt is empty, or carries a block this cannot read.
@@ -1946,28 +2096,26 @@ def _prompt_text(prompt: list[ContentBlock]) -> str:
             {"reason": f"this agent cannot read {what}"}
         )
 
-    parts: list[str] = []
+    texts: list[str] = []
+    attachments: list[Attachment] = []
+    images: list[Image.Image] = []
     for block in prompt:
         if block.type == "text":
-            parts.append(block.text)
+            texts.append(block.text)
         elif block.type == "resource_link":
-            parts.append(f"[the user attached the file {block.uri}]")
-        elif block.type == "resource":
-            text = getattr(block.resource, "text", None)
-            if text is None:
-                raise unreadable(f"the binary attachment {block.resource.uri}")
-            parts.append(
-                f"[the user attached {block.resource.uri}, with these contents]\n"
-                f"{text}\n[end of {block.resource.uri}]"
-            )
+            attachments.append(Attachment(uri=block.uri))
+        elif block.type == "image":
+            if not block.data:
+                raise unreadable(f"an image that is only a reference ({block.uri})")
+            images.append(Image.open(io.BytesIO(base64.b64decode(block.data))))
         else:
             raise unreadable(
                 f"a {block.type!r} block; it advertises no prompt capability for one"
             )
-    text = "".join(parts).strip()
-    if not text:
+    text = "".join(texts).strip()
+    if not text and not attachments and not images:
         raise acp.RequestError.invalid_params({"reason": "the prompt is empty"})
-    return text
+    return text, attachments, images
 
 
 class EffectfulACPAgent[A: Agent](acp.Agent):
@@ -1977,7 +2125,19 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     never has to know about any particular one. `make_agent` is handed the session id
     and returns an agent bearing it as its ``__agent_id__``; an agent class with an
     ``__agent_id__`` field is already such a callable, which is the usual way to pass
-    one (see ``assistant.py``). `skill_name` names the method a prompt calls on it.
+    one (see ``assistant.py``).
+
+    The agent must have a ``prompt`` skill -- named for the protocol method it
+    answers, ``session/prompt`` -- of the form::
+
+        prompt(user_input: str,
+               attachments: Sequence[Attachment] = (),
+               images: Sequence[Image.Image] = ()) -> ...
+
+    The contract is assumed, not discovered: `_answer` calls it directly, and the
+    capabilities advertised below claim exactly what it accepts. Introspecting each
+    agent for what it happens to take would make the advertisement -- sent once at
+    ``initialize`` -- depend on an agent that does not exist yet.
 
     `models` fills the editor's model picker, and defaults to reading `OFFER_MODELS_ENV`
     rather than to nothing. Which side of this module that default lives on is the
@@ -1988,7 +2148,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     """
 
     make_agent: collections.abc.Callable[[str], A]
-    skill_name: str
     models: tuple[str, ...]
     page_size: int
 
@@ -1999,12 +2158,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self,
         make_agent: collections.abc.Callable[[str], A],
         *,
-        skill_name: str = "prompt",
         models: collections.abc.Sequence[str] | None = None,
         page_size: int = 50,
     ):
         self.make_agent = make_agent
-        self.skill_name = skill_name
         # `None` rather than `()` as the default, because "the caller said nothing" and
         # "the caller said no models" are different answers and only the first should
         # consult the environment. A caller passing `()` has turned the picker off.
@@ -2024,13 +2181,14 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         will ever call. `close_session` was exactly that until this said so, which
         left every session and its writer task alive for the life of the process.
 
-        `prompt_capabilities` is left at its default -- see `initialize`. `mcp_*` is
-        likewise left claiming nothing, which is the honest answer for an agent that
-        connects to no MCP servers.
+        `prompt_capabilities` claims exactly what the ``prompt`` skill contract
+        accepts -- see `initialize` for the argument. `mcp_*` is left claiming
+        nothing, which is the honest answer for an agent that connects to no MCP
+        servers.
         """
         return acp.schema.AgentCapabilities(
             load_session=True,
-            prompt_capabilities=acp.schema.PromptCapabilities(embedded_context=True),
+            prompt_capabilities=acp.schema.PromptCapabilities(image=True),
             session_capabilities=acp.schema.SessionCapabilities(
                 close=acp.schema.SessionCloseCapabilities(),
                 resume=acp.schema.SessionResumeCapabilities(),
@@ -2209,14 +2367,22 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     ) -> acp.schema.InitializeResponse:
         """Negotiate: say what this agent can do, and remember what the client can.
 
-        `prompt_capabilities` is left at its default, which is to claim nothing beyond
-        the baseline every agent must support (text and resource links). That is not
-        modesty, it is the contract: a client "MUST adapt its interface according to
-        `PromptCapabilities`", so claiming `image` here is a promise that an attached
-        screenshot will be *looked at*. `prompt` below turns a prompt into a single
-        string, so an image would be silently dropped and the user would get a
-        confident answer about a picture nobody read. Advertising less is the
-        difference between a feature this does not have and a lie.
+        `prompt_capabilities` claims what `_prompt_parts` reads and nothing more --
+        the contract: a client "MUST adapt its interface according to
+        `PromptCapabilities`", and treats anything not claimed as unsupported. Both
+        directions of that rule are used deliberately here:
+
+        * ``image`` is claimed, because the ``prompt`` skill contract takes decoded
+          images -- a promise that an attached screenshot will be *looked at*.
+        * ``embedded_context`` is not, and its absence is load-bearing: it is what
+          makes a conforming client attach a file as a ``resource_link`` -- a
+          reference costing a line -- instead of inlining its whole contents into
+          a prompt this agent would then be carrying in the conversation, and
+          paying for, on every request after. The model reads an attachment
+          through `acp_read_text_file` if and when the request needs it, bounded
+          and fresh from the editor's buffer. (Poolside's client, for one,
+          auto-attaches the active file to every prompt with its full text when
+          this is claimed, and degrades to links itself when it is not.)
 
         The client's own capabilities are consulted by `ACPToolRuntime`: the editor
         tools are offered to the model either way, and one the client cannot service
@@ -2436,9 +2602,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """Answer one prompt, reporting progress as it goes.
 
         A prompt is a *list* of content blocks, not a string: the user's typed text,
-        plus whatever their editor attached -- a referenced file, a screenshot, a
-        selection. `_prompt_text` flattens it, and rejects what this agent cannot
-        read rather than dropping it (see there).
+        plus whatever their editor attached -- referenced files, screenshots.
+        `_prompt_parts` splits it into the arguments the agent's ``prompt`` skill
+        takes, and rejects what this agent cannot read rather than dropping it
+        (see there).
 
         The skill call is synchronous and can run for minutes, so it goes to a worker
         thread. `asyncio.to_thread` copies this task's context, and the handler stack
@@ -2460,12 +2627,14 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             session.cancel.clear()
             session.reporter.begin_turn()
             try:
-                text = _prompt_text(prompt)
+                text, attachments, images = _prompt_parts(prompt)
                 self._retitle(session, text)
                 if (answered := self._command(session, text)) is not None:
                     session.notify(acp.update_agent_message_text(answered))
                     return acp.schema.PromptResponse(stop_reason="end_turn")
-                answer = await asyncio.to_thread(self._answer, session, text)
+                answer = await asyncio.to_thread(
+                    self._answer, session, text, attachments, images
+                )
                 # A `str` skill's answer was already streamed to the editor token by
                 # token; anything else was decoded from JSON that would have been noise
                 # to stream, so it is reported here, once, in its decoded form.
@@ -2515,9 +2684,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """Answer `text` here if it is a slash command, or `None` to send it onward.
 
         A command is an ordinary prompt whose text begins with the name -- ACP has no
-        separate method for one -- so recognising the prefix is the whole mechanism.
-        These two are answered without a model: they are about the session rather than
-        about anything the model would know, and paying for a round trip to be told the
+        separate method for one -- so recognising the prefix and looking the name up
+        in `_SLASH_COMMANDS` is the whole mechanism; the same table is what
+        `_announce_commands` advertises, so a command offered is a command answered.
+        All of them run without a model: they are about the session rather than about
+        anything the model would know, and paying for a round trip to be told the
         working directory would be an odd way to spend the user's money.
 
         Both go into the reply as prose rather than into the agent's history, so the
@@ -2529,72 +2700,36 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return None
         name, _, argument = text[1:].partition(" ")
         name, argument = name.strip(), argument.strip()
-        if name == "mode":
-            return self._mode_command(session, argument)
-        if name == "clear":
-            session.agent.__history__.clear()
-            return "Cleared. I have forgotten the conversation up to here."
-        if name == "status":
-            roots = "\n".join(f"- `{root}`" for root in session.roots) or "- (none)"
-            mode = next(
-                (m.name for m in SESSION_MODES if m.id == session.mode_id),
-                session.mode_id,
-            )
-            model = session.model or "as configured at launch"
-            return (
-                f"**Mode** {mode}\n\n**Model** {model}\n\n"
-                f"**Directories**\n{roots}\n\n"
-                f"**Messages so far** {len(session.agent.__history__)}"
-            )
-        return f"Unknown command `/{name}`. Try {', '.join(f'`/{c.name}`' for c in SLASH_COMMANDS)}."
+        command = _SLASH_COMMANDS.get(name)
+        if command is None:
+            return f"Unknown command `/{name}`. Try {', '.join(f'`/{c.name}`' for c in SLASH_COMMANDS)}."
+        return command.run(self, session, argument)
 
-    def _mode_command(self, session: ACPSession[A], mode_id: str) -> str:
-        """``/mode`` with no argument reports; with one, switches.
+    def _answer(
+        self,
+        session: ACPSession[A],
+        text: str,
+        attachments: list[Attachment],
+        images: list[Image.Image],
+    ) -> typing.Any:
+        """Call the agent's ``prompt`` skill under this session's handlers.
 
-        The editor's own picker sends `session/set_config_option`, and this sends
-        nothing -- it is already inside the agent. What it must do instead is *say* the
-        mode changed, on both channels a client might be listening to: `current_mode_update`
-        for one that reads `modes`, and the config options for one that reads those.
-        """
-        offered = {mode.id: mode for mode in SESSION_MODES}
-        if not mode_id:
-            return "\n".join(
-                [f"**Mode** {offered[session.mode_id].name}", ""]
-                + [
-                    f"- `/mode {mode.id}` — {mode.description}"
-                    for mode in SESSION_MODES
-                ]
-            )
-        if mode_id not in offered:
-            return (
-                f"No such mode `{mode_id}`. Try "
-                f"{', '.join(f'`{mode_id}`' for mode_id in offered)}."
-            )
-        session.mode_id = mode_id
-        session.notify(
-            acp.schema.CurrentModeUpdate(
-                session_update="current_mode_update", current_mode_id=mode_id
-            )
-        )
-        session.notify(
-            acp.schema.ConfigOptionUpdate(
-                session_update="config_option_update",
-                config_options=self._config_options(session),
-            )
-        )
-        return (
-            f"Mode is now **{offered[mode_id].name}**. {offered[mode_id].description}"
-        )
-
-    def _answer(self, session: ACPSession[A], text: str) -> typing.Any:
-        """Call the skill under this session's handlers. Runs in a worker thread.
+        Runs in a worker thread. The call is direct rather than introspected: the
+        skill contract is this server's to define (see the class docstring), and a
+        nonconforming agent should fail loudly at its first prompt, the way any
+        wrong argument list does.
 
         Installing on top of the ambient stack, rather than assembling one, is what
         lets the launcher decide the model, the retry budget and the persistence: the
         session contributes only its three translations to the editor.
         """
         with handler(session.intp):
-            return getattr(session.agent, self.skill_name)(text)
+            # `Agent` the bound says nothing about a `prompt` skill; the contract
+            # is this server's own (class docstring), so the checker is waved off
+            # here rather than widened everywhere the type parameter travels.
+            return session.agent.prompt(  # type: ignore
+                text, attachments=attachments, images=images
+            )
 
     async def cancel(self, session_id: str, **kwargs: typing.Any) -> None:
         """Ask the worker to stop at its next cancellation point.

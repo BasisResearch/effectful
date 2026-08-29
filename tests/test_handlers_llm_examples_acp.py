@@ -23,8 +23,12 @@ loop can catch it.
 import argparse
 import ast
 import asyncio
+import base64
+import collections.abc
 import contextlib
 import dataclasses
+import inspect
+import io
 import os
 import pathlib
 import re
@@ -36,6 +40,7 @@ import typing
 import litellm
 import pydantic
 import pytest
+from PIL import Image
 
 from effectful.handlers.llm import Agent, Encodable, Skill, Tool
 from effectful.handlers.llm.harness import harness
@@ -190,7 +195,12 @@ class _Bot(Agent):
     __agent_id__: str = ""
 
     @Skill.define
-    def respond(self, user_input: str) -> str:
+    def prompt(
+        self,
+        user_input: str,
+        attachments: collections.abc.Sequence[library.Attachment] = (),
+        images: collections.abc.Sequence[Image.Image] = (),
+    ) -> str:
         """Answer: {user_input}"""
 
 
@@ -309,7 +319,7 @@ def _plan_tool_taking(step_type: type) -> Tool:
 
 async def _serve(client: _FakeClient, **kwargs) -> library.EffectfulACPAgent:
     """A connected, initialized server over `_Bot`. Call from inside a running loop."""
-    server = library.EffectfulACPAgent(_Bot, skill_name="respond", **kwargs)
+    server = library.EffectfulACPAgent(_Bot, **kwargs)
     server.on_connect(typing.cast(typing.Any, client))
     await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
     return server
@@ -430,7 +440,7 @@ def test_a_text_answer_is_reported_as_an_agent_message():
                 library.ACPSessionReporter(session),
             )
         ):
-            assert session.agent.respond("hello") == "hi there"
+            assert session.agent.prompt("hello") == "hi there"
 
     assert [u.content.text for u in client.updates] == ["hi there"]
 
@@ -856,6 +866,42 @@ def test_reading_and_writing_go_through_the_editor(tmp_path):
     assert not pathlib.Path(target).exists(), "the tool must not touch the disk"
 
 
+def test_an_unbounded_read_of_a_long_file_is_truncated_with_a_notice():
+    """One read must not swallow the conversation's budget.
+
+    A read lands in the history and is re-sent with every request after, so an
+    unbounded read of a large file is a large recurring cost incurred in one
+    call. The notice carries the line to continue from, so the model can page
+    without arithmetic.
+    """
+    lines = library.READ_RESULT_LIMIT_LINES
+    client = _FakeClient(
+        files={"/big.py": "".join(f"line {n}\n" for n in range(1, lines + 501))}
+    )
+    with _session(client, _FS) as session:
+        with handler(library.ACPToolRuntime(session)):
+            result = acp_read_text_file("/big.py")
+
+    assert f"line {lines}\n" in result
+    assert f"line {lines + 1}\n" not in result
+    assert f"showing lines 1..{lines} of {lines + 500}" in result
+    assert f"line={lines + 1}" in result
+
+
+def test_an_explicit_limit_is_the_models_own_and_is_not_second_guessed():
+    """A model that passed `limit` chose a size; cutting further would make the
+    parameter mean less than it says. (The fake editor ignores the slice, which
+    is exactly what lets this assert the *tool* added no notice of its own.)"""
+    lines = library.READ_RESULT_LIMIT_LINES
+    content = "".join(f"line {n}\n" for n in range(1, lines + 501))
+    client = _FakeClient(files={"/big.py": content})
+    with _session(client, _FS) as session:
+        with handler(library.ACPToolRuntime(session)):
+            result = acp_read_text_file("/big.py", limit=lines + 500)
+
+    assert result == content
+
+
 def test_writing_answers_with_something_the_model_can_read():
     """ACP's own write response is empty, but the tool is declared to return `str`.
 
@@ -1219,7 +1265,7 @@ def test_the_model_is_told_which_directories_the_session_is_about():
     with _session(_FakeClient(), cwd="/work/thing") as session:
         session.additional_directories = ("/work/vendor",)
         with handler(_stack(mock, library.ACPToolRuntime(session))):
-            session.agent.respond("hello")
+            session.agent.prompt("hello")
 
     system = "".join(
         part.get("text", "")
@@ -1882,47 +1928,123 @@ def test_a_cancelled_permission_prompt_does_not_run_the_tool():
 # ============================================================================
 
 
+def _png_b64() -> str:
+    """A real 1x1 PNG, since `_prompt_parts` decodes images rather than storing them."""
+    buf = io.BytesIO()
+    Image.new("RGB", (1, 1)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 def test_text_and_resource_links_are_the_baseline_and_are_accepted():
     """Both are baseline: an agent must handle them with nothing negotiated.
 
-    A resource link is a *reference*, so it becomes the path rather than the file's
-    contents -- the model can then read it through the editor and see unsaved
-    changes, where inlining here would freeze a stale copy.
+    A resource link is a *reference*, so it becomes an `Attachment` carrying the
+    path rather than the file's contents -- the model can then read it through the
+    editor and see unsaved changes, where inlining would freeze a stale copy into
+    the conversation and pay its tokens on every request after. A ``file:`` URI
+    and the bare absolute path Poolside's client sends must land the same way.
     """
-    text = library._prompt_text(
+    text, attachments, images = library._prompt_parts(
         [
-            acp.text_block("look at "),
+            acp.text_block("look at these"),
             acp.resource_link_block(name="x.py", uri="file:///tmp/x.py"),
+            acp.resource_link_block(name="y.py", uri="/tmp/y.py"),
         ]
     )
-    assert "look at" in text
-    assert "file:///tmp/x.py" in text
+    assert text == "look at these"
+    assert attachments == [
+        library.Attachment(uri="/tmp/x.py"),
+        library.Attachment(uri="/tmp/y.py"),
+    ]
+    assert images == []
 
 
-def test_a_block_the_agent_cannot_read_is_refused_rather_than_dropped():
-    """Silently discarding an attachment is the failure that looks like success.
+def test_an_attachment_is_plain_data_and_its_meaning_lives_in_the_schema():
+    """The value is the path; the prose about what it means rides in the schema.
 
-    The user attaches a screenshot, the agent answers confidently about a picture
-    nobody read, and nothing anywhere reports a problem.
+    The two channels must not be conflated. `Attachment`'s docstring reaches the
+    model as the type's schema ``description``, shown once with the skill's spec
+    in the system prompt -- so the value serializes as exactly the ``{"uri"}``
+    object that schema describes, a few tokens per attachment per message, with
+    no contents and no prose repeated in it. The docstring's wording is the
+    author's business; what this pins is the channel.
+    """
+    assert library.Attachment(uri="file:///tmp/x.py").model_dump() == {
+        "uri": "/tmp/x.py"  # the path the read tool takes, not the URI form
+    }
+    description = pydantic.TypeAdapter(library.Attachment).json_schema()["description"]
+    assert description == inspect.getdoc(library.Attachment)
+
+
+def test_an_embedded_resource_is_refused_rather_than_read():
+    """`embedded_context` is not claimed, and the refusal is what keeps that honest.
+
+    A conforming client never sends one -- unclaimed capabilities are unsupported,
+    and clients MUST restrict prompt content accordingly, so Poolside degrades its
+    auto-attached files to resource links by itself. One that arrives anyway is
+    answered with an error, not quietly read or dropped: silently discarding an
+    attachment is the failure that looks like success.
     """
     with pytest.raises(acp.RequestError):
-        library._prompt_text(
-            [acp.text_block("what is this?"), acp.image_block("iVBOR", "image/png")]
+        library._prompt_parts(
+            [
+                acp.text_block("look at "),
+                acp.resource_block(
+                    acp.embedded_text_resource("file:///tmp/x.py", "print(1)")
+                ),
+            ]
         )
 
 
-def test_an_empty_prompt_is_refused():
+def test_an_image_is_decoded_for_the_skill_and_a_bare_reference_is_refused():
+    """A screenshot arrives as data and leaves as the `PIL.Image` the skill takes.
+
+    An image block that is only a URI is refused rather than fetched: nothing in
+    this agent talks to the network, and answering as though the picture had been
+    looked at would be the same silent-drop failure as any other attachment.
+    """
+    text, attachments, images = library._prompt_parts(
+        [acp.text_block("what is this?"), acp.image_block(_png_b64(), "image/png")]
+    )
+    assert [image.size for image in images] == [(1, 1)]
+
     with pytest.raises(acp.RequestError):
-        library._prompt_text([acp.text_block("   ")])
+        library._prompt_parts(
+            [
+                acp.schema.ImageContentBlock(
+                    type="image", data="", mime_type="image/png", uri="http://x/i.png"
+                )
+            ]
+        )
+
+
+def test_a_block_the_agent_cannot_read_is_refused_rather_than_dropped():
+    """Silently discarding an attachment is the failure that looks like success."""
+    with pytest.raises(acp.RequestError):
+        library._prompt_parts(
+            [acp.text_block("listen"), acp.audio_block("AAAA", "audio/wav")]
+        )
+
+
+def test_an_empty_prompt_is_refused_but_an_attachment_alone_is_not():
+    with pytest.raises(acp.RequestError):
+        library._prompt_parts([acp.text_block("   ")])
+
+    text, attachments, _ = library._prompt_parts(
+        [acp.resource_link_block(name="x.py", uri="/tmp/x.py")]
+    )
+    assert text == "" and attachments
 
 
 def test_advertised_prompt_capabilities_match_what_the_agent_can_actually_read():
-    """The agent must not claim a capability whose blocks `_prompt_text` refuses.
+    """The agent must not claim a capability whose blocks `_prompt_parts` refuses.
 
     A client "MUST adapt its interface according to PromptCapabilities", so claiming
-    `image` is a promise that an attached screenshot will be looked at. This pins the
-    two together: adding a claim here without teaching `_prompt_text` to read it
-    fails, and so does the reverse.
+    `image` is a promise that an attached screenshot will be looked at -- and *not*
+    claiming `embedded_context` is a promise relied on in the other direction, the
+    one that keeps clients from inlining whole files into the conversation. This
+    pins the two together: adding a claim here without teaching `_prompt_parts` to
+    read it fails, and so does the reverse.
     """
 
     caps = _advertised().prompt_capabilities
@@ -1932,7 +2054,7 @@ def test_advertised_prompt_capabilities_match_what_the_agent_can_actually_read()
         "embedded_context": caps.embedded_context,
     }
     samples = {
-        "image": acp.image_block("iVBOR", "image/png"),
+        "image": acp.image_block(_png_b64(), "image/png"),
         "audio": acp.audio_block("AAAA", "audio/wav"),
         "embedded_context": acp.resource_block(
             acp.embedded_text_resource("file:///tmp/x.py", "print(1)")
@@ -1940,15 +2062,63 @@ def test_advertised_prompt_capabilities_match_what_the_agent_can_actually_read()
     }
     for name, is_claimed in claimed.items():
         try:
-            library._prompt_text([samples[name]])
+            library._prompt_parts([samples[name]])
         except acp.RequestError:
             readable = False
         else:
             readable = True
         assert bool(is_claimed) == readable, (
             f"prompt capability {name!r} is advertised as {is_claimed!r} but "
-            f"_prompt_text {'reads' if readable else 'refuses'} that block"
+            f"_prompt_parts {'reads' if readable else 'refuses'} that block"
         )
+
+
+def test_the_prompt_skill_is_handed_the_parts_and_the_model_sees_them():
+    """The whole pipeline: blocks in, typed arguments through, content blocks out.
+
+    The server calls the agent's ``prompt`` skill -- the contract, not a
+    configured name -- with the split parts, and what reaches the model is the
+    attachment as a one-line reference (never contents, which the editor never
+    even sent) and the image as a real ``image_url`` block, not a placeholder.
+
+    Driven through the example's own `Assistant` rather than `_Bot`, because the
+    delivery depends on its docstring rendering ``{attachments}{images}`` -- the
+    part of the example this test exists to pin.
+    """
+    mock = MockCompletionHandler([make_text_response("looked")])
+    client = _FakeClient()
+
+    async def drive():
+        server = library.EffectfulACPAgent(assistant.Assistant)
+        server.on_connect(typing.cast(typing.Any, client))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        response = await server.prompt(
+            session_id=session_id,
+            prompt=[
+                acp.text_block("what are these?"),
+                acp.resource_link_block(name="x.py", uri="file:///tmp/x.py"),
+                acp.image_block(_png_b64(), "image/png"),
+            ],
+        )
+        await server.close_session(session_id)
+        return response
+
+    with handler(_stack(mock)):
+        response = asyncio.run(drive())
+
+    assert response.stop_reason == "end_turn"
+    user_parts = [
+        part
+        for message in mock.received_messages[0]
+        if message.get("role") == "user"
+        for part in message.get("content", [])
+    ]
+    user_text = "".join(p.get("text", "") for p in user_parts)
+    assert "what are these?" in user_text
+    assert "/tmp/x.py" in user_text
+    assert "print(1)" not in user_text
+    assert [p["type"] for p in user_parts if p["type"] != "text"] == ["image_url"]
 
 
 # ============================================================================
@@ -1958,7 +2128,7 @@ def test_advertised_prompt_capabilities_match_what_the_agent_can_actually_read()
 
 def _advertised() -> schema.AgentCapabilities:
     async def initialize():
-        server = library.EffectfulACPAgent(_Bot, skill_name="respond")
+        server = library.EffectfulACPAgent(_Bot)
         response = await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
         return response.agent_capabilities
 
@@ -2025,7 +2195,7 @@ def _in_session(
     """
 
     async def drive():
-        server = library.EffectfulACPAgent(_Bot, skill_name="respond", **kwargs)
+        server = library.EffectfulACPAgent(_Bot, **kwargs)
         server.on_connect(typing.cast(typing.Any, client or _FakeClient()))
         await server.initialize(
             protocol_version=acp.PROTOCOL_VERSION,
