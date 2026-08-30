@@ -784,7 +784,7 @@ class Domain:
         The premise, checked: ClaimCheck is only interesting if the formal
         artifacts really are proved -- otherwise a disputed theorem might just be
         a broken one. `formalization.py` (LEAP) already drives a real Lean 4 +
-        Mathlib toolchain, so this reuses its kernel rather than restating it,
+        Mathlib toolchain, so this reuses its compiler rather than restating it,
         imported inside the property as `world_model_agent.py` imports
         `gridworlds`, so the example carries no Lean dependency unless the check
         is asked for.
@@ -800,18 +800,18 @@ class Domain:
         # `auditing.py` is run directly; add it so both invocations work.
         sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
         from docs.source.llm_examples.autoformalization.formalization import (
-            _SORRY,
-            LeanKernel,
+            LEAN_PROJECT,
+            LeanError,
+            compile_lean,
         )
 
-        kernel = LeanKernel()
-        if not kernel.available():
+        if not (pathlib.Path(LEAN_PROJECT) / ".lake").is_dir():
             print(
-                f"Lean project not built at {kernel.project!r}; skipping "
+                f"Lean project not built at {LEAN_PROJECT!r}; skipping "
                 "verification.\nBuild it once (see formalization.py "
                 "--check-toolchain):\n"
                 "  elan default stable\n"
-                f"  cd {kernel.project} && lake exe cache get && lake build"
+                f"  cd {LEAN_PROJECT} && lake exe cache get && lake build"
             )
             return False
 
@@ -819,12 +819,15 @@ class Domain:
             f"Compiling {self.name} ({len(self.theorems)} theorems) with "
             "Lean 4 + Mathlib ..."
         )
-        result = kernel.compile(self.corpus)
-        if not result.ok:
+        try:
+            compile_lean(self.corpus)
+        except LeanError as exc:
             raise SystemExit(
-                f"The {self.name} corpus does not compile:\n{result.messages}"
-            )
-        if _SORRY.search(self.corpus):
+                f"The {self.name} corpus does not compile:\n{exc}"
+            ) from exc
+        # Lean warns about `sorry` rather than erroring, so a corpus can compile
+        # while proving nothing; the claims below are only worth auditing if it does.
+        if re.search(r"\b(sorry|admit|sorryAx)\b", self.corpus):
             raise SystemExit(
                 f"The {self.name} corpus contains `sorry`; it is not proved."
             )

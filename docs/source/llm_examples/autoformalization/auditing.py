@@ -53,7 +53,7 @@ Demonstrates:
 - Decode-time certification of a structured verdict's internal coherence, turning
   a self-contradictory answer into a `TenacityRetryer` retry
 - Reuse of a sibling example's real external verifier (`formalization.py`'s
-  `LeanKernel`) to establish a premise, rather than asserting it
+  `compile_lean`) to establish a premise, rather than asserting it
 - Labelled corpora and an accuracy report separating the two error directions
 - Fan-out over independent audits with ``asyncio.gather`` + ``asyncio.to_thread``
 - Per-field guidance carried on the types as ``field(metadata={"description": ...})``

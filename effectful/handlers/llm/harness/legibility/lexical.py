@@ -549,6 +549,36 @@ def _tools_in_scope(
     return frozenset(_tool_paths(env, wrap=wrap, seen=seen))
 
 
+def _readable_attrs(obj: typing.Any) -> dict[str, typing.Any]:
+    """``obj``'s class attributes that could be a tool, bound to ``obj``.
+
+    Bound, because that is the form the rest of this module wants: a `Tool`
+    method is a descriptor whose `__get__` produces the instance's operation,
+    and a plain method is a candidate for `ImplicitToolExtractor` only once it
+    is a bound method. An `Agent` held as a class attribute is not a descriptor
+    and is taken as it is.
+
+    Everything else is left alone rather than read, so discovery cannot run a
+    property's side effects, and an attribute that refuses instance access --
+    a ``pydantic.dataclasses.dataclass`` publishes ``__signature__`` as
+    class-only -- is simply never asked for.
+    """
+    attrs: dict[str, typing.Any] = {}
+    for cls in type(obj).__mro__:
+        for name, attr in vars(cls).items():
+            if name in attrs or name in vars(obj):  # a nearer one already won
+                continue
+            if isinstance(attr, Agent):
+                attrs[name] = attr
+            elif isinstance(
+                attr, Tool | types.FunctionType | classmethod | staticmethod
+            ):
+                # Bound to `type(obj)`, not to `cls`: an inherited classmethod
+                # takes the instance's class, as attribute access would give it.
+                attrs[name] = attr.__get__(obj, type(obj))
+    return attrs
+
+
 def _tool_paths(
     env: collections.abc.Mapping[str, typing.Any],
     *,
@@ -585,9 +615,7 @@ def _tool_paths(
             paths.setdefault(obj, name)
         elif isinstance(obj, Agent) and id(obj) not in seen:
             seen |= {id(obj)}
-            sub_env = vars(obj) | {
-                k: getattr(obj, k) for cls in type(obj).__mro__ for k in vars(cls)
-            }
+            sub_env = vars(obj) | _readable_attrs(obj)
             for tool, sub_path in _tool_paths(sub_env, wrap=wrap, seen=seen).items():
                 paths.setdefault(tool, f"{name}.{sub_path}")
         elif wrap is not None and (wrapped := wrap(obj)) is not None:
