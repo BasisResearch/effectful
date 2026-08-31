@@ -1,35 +1,30 @@
-"""The ClaimCheck benchmark: five Lean corpora, the claims made about them, and
-the labelled ground truth the audit in `auditing.py` is scored against.
+"""The ClaimCheck benchmark: five Lean corpora, the claims made about them, the
+labelled ground truth the audit in `informalization.py` is scored against, and
+the Lean toolchain that checks the corpora really are proved.
 
-Nothing in this module may reach an auditing agent. The harness builds a skill's
-system prompt partly from the source of the module the skill is *defined* in, so
-the unit of exposure is the module: the agents live in `auditing_agents` and
-`auditing_naive`, and neither imports this file. The dependency runs the other
-way -- this module imports `Verdict` from `auditing_agents` to spell the answer
-key -- which is safe in exactly the direction that matters. See the module
-docstring of `auditing_agents` for what happened when the corpora did share a
-file with them.
+The corpora transliterate upstream's benchmark item for item from
+`test/integration/claims/*.dfy` (the lemmas) and
+`test/integration/mappings/*.json` (the labels): five domains, 36
+requirement/theorem pairs, the same 27 faithful / 9 planted split, upstream's
+requirement sentences verbatim, and its lemma names in Lean's snake_case.
 
-Split out of `auditing.py`, which drives the audit, scores it, and holds the
-findings; here is only the data it runs on.
+`compile_lean` is the other half of that arrangement: `verification.py` (LEAP)
+drives the same Lean 4 + Mathlib project to certify proofs it has just written,
+and this module uses it to certify the proofs it ships.
 """
 
 import dataclasses
+import enum
 import functools
+import os
 import pathlib
 import re
-import sys
+import subprocess
+import tempfile
 import textwrap
 
-from auditing_agents import Verdict
-
 # ---------------------------------------------------------------------------
-# The corpora. Five domains, ported item for item from upstream's benchmark
-# (`test/integration/claims/*.dfy` for the lemmas,
-# `test/integration/mappings/*.json` for the labels): the same 36
-# requirement/theorem pairs, the same 27-faithful / 9-planted split, upstream's
-# requirement sentences verbatim, and its lemma names transliterated to Lean's
-# snake_case. Every one of them compiles (see `--verify`).
+# The corpora. Every one of them compiles (see `--verify`).
 #
 # Three properties of the Dafny original are load-bearing and are reproduced
 # deliberately, because a first attempt at this example invented its own corpus
@@ -481,6 +476,17 @@ end Kanban
 # ---------------------------------------------------------------------------
 
 
+class Verdict(enum.StrEnum):
+    """
+    ``verdict`` is Verdict.CONFIRMED only if the theorem expresses the whole of the requirement.
+    A theorem that is stronger than the requirement still matches;
+    one that is weaker, narrower, or about something else does not.
+    """
+
+    CONFIRMED = "confirmed"
+    DISPUTED = "disputed"
+
+
 @dataclasses.dataclass(frozen=True)
 class Claim:
     """A requirement, the theorem said to formalize it, and the labelled truth.
@@ -728,6 +734,48 @@ KANBAN_CLAIMS: tuple[Claim, ...] = (
         "membership that makes it a partition",
     ),
 )
+LEAN_PROJECT = os.environ.get(
+    "LEAP_LEAN_PROJECT", os.path.expanduser("~/.cache/leap-lean/leapproj")
+)
+
+
+class LeanError(ValueError):
+    """Lean refused a fragment; the message is the compiler's own output."""
+
+
+@functools.cache
+def _run_lean(source: str, *, timeout: float = 120) -> str:
+    """
+    Lean's complaints about `source`, or the empty string if it accepted it.
+    """
+    env = dict(os.environ)
+    env["PATH"] = os.path.expanduser("~/.elan/bin") + os.pathsep + env.get("PATH", "")
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", dir=LEAN_PROJECT, prefix=".leap_", suffix=".lean"
+        ) as scratch:
+            scratch.write(source)
+            scratch.flush()
+            proc = subprocess.run(
+                ["lake", "env", "lean", scratch.name],
+                cwd=LEAN_PROJECT,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+    except subprocess.TimeoutExpired:
+        return f"Lean timed out after {timeout}s (too slow)."
+    out = (proc.stdout + proc.stderr).strip()
+    if proc.returncode == 0 and "error:" not in out:
+        return ""
+    return out or "unknown error"
+
+
+def compile_lean(source: str) -> None:
+    """Compile a Lean source string, raising `LeanError` if Lean refuses it."""
+    if complaints := _run_lean(source):
+        raise LeanError(complaints)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -783,11 +831,7 @@ class Domain:
 
         The premise, checked: ClaimCheck is only interesting if the formal
         artifacts really are proved -- otherwise a disputed theorem might just be
-        a broken one. `formalization.py` (LEAP) already drives a real Lean 4 +
-        Mathlib toolchain, so this reuses its compiler rather than restating it,
-        imported inside the property as `world_model_agent.py` imports
-        `gridworlds`, so the example carries no Lean dependency unless the check
-        is asked for.
+        a broken one.
 
         Cached because importing Mathlib is by far the slowest thing this example
         does, and a domain may be asked to verify more than once in a process.
@@ -795,20 +839,10 @@ class Domain:
         instead, since an unproved theorem makes every verdict about it
         meaningless.
         """
-        # The examples are importable as ``docs.source.llm_examples...`` from the
-        # repository root, which is on ``sys.path`` under the harness but not when
-        # `auditing.py` is run directly; add it so both invocations work.
-        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
-        from docs.source.llm_examples.autoformalization.formalization import (
-            LEAN_PROJECT,
-            LeanError,
-            compile_lean,
-        )
-
         if not (pathlib.Path(LEAN_PROJECT) / ".lake").is_dir():
             print(
                 f"Lean project not built at {LEAN_PROJECT!r}; skipping "
-                "verification.\nBuild it once (see formalization.py "
+                "verification.\nBuild it once (see verification.py "
                 "--check-toolchain):\n"
                 "  elan default stable\n"
                 f"  cd {LEAN_PROJECT} && lake exe cache get && lake build"
@@ -841,3 +875,4 @@ DOMAINS: dict[str, Domain] = {
     "delegation": Domain("delegation", DELEGATION_CORPUS, DELEGATION_CLAIMS),
     "kanban": Domain("kanban", KANBAN_CORPUS, KANBAN_CLAIMS),
 }
+PRELUDE = "import Mathlib\n"

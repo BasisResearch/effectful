@@ -33,63 +33,22 @@ Needs a built Lean 4 + Mathlib project; run ``--check-toolchain`` for instructio
 import argparse
 import collections.abc
 import dataclasses
-import functools
 import hashlib
 import os
 import re
-import subprocess
-import tempfile
 import textwrap
 import typing
 
 import pydantic
 
+from docs.source.llm_examples.autoformalization.library import (
+    LEAN_PROJECT,
+    PRELUDE,
+    LeanError,
+    compile_lean,
+)
 from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.hooks import DecodingError
-
-LEAN_PROJECT = os.environ.get(
-    "LEAP_LEAN_PROJECT", os.path.expanduser("~/.cache/leap-lean/leapproj")
-)
-PRELUDE = "import Mathlib\n"
-
-
-class LeanError(ValueError):
-    """Lean refused a fragment; the message is the compiler's own output."""
-
-
-def compile_lean(source: str) -> None:
-    """Compile a Lean source string, raising `LeanError` if Lean refuses it."""
-    if complaints := _run_lean(source):
-        raise LeanError(complaints)
-
-
-@functools.cache
-def _run_lean(source: str, *, timeout: float = 120) -> str:
-    """
-    Lean's complaints about `source`, or the empty string if it accepted it.
-    """
-    env = dict(os.environ)
-    env["PATH"] = os.path.expanduser("~/.elan/bin") + os.pathsep + env.get("PATH", "")
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", dir=LEAN_PROJECT, prefix=".leap_", suffix=".lean"
-        ) as scratch:
-            scratch.write(source)
-            scratch.flush()
-            proc = subprocess.run(
-                ["lake", "env", "lean", scratch.name],
-                cwd=LEAN_PROJECT,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-            )
-    except subprocess.TimeoutExpired:
-        return f"Lean timed out after {timeout}s (too slow)."
-    out = (proc.stdout + proc.stderr).strip()
-    if proc.returncode == 0 and "error:" not in out:
-        return ""
-    return out or "unknown error"
 
 
 class Unproved(Exception):
