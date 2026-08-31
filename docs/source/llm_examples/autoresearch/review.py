@@ -56,8 +56,9 @@ Demonstrates:
 - An ``Agent`` whose instance field reshapes a Skill prompt (venue guidelines)
 - Structured, typed review output (an illustrative ICLR-style schema: per-dimension
   1-10 scores, a recommendation enum, and author-facing suggestions)
-- Per-field guidance carried on the types as ``field(metadata={"description": ...})``,
-  reaching the model through each schema so no prompt has to restate it
+- Per-field guidance carried on the types as ``Annotated[T,
+  pydantic.Field(description=...)]``, reaching the model through each schema so
+  no prompt has to restate it
 """
 
 # Simplifications vs. the source:
@@ -103,7 +104,7 @@ from effectful.handlers.llm import Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-# A field's ``metadata={"description": ...}`` is inlined by pydantic into that
+# A field's ``pydantic.Field(description=...)`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
 # a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
@@ -262,19 +263,21 @@ class MissingBaseline:
 
     method: str
     benchmark: str
-    paper_key: str = dataclasses.field(
-        metadata={
-            "description": "A citation key for a paper ``search`` returned (a corpus "
+    paper_key: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="A citation key for a paper ``search`` returned (a corpus "
             "key or a Semantic Scholar paperId); a key not among the retrieved "
             "papers is rejected at decode time."
-        }
-    )
-    reason: str = dataclasses.field(
-        metadata={
-            "description": "Why this omitted comparison matters -- what the missing "
+        ),
+    ]
+    reason: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Why this omitted comparison matters -- what the missing "
             "baseline would have tested that the submission leaves unchecked."
-        }
-    )
+        ),
+    ]
 
     def __post_init__(self) -> None:
         if self.paper_key not in RETRIEVED:
@@ -301,12 +304,13 @@ class Interrogation:
     question: str
     answer: str
     verification: str
-    discrepancy: str = dataclasses.field(
-        metadata={
-            "description": "Where the paper's self-answer diverges from the domain "
+    discrepancy: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Where the paper's self-answer diverges from the domain "
             "narrative; empty when they agree."
-        }
-    )
+        ),
+    ]
 
 
 class Recommendation(enum.StrEnum):
@@ -324,9 +328,12 @@ class Review:
     strengths: list[str]
     weaknesses: list[str]
     questions: list[str]
-    suggestions: list[str] = dataclasses.field(
-        metadata={"description": "Concrete, actionable improvements for the authors."}
-    )
+    suggestions: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Concrete, actionable improvements for the authors."
+        ),
+    ]
     soundness: Score
     novelty: Score
     significance: Score

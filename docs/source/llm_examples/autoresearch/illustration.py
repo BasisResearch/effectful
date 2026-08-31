@@ -60,7 +60,8 @@ Demonstrates:
 - Decode-time certification of a retrieval selection against an immutable reference
   set, read directly (no ContextVar) because the set is a module constant
 - A typed plan (``StyledPlot``) threaded through the pipeline as orchestration data
-- Per-field guidance carried on the types via ``field(metadata={"description": ...})``
+- Per-field guidance carried on the types via ``Annotated[T,
+  pydantic.Field(description=...)]``
 """
 
 # Simplifications vs. the source:
@@ -84,7 +85,6 @@ Demonstrates:
 
 import argparse
 import collections.abc
-import dataclasses
 import pathlib
 import tempfile
 import typing
@@ -95,7 +95,7 @@ from PIL import Image
 
 from effectful.handlers.llm import Skill, Tool
 
-# A field's ``metadata={"description": ...}`` is inlined by pydantic into that
+# A field's ``pydantic.Field(description=...)`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
 # a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
@@ -132,13 +132,14 @@ class PlotExemplar:
     chart_type: ChartType
     domain: str
     caption: str
-    structure_notes: str = dataclasses.field(
-        metadata={
-            "description": "The visual/structural composition (axes, grouping, marks, "
+    structure_notes: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="The visual/structural composition (axes, grouping, marks, "
             "legend, layout) independent of subject matter -- what the Retriever "
             "weights above topic when matching."
-        }
-    )
+        ),
+    ]
     style_notes: str
 
 
@@ -224,13 +225,14 @@ class Retrieval:
     """The Retriever's selection E: keys of the exemplars from R that best match the
     task by diagram type and domain (visual structure weighted over topic)."""
 
-    selected: list[str] = dataclasses.field(
-        metadata={
-            "description": "Keys of the chosen exemplars; each MUST resolve in the "
+    selected: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Keys of the chosen exemplars; each MUST resolve in the "
             "reference set R (certified at decode time), so a hallucinated key is "
             "rejected and fed back."
-        }
-    )
+        ),
+    ]
     rationale: str
 
     def __post_init__(self) -> None:
@@ -249,13 +251,14 @@ class DataSeries:
     """One data series (a method / line / stack): a name and its numeric values."""
 
     name: str
-    values: list[float] = dataclasses.field(
-        metadata={
-            "description": "One value per category, in the SAME order as the "
+    values: typing.Annotated[
+        list[float],
+        pydantic.Field(
+            description="One value per category, in the SAME order as the "
             "description's ``categories`` -- the transcribed numbers from S the plot "
             "must reproduce exactly."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -267,12 +270,13 @@ class PlotDescription:
     title: str
     x_label: str
     y_label: str
-    categories: list[str] = dataclasses.field(
-        metadata={
-            "description": "The groups along the x-axis (e.g. datasets); the "
+    categories: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="The groups along the x-axis (e.g. datasets); the "
             "Visualizer's code iterates these and each series aligns to them by order."
-        }
-    )
+        ),
+    ]
     series: list[DataSeries]
     notes: str
 
@@ -283,22 +287,24 @@ class AestheticGuideline:
     (the paper's palette / shapes / lines / layout / typography / icons), read off R
     and specialized to statistical plots."""
 
-    palette: list[str] = dataclasses.field(
-        metadata={
-            "description": "Ordered color specs (hex like '#4C72B0' or matplotlib "
+    palette: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Ordered color specs (hex like '#4C72B0' or matplotlib "
             "names), one per series, applied in order."
-        }
-    )
+        ),
+    ]
     marks_and_containers: str
     lines_and_arrows: str
     layout: str
     typography: str
-    icons: str = dataclasses.field(
-        metadata={
-            "description": "Any small glyphs/markers or annotation style; 'none' for a "
+    icons: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Any small glyphs/markers or annotation style; 'none' for a "
             "plain statistical plot."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -309,12 +315,13 @@ class StyledPlot:
 
     description: PlotDescription
     guideline: AestheticGuideline
-    directives: str = dataclasses.field(
-        metadata={
-            "description": "Concrete restyling instructions applying G to this "
+    directives: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Concrete restyling instructions applying G to this "
             "description -- what colors/spines/gridlines/labels the Visualizer should use."
-        }
-    )
+        ),
+    ]
 
     def __str__(self) -> str:
         """Render the plan to a compact, exact brief -- data first, so the Visualizer
@@ -346,15 +353,16 @@ class Critique:
     """The Critic's verdict on one rendered plot: the concrete problems it saw and a
     refined plan addressing them."""
 
-    issues: list[str] = dataclasses.field(
-        metadata={
-            "description": "What the Critic targets in the RENDERED plot, per the "
+    issues: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="What the Critic targets in the RENDERED plot, per the "
             "paper: factual misalignments (wrong/missing numbers or labels vs. S and "
             "C), visual glitches, OR areas for improvement (readability/aesthetics). "
             "Leave empty ONLY if the plot is already publication-ready with nothing to "
             "improve."
-        }
-    )
+        ),
+    ]
     refined: StyledPlot
 
 

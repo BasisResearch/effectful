@@ -142,14 +142,14 @@ def _type_checks(sig: str, info: pydantic.ValidationInfo) -> str:
 class LeanProof:
     """A tactic-block proof of a goal, certified by Lean at decode time."""
 
-    tactics: typing.Annotated[str, pydantic.AfterValidator(_certified)] = (
-        dataclasses.field(
-            metadata={
-                "description": "The tactic block that proves the goal: what follows "
-                "`:= by`, with no signature and no `by`."
-            }
-        )
-    )
+    tactics: typing.Annotated[
+        str,
+        pydantic.AfterValidator(_certified),
+        pydantic.Field(
+            description="The tactic block that proves the goal: what follows "
+            "`:= by`, with no signature and no `by`."
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -159,26 +159,29 @@ class ProposedLemma:
     ``sorry`` stub, so a malformed one is fed back before it becomes a subgoal.
     """
 
-    name: str = dataclasses.field(
-        metadata={
-            "description": "A short snake_case label for this lemma, unique within "
+    name: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="A short snake_case label for this lemma, unique within "
             "the decomposition."
-        }
-    )
+        ),
+    ]
     sig: typing.Annotated[
-        str, pydantic.AfterValidator(str.strip), pydantic.AfterValidator(_type_checks)
-    ] = dataclasses.field(
-        metadata={
-            "description": "The lemma's Lean signature -- binders and proposition, "
+        str,
+        pydantic.AfterValidator(str.strip),
+        pydantic.AfterValidator(_type_checks),
+        pydantic.Field(
+            description="The lemma's Lean signature -- binders and proposition, "
             "with no name and no `:= ...`, e.g. `(n : ℕ) : 0 < n + 1`."
-        }
-    )
-    rationale: str = dataclasses.field(
-        metadata={
-            "description": "What proving this lets the sketch do, and why it is "
+        ),
+    ]
+    rationale: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="What proving this lets the sketch do, and why it is "
             "strictly simpler or more general than the goal."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -205,12 +208,13 @@ class Blueprint:
 class ReviewVerdict:
     """The reviewer's judgment -- the paper's planning-level search filter."""
 
-    simplifies: bool = dataclasses.field(
-        metadata={
-            "description": "True only if every proposed lemma is genuinely simpler "
+    simplifies: typing.Annotated[
+        bool,
+        pydantic.Field(
+            description="True only if every proposed lemma is genuinely simpler "
             "or more general than the goal and plausibly provable."
-        }
-    )
+        ),
+    ]
     reason: str
 
 

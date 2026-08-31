@@ -104,7 +104,7 @@ from effectful.handlers.llm import Skill, Tool
 
 type Score = typing.Literal[1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
-# A field's ``metadata={"description": ...}`` is inlined by pydantic into that
+# A field's ``pydantic.Field(description=...)`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of
 # a skill's argument (and structured-output) spec. So per-field guidance reaches
 # the model *through the type* -- used below only where the field name and type
@@ -262,27 +262,30 @@ class FigurePlan:
     figure_id: str
     kind: typing.Literal["plot", "diagram"]
     intent: str
-    data_source: str = dataclasses.field(
-        metadata={
-            "description": "For a plot, the part of the experimental log whose "
+    data_source: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="For a plot, the part of the experimental log whose "
             "numbers it draws from; empty for a diagram."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
 class SearchStrategy:
     """The targeted literature-search strategy."""
 
-    macro_context: list[str] = dataclasses.field(
-        metadata={"description": "Broad themes that frame the Introduction."}
-    )
-    method_clusters: list[str] = dataclasses.field(
-        metadata={
-            "description": "Specific method families and baselines to search for and "
+    macro_context: typing.Annotated[
+        list[str],
+        pydantic.Field(description="Broad themes that frame the Introduction."),
+    ]
+    method_clusters: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Specific method families and baselines to search for and "
             "position Related Work against."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -291,11 +294,12 @@ class SectionPlan:
 
     section: str
     bullets: list[str]
-    citation_hints: list[str] = dataclasses.field(
-        metadata={
-            "description": "Baselines, datasets, and metrics this section must cite."
-        }
-    )
+    citation_hints: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Baselines, datasets, and metrics this section must cite."
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -331,15 +335,16 @@ _LATEX_ESCAPING = (
 class Citation:
     """A reference the manuscript cites, bound to the claim it supports."""
 
-    key: str = dataclasses.field(
-        metadata={
-            "description": """
+    key: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="""
             ``key`` MUST resolve to a real entry in ``INDEX`` *and* the entry must predate
             the venue ``CUTOFF`` date, or the citation is rejected at decode time -- as a
             hallucination (no such paper) or as leakage (future-dated work).
             """
-        }
-    )
+        ),
+    ]
     claim: str
 
     def __post_init__(self) -> None:
@@ -373,16 +378,18 @@ class Figure:
     """A generated visual the Section Writer embeds. (In the paper, PaperBanana
     renders real images; here the body is LaTeX text.)"""
 
-    figure_id: str = dataclasses.field(
-        metadata={"description": "Matches the FigurePlan.figure_id this realizes."}
-    )
-    caption: str = dataclasses.field(metadata={"description": _LATEX_ESCAPING})
-    latex: str = dataclasses.field(
-        metadata={
-            "description": "Self-contained LaTeX for the figure: a pgfplots axis or "
+    figure_id: typing.Annotated[
+        str,
+        pydantic.Field(description="Matches the FigurePlan.figure_id this realizes."),
+    ]
+    caption: typing.Annotated[str, pydantic.Field(description=_LATEX_ESCAPING)]
+    latex: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Self-contained LaTeX for the figure: a pgfplots axis or "
             "tabular for a plot, TikZ for a diagram. " + _LATEX_ESCAPING
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -390,7 +397,7 @@ class Section:
     """One body section of the manuscript (Method, Experiments, ...)."""
 
     name: str
-    body: str = dataclasses.field(metadata={"description": _LATEX_ESCAPING})
+    body: typing.Annotated[str, pydantic.Field(description=_LATEX_ESCAPING)]
 
 
 @pydantic.dataclasses.dataclass
@@ -434,12 +441,13 @@ class Review:
     clarity: Score
     contribution: Score
     overall: Score
-    weakness: str = dataclasses.field(
-        metadata={
-            "description": "The single highest-impact weakness for the next revision "
+    weakness: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="The single highest-impact weakness for the next revision "
             "to fix -- specific and grounded in the manuscript."
-        }
-    )
+        ),
+    ]
 
     @property
     def sub_total(self) -> int:

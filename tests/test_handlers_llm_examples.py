@@ -85,7 +85,7 @@ OVERRIDES: dict[str, Override] = {
             "default before this override existed"
         ),
     ),
-    "autoformalization/formalization": Override(skip=Skip.LEAN),
+    "autoformalization/verification": Override(skip=Skip.LEAN),
     "acp/assistant": Override(
         skip=Skip.NO_COMMAND_LINE,
         why=(
@@ -105,9 +105,13 @@ OVERRIDES: dict[str, Override] = {
         args=("--budget", "20"),
         why="the default 400-press budget is a research run, not a smoke test",
     ),
-    "autoformalization/auditing": Override(
-        args=("--limit", "1"),
-        why="--limit is the example's own documented cheap smoke test",
+    "autoformalization/informalization": Override(
+        args=("--domain", "counter"),
+        why=(
+            "its default audits all five benchmark domains -- 36 requirement/theorem "
+            "pairs, two model calls each -- which is the benchmark run, not a smoke "
+            "test. One domain exercises every pass"
+        ),
     ),
 }
 
@@ -134,11 +138,8 @@ def reachable_model() -> str:
     `requires_llm` only knows whether a key is *configured*. This is the
     difference between a suite that says "every example still works" and one
     that says "every example still exits zero while failing to reach a model" --
-    which look identical in the summary, because an example that handles its own
-    errors reports them and exits zero anyway. ``autoformalization/auditing``
-    against an unreachable model prints ``no verdict (retries exhausted): 5`` and
-    succeeds, since a claim it could not get a verdict on is a result it is
-    designed to report.
+    which look identical in the summary, because an example that reports its own
+    per-item failures and carries on exits zero anyway, having reached nothing.
     """
     import litellm
 

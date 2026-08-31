@@ -50,6 +50,7 @@ import asyncio
 import collections.abc
 import contextvars
 import dataclasses
+import typing
 
 import pydantic.dataclasses
 
@@ -287,12 +288,13 @@ class ConclusionClaim:
     """A takeaway that builds on other claims rather than directly on an artifact."""
 
     statement: str
-    supported_by: list[str] = dataclasses.field(
-        metadata={
-            "description": "bibkeys and/or metrics this conclusion builds on; "
+    supported_by: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="bibkeys and/or metrics this conclusion builds on; "
             "each must already be cited or measured"
-        }
-    )
+        ),
+    ]
 
     def __post_init__(self) -> None:
         ws = WORKSPACE.get()
@@ -343,9 +345,12 @@ class Brief:
     """A research brief: a problem framing plus the reference keys it relies on."""
 
     summary: str
-    cited: list[str] = dataclasses.field(
-        metadata={"description": "citation keys of the references this brief relies on"}
-    )
+    cited: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="citation keys of the references this brief relies on"
+        ),
+    ]
 
     def __post_init__(self) -> None:
         known = {r.key for r in WORKSPACE.get().references}

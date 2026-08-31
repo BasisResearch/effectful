@@ -70,7 +70,8 @@ Demonstrates:
   emits a lesson spliced into later syntheses (invalidating the cache), so
   cross-branch transfer is observable
 - Decode-time certification of the ``Design``'s shape (>= 2 strategies per module,
-  unique names), and per-field guidance via ``field(metadata={"description": ...})``
+  unique names), and per-field guidance via ``Annotated[T,
+  pydantic.Field(description=...)]``
 """
 
 # Simplifications vs. the source:
@@ -106,12 +107,13 @@ import inspect
 import math
 import random
 import time
+import typing
 
 import pydantic
 
 from effectful.handlers.llm import Skill
 
-# A field's ``metadata={"description": ...}`` is inlined by pydantic into that
+# A field's ``pydantic.Field(description=...)`` is inlined by pydantic into that
 # field's JSON schema, which the harness renders into the system prompt as part of a
 # skill's argument (and structured-output) spec. So per-field guidance reaches the
 # model *through the type* -- used below only where the field name and type don't
@@ -214,20 +216,22 @@ class ModuleSpec:
     branching actions for this stage."""
 
     name: str
-    intent: str = dataclasses.field(
-        metadata={
-            "description": "What this stage does to the tour it receives (e.g. build "
+    intent: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="What this stage does to the tour it receives (e.g. build "
             "an initial ordering, or locally improve the incoming tour). Every stage "
             "takes the cities and the current tour and returns a valid tour."
-        }
-    )
-    strategies: list[str] = dataclasses.field(
-        metadata={
-            "description": "Two or three distinct, concrete implementation approaches "
+        ),
+    ]
+    strategies: typing.Annotated[
+        list[str],
+        pydantic.Field(
+            description="Two or three distinct, concrete implementation approaches "
             "for this stage (e.g. 'nearest-neighbour construction', '2-opt local "
             "search', 'or-opt segment moves'). Each becomes one search action."
-        }
-    )
+        ),
+    ]
 
 
 @pydantic.dataclasses.dataclass(frozen=True)
@@ -236,12 +240,13 @@ class Design:
     of modules. This one structured value *is* the MCTS action space -- every
     downstream Implement call and every tree action reads it."""
 
-    analysis: str = dataclasses.field(
-        metadata={
-            "description": "A short reading of the task: what makes a good tour and "
+    analysis: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="A short reading of the task: what makes a good tour and "
             "how the modules cooperate to produce one."
-        }
-    )
+        ),
+    ]
     modules: list[ModuleSpec]
 
     def __post_init__(self) -> None:
@@ -283,12 +288,13 @@ class RolloutSummary:
     choices: list[PipelineChoice]
     tour_length: float
     cost_seconds: float
-    reward: float = dataclasses.field(
-        metadata={
-            "description": "The search reward: fractional improvement of the tour over "
+    reward: typing.Annotated[
+        float,
+        pydantic.Field(
+            description="The search reward: fractional improvement of the tour over "
             "the trivial identity ordering, in [0, 1] (higher is better)."
-        }
-    )
+        ),
+    ]
 
     def __str__(self) -> str:
         picks = " -> ".join(f"{c.module}:{c.strategy}" for c in self.choices)
@@ -303,19 +309,21 @@ class Reflection:
     """The Reflector's credit-assignment output: one transferable lesson drawn from
     comparing a strong branch against a weak one."""
 
-    lesson: str = dataclasses.field(
-        metadata={
-            "description": "A concrete, transferable engineering lesson about how to "
+    lesson: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="A concrete, transferable engineering lesson about how to "
             "implement a stage better -- grounded in the difference between the two "
             "branches, not generic advice. It will be shown to future implementers."
-        }
-    )
-    applies_to: str = dataclasses.field(
-        metadata={
-            "description": "Which module or strategy this lesson informs, so a future "
+        ),
+    ]
+    applies_to: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="Which module or strategy this lesson informs, so a future "
             "implementer knows when it is relevant."
-        }
-    )
+        ),
+    ]
 
     def __str__(self) -> str:
         return f"({self.applies_to}) {self.lesson}"

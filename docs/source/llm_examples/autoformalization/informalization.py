@@ -52,13 +52,11 @@ Demonstrates:
   the compiler `verification.py` proves against) rather than asserting it
 - Labelled corpora and an accuracy report separating the two error directions
 - Fan-out over independent audits with ``asyncio.gather`` + ``asyncio.to_thread``
-- Per-field guidance carried on the types as ``field(metadata={"description": ...})``
 """
 
 import argparse
 import asyncio
 import collections.abc
-import dataclasses
 import enum
 import pprint
 import typing
@@ -119,29 +117,31 @@ class Informalization:
     because it had been shown the requirement would be worth nothing.
     """
 
-    natural_language: str = dataclasses.field(
-        metadata={
-            "description": "One sentence of plain English for what this theorem "
+    natural_language: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="One sentence of plain English for what this theorem "
             "guarantees. Be literal: describe what the statement says, not what "
             "you suppose its author was aiming at."
-        }
-    )
-    hypotheses: str = dataclasses.field(
-        metadata={
-            "description": "What must hold for the guarantee to apply, in English; "
+        ),
+    ]
+    hypotheses: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="What must hold for the guarantee to apply, in English; "
             "'none' if the statement holds unconditionally."
-        }
-    )
-    conclusion: str = dataclasses.field(
-        metadata={"description": "What is guaranteed, in English."}
-    )
-    scope: str = dataclasses.field(
-        metadata={
-            "description": "What the guarantee ranges over: every state of the "
-            "system, one particular state, states satisfying some restriction, "
-            "etc."
-        }
-    )
+        ),
+    ]
+    conclusion: typing.Annotated[
+        str, pydantic.Field(description="What is guaranteed, in English.")
+    ]
+    scope: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="What the guarantee ranges over: every state of the system,"
+            "one particular state, states satisfying some restriction, etc."
+        ),
+    ]
     strength: Strength
     confidence: typing.Annotated[float, pydantic.Field(ge=0, le=1)]
 
@@ -157,12 +157,13 @@ class Comparison:
 
     verdict: Verdict
     weakening: Weakening
-    discrepancy: str = dataclasses.field(
-        metadata={
-            "description": "What the requirement asks for that the theorem does "
+    discrepancy: typing.Annotated[
+        str,
+        pydantic.Field(
+            description="What the requirement asks for that the theorem does "
             "not deliver. Empty when match is true."
-        }
-    )
+        ),
+    ]
 
     def __post_init__(self) -> None:
         if self.verdict is Verdict.CONFIRMED and self.weakening is not Weakening.NONE:
