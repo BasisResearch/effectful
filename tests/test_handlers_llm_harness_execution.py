@@ -1,0 +1,1995 @@
+"""Tests for effectful.handlers.llm.evaluation."""
+
+import ast
+import builtins
+import contextlib
+import dataclasses
+import importlib.util
+import io
+import json
+import sys
+import types
+from collections.abc import Callable
+from typing import Any
+
+import pydantic
+import pytest
+import tenacity
+from RestrictedPython import RestrictingNodeTransformer
+
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+from effectful.handlers.llm.harness.durability.transaction import (
+    CompactionScope,
+    HistoryBuilder,
+    transaction,
+)
+from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
+from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
+from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
+from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
+from effectful.handlers.llm.harness.hooks import AgentLoop
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
+from effectful.handlers.llm.harness.synthesis.function import (
+    SynthesizedFunction,
+    _recover_skill_def,
+    _splice_function,
+)
+from effectful.handlers.llm.harness.synthesis.snippet import (
+    ReplSession,
+    StatefulReplSynthesizer,
+    _scan_non_nestable,
+    _splice_snippet,
+)
+from effectful.handlers.llm.harness.validation.hooks import run_doctests, type_check
+from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
+from effectful.handlers.llm.types import Agent, Encodable, Skill
+from effectful.ops.semantics import handler
+
+from .conftest import (
+    MockCompletionHandler,
+    make_text_response,
+    make_tool_call_response,
+)
+
+# Every contract asserted below is a contract of the `type_check` operation, not of
+# one checker behind it, so the module runs once per handler that implements it. The
+# tests name `TYPE_CHECKER` instead of a class and this fixture rebinds it per
+# parameter; `autouse` because the handler stacks are assembled inside the tests and
+# their helpers rather than passed in, so there is nothing to thread a fixture
+# through. Assertions are by exception type and runtime effect -- never by matching a
+# checker's message or flag names -- which is what lets one suite serve both.
+TYPE_CHECKER: Callable[[], Any] = MypyTypeChecker
+
+
+@pytest.fixture(
+    params=[MypyTypeChecker, TyTypeChecker], ids=["mypy", "ty"], autouse=True
+)
+def type_checker(request, monkeypatch):
+    monkeypatch.setitem(globals(), "TYPE_CHECKER", request.param)
+    return request.param
+
+
+# ============================================================================
+# Splice-based type checking (splice_into_source + type_check)
+#
+# The type checker splices LLM-generated code into the real source of the
+# Skill's module -- at the skill function's own (possibly nested)
+# position -- and runs the installed checker over the whole module, raising only
+# on diagnostics inside the spliced region. These tests exercise that contract
+# against real anchor functions, for every checker that implements `type_check`.
+# ============================================================================
+
+
+# Module-level "Skill" anchors. Their bodies are placeholders; the type
+# checker replaces them with the generated code. ``count_a`` deliberately shares
+# a name with the function the model is asked to synthesize (issue #542).
+count_a: Callable[[str], int] = lambda s: 0  # noqa: E731
+
+
+class _Ctx:
+    x: int = 0
+
+
+def _count_char(char: str) -> Callable[[str], int]:
+    raise NotImplementedError
+
+
+def _takes_ctx() -> Callable[[_Ctx], int]:
+    raise NotImplementedError
+
+
+def _loose() -> Callable[..., object]:
+    raise NotImplementedError
+
+
+def _make_counter(helper_const: int) -> Callable[[int], int]:
+    def templ(a: int) -> Callable[[int], int]:
+        raise NotImplementedError
+
+    return templ  # type: ignore[return-value]
+
+
+def _raises(generated_src: str, anchor: Any) -> bool:
+    # Splice then type-check as separate steps (the decode path's shape), under a
+    # provider so the `type_check` op resolves.
+    try:
+        with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+            anchor_asts = _recover_skill_def(anchor)
+            assert anchor_asts is not None
+            module_ast, skill_def = anchor_asts
+            spliced = _splice_function(ast.parse(generated_src), module_ast, skill_def)
+            type_check(*spliced)
+        return False
+    except TypeError:
+        return True
+
+
+def _import_fixture(tmp_path, source: str, modname: str):
+    p = tmp_path / f"{modname}.py"
+    p.write_text(source)
+    spec = importlib.util.spec_from_file_location(modname, str(p))
+    assert spec is not None and spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[modname] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _anchor_from_source(tmp_path, source: str, attr: str, modname: str) -> Any:
+    return getattr(_import_fixture(tmp_path, source, modname), attr)
+
+
+def test_good_function_typechecks():
+    assert not _raises(
+        "def count_a(s: str) -> int:\n    return s.count('a')\n", _count_char
+    )
+
+
+def test_wrong_return_type_raises():
+    assert _raises("def count_a(s: str) -> str:\n    return s\n", _count_char)
+
+
+def test_synthesized_name_collides_with_context_var_issue_542():
+    # The synthesized ``count_a`` collides with the module-level ``count_a``
+    # binding. Nested as a local it *shadows* it (no ``[no-redef]``), where the
+    # old flat-stub mechanism raised and had to rename around the collision.
+    assert not _raises(
+        "def count_a(s: str) -> int:\n    return s.count('a')\n", _count_char
+    )
+
+
+def test_helpers_alongside_target_are_checked():
+    src = (
+        "def helper(y: int) -> int:\n    return y * 2\n"
+        "def count_a(s: str) -> int:\n    return helper(len(s))\n"
+    )
+    assert not _raises(src, _count_char)
+
+
+def test_closure_skill_sees_enclosing_local():
+    anchor = _make_counter(5)  # nested ``templ``, whose factory binds helper_const
+    assert not _raises("def f(z: int) -> int:\n    return z + helper_const\n", anchor)
+
+
+def test_unannotated_container_is_not_a_false_positive():
+    # Heterogeneous list via ``append`` runs fine, and an unannotated body is not
+    # held to a declared element type, so it must not be rejected.
+    src = "def cf(z):\n    acc = []\n    acc.append(1)\n    acc.append('x')\n    return acc\n"
+    assert not _raises(src, _loose)
+
+
+def test_star_import_raises():
+    with pytest.raises(ValueError):
+        _scan_non_nestable(
+            ast.parse("from os import *\ndef g(s: str) -> int:\n    return 0\n")
+        )
+
+
+def test_future_import_raises():
+    with pytest.raises(ValueError):
+        _scan_non_nestable(
+            ast.parse(
+                "from __future__ import annotations\n"
+                "def g(s: str) -> int:\n    return 0\n"
+            )
+        )
+
+
+def test_annotation_collision_with_context_type_raises():
+    # A helper named like the context type ``_Ctx`` and used as a body annotation
+    # is shadowed -> rejected (fail-closed; matches runtime, where the helper
+    # wins). The old rename pass rejected this identically; not a regression.
+    src = "def _Ctx(q):\n    return q\ndef f(z: _Ctx) -> int:\n    return z.x\n"
+    assert _raises(src, _takes_ctx)
+
+
+def test_gate_unrelated_module_error_does_not_block(tmp_path):
+    # The anchor's module contains an UNRELATED type error; a correct synthesis
+    # must still pass, because region-scoping ignores out-of-region diagnostics.
+    source = (
+        "from collections.abc import Callable\n\n\n"
+        "def unrelated() -> int:\n    return 'boom'\n\n\n"
+        "def templ(char: str) -> Callable[[str], int]:\n    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_gate_fixture")
+    assert not _raises("def count_a(s: str) -> int:\n    return s.count('a')\n", anchor)
+
+
+def test_method_skills_all_flavors(tmp_path):
+    # staticmethod/classmethod/instance skills all type-check: the splice leaves
+    # decorators untouched, so the method kind (self/cls semantics) is preserved and
+    # the checker never spuriously demands a missing ``self``. ``skill.__default__``
+    # is
+    # the static/classmethod *wrapper* (or the plain function for an instance
+    # method), exactly as ``Skill.define`` stores it.
+    source = (
+        "from collections.abc import Callable\n\n\n"
+        "class C:\n"
+        "    @staticmethod\n"
+        "    def sm(char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n\n"
+        "    @classmethod\n"
+        "    def cm(cls, char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n\n"
+        "    def im(self, char: str) -> Callable[[str], int]:\n"
+        "        raise NotImplementedError\n"
+    )
+    cls = _import_fixture(tmp_path, source, "splice_method_fixture").C
+    good = "def count_a(s: str) -> int:\n    return s.count('a')\n"
+    bad = "def count_a(s: str) -> str:\n    return s\n"
+    for name in ("sm", "cm", "im"):
+        anchor = cls.__dict__[name]  # the wrapper for static/classmethod
+        assert not _raises(good, anchor), f"{name}: correct body should pass"
+        assert _raises(bad, anchor), f"{name}: wrong return type should raise"
+
+
+def test_context_enum_and_dataclass_are_checked(tmp_path):
+    # The PR's headline value (issue #576): an Enum / dataclass in the skill's
+    # module is reachable through its real import, where the old quotation
+    # mechanism mishandled such types. A correct generated function passes; a
+    # misuse is still caught -- all without synthesizing any type stub.
+    source = (
+        "import dataclasses\n"
+        "import enum\n"
+        "from collections.abc import Callable\n\n\n"
+        "class Color(enum.Enum):\n"
+        "    RED = 1\n"
+        "    GREEN = 2\n\n\n"
+        "@dataclasses.dataclass\n"
+        "class Point:\n"
+        "    x: int\n"
+        "    y: int\n\n\n"
+        "def templ() -> Callable[[Color, Point], int]:\n"
+        "    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_enum_fixture")
+    good = (
+        "def f(c: Color, p: Point) -> int:\n    return p.x if c is Color.RED else p.y\n"
+    )
+    bad = "def f(c: Color, p: Point) -> int:\n    return p.nonexistent\n"
+    assert not _raises(good, anchor)
+    assert _raises(bad, anchor)
+
+
+def test_context_pydantic_model_is_checked_issue_576(tmp_path):
+    # Issue #576, the reported type: a Pydantic model. The old quotation mechanism
+    # re-emitted the model's inherited methods as stubs and dropped their
+    # keyword-only markers, so mypy rejected every generated function over a model
+    # with spurious `[override]` errors on `__deepcopy__`, `copy`, `dict`, `json`,
+    # `model_copy`, `model_dump`... Splicing reaches the real `BaseModel` through
+    # its real import instead, so a correct function passes -- including one calling
+    # `model_copy`, whose mangled stub was one of the reported errors -- while a
+    # genuine misuse is still caught.
+    source = (
+        "import pydantic\n"
+        "from collections.abc import Callable\n\n\n"
+        "class M(pydantic.BaseModel):\n"
+        "    x: int\n"
+        "    y: str\n\n\n"
+        "def templ() -> Callable[[M], M]:\n"
+        "    raise NotImplementedError\n"
+    )
+    anchor = _anchor_from_source(tmp_path, source, "templ", "splice_pydantic_fixture")
+    good = 'def f(m: M) -> M:\n    return m.model_copy(update={"x": m.x + 1})\n'
+    bad = "def f(m: M) -> M:\n    return m.x\n"  # int, not M
+    assert not _raises(good, anchor)
+    assert _raises(bad, anchor)
+
+
+def test_decode_runtime_only_pydantic_model_issue_576():
+    # Issue #576 verbatim: a model built by a factory exists only at runtime, so it
+    # cannot be imported from any file. Decoding a `Callable` over it used to fail
+    # in the type checker (which synthesized stubs from whatever was in the decode
+    # context); now the model is simply a runtime value passed through the context,
+    # and the decode succeeds and round-trips an instance.
+    def _make_model() -> type[pydantic.BaseModel]:
+        class MyModel(pydantic.BaseModel):
+            x: int
+            y: str
+
+        return MyModel
+
+    MyModel = _make_model()
+
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        fn = pydantic.TypeAdapter(
+            Encodable[Callable[[MyModel], MyModel]]
+        ).validate_python(
+            SynthesizedFunction(
+                code="def identity(a: MyModel) -> MyModel:\n    return a"
+            ),
+            context={"MyModel": MyModel},
+        )
+        assert fn(MyModel(x=1, y="hi")) == MyModel(x=1, y="hi")
+
+
+def test_generated_reference_to_unsourced_name_raises():
+    # A name present only at runtime (injected into the env, absent from the
+    # skill's source) is unrecoverable -> an unresolved-name diagnostic in-region ->
+    # raise. The fail-closed case-3 / injected-name narrowing.
+    assert _raises(
+        "def count_a(s: str) -> int:\n    return _definitely_not_in_scope(s)\n",
+        _count_char,
+    )
+
+
+def test_linecache_backed_skill_is_checked():
+    # REPL/``exec``-defined skills have no file; their source lives in
+    # ``linecache`` (the #690 path). Recovery must read it, so the check runs.
+    import linecache
+
+    fname = "<synthesis:splice-linecache-test>"
+    src = (
+        "from collections.abc import Callable\n\n\n"
+        "def templ(char: str) -> Callable[[str], int]:\n"
+        "    raise NotImplementedError\n"
+    )
+    linecache.cache[fname] = (len(src), None, src.splitlines(keepends=True), fname)
+    ns: dict[str, Any] = {}
+    exec(compile(src, fname, "exec"), ns)
+    anchor = ns["templ"]  # __code__.co_filename == fname; source only in linecache
+    assert not _raises("def count_a(s: str) -> int:\n    return s.count('a')\n", anchor)
+    assert _raises("def count_a(s: str) -> str:\n    return s\n", anchor)
+
+
+# --- End-to-end: decode through ``Encodable[Callable]`` with the anchor in
+# the (result) decode context. The argument path has no anchor and is skipped.
+
+
+def test_decode_with_anchor_typechecks_and_runs():
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(
+                code="def count_a(s: str) -> int:\n    return s.count('a')"
+            ),
+            context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
+        )
+        assert fn("banana") == 3
+
+
+def test_decode_with_anchor_rejects_bad_code():
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        with pytest.raises(Exception):
+            ta.validate_python(
+                SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
+                context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
+            )
+
+
+def test_decode_without_anchor_skips_typecheck():
+    # Argument-path decoding carries no anchor -> the type check is skipped, so
+    # even ill-typed code decodes (it is out of scope for this stage).
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        fn = ta.validate_python(
+            SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
+            context={},
+        )
+        assert callable(fn)
+
+
+def test_decode_with_anchor_rejects_non_nestable():
+    # The non-nestable scan is a decode-time precondition of the splice: with an
+    # anchor, a star import (illegal once nested in the Skill body) is rejected
+    # before type checking.
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
+        with pytest.raises(Exception):
+            ta.validate_python(
+                SynthesizedFunction(
+                    code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+                ),
+                context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
+            )
+
+
+def test_decode_without_anchor_still_rejects_non_nestable():
+    # The splice-time scan is anchor-conditional, but `SynthesizedFunction` states the
+    # no-star-import rule to the model as an unconditional constraint on `code`
+    # -- so it is enforced unconditionally too, and the anchorless path rejects it just
+    # as the spliced one does (here at model validation, before any provider runs).
+    with pytest.raises(pydantic.ValidationError):
+        SynthesizedFunction(
+            code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+        )
+
+
+# ============================================================================
+# RestrictedEvalProvider security tests
+# ============================================================================
+
+
+def test_restricted_blocks_private_attribute_access():
+    """RestrictedPython blocks access to underscore-prefixed attributes by default."""
+    source = SynthesizedFunction(
+        code="""def get_private(s: str) -> int:
+    return s.__class__.__name__"""
+    )
+    # Should raise due to restricted attribute access
+    with pytest.raises(Exception):  # Could be NameError or AttributeError
+        with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], int]]).validate_python(
+                source, context={}
+            )
+            fn("test")
+
+
+def test_restricted_with_custom_policy():
+    """Can pass custom policy via kwargs."""
+
+    # Create a custom policy that's the same as default (just to test the plumbing)
+    class CustomPolicy(RestrictingNodeTransformer):
+        pass
+
+    source = SynthesizedFunction(
+        code="""def add(a: int, b: int) -> int:
+    return a + b"""
+    )
+    with (
+        handler(TYPE_CHECKER()),
+        handler(RestrictedPythonExecutor(policy=CustomPolicy)),
+    ):
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source, context={}
+        )
+    assert fn(2, 3) == 5
+
+
+def test_builtins_in_env_does_not_bypass_security():
+    """Including __builtins__ in env should not bypass RestrictedEvalProvider security.
+
+    RestrictedEvalProvider explicitly filters out __builtins__ from the env
+    to prevent callers from replacing the restricted builtins with full Python builtins.
+    This test verifies that even if __builtins__ is passed in the context,
+    dangerous operations remain blocked.
+    """
+
+    # Attempt to pass full builtins in the context, which should be filtered out
+    dangerous_ctx = {"__builtins__": builtins.__dict__}
+
+    # Test 1: open() should not be usable even with __builtins__ in context
+    source_open = SynthesizedFunction(
+        code="""def read_file(path: str) -> str:
+    return open(path).read()"""
+    )
+    with pytest.raises(Exception):  # Could be NameError, ValueError, or other
+        with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_open, context=dangerous_ctx
+            )
+            fn("/etc/passwd")
+
+    # Test 2: __import__ should not be usable
+    source_import = SynthesizedFunction(
+        code="""def get_os_name() -> str:
+    os = __import__('os')
+    return os.name"""
+    )
+    with pytest.raises(Exception):
+        with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+            fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
+                source_import, context=dangerous_ctx
+            )
+            fn()
+
+    # Test 3: Verify safe code still works with dangerous context
+    source_safe = SynthesizedFunction(
+        code="""def add(a: int, b: int) -> int:
+    return a + b"""
+    )
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
+            source_safe, context=dangerous_ctx
+        )
+        assert fn(2, 3) == 5, "Safe code should still work"
+
+    # Test 4: Private attribute access should still be blocked
+    source_private = SynthesizedFunction(
+        code="""def get_class(s: str) -> str:
+    return s.__class__.__name__"""
+    )
+    with pytest.raises(Exception):
+        with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+            fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
+                source_private, context=dangerous_ctx
+            )
+            fn("test")
+
+
+# ============================================================================
+# ReplSession (#678)
+# ============================================================================
+
+
+def _code(source: str) -> types.CodeType:
+    """Compile `source` to a code object the way the `exec_code` tool boundary
+    does -- through `Encodable[CodeType]`, which routes the active eval
+    provider's `parse`/`compile` ops (so a handler must be installed)."""
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(source)
+
+
+def test_repl_seeds_from_lexical_context():
+    """Names in the seed context are usable in executed code."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"readings": [10, 20, 30]})
+        assert session.exec_code(_code("print(sum(readings))")) == "60\n"
+
+
+def test_repl_persists_bindings_across_calls():
+    """A binding created in one call is visible in the next."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        session.exec_code(_code("total = 41"))
+        assert session.exec_code(_code("print(total)")) == "41\n"
+
+
+def test_repl_rebinds_across_calls():
+    """A seeded/prior name can be rebound using its prior value."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_runs_complete_multistatement_block():
+    """A complete `def` + call in one snippet runs in one shot (the case
+    `single`-mode compilation would reject)."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        out = session.exec_code(
+            _code("def double(n):\n    return n * 2\nprint(double(21))")
+        )
+        assert out == "42\n"
+
+
+def test_repl_captures_print():
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+def test_repl_rejects_invalid_source_at_construction():
+    """Invalid source is rejected when it is decoded to a code object -- before it
+    ever reaches the session -- and valid code in the same provider still runs."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        with pytest.raises(SyntaxError):
+            _code("def f(:")
+        assert ReplSession({}).exec_code(_code("print('ok')")) == "ok\n"
+
+
+def test_repl_exception_propagates_and_session_survives():
+    """A runtime exception propagates to the caller -- the session is the
+    primitive, and turning the raise into model-visible feedback is the tool
+    layer's job (`call_tool` + `TenacityRetryer`) -- while the session itself
+    survives with every binding made before the raise."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        session.exec_code(_code("kept = 7"))
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("print(1 / 0)"))
+        assert session.exec_code(_code("print(kept)")) == "7\n"
+
+
+def test_repl_all_exceptions_propagate():
+    """`SystemExit` and `KeyboardInterrupt` propagate like everything else --
+    there is no swallowing tier in the session, so an interrupt genuinely
+    aborts instead of coming back as output."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        with pytest.raises(SystemExit):
+            session.exec_code(_code("raise SystemExit"))
+        with pytest.raises(KeyboardInterrupt):
+            session.exec_code(_code("raise KeyboardInterrupt"))
+        assert session.exec_code(_code("print('alive')")) == "alive\n"
+
+
+def test_repl_cross_snippet_traceback_shows_correct_source():
+    """A function defined in an earlier call that raises in a later call formats
+    with its *own* source line, not the later call's source -- the per-snippet
+    filename keeps each cell's source in linecache, so the propagated
+    exception's traceback (which the tool layer sends to the model) resolves
+    it."""
+    import traceback as _traceback
+
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        session.exec_code(_code("def boom():\n    return 1 / 0"))
+        with pytest.raises(ZeroDivisionError) as exc_info:
+            session.exec_code(_code("boom()"))
+        formatted = "".join(_traceback.format_exception(exc_info.value))
+        assert "return 1 / 0" in formatted  # boom's real source
+
+
+def test_repl_new_binding_does_not_leak_into_seed_context():
+    """A binding created in executed code stays in the session; the seed mapping
+    the session was created from is not mutated."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        seed = {"base": 10}
+        session = ReplSession(seed)
+        session.exec_code(_code("derived = base + 5"))
+        assert session.exec_code(_code("print(derived)")) == "15\n"
+        assert "derived" not in seed  # the lexical seed is untouched
+
+
+def test_repl_keeps_stdout_and_stderr_separate():
+    """stdout (print output) and stderr (writes) accumulate in separate,
+    introspectable buffers; `exec_code` returns this call's stdout then stderr.
+    Output printed before a raise stays in the session buffer -- captured, but
+    not returned, since the raise preempts the return."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        out = session.exec_code(
+            _code("import sys\nprint('hi')\nsys.stderr.write('warn\\n')")
+        )
+        assert session.stdout.getvalue() == "hi\n"
+        assert session.stderr.getvalue() == "warn\n"  # the streams don't mix
+        assert out == "hi\nwarn\n"  # returned: stdout then stderr
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("print('pre-raise')\n1 / 0"))
+        assert session.stdout.getvalue() == "hi\npre-raise\n"  # captured anyway
+
+
+def test_repl_runsource_routes_through_ops():
+    """`runsource` compiles through the `parse`/`compile` ops (so it needs an
+    installed provider), keeping it self-consistent with `runcode`/`exec_code`
+    rather than falling back to the native single-mode compiler."""
+    with pytest.raises(NotImplementedError):
+        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({})
+        assert session.runsource("kept = 7") is False  # complete: compiled + ran
+        assert session.locals["kept"] == 7
+
+
+# ----------------------------------------------------------------------------
+# ReplSession under RestrictedEvalProvider (state + print fixed in #686)
+# ----------------------------------------------------------------------------
+
+
+def test_repl_rebinds_across_calls_restricted():
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        session = ReplSession({"x": 10})
+        session.exec_code(_code("x = x + 1"))
+        assert session.exec_code(_code("print(x)")) == "11\n"
+
+
+def test_repl_captures_print_restricted():
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        assert ReplSession({}).exec_code(_code("print('hi')")) == "hi\n"
+
+
+# ============================================================================
+# RestrictedEvalProvider state-retention and print (#685)
+# ============================================================================
+
+
+def _restricted_run(source: str, ns: dict, capture: bool = False) -> str | None:
+    """Run one snippet through the parse/compile/exec ops under
+    RestrictedEvalProvider, optionally capturing stdout."""
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        code = compile_op(parse_op(source, "<f>"), "<f>")
+        if capture:
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                exec_op(code, ns)
+            return buf.getvalue()
+        exec_op(code, ns)
+        return None
+
+
+def test_restricted_exec_copies_back_rebound_seed():
+    """#685: rebinding a name already present in the namespace writes the new
+    value back, not just never-before-seen names."""
+    ns = {"x": 1}
+    _restricted_run("x = 99", ns)
+    assert ns["x"] == 99
+
+
+def test_restricted_exec_copies_back_rebound_new_key():
+    """#685: a key that becomes a 'seed' after its first definition is still
+    rebindable on subsequent calls."""
+    ns: dict = {}
+    _restricted_run("y = 1", ns)
+    _restricted_run("y = 2", ns)
+    assert ns["y"] == 2
+
+
+def test_restricted_exec_persists_and_rebinds_across_calls():
+    """#685: the namespace is a real REPL session — a binding from one call is
+    usable in the next, and rebinding it using its prior value works."""
+    ns: dict = {}
+    _restricted_run("x = 10", ns)
+    _restricted_run("x = x + 1", ns)
+    assert ns["x"] == 11
+
+
+def test_restricted_exec_print_captured_to_stdout():
+    """#685: RestrictedPython's `print` is routed to the real stdout so
+    output-capturing callers see it (rather than NameError on `_print_`)."""
+    out = _restricted_run("print('hi')", {}, capture=True)
+    assert out == "hi\n"
+
+
+# ============================================================================
+# What `RestrictedPythonPolicy` allows, and what the sandbox still refuses
+#
+# The two halves of one trade: generated code gets to be ordinary modern Python
+# (upstream RestrictedPython rejects most of the first list outright), and none of
+# that widens the reach of the second.
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        # Rejected by upstream `RestrictingNodeTransformer`, allowed here.
+        (
+            "annotated assignment",
+            "def f() -> int:\n    t: int = 2\n    return t\nR = f()",
+        ),
+        ("private helper", "def _dbl(x: int) -> int:\n    return 2 * x\nR = _dbl(1)"),
+        (
+            "nonlocal",
+            "def f() -> int:\n    n = 0\n    def bump() -> None:\n        nonlocal n\n"
+            "        n += 1\n    bump()\n    bump()\n    return n\nR = f()",
+        ),
+        ("augmented item assignment", "a = [0, 1]\na[0] += 2\nR = a[0]"),
+        (
+            "augmented attribute assignment",
+            "class C:\n    v = 0\nc = C()\nc.v += 2\nR = c.v",
+        ),
+        (
+            "dataclass",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\nR = P(2).x",
+        ),
+        (
+            "dunder methods",
+            "class B:\n    def __len__(self) -> int:\n        return 2\nR = len(B())",
+        ),
+        (
+            "super",
+            "class A:\n    def __init__(self) -> None:\n        self.x = 2\n"
+            "class B(A):\n    def __init__(self) -> None:\n        super().__init__()\nR = B().x",
+        ),
+        (
+            "type alias",
+            "type Row = list[int]\ndef f(r: Row) -> int:\n    return r[0]\nR = f([2])",
+        ),
+        # Broken by the missing runtime guards, rather than by the policy.
+        ("subscripting", "a = [0, 1, 2]\nR = a[2]"),
+        ("slicing", "R = len([0, 1, 2][1:])"),
+        ("tuple unpacking", "a, b = (1, 1)\nR = a + b"),
+        ("augmented assignment", "n = 0\nfor i in [1, 1]:\n    n += i\nR = n"),
+        ("starred call", "R = max(*[1, 2])"),
+        ("guarded import", "import math\nR = math.isqrt(5)"),
+        (
+            "from-import",
+            "from itertools import islice\nR = len(list(islice([1, 2, 3], 2)))",
+        ),
+        ("extended builtins", "R = sum(sorted(set(map(int, ['2', '2'])))) "),
+        ("bytearray", "b = bytearray(b'ab')\nb[0] = 99\nR = len(bytes(b))"),
+        ("memoryview", "R = len(bytes(memoryview(b'xyz')[1:]))"),
+        ("base64", "import base64\nR = len(base64.b64decode(base64.b64encode(b'hi')))"),
+        ("struct", "import struct\nR = struct.unpack('<H', struct.pack('<H', 2))[0]"),
+        ("csv", "import csv\nR = int(list(csv.reader(['a,b', '1,2']))[1][1])"),
+        (
+            "__slots__",
+            "class P:\n    __slots__ = ('x',)\n"
+            "    def __init__(self) -> None:\n        self.x = 2\nR = P().x",
+        ),
+        ("__all__", "__all__ = ['f']\ndef f() -> int:\n    return 2\nR = f()"),
+        # `str.format` -- allowed as long as no field reaches past its argument.
+        ("str.format", "R = int('{}'.format(2))"),
+        ("str.format keyword", "R = int('{n}'.format(n=2))"),
+        ("str.format nested spec", "R = int('{0:{1}}'.format(2, 'd'))"),
+        ("str.format_map", "R = int('{v}'.format_map({'v': 2}))"),
+        ("str.format unbound", "R = int(str.format('{0}', 2))"),
+        # `match` -- every pattern kind, since each is a separate visitor.
+        (
+            "match literal",
+            "match 1:\n    case 1:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match singleton",
+            "match None:\n    case None:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match or",
+            "match 3:\n    case 1 | 3:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        ("match capture", "match 2:\n    case x:\n        R = x"),
+        (
+            "match guard",
+            "match 9:\n    case x if x > 5:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        ("match sequence", "match [1, 1]:\n    case [a, b]:\n        R = a + b"),
+        ("match star", "match [2, 9, 9]:\n    case [first, *rest]:\n        R = first"),
+        ("match as", "match [1]:\n    case [1] as hit:\n        R = len(hit) + 1"),
+        (
+            "match mapping",
+            "match {'k': 1, 'z': 0}:\n    case {'k': v, **rest}:\n        R = v + len(rest)",
+        ),
+        (
+            "match class by keyword",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\n    y: int\n"
+            "match P(0, 2):\n    case P(x=0, y=y):\n        R = y\n    case _:\n        R = 0",
+        ),
+        (
+            "match class by position",
+            "import dataclasses\n@dataclasses.dataclass\nclass P:\n    x: int\n    y: int\n"
+            "match P(0, 2):\n    case P(0, y):\n        R = y\n    case _:\n        R = 0",
+        ),
+        (
+            "match dotted value",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n    BLUE = 2\n"
+            "match C.RED:\n    case C.RED:\n        R = 2\n    case _:\n        R = 0",
+        ),
+        (
+            "match nested",
+            "match {'p': [1, {'q': 1}]}:\n    case {'p': [a, {'q': b}]}:\n        R = a + b",
+        ),
+    ],
+)
+def test_restricted_allows_ordinary_python(label, source):
+    """Each of these is code a model writes without thinking twice; every one of
+    them fails to run under stock RestrictedPython."""
+    ns: dict = {}
+    _restricted_run(source, ns)
+    assert ns["R"] == 2, label
+
+
+def test_restricted_annotations_are_not_stringified():
+    """Annotations evaluate to the objects the source names.
+
+    `compile_restricted` compiles without ``dont_inherit`` from a module that does
+    ``from __future__ import annotations``, so its future flag leaks in and every
+    annotation in generated code becomes a string -- which silently changes what
+    `dataclasses`, `typing.get_type_hints` and anything else reading annotations
+    see. The provider recompiles to keep the source's own semantics.
+    """
+    ns: dict = {}
+    _restricted_run("class P:\n    x: int\n", ns)
+    assert ns["P"].__annotations__ == {"x": int}
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("attribute escape to type", "R = ().__class__.__bases__[0].__subclasses__()"),
+        ("function globals", "def f() -> None:\n    pass\nR = f.__globals__"),
+        ("dynamic dunder getattr", "R = getattr((), '__class__')"),
+        (
+            "frame via traceback",
+            "try:\n    raise ValueError\nexcept ValueError as e:\n    R = e.__traceback__",
+        ),
+        ("generator frame", "def g():\n    yield 1\nR = g().gi_frame"),
+        ("open", "R = open('/etc/passwd').read()"),
+        ("import os", "import os\nR = os.name"),
+        ("import sys", "import sys\nR = sys.modules"),
+        ("import importlib", "import importlib\nR = importlib"),
+        ("dunder import", "R = __import__('os')"),
+        ("exec", "R = exec('1')"),
+        ("eval", "R = eval('1')"),
+        ("compile", "R = compile('1', '<s>', 'eval')"),
+        ("globals", "R = globals()"),
+        ("star import", "from math import *\nR = pi"),
+        ("rebind a guard", "_getattr_ = getattr\nR = 1"),
+        ("rebind builtins", "__builtins__ = 1\nR = 1"),
+        ("async", "async def f() -> None:\n    pass\nR = 1"),
+        # `io.open` *is* `builtins.open`, so allowing `io` would undo omitting it;
+        # `numpy.load(..., allow_pickle=True)` executes arbitrary code.
+        ("import io", "import io\nR = io.open('/etc/passwd')"),
+        ("import numpy", "import numpy\nR = numpy"),
+        # The format traversals that are the reason RestrictedPython refuses
+        # `str.format` outright: they happen inside CPython's formatter, where the
+        # `_getattr_`/`_getitem_` rewriting cannot see them.
+        ("format reaches an attribute", "R = '{0.__class__}'.format(())"),
+        ("format reaches the type hierarchy", "R = '{0.__class__.__mro__}'.format(())"),
+        ("format reaches an item", "R = '{0[0]}'.format([1, 2])"),
+        ("format reaches from a nested spec", "R = '{0:{1.__class__}}'.format(1, 2)"),
+        ("format_map reaches an attribute", "R = '{v.__class__}'.format_map({'v': 1})"),
+        ("unbound format reaches", "R = str.format('{0.__class__}', ())"),
+        ("string.Formatter", "import string\nR = string.Formatter().format('{0}', 1)"),
+        # A pattern reads attributes of the subject outside the `_getattr_`
+        # rewriting, so the names it can read are checked in the AST instead. The
+        # dotted-name forms are the ones Python's own parser accepts.
+        (
+            "class pattern reads a dunder",
+            "match 1:\n    case object(__class__=cls):\n        R = cls\n    case _:\n        R = 0",
+        ),
+        (
+            "class pattern reads a frame attribute",
+            "match 1:\n    case object(gi_frame=g):\n        R = g\n    case _:\n        R = 0",
+        ),
+        (
+            "value pattern reaches a dunder",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n"
+            "match 1:\n    case C.__class__:\n        R = 1\n    case _:\n        R = 0",
+        ),
+        (
+            "mapping key reaches a dunder",
+            "import enum\nclass C(enum.Enum):\n    RED = 1\n"
+            "match {}:\n    case {C.__class__: v}:\n        R = v\n    case _:\n        R = 0",
+        ),
+        (
+            "capture binds a guard name",
+            "match 1:\n    case _getattr_:\n        R = 1",
+        ),
+        (
+            "star capture binds a guard name",
+            "match [1, 2]:\n    case [x, *_getattr_]:\n        R = 1\n    case _:\n        R = 0",
+        ),
+    ],
+)
+def test_restricted_still_refuses_the_way_out(label, source):
+    """The relaxations above are about what generated code may *say*, not about
+    what it may *reach*: the interpreter's internals, the import system, the
+    filesystem and the compiler are all still closed. Each of these fails at
+    compile time (the policy) or at run time (the guarded environment)."""
+    with pytest.raises(Exception):
+        _restricted_run(source, {})
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        # The two spellings reported in the issue.
+        ("exit", "exit()"),
+        ("quit", "quit()"),
+        # `BaseException` and the subclasses of it that are not `Exception`, which
+        # `safe_builtins` supplies and this environment takes back out.
+        ("raise SystemExit", "raise SystemExit(7)"),
+        ("raise KeyboardInterrupt", "raise KeyboardInterrupt"),
+        ("raise GeneratorExit", "raise GeneratorExit"),
+        ("raise BaseException", "raise BaseException('boom')"),
+        ("subclass SystemExit", "class E(SystemExit):\n    pass\nraise E(9)"),
+        # An allowed module holds the modules *it* imported as public attributes,
+        # so the allowlist has to gate the module wherever it is reached from --
+        # not just the name in the `import` statement. The pairs these reach
+        # through are registered in `_MODULE_ATTRIBUTE_ESCAPES` below, which is
+        # what keeps them from going stale unnoticed.
+        ("uuid.os", "import uuid\nR = uuid.os"),
+        ("uuid.os.system", "import uuid\nR = uuid.os.system('echo pwned')"),
+        ("uuid.os._exit", "import uuid\nR = uuid.os._exit(0)"),
+        ("uuid.os.fork", "import uuid\nR = uuid.os.fork()"),
+        ("typing.sys.exit", "import typing\nR = typing.sys.exit(3)"),
+        ("queue.threading", "import queue\nR = queue.threading"),
+        ("json.codecs", "import json\nR = json.codecs"),
+        ("dynamic getattr for a module", "import uuid\nR = getattr(uuid, 'os')"),
+        ("dynamic getattr with a default", "import uuid\nR = getattr(uuid, 'os', 1)"),
+        # `from uuid import os` fetches the attribute with `IMPORT_FROM`, which is
+        # not rewritten to `_getattr_`; only `_guarded_import` sees it.
+        ("from-import a module", "from uuid import os\nR = os.system('echo pwned')"),
+        ("from-import sys", "from typing import sys\nR = sys.exit(4)"),
+        ("from-import threading", "from queue import threading\nR = threading"),
+    ],
+)
+def test_restricted_cannot_terminate_its_host_issue_757(label, source):
+    """#757: generated code must not be able to shut down the process running it.
+
+    `call_tool` catches `Exception`, deliberately and not `BaseException` -- so a
+    real Ctrl-C still interrupts the host rather than being reported to the model
+    as a failed tool call. That makes `SystemExit` (and the rest of `BaseException`)
+    the one thing a snippet can raise that the harness will not contain, and
+    `os._exit`/`os.fork`/`os.kill` worse still, since they do not raise at all.
+
+    So `pytest.raises(Exception)` is the assertion, not incidental to it: each of
+    these must fail as something catchable. A `SystemExit` here would not be caught
+    by this test either -- it would escape into pytest, exactly as it escapes into
+    the host program in the issue.
+    """
+    with pytest.raises(Exception):
+        _restricted_run(source, {})
+
+
+# Every (module, attribute) pair the escape cases above reach a second module
+# through. Registered here so `test_module_attribute_escapes_are_still_reachable`
+# can check they exist; see that test for why.
+_MODULE_ATTRIBUTE_ESCAPES = [
+    ("uuid", "os"),
+    ("typing", "sys"),
+    ("queue", "threading"),
+    ("json", "codecs"),
+]
+
+
+@pytest.mark.parametrize("module_name,attribute", _MODULE_ATTRIBUTE_ESCAPES)
+def test_module_attribute_escapes_are_still_reachable(module_name, attribute):
+    """Guard the escape cases above: an attribute that no longer exists would
+    make them pass without testing anything.
+
+    Those cases assert `pytest.raises(Exception)`, and deliberately so -- what
+    they are proving is that the escape fails as something *catchable*, which a
+    narrower assertion could not express. But that breadth also admits the
+    `AttributeError` of an attribute that simply is not there any more: a
+    stdlib module's incidental imports are not API, and 3.14 dropped `re` from
+    both `csv` and `base64`. Were `uuid.os` to go the same way, `import uuid; R
+    = uuid.os` would keep passing while proving nothing about the gate, and the
+    sandbox would be untested exactly where it is load-bearing.
+
+    So this fails loudly instead, and the fix when it does is to re-point the
+    case at a module attribute that still exists -- not to delete it.
+    """
+    module = importlib.import_module(module_name)
+    reached = getattr(module, attribute, None)
+    assert isinstance(reached, types.ModuleType), (
+        f"{module_name}.{attribute} is no longer a module attribute on this "
+        f"interpreter, so the escape case that reaches through it proves nothing"
+    )
+
+
+@pytest.mark.parametrize(
+    "label,source",
+    [
+        ("allowed module", "import math\nR = math.sqrt(16)"),
+        ("allowed submodule", "import collections.abc\nR = collections.abc.Mapping"),
+        ("from-import a submodule", "from collections import abc\nR = abc.Mapping"),
+        ("from-import a name", "from dataclasses import dataclass\nR = dataclass"),
+        # `fractions.math` rather than the more obvious `csv.re`: a stdlib module's
+        # incidental imports are not API, and 3.14 dropped `re` from both `csv` and
+        # `base64`. `Fraction` cannot normalize without `math.gcd`, so this pair is
+        # load-bearing upstream rather than incidental.
+        (
+            "module attribute that is a module",
+            "import fractions\nR = fractions.math.gcd(4, 6)",
+        ),
+        ("Exception is still available", "R = Exception('fine')"),
+        (
+            "except Exception still works",
+            "try:\n    raise ValueError\nexcept Exception:\n    R = 1",
+        ),
+    ],
+)
+def test_restricted_module_gate_leaves_ordinary_imports_alone(label, source):
+    """The gate above is on the *module*, so an allowed module reached through
+    another allowed module (`fractions.math`) is fine, and taking `Exception` out
+    of `BaseException`'s company leaves ordinary error handling untouched."""
+    ns: dict = {}
+    _restricted_run(source, ns)
+    assert "R" in ns
+
+
+def test_restricted_runs_doctests_under_the_same_policy():
+    """A docstring is model output too, so its examples run restricted.
+
+    Left to `doctest`, the examples are compiled by the built-in `compile` and run
+    with whatever globals they are handed -- so an escape written in a docstring
+    would execute with nothing restricting it. Here the identical function passes
+    its doctests under `BuiltinExecutor` and fails them under
+    `RestrictedPythonExecutor`, because the example itself is rejected by the policy.
+    """
+
+    def peek(x: int) -> int:
+        """Reach the type hierarchy from an example.
+
+        >>> ().__class__ is tuple
+        True
+        """
+        return x
+
+    with (
+        handler(TYPE_CHECKER()),
+        handler(BuiltinExecutor()),
+    ):  # unrestricted: the example is just Python
+        run_doctests(peek, {"peek": peek})
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        with pytest.raises(TypeError, match="doctest failed"):
+            run_doctests(peek, {"peek": peek})
+
+
+def test_restricted_doctest_can_print_and_import():
+    """The restricted doctest environment is still a usable one: `print` works (the
+    transformer injects its collector only into modules and functions, never into
+    the `single`-mode code an example compiles to) and allow-listed imports work."""
+
+    def summarize(xs: list[int]) -> int:
+        """Total ``xs``.
+
+        >>> import math
+        >>> print(math.isqrt(4), summarize([1, 2]))
+        2 3
+        """
+        return sum(xs)
+
+    with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
+        run_doctests(summarize, {"summarize": summarize})
+
+
+class TestRunDoctests:
+    """Doctest validation stage for synthesized functions (#433)."""
+
+    @pytest.fixture(autouse=True)
+    def _provider(self):
+        # `run_doctests` compiles and runs each example through the `compile` and
+        # `exec` operations, so it needs a provider installed exactly as the code
+        # it validates does.
+        with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+            yield
+
+    def test_passing_doctests_pass(self):
+        def count_char(s: str, c: str) -> int:
+            """Count occurrences of ``c`` in ``s``.
+
+            >>> count_char("hello", "l")
+            2
+            >>> count_char("", "x")
+            0
+            """
+            return s.count(c)
+
+        # No exception means the doctests passed.
+        run_doctests(count_char, {"count_char": count_char})
+
+    def test_failing_doctest_raises_with_report(self):
+        def count_char(s: str, c: str) -> int:
+            """Wrong expected output.
+
+            >>> count_char("hello", "l")
+            99
+            """
+            return s.count(c)
+
+        with pytest.raises(TypeError) as exc:
+            run_doctests(count_char, {"count_char": count_char})
+        msg = str(exc.value)
+        assert "doctest failed" in msg
+        assert "Expected:" in msg and "99" in msg
+
+    def test_no_doctests_is_noop(self):
+        def plain(x: int) -> int:
+            """No interactive examples here."""
+            return x
+
+        run_doctests(plain, {"plain": plain})
+
+    def test_no_docstring_is_noop(self):
+        def nodoc(x: int) -> int:
+            return x
+
+        run_doctests(nodoc, {"nodoc": nodoc})
+
+    def test_doctest_uses_globs(self):
+        offset = 10
+
+        def add_offset(x: int) -> int:
+            """Add the captured ``offset`` to ``x``.
+
+            >>> add_offset(5)
+            15
+            """
+            return x + offset
+
+        # `offset` resolves from globs, not the example's literals.
+        run_doctests(add_offset, {"add_offset": add_offset, "offset": offset})
+
+    def test_op_finds_and_reports_via_its_default_rule(self):
+        # Finding the examples and reporting their failures is the default rule's
+        # own work -- only compiling and running them is the provider's.
+        def f(x: int) -> int:
+            """Identity.
+
+            >>> f(1)
+            1
+            """
+            return x
+
+        run_doctests(f, {"f": f})  # passes
+
+        def g(x: int) -> int:
+            """Wrong.
+
+            >>> g(1)
+            2
+            """
+            return x
+
+        with pytest.raises(TypeError, match="doctest failed"):
+            run_doctests(g, {"g": g})
+
+
+def test_run_doctests_requires_a_provider():
+    """With no provider installed, the examples cannot be compiled or executed at
+    all: `run_doctests` delegates both to the operations, so `doctest` reports the
+    provider's own `NotImplementedError` as a failed example."""
+
+    def f(x: int) -> int:
+        """Identity.
+
+        >>> f(1)
+        1
+        """
+        return x
+
+    with pytest.raises(TypeError, match="doctest failed") as exc:
+        run_doctests(f, {"f": f})
+    assert "eval provider must be installed" in str(exc.value)
+
+
+class TestRunDoctestsThroughCallableDecode:
+    """`Encodable[Callable[...]]` runs the synthesized function's doctests."""
+
+    def _decode(self, code: str, provider=None):
+        provider = provider or BuiltinExecutor()
+        with handler(TYPE_CHECKER()), handler(provider):
+            return pydantic.TypeAdapter(
+                Encodable[Callable[[str, str], int]]
+            ).validate_python(SynthesizedFunction(code=code), context={})
+
+    def test_decode_runs_passing_doctests(self):
+        fn = self._decode(
+            "def count_char(s: str, c: str) -> int:\n"
+            '    """Count occurrences.\n'
+            "\n"
+            '    >>> count_char("hello", "l")\n'
+            "    2\n"
+            '    """\n'
+            "    return s.count(c)\n"
+        )
+        assert fn("banana", "a") == 3
+
+    def test_decode_rejects_failing_doctests(self):
+        with pytest.raises(Exception) as exc:
+            self._decode(
+                "def count_char(s: str, c: str) -> int:\n"
+                '    """Count occurrences.\n'
+                "\n"
+                '    >>> count_char("hello", "l")\n'
+                "    99\n"
+                '    """\n'
+                "    return s.count(c)\n"
+            )
+        assert "doctest failed" in str(exc.value)
+
+    def test_decode_restricted_provider(self):
+        fn = self._decode(
+            "def count_char(s: str, c: str) -> int:\n"
+            '    """Count occurrences.\n'
+            "\n"
+            '    >>> count_char("hello", "l")\n'
+            "    2\n"
+            '    """\n'
+            "    return s.count(c)\n",
+            provider=RestrictedPythonExecutor(),
+        )
+        assert fn("hello", "l") == 2
+
+
+# ============================================================================
+# REPL code type-checking (issue #690)
+#
+# `exec_code` type-checks the cumulative session code -- prior snippets plus the
+# current one -- spliced into the enclosing Skill's body (`splice_repl_code_into_body`
+# + the `type_check` op, `lenient=True`), so names resolve in their real execution
+# context. These tests drive that pipeline against a real anchor and assert the
+# contract by exception type / runtime effect -- never by matching a checker's message
+# or a filename.
+# ============================================================================
+
+
+def _repl_anchor(readings: list[int]) -> int:
+    """A module-level stand-in for a Skill function: the REPL splice target. Its
+    real source is recoverable (it lives in this test module) and its parameter
+    `readings` stands in for a name from the session's seed env."""
+    raise NotImplementedError
+
+
+def _nested_repl_anchor():
+    """The same stand-in, but nested -- the shape of a Skill defined inside a
+    function, which is how the examples and most tests define one.
+
+    The difference that matters is where the seed name comes from. Above,
+    `readings` is a *parameter*, bound on entry, so a snippet may assign to it
+    freely. Here it is an *enclosing-scope* binding, and assigning to it makes it
+    local to the whole spliced body -- which is what
+    `test_repl_rebinding_a_seed_name_leaves_earlier_cells_clean` turns on.
+    """
+    readings = [12, 19, 23, 31, 8, 27]
+
+    def anchor() -> int:
+        return len(readings)
+
+    return anchor
+
+
+def _repl_raises(prior: list[str], snippet: str, anchor=_repl_anchor) -> bool:
+    """type_check the cumulative REPL code spliced into `anchor`'s body; True
+    if it reports an in-region error."""
+    # Prepend the already-run snippets to the current one and report only the
+    # current one's span -- both exactly as the production caller does, so these
+    # tests exercise the region it actually asks for rather than a wider one.
+    prior_src = "".join(s if s.endswith("\n") else s + "\n" for s in prior)
+    anchor_asts = _recover_skill_def(anchor)
+    assert anchor_asts is not None
+    module_ast, skill_def = anchor_asts
+    checked = _splice_snippet(
+        ast.parse(prior_src + snippet),
+        module_ast,
+        skill_def,
+        len(ast.parse(prior_src).body),
+    )
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        try:
+            type_check(*checked, lenient=True)
+            return False
+        except TypeError:
+            return True
+
+
+# --- Type-check semantics: checked in the Skill body, leniently ---
+
+
+def test_repl_seed_env_read_is_checked():
+    """A snippet reading a seed name (a Skill parameter) resolves in the spliced
+    body and is checked -- the case the old module-scope gate could only decline.
+    A correct use is clean; misusing the seed's type is a real error."""
+    assert not _repl_raises([], "total = sum(readings)\nprint(total)")
+    assert _repl_raises([], "bad: str = sum(readings)\nprint(bad)")
+
+
+def test_repl_cross_snippet_names_resolve():
+    """A helper defined in an earlier cell resolves when a later cell uses it (the
+    cumulative splice); calling it with the wrong type is caught."""
+    prior = ["def helper(n: int) -> int:\n    return n + 1"]
+    assert not _repl_raises(prior, "print(helper(3))")
+    assert _repl_raises(prior, "print(helper('bad'))")
+
+
+def test_repl_rebind_across_cells_is_lenient():
+    """A cell may rebind a name to a new type and use it -- normal REPL editing,
+    allowed by `--allow-redefinition`, not a type error."""
+    assert not _repl_raises(["x = 1"], "x = 'now a string'\nprint(x.upper())")
+
+
+def test_repl_body_need_not_return_skill_type():
+    """REPL code isn't a function returning the Skill's declared type; the return
+    contract is waived (``--disable-error-code=return``), so a body with no matching
+    return is clean."""
+    assert not _repl_raises([], "y = sum(readings)\nprint(y)")
+
+
+def test_repl_global_and_nonlocal_are_not_false_positives():
+    """`global`/`nonlocal` are legal REPL code; spliced into the Skill body they do
+    not produce a spurious diagnostic."""
+    assert not _repl_raises(
+        ["counter = 0"], "def bump():\n    global counter\n    counter += 1\nbump()"
+    )
+
+
+def test_repl_read_of_cross_cell_rebound_name_is_lenient():
+    """A name rebound to a new type across cells, then read, is clean: the checker
+    narrows to the latest binding, so no spurious error on the read. (The old
+    module-scope gate had to decline this explicitly.)"""
+    assert not _repl_raises(['x = "s"', "x = 5"], "print(x + 1)")
+
+
+def test_repl_illtyped_but_runnable_snippet_is_caught():
+    """An ill-typed snippet that would execute with no runtime error is reported --
+    plain execution never catches it."""
+    assert _repl_raises([], "n: int = 'oops'\nprint(n)")
+
+
+def test_repl_checks_the_cumulative_body():
+    """The whole cumulative body is checked. A production caller prepends only
+    already-run, type-clean snippets (from `repl_history`), so an error can only
+    come from the current cell; earlier cells stay in the body so their bindings
+    still resolve."""
+    assert _repl_raises(
+        [], "bad: int = 'x'\nprint(bad)"
+    )  # current cell error -> raised
+    assert not _repl_raises(
+        ["c = 3"], "print(c + 1)"
+    )  # earlier binding resolves, clean
+
+
+def test_repl_rebinding_a_seed_name_leaves_earlier_cells_clean():
+    """A cell may rebind a seed-env name without faulting the cell that read it.
+
+    Both cells run: the session is a single namespace, so cell 1 reads the seeded
+    `readings` and cell 2 rebinds it, exactly as reassigning any REPL variable
+    would. Spliced into a function body, though, cell 2's assignment makes
+    `readings` local to the *whole* body, and cell 1's read -- which already ran --
+    becomes a use-before-assignment. That is an artifact of modelling a namespace
+    as a function scope, and it is why only the current cell's span is reported.
+
+    The seed name has to come from an enclosing scope for this to bite, so this
+    uses `_nested_repl_anchor`; with `_repl_anchor` it is a parameter, bound on
+    entry, and assigning to it is unremarkable.
+    """
+    nested = _nested_repl_anchor()
+    reads_the_seed = "total = sum(readings)\nprint(total)"
+    rebinds_the_seed = "readings = [1, 2, 3]"
+
+    # Each cell is clean on its own ...
+    assert not _repl_raises([], reads_the_seed, anchor=nested)
+    assert not _repl_raises([], rebinds_the_seed, anchor=nested)
+    # ... and the second does not retroactively fault the first.
+    assert not _repl_raises([reads_the_seed], rebinds_the_seed, anchor=nested)
+
+    # The narrowing is only of the *reported* span: a genuine error in the
+    # current cell is still caught against the same anchor and prior cell.
+    assert _repl_raises([reads_the_seed], "oops: int = 'x'", anchor=nested)
+
+    # Both halves of the mismatch the narrowing exists for. The session runs the
+    # two cells without complaint -- it is one namespace, seeded with `readings`,
+    # and the second cell just reassigns a name ...
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"readings": [12, 19, 23, 31, 8, 27]})
+        assert session.exec_code(_code(reads_the_seed)) == "120\n"
+        session.exec_code(_code(rebinds_the_seed))
+
+    # ... while the same two cells *as a function body* really do raise, because
+    # there the assignment makes `readings` local to the whole body. The checker
+    # is right about the function; it is the function that misrepresents the
+    # session, which is why the fix narrows the reported span rather than
+    # suppressing the diagnostic.
+    namespace: dict = {}
+    exec(  # noqa: S102
+        "def outer():\n"
+        "    readings = [12, 19, 23, 31, 8, 27]\n"
+        "    def anchor():\n"
+        + "".join(f"        {line}\n" for line in reads_the_seed.splitlines())
+        + f"        {rebinds_the_seed}\n"
+        "    return anchor\n",
+        namespace,
+    )
+    with pytest.raises(UnboundLocalError):
+        namespace["outer"]()()
+
+
+def test_repl_failed_snippet_bindings_still_resolve():
+    """A snippet that raised at runtime stays in the cumulative splice
+    (`exec_code` records every snippet that reached execution), so a binding it
+    made *before* raising resolves in the repair cell -- the ordinary
+    read-the-error-and-fix flow must not be rejected at the decode gate. The
+    price is that bindings from statements *after* the raise are phantoms: they
+    pass the gate and fail at runtime instead, where error feedback handles
+    them."""
+    prior = ["data = [1, 2, 3]\n1 / 0\nnever_bound = 99"]
+    assert not _repl_raises(prior, "print(data[0])")  # real binding resolves
+    assert not _repl_raises(prior, "print(never_bound)")  # phantom: runtime's problem
+
+
+def test_repl_splice_skips_sourceless_anchor():
+    """A Skill with no recoverable source (defined via exec/REPL/notebook) skips the
+    check rather than breaking the tool -- like ``splice_into_source`` for a sourceless
+    Callable anchor. Only source *drift* raises."""
+    ns: dict[str, Any] = {}
+    exec("def t(readings):\n    raise NotImplementedError", ns)
+    anchor_asts = _recover_skill_def(ns["t"])
+    assert anchor_asts is None
+
+
+# --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---
+
+
+def _decode(source: str, *, anchor: bool) -> types.CodeType:
+    """Decode `source` to a code object the way the `exec_code` tool argument does -- with
+    the Skill type-check anchor in the decode context (``anchor=True``, as a managed
+    Skill call supplies) or without it."""
+    ctx = {_TYPE_CHECK_ANCHOR_KEY: _repl_anchor} if anchor else None
+    return pydantic.TypeAdapter(Encodable[types.CodeType]).validate_python(
+        source, context=ctx
+    )
+
+
+def test_repl_decode_rejects_illtyped_snippet():
+    """With the Skill anchor in the decode context, an ill-typed-but-runnable snippet is
+    type-checked and rejected *at decode* -- so it never reaches `runcode` (upstream this
+    fails the tool-call decode and `TenacityRetryer` retries). A well-typed snippet decodes
+    to a code object."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        with pytest.raises((pydantic.ValidationError, TypeError)):
+            _decode("n: int = 'oops'\nprint(n)", anchor=True)
+        assert isinstance(
+            _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
+        )
+
+
+def test_repl_decode_without_anchor_skips_typecheck():
+    """Outside a managed Skill call there is no anchor in the decode context, so an
+    ill-typed snippet decodes without a type check (it can still run)."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        assert isinstance(_decode("n: int = 'oops'", anchor=False), types.CodeType)
+
+
+def test_repl_exec_code_runs_and_records_history():
+    """`exec_code` itself no longer type-checks -- it runs the (decode-checked) code and
+    records each snippet's source so a later decode can splice the accumulated session."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"readings": [1, 2, 3]})
+        assert session.exec_code(_code("total = sum(readings)\nprint(total)")) == "6\n"
+        assert session.prior_snippets == ["total = sum(readings)\nprint(total)"]
+
+
+# --- decode boundary: non-nestable constructs rejected at Encodable[CodeType] ---
+
+
+def test_encodable_code_rejects_future_import():
+    """`from __future__ import ...` is illegal once nested in a function body, so it
+    is rejected when the code object is decoded, before it can run."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from __future__ import annotations\nx = 1")
+
+
+def test_encodable_code_rejects_star_import():
+    """A star import is likewise rejected at decode."""
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        with pytest.raises(pydantic.ValidationError):
+            _code("from os import *\nx = 1")
+
+
+# ============================================================================
+# transaction(): what a completed transaction writes back to its prefix
+#
+# `HistoryBuilder.call_agent` runs every Skill call inside one of these over the
+# agent's durable `__history__`, so what compaction can express is bounded by
+# what this can write back. Plain list manipulation -- no model, no mock.
+# ============================================================================
+
+
+def _msgs(*roles: str) -> list[Any]:
+    """Distinguishable messages, one per role, tagged so identity and equality
+    both distinguish them."""
+    return [{"role": role, "tag": i} for i, role in enumerate(roles)]
+
+
+def test_transaction_writes_back_appended_messages():
+    """The ordinary case: a transaction that only appends hands its prefix the
+    tail it produced."""
+    prefix = _msgs("system", "user", "assistant")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        assert buffer == original
+        buffer.append({"role": "user", "tag": "new"})
+        buffer.append({"role": "assistant", "tag": "new"})
+    assert prefix == [
+        *original,
+        {"role": "user", "tag": "new"},
+        {"role": "assistant", "tag": "new"},
+    ]
+
+
+def test_transaction_writes_back_a_truncated_prefix():
+    """A transaction that *rewrites* the prefix it inherited -- a compaction --
+    writes the rewrite back.
+
+    The buffer ends shorter than the prefix it started from, so the
+    append-only write-back cannot express it: it would leave the prefix
+    untouched *and* drop everything this transaction added, silently losing the
+    whole call. This is the regression that gates the whole-conversation clear.
+    """
+    prefix = _msgs("system", "user", "assistant")
+    system = prefix[0]
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        buffer.append({"role": "user", "tag": "new"})
+        buffer.append({"role": "assistant", "tag": "clearing"})
+        # Keep only the system message and the request this call opened.
+        buffer[:] = [system, {"role": "user", "tag": "new"}]
+        buffer.append({"role": "assistant", "tag": "answer"})
+    assert prefix == [
+        system,
+        {"role": "user", "tag": "new"},
+        {"role": "assistant", "tag": "answer"},
+    ]
+
+
+def test_transaction_preserves_concurrent_growth():
+    """A prefix that grew by some other route during the transaction still
+    receives exactly this transaction's messages, appended after that growth."""
+    prefix = _msgs("system", "user")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix) as buffer:
+        buffer.append({"role": "assistant", "tag": "mine"})
+        prefix.append({"role": "user", "tag": "theirs"})
+    assert prefix == [
+        *original,
+        {"role": "user", "tag": "theirs"},
+        {"role": "assistant", "tag": "mine"},
+    ]
+
+
+def test_transaction_write_back_false_discards_everything():
+    """`TenacityRetryer`'s scratch transaction: nothing reaches the prefix,
+    whether the buffer grew or was rewritten."""
+    prefix = _msgs("system", "user")
+    original = list(prefix)
+    with handler(HistoryBuilder()), transaction(prefix, write_back=False) as buffer:
+        buffer.append({"role": "assistant", "tag": "scratch"})
+        buffer[:] = [{"role": "system", "tag": "rewritten"}]
+    assert prefix == original
+
+
+@dataclasses.dataclass
+class _Keeper(Agent):
+    """A test agent with one durable field the model can promote state onto.
+
+    ``step``'s prompt splices that field, so a request rendered before the model
+    writes to it and one rendered after are distinguishable -- which is what
+    `test_clear_refreshes_the_surviving_request` turns on.
+    """
+
+    x: int = 0
+
+    @Skill.define
+    def step(self, q: str) -> str:
+        """Answer {q}. Current x is {self.x}."""
+
+
+def _compact_call(
+    code: str,
+    tool_call_id: str = "call_1",
+    compact: CompactionScope = CompactionScope.TURN,
+):
+    return make_tool_call_response(
+        "exec_code",
+        json.dumps({"code": code, "compact": compact}),
+        tool_call_id=tool_call_id,
+    )
+
+
+def _compaction_stack(mock, *, retryer_last: bool = True):
+    """The offline agent stack in `harness()`'s order: the retryer is composed
+    last, so it is reached first and `StatefulReplSynthesizer.call_tool` sees a
+    failing snippet as a *raised* `ToolCallExecutionError`. With
+    ``retryer_last=False`` the order is inverted so the rule sees the error
+    *as a value* instead (the other shape it must handle)."""
+    stack = contextlib.ExitStack()
+    stack.enter_context(handler(AgentLoop()))
+    stack.enter_context(handler(LiteLLMConfigurer(model="test")))
+    stack.enter_context(handler(HistoryBuilder()))
+    stack.enter_context(handler(mock))
+    stack.enter_context(handler(BuiltinExecutor()))
+    retryer = TenacityRetryer(stop=tenacity.stop_after_attempt(2))
+    if retryer_last:
+        stack.enter_context(handler(StatefulReplSynthesizer()))
+        stack.enter_context(handler(retryer))
+    else:
+        stack.enter_context(handler(retryer))
+        stack.enter_context(handler(StatefulReplSynthesizer()))
+    return stack
+
+
+def _text_of(message) -> str:
+    content = message.get("content")
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.get("text", "") for part in (content or []) if isinstance(part, dict)
+    )
+
+
+def test_clear_keeps_the_request_and_the_asking_round():
+    """A clean snippet leaves ``[system, user, assistant, tool]``: the request,
+    and the round that asked for the clear -- the model's message, the source it
+    submitted and the output.
+
+    Nothing is extracted into a note, because nothing needs to be: the snippet is
+    verbatim in the assistant message's tool-call arguments and its output is the
+    tool message. The promoted binding on `self` survives regardless, and the
+    REPL-only one does not.
+    """
+    mock = MockCompletionHandler(
+        [
+            _compact_call("tmp = 41\nself.x = tmp + 1\nprint('promoted x')"),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        result = agent.step("go")
+
+    assert result == "done"
+    assert agent.x == 42  # promoted via `self`, outlives the cleared transcript
+    assert not hasattr(agent, "tmp")  # REPL-only names die with the session
+
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",  # the turn that asked for the clear
+        "tool",  # its output
+        "assistant",  # the answer, appended after the clear
+    ]
+    # The snippet the model wrote and what it printed are both still readable.
+    assert "self.x = tmp + 1" in json.dumps(history[2])
+    assert "promoted x" in _text_of(history[3])
+
+    # And the request the loop sent next was that same well-formed history, with
+    # the tool message answered by the assistant message that requested it.
+    followup = mock.received_messages[1]
+    assert [m["role"] for m in followup] == ["system", "user", "assistant", "tool"]
+
+
+def test_clear_keeps_the_request_as_it_was_sent():
+    """The request kept by a clear is the one that was actually sent, holes and
+    all -- it is not re-rendered against the state the call has since changed.
+
+    `_Keeper.step` splices ``{self.x}``, so the message that opened the call says
+    ``x is 0``; the snippet then sets it to 7. Reporting 0 is correct, because
+    the round kept directly *below* the request is the round that made it 7.
+    Re-rendering would read backwards: a request that already knew the answer,
+    above the turn that worked it out. The current value is not lost either --
+    the next call renders its own request from the state it finds, which the
+    second `step` here checks.
+    """
+    mock = MockCompletionHandler(
+        [
+            _compact_call("self.x = 7\nprint('set')"),
+            make_text_response("done"),
+            make_text_response("again"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+        assert agent.step("go again") == "again"
+
+    opening = _text_of(mock.received_messages[0][1])
+    surviving = _text_of(agent.__history__[1])
+    assert "Current x is 0" in opening
+    assert surviving == opening
+    # The write is reported by the round below the request, not by the request.
+    assert "self.x = 7" in json.dumps(agent.__history__[2])
+    # And the *next* call's request carries the new value, unprompted.
+    assert "Current x is 7" in _text_of(agent.__history__[5])
+
+
+def test_clear_turn_preserves_prior_calls():
+    """``compact="turn"`` drops only the current call's earlier rounds: previous
+    exchanges in an `Agent`'s history survive it."""
+    mock = MockCompletionHandler(
+        [
+            make_text_response("first"),
+            _compact_call("print('note')"),
+            make_text_response("second"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("one") == "first"
+        assert agent.step("two") == "second"
+
+    roles = [m["role"] for m in agent.__history__]
+    assert roles == [
+        "system",
+        "user",
+        "assistant",  # the first call, untouched
+        "user",
+        "assistant",
+        "tool",  # the second call's request and clearing round
+        "assistant",  # its answer
+    ]
+    assert "note" in _text_of(agent.__history__[5])
+
+
+def test_compact_conversation_drops_prior_calls():
+    """``compact="conversation"`` additionally drops those previous calls, leaving
+    the system message, the request and the clearing round.
+
+    This is the compaction that reaches below the enclosing transaction's start,
+    and so the end-to-end partner of
+    `test_transaction_writes_back_a_truncated_prefix`: without that write-back
+    the durable history would keep the first call *and* lose the second.
+    """
+    mock = MockCompletionHandler(
+        [
+            make_text_response("first"),
+            _compact_call("print('note')", compact=CompactionScope.CONVERSATION),
+            make_text_response("second"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("QUESTION-ONE") == "first"
+        assert agent.step("QUESTION-TWO") == "second"
+
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    # Past the system message, which embeds this module's own source and so
+    # mentions both questions whatever the history holds.
+    assert "QUESTION-ONE" not in json.dumps(history[1:])  # the first call is gone
+    assert "QUESTION-TWO" in _text_of(history[1])
+    assert "note" in _text_of(history[3])
+
+
+def test_clear_alongside_a_sibling_tool_call():
+    """A clearing call in a turn that made two calls leaves a well-formed
+    history.
+
+    Compaction removes only messages *ahead* of the assistant message that
+    requested the clear, so that message is still there to answer the sibling's
+    tool result -- which `HistoryBuilder.append_message` asserts on, and which an
+    earlier truncate-to-the-request design would have orphaned.
+    """
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response(
+                [
+                    (
+                        "exec_code",
+                        json.dumps({"code": "print('a')", "compact": "turn"}),
+                    ),
+                    (
+                        "exec_code",
+                        json.dumps({"code": "print('b')", "compact": "none"}),
+                    ),
+                ]
+            ),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "tool",
+        "assistant",
+    ]
+    assert "a" in _text_of(history[3]) and "b" in _text_of(history[4])
+
+
+def test_compact_on_free_skill():
+    """A free `Skill` gets a fresh history per call, so the compaction compacts its
+    only exchange and the call completes normally."""
+
+    @Skill.define
+    def answer(q: str) -> str:
+        """Answer {q}."""
+
+    mock = MockCompletionHandler(
+        [
+            _compact_call("print('fine')"),
+            make_text_response("ok"),
+        ]
+    )
+    with _compaction_stack(mock):
+        assert answer("go") == "ok"
+    assert not hasattr(answer, "__history__")
+
+
+@pytest.mark.parametrize("retryer_last", [True, False])
+def test_raising_snippet_clears_nothing_and_feeds_back(retryer_last):
+    """A raising snippet compacts nothing: the traceback reaches the model as
+    a tool message, the session survives for repair, and the rule behaves the
+    same whether it observes the failure as a raised `ToolCallExecutionError`
+    (harness order) or as an error value already converted by `TenacityRetryer`
+    (inverted order)."""
+    mock = MockCompletionHandler(
+        [
+            _compact_call("self.x = 99\n1 / 0"),
+            _compact_call("print('repaired')", tool_call_id="call_2"),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock, retryer_last=retryer_last):
+        assert agent.step("go") == "done"
+
+    # The failed round was NOT cleared out from under the model: the request
+    # after the failure still carries the failing assistant turn and the error
+    # feedback as a tool message.
+    after_failure = mock.received_messages[1]
+    assert [m["role"] for m in after_failure] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+    ]
+    assert "ZeroDivisionError" in _text_of(after_failure[3])
+
+    # The repair's clear then landed, dropping the failed round and keeping its
+    # own; the failed snippet's partial effects never survived as session code.
+    history = list(agent.__history__)
+    assert [m["role"] for m in history] == [
+        "system",
+        "user",
+        "assistant",
+        "tool",
+        "assistant",
+    ]
+    assert "repaired" in _text_of(history[3])
+    # Past the system message, which embeds this module's own source.
+    assert "ZeroDivisionError" not in json.dumps(history[1:])
+
+
+def test_request_names_the_session_and_points_at_its_arguments():
+    """The request carries a `REPL session` section: that a fresh session opens
+    with it, and that the call's arguments are bound in that session.
+
+    Both facts are per-call, which is why they live here rather than in the
+    system message -- and the arguments are claimed *nowhere* else, since the
+    `Lexical scope` table is built from the Skill's lexical context alone.
+    Without this, a model has no way to know that the value spliced into the
+    prompt is also reachable as a name, and retypes it into its snippets.
+
+    The section points at the request's own heading rather than tabulating the
+    parameters, so what it claims has to actually be there: the heading carries
+    the signature, names and annotations both.
+    """
+    mock = MockCompletionHandler([make_text_response("done")])
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+
+    request = _text_of(mock.received_messages[0][1])
+    # Unwrapped, since the section is hard-wrapped prose and these claims span
+    # its line breaks.
+    flat = " ".join(request.split())
+    assert "REPL session" in flat
+    assert "discarded when you answer it" in flat
+    assert "parameters of the signature heading this request are bound" in flat
+    # The heading the section refers to -- with `q`'s type, and no `self`.
+    assert request.lstrip().startswith("# step(q: str) -> str")
+
+
+def test_exec_code_without_clear_leaves_history_intact():
+    """The default is the plain REPL: a call without compaction truncates nothing,
+    so the tool round stays in the durable history."""
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("exec_code", json.dumps({"code": "print('hi')"})),
+            make_text_response("done"),
+        ]
+    )
+    agent = _Keeper()
+    with _compaction_stack(mock):
+        assert agent.step("go") == "done"
+    roles = [m["role"] for m in agent.__history__]
+    assert roles == ["system", "user", "assistant", "tool", "assistant"]
+
+
+def test_session_records_snippets_that_raised():
+    """`exec_code` propagates exceptions -- the resilient tier is the tool
+    layer, not the session -- but records every snippet that reached
+    execution, including one that raised partway: it may have bound names
+    before the raise, and the next snippet's decode-time type check must see
+    them or a valid repair cell reading them would be rejected at the gate."""
+    with handler(BuiltinExecutor()):
+        session = ReplSession({})
+        assert session.exec_code(_code("kept = 1\nprint('ok')")) == "ok\n"
+        with pytest.raises(ZeroDivisionError):
+            session.exec_code(_code("data = [1, 2, 3]\n1 / 0"))
+        assert session.prior_snippets == [
+            "kept = 1\nprint('ok')",
+            "data = [1, 2, 3]\n1 / 0",
+        ]
+        # The session survived the failure, and the binding made before the
+        # raise is real -- the repair cell can read it.
+        assert session.exec_code(_code("print(data[0])")) == "1\n"

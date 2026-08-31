@@ -44,6 +44,12 @@ typehints_use_signature_return = True
 # Enable documentation inheritance
 autodoc_inherit_docstrings = True
 
+# Render the ``__init__`` docstring alongside the class docstring.  The LLM
+# harness handlers rely on this split: a handler's class docstring is injected
+# into the model's system prompt, so constructor documentation -- which only
+# the caller of ``Handler(...)`` can act on -- lives on ``__init__`` instead.
+autoclass_content = "both"
+
 # The suffix(es) of source filenames.
 # You can specify multiple suffix as a list of string:
 #

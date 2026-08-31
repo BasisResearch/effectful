@@ -144,8 +144,7 @@ class TypeEvaluator(abc.ABC):
     @evaluate.register
     def _(self, typ: typing._AnnotatedAlias):  # type: ignore
         return typing.Annotated[
-            self.evaluate(typing.get_args(typ)[0]),
-            typ.__metadata__,
+            (self.evaluate(typing.get_args(typ)[0]), *typ.__metadata__)
         ]
 
     @evaluate.register
@@ -1102,7 +1101,9 @@ def _(value: collections.abc.Collection):
 
 @nested_type.register
 def _(value: tuple):
-    if type(value) != tuple or len(value) == 0:
+    if hasattr(value, "_fields"):
+        return Box(type(value))
+    elif type(value) != tuple or len(value) == 0:
         return nested_type.dispatch(collections.abc.Sequence)(value)
     else:
         return Box(tuple[tuple(nested_type(item).value for item in value)])  # type: ignore

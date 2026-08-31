@@ -12,9 +12,12 @@ jobs:
   test-llm:
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
         model: ["gpt-4o-mini"]
+        mypy: ["mypy", "not mypy"]
+    name: "test-llm (py ${{ matrix.python-version }}, ${{ matrix.mypy }})"
     steps:
       - uses: actions/checkout@v4
 
@@ -37,4 +40,35 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          uv run pytest tests/test_handlers_llm_provider.py tests/test_handlers_llm_tool_calling_poem.py tests/test_handlers_llm_tool_calling_book.py tests/test_handlers_llm_encoding.py -v --tb=short
+          uv run pytest tests/test_handlers_llm_* -v -n logical \
+            -m "not example" -k "${{ matrix.mypy }}"
+
+  # The basics/ examples, run live the way a reader runs them.
+  examples:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    name: "basics examples (live)"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+          python-version: "3.13"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install Python dependencies
+        run: |
+          uv sync --all-extras --dev
+
+      - name: Run the basics examples
+        env:
+          EFFECTFUL_LLM_MODEL: gpt-4o-mini
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          uv run pytest tests/test_handlers_llm_examples.py -v -n logical \
+            -m "not nightly_example"
