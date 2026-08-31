@@ -436,6 +436,19 @@ def test_fwd_through_apply_operation_subtypes():
 
     assert calls == ["exact", "derived apply", "base apply", "apply", "default"]
 
+    # Unhandled intermediate apply operations proceed directly to their defaults,
+    # so the base apply handler sees the original operation exactly once.
+    calls.clear()
+    with handler(
+        {
+            Operation.__apply__: forwarding("apply"),
+            f: forwarding("exact"),
+        }
+    ):
+        assert f(1) == 2
+
+    assert calls == ["exact", "apply", "default"]
+
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n1", N_CASES)

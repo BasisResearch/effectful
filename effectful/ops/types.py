@@ -533,8 +533,7 @@ class Operation[**Q, V]:
             fwd_intp = typing.cast(Interpretation, {fwd: self._next_rule_with_args})
             with handler(fwd_intp):
                 return self_handler(*args, **kwargs)
-        elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
-            # Prevent infinite recursion when calling self.apply directly
+        elif isinstance(self, ApplyOperation):
             return self.__default__(*args, **kwargs)
         else:
             return self.__apply__(self, *args, **kwargs)
@@ -544,9 +543,7 @@ class Operation[**Q, V]:
         if not _generate_apply:
             return
 
-        assert "__apply__" not in cls.__dict__ or cls is Operation, (
-            "Cannot manually override apply"
-        )
+        assert "__apply__" not in cls.__dict__, "Cannot manually override apply"
         assert isinstance(cls.__apply__, ApplyOperation)
 
         cls.__apply__ = cls.__apply__.define(
