@@ -1,19 +1,14 @@
-"""TypedDict unification tests using Required/NotRequired/ReadOnly annotations.
+"""TypedDict unification tests using Required/NotRequired/typing_extensions.ReadOnly annotations.
 
 Separated from test_internals_unification.py because mypy 1.19 cannot serialize
 RequiredType instances to its cache, causing a crash.
 """
 
 import collections.abc
-import sys
 import typing
 
 import pytest
-
-if sys.version_info >= (3, 13):
-    from typing import ReadOnly
-else:
-    from typing_extensions import ReadOnly
+import typing_extensions
 
 from effectful.internals.unification import (
     canonicalize,
@@ -193,7 +188,7 @@ def test_canonicalize_typeddict_notrequired():
         items: typing.NotRequired[list[int]]
 
     result = canonicalize(TD)
-    assert typing.is_typeddict(result)
+    assert typing_extensions.is_typeddict(result)
     assert "items" in result.__optional_keys__
 
 
@@ -242,29 +237,25 @@ def test_unify_typeddict_invariance_rejects_subtype():
         unify(Pattern, Sub)
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 13), reason="ReadOnly TypedDict requires 3.13+"
-)
 def test_unify_typeddict_readonly_covariance():
-    """ReadOnly field allows covariant subtyping."""
-    Pattern = typing.TypedDict("Pattern", {"x": ReadOnly[int]})  # noqa: UP013
-    Sub = typing.TypedDict("Sub", {"x": ReadOnly[bool]})  # noqa: UP013
+    """typing_extensions.ReadOnly field allows covariant subtyping."""
+    Pattern = typing_extensions.TypedDict(  # noqa: UP013
+        "Pattern", {"x": typing_extensions.ReadOnly[int]}
+    )
+    Sub = typing_extensions.TypedDict("Sub", {"x": typing_extensions.ReadOnly[bool]})  # noqa: UP013
 
-    # bool is subtype of int, ReadOnly allows covariance
+    # bool is subtype of int, typing_extensions.ReadOnly allows covariance
     subs = unify(Pattern, Sub)
     assert subs == {}
 
 
-@pytest.mark.skipif(
-    sys.version_info < (3, 13), reason="ReadOnly TypedDict requires 3.13+"
-)
 def test_unify_typeddict_readonly_notrequired_to_required():
-    """ReadOnly NotRequired in typ, Required in subtyp → OK (promotion)."""
-    Pattern = typing.TypedDict(  # noqa: UP013
+    """typing_extensions.ReadOnly NotRequired in typ, Required in subtyp → OK (promotion)."""
+    Pattern = typing_extensions.TypedDict(  # noqa: UP013
         "Pattern",
-        {"x": ReadOnly[typing.NotRequired[str]]},
+        {"x": typing_extensions.ReadOnly[typing.NotRequired[str]]},
     )
-    Sub = typing.TypedDict("Sub", {"x": str})  # noqa: UP013
+    Sub = typing_extensions.TypedDict("Sub", {"x": str})  # noqa: UP013
 
     subs = unify(Pattern, Sub)
     assert subs == {}
