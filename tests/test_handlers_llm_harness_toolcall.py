@@ -1164,6 +1164,65 @@ def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
 
 
 # ============================================================================
+# Return types with no `Encodable` decoding at all
+# ============================================================================
+
+_UNENCODABLE_SKILL_SRC = '''
+from effectful.handlers.llm import Skill
+
+
+class Widget:
+    """A type the encoding registry knows nothing about."""
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def __repr__(self) -> str:
+        return f"Widget({self.n})"
+
+
+@Skill.define
+def make_widget(n: int) -> Widget:
+    """Build a widget holding {n}."""
+'''
+
+
+@pytest.fixture
+def widget_mod(tmp_path, request):
+    modname = f"_widget_fixture_{request.node.name}".replace("[", "_").replace("]", "")
+    mod = _import_fixture(tmp_path, _UNENCODABLE_SKILL_SRC, modname)
+    yield mod
+    sys.modules.pop(modname, None)
+
+
+def test_unencodable_return_redirects_to_code_mode(widget_mod):
+    # A return type with no decoding is answerable by the route an uninstantiated
+    # one takes: the response format asks for a string nothing satisfies, so the
+    # plausible-looking reply below is refused and the feedback steers the model
+    # to `write_and_run_body`, whose result is the answer.
+    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    result = _run_generic(
+        widget_mod,
+        lambda: widget_mod.make_widget(3),
+        [
+            make_text_response(json.dumps({"value": "Widget(3)"})),
+            make_tool_call_response(
+                "write_and_run_body",
+                json.dumps(
+                    {"implementation": "def make_widget(n):\n    return Widget(n)\n"}
+                ),
+            ),
+        ],
+        FinalBodySynthesizer(),
+        TenacityRetryer(),
+    )
+    assert isinstance(result, widget_mod.Widget)
+    assert result.n == 3
+
+
+# ============================================================================
 # Live model
 # ============================================================================
 

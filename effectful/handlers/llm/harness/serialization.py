@@ -434,23 +434,6 @@ def _pydantic_type_str[T](ty: type[T]) -> type[T]:
     return ty
 
 
-@dataclasses.dataclass(frozen=True)
-class _NoEncoding:
-    """Refuses a *validation* JSON schema for a type that has no encoding."""
-
-    ty: typing_extensions.TypeForm
-
-    def __get_pydantic_json_schema__(self, schema, handler):
-        if handler.mode == "validation":
-            raise pydantic.errors.PydanticInvalidForJsonSchema(
-                f"`{inspect.formatannotation(self.ty)}` has no `Encodable` encoding, so a "
-                f"value of it can be sent to the model but not decoded from the "
-                f"model's output. Register one with `TypeToPydanticType.register` "
-                f"if the model needs to produce these."
-            )
-        return handler(schema)
-
-
 def _serialize_unencodable(value: typing.Any) -> str:
     """Render a value whose type has no encoding, as text.
 
@@ -470,21 +453,39 @@ def _serialize_unencodable(value: typing.Any) -> str:
 
 @TypeToPydanticType.register(object)
 def _pydantic_type_base(ty: typing.Any) -> typing.Any:
-    """Pydantic's own handling, or a serialize-only encoding if it has none."""
+    """Pydantic's own handling, or a serialize-only encoding if it has none.
+
+    A serialize-only value reaches the model as text and nothing decodes back to
+    one, so the two directions get different schemas: the validation one asks for
+    a string no reply can satisfy, the way `_UndecodableReturn` does for a return
+    type left uninstantiated.  Register a real encoding with
+    `TypeToPydanticType.register` if the model needs to produce these.
+    """
     try:
         pydantic.TypeAdapter(ty)
         return ty
     except pydantic.errors.PydanticSchemaGenerationError:
+        name = inspect.formatannotation(ty)
         return typing.Annotated[
             ty,
             pydantic.InstanceOf,
             pydantic.PlainSerializer(
                 _serialize_unencodable,
-                return_type=typing.Annotated[
-                    str, pydantic.Field(description=inspect.formatannotation(ty))
+                return_type=typing.Annotated[str, pydantic.Field(description=name)],
+            ),
+            pydantic.BeforeValidator(
+                lambda value: value,
+                json_schema_input_type=typing.Annotated[
+                    str,
+                    pydantic.Field(
+                        description=(
+                            f"No decoding exists for `{name}`, so a direct reply of "
+                            f"it cannot be decoded. Do not answer directly: call a "
+                            f"tool that produces a final answer instead."
+                        )
+                    ),
                 ],
             ),
-            _NoEncoding(ty),
         ]
 
 
