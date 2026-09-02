@@ -453,14 +453,7 @@ def _serialize_unencodable(value: typing.Any) -> str:
 
 @TypeToPydanticType.register(object)
 def _pydantic_type_base(ty: typing.Any) -> typing.Any:
-    """Pydantic's own handling, or a serialize-only encoding if it has none.
-
-    A serialize-only value reaches the model as text and nothing decodes back to
-    one, so the two directions get different schemas: the validation one asks for
-    a string no reply can satisfy, the way `_UndecodableReturn` does for a return
-    type left uninstantiated.  Register a real encoding with
-    `TypeToPydanticType.register` if the model needs to produce these.
-    """
+    """Pydantic's own handling, or a serialize-only encoding if it has none."""
     try:
         pydantic.TypeAdapter(ty)
         return ty
@@ -502,16 +495,7 @@ def _best_effort_schema(
 
 
 def _is_decodable(annotation: typing_extensions.TypeForm) -> bool:
-    """Whether the model can be asked to produce a value of ``annotation``.
-
-    False when its validation schema refuses anywhere within, and when it has no
-    such schema at all (`Operation`, `Term`).
-
-    The question is put to the generated schema rather than to the type, because
-    an encoding that supplies its own validation schema does not delegate inward:
-    a synthesized `Callable` is asked for as source, so it decodes whatever its
-    return type is.
-    """
+    """Whether the model can be asked to produce a value of ``annotation``."""
 
     def refuses(node: typing.Any) -> bool:
         if isinstance(node, dict):
@@ -556,9 +540,6 @@ class _UndecodableReturn:
     reply cannot be decoded soundly. Do not answer directly: call a tool that
     produces a final answer instead."""
 
-    # The `title` every refusing validation schema carries, so `_is_decodable` can
-    # recognize one without reading its prose. Deliberately not an identifier, like
-    # the context keys at the top of this module.
     __schema_title__: typing.ClassVar[typing.Literal["$UNDECODABLE"]] = "$UNDECODABLE"
 
 
@@ -849,14 +830,6 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
 
 
 def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
-    """Encode ``value`` as the JSON advertisement of the tool it names.
-
-    A tool with a parameter the model cannot produce is refused rather than
-    advertised: it would be offered as callable and then fail to decode every
-    call, spending a turn each time.  Its return type is not in question -- an
-    unencodable result reaches the model as text -- and the expression pathway
-    can still call it, with real Python values.
-    """
     name, tool = value
     params = inspect.signature(tool).parameters
     for param_name, param in params.items():
