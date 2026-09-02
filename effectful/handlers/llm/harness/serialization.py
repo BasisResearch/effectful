@@ -60,6 +60,22 @@ CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
 )
 
 
+def _is_empty_text_block(block: typing.Any) -> bool:
+    """Whether `block` is a text block with no text."""
+    return (
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and not block.get("text")
+    )
+
+
+def _text_blocks(text: str) -> list[OpenAIMessageContentListBlock]:
+    """`text` as one content block, or no block at all when `_is_empty_text_block`
+    would reject it."""
+    block = ChatCompletionTextObject(type="text", text=text)
+    return [] if _is_empty_text_block(block) else [block]
+
+
 @pydantic.validate_call(validate_return=True)
 def to_content_blocks(
     value: typing.Any,
@@ -74,17 +90,17 @@ def to_content_blocks(
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
 
-    No block has empty text; Anthropic rejects a request containing one.
+    Every text block goes through `_text_blocks`, so none of them is empty;
+    Anthropic rejects a request containing one.
     """
     if isinstance(value, str):
-        return [ChatCompletionTextObject(type="text", text=value)] if value else []
+        return _text_blocks(value)
 
     buf: list[str] = []
     blocks: list[OpenAIMessageContentListBlock] = []
 
     def flush() -> None:
-        if text := "".join(buf):
-            blocks.append(ChatCompletionTextObject(type="text", text=text))
+        blocks.extend(_text_blocks("".join(buf)))
         buf.clear()
 
     def walk(v: typing.Any) -> None:
@@ -114,15 +130,6 @@ def to_content_blocks(
     return blocks
 
 
-def _is_empty_text_block(block: typing.Any) -> bool:
-    """Whether `block` is a text block with no text."""
-    return (
-        isinstance(block, dict)
-        and block.get("type") == "text"
-        and not block.get("text")
-    )
-
-
 def format_as_content_blocks(
     template: str,
     env: collections.abc.Mapping[str, typing.Any],
@@ -141,8 +148,7 @@ def format_as_content_blocks(
     buf: list[str] = []
 
     def flush_text() -> None:
-        if text := "".join(buf):
-            parts.append(ChatCompletionTextObject(type="text", text=text))
+        parts.extend(_text_blocks("".join(buf)))
         buf.clear()
 
     for literal, field_name, format_spec, conversion in formatter.parse(
@@ -154,22 +160,25 @@ def format_as_content_blocks(
         if field_name is None:
             continue
 
+        def formatted(text: str, conversion=conversion, spec=format_spec) -> str:
+            if conversion:
+                text = formatter.convert_field(text, conversion)
+            return formatter.format_field(text, spec or "")
+
         obj, _ = formatter.get_field(field_name, (), env)
         encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[nested_type(obj).value]  # type: ignore[misc]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
-        encoded_parts = to_content_blocks(encoded_obj)
-        if not encoded_parts and isinstance(encoded_obj, str):
-            encoded_parts = [ChatCompletionTextObject(type="text", text=encoded_obj)]
-        for part in encoded_parts:
+        if isinstance(encoded_obj, str):
+            # Formatted here rather than through `to_content_blocks`, which
+            # drops an empty string before a conversion or format spec could
+            # turn it into something.
+            buf.append(formatted(encoded_obj))
+            continue
+        for part in to_content_blocks(encoded_obj):
             if part["type"] == "text":
-                text = (
-                    formatter.convert_field(part["text"], conversion)
-                    if conversion
-                    else part["text"]
-                )
-                buf.append(formatter.format_field(text, format_spec or ""))
+                buf.append(formatted(part["text"]))
             else:
                 flush_text()
                 parts.append(part)

@@ -52,6 +52,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
 from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
+    _is_empty_text_block,
     _NameAndTool,
     format_as_content_blocks,
     to_content_blocks,
@@ -3531,6 +3532,13 @@ class TestEmptyContentBlocks:
         assert to_content_blocks("") == []
         assert to_content_blocks({"a": ""}) == [{"type": "text", "text": '{"a": ""}'}]
         assert to_content_blocks([]) == [{"type": "text", "text": "[]"}]
+
+    @pytest.mark.parametrize(
+        "value", ["", "   ", "x", {}, [], {"a": ""}, {"a": [1, ""]}, 0, None]
+    )
+    def test_to_content_blocks_agrees_with_is_empty_text_block(self, value):
+        """The invariant `HistoryBuilder.append_message` asserts."""
+        assert not any(_is_empty_text_block(b) for b in to_content_blocks(value))
 
     @pytest.mark.parametrize(
         ("template", "expected"),
