@@ -31,23 +31,23 @@ class LiteLLMConfigurer(ObjectInterpretation):
     @staticmethod
     def _mark(msg: Message) -> Message | None:
         """`msg`, with a `cache_control` breakpoint on its last non-empty content
-        block -- or `None` if it has none.
+        block, or `None` if it has no block to put one on.
 
         A message whose content is a plain string -- which the assembled system
         prompt is not, but a hand-written or externally supplied message may be
         -- takes the message-level key instead, the only form litellm reads a
         breakpoint from for string content.
 
-        Empty blocks are skipped because Anthropic answers ``cache_control
-        cannot be set for empty text blocks``. `to_content_blocks` no longer
-        builds one, so this is reached only by messages supplied from outside --
-        the same messages the string case above exists for. `None` lets
-        `_add_cache_control` fall back to an earlier message; a message that is
-        already marked returns itself, since that mark is the breakpoint.
+        Empty blocks are skipped: Anthropic answers ``cache_control cannot be
+        set for empty text blocks``. `to_content_blocks` does not build one, so
+        only messages supplied from outside can contain one. Returning `None`
+        lets `_add_cache_control` mark an earlier message instead of losing the
+        breakpoint. An already-marked message returns itself, since that mark is
+        the breakpoint.
         """
         content = msg.get("content")
         if isinstance(content, str):
-            if not content.strip():
+            if not content:
                 return None
             return typing.cast(Message, {**msg, "cache_control": {"type": "ephemeral"}})
         if not isinstance(content, list):
@@ -98,10 +98,9 @@ class LiteLLMConfigurer(ObjectInterpretation):
         transport-level annotations never reach the stored history -- and so
         never reach an `Agent`'s checkpointed transcript.
 
-        A message `_mark` declines is stepped over: the scan keeps walking back
-        until one takes the breakpoint, so a request whose newest message has
-        nothing markable in it caches a shorter prefix rather than going out
-        with one breakpoint.
+        If `_mark` declines a message, the scan continues to the one before it.
+        The request then caches a shorter prefix, rather than going out with
+        only one breakpoint.
         """
         out = list(messages)
         for i in reversed(range(len(out))):
@@ -113,7 +112,8 @@ class LiteLLMConfigurer(ObjectInterpretation):
                 break
         for i in range(len(out)):
             if out[i]["role"] == "system":
-                # Only one system message is ever sent: stop either way.
+                # There is only one system message, so there is no earlier one
+                # to fall back to.
                 marked = self._mark(out[i])
                 if marked is not None:
                     out[i] = marked

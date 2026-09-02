@@ -74,8 +74,9 @@ def to_content_blocks(
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
 
-    No block is empty: Anthropic rejects an empty text block outright, and
-    rejects it again when a cache breakpoint lands on one.
+    No block has empty text. Anthropic rejects a request containing one, and
+    rejects it again if a cache breakpoint sits on it. Whitespace is content, so
+    a block of spaces is kept.
     """
     if isinstance(value, str):
         return [ChatCompletionTextObject(type="text", text=value)] if value else []
@@ -116,14 +117,15 @@ def to_content_blocks(
 
 
 def _is_empty_text_block(block: typing.Any) -> bool:
-    """Whether `block` is a text block Anthropic will reject as empty.
+    """Whether `block` is a text block with no text.
 
-    Whitespace-only counts, matching litellm's own ``.strip()`` test.
+    This is the invariant `to_content_blocks` establishes, tested the same way:
+    a block of whitespace has content and is not empty. Anthropic accepts one.
     """
     return (
         isinstance(block, dict)
         and block.get("type") == "text"
-        and not (block.get("text") or "").strip()
+        and not block.get("text")
     )
 
 
@@ -135,6 +137,11 @@ def format_as_content_blocks(
     Format a template applied to arguments into a list of content blocks.
     This is similar to str.format() but produces a list of content blocks
     instead of a single string, so that non-text content is preserved.
+
+    A conversion or format spec runs on the encoded value even when that value
+    is the empty string, which `to_content_blocks` emits no block for: ``{x!r}``
+    renders ``''`` and ``{x:>5}`` renders five spaces. Text that formats to
+    nothing still produces no block.
     """
     formatter = string.Formatter()
     parts: list[OpenAIMessageContentListBlock] = []
@@ -142,9 +149,9 @@ def format_as_content_blocks(
     buf: list[str] = []
 
     def flush_text() -> None:
-        if buf:
-            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
-            buf.clear()
+        if text := "".join(buf):
+            parts.append(ChatCompletionTextObject(type="text", text=text))
+        buf.clear()
 
     for literal, field_name, format_spec, conversion in formatter.parse(
         textwrap.dedent(template)
@@ -160,7 +167,10 @@ def format_as_content_blocks(
             Encodable[nested_type(obj).value]  # type: ignore[misc]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
-        for part in to_content_blocks(encoded_obj):
+        encoded_parts = to_content_blocks(encoded_obj)
+        if not encoded_parts and isinstance(encoded_obj, str):
+            encoded_parts = [ChatCompletionTextObject(type="text", text=encoded_obj)]
+        for part in encoded_parts:
             if part["type"] == "text":
                 text = (
                     formatter.convert_field(part["text"], conversion)
