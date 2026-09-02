@@ -16,7 +16,7 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     EncodedFunction,
     TypeToPydanticType,
-    _inline_refs,
+    _bundle_refs,
     _serialize_callable,
 )
 
@@ -398,7 +398,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         pydantic.BeforeValidator(_validate),
         pydantic.PlainSerializer(_serialize_callable),
         pydantic.WithJsonSchema(
-            _inline_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
+            _bundle_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
             mode="validation",
         ),
         pydantic.WithJsonSchema(

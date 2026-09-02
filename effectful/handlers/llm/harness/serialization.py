@@ -10,6 +10,7 @@ import collections.abc
 import contextvars
 import dataclasses
 import functools
+import hashlib
 import inspect
 import io
 import json
@@ -284,28 +285,81 @@ def _render_prompt_section(
     return [ChatCompletionTextObject(type="text", text=heading), *blocks]
 
 
-def _inline_refs(schema: dict) -> dict:
-    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
+# Base URI for the definitions a fragment carries. An absolute URI is the one ref
+# form Pydantic's ref counter tolerates, and an `$id`-bearing subschema is a
+# 2020-12 embedded resource, so a ref to it resolves wherever the fragment does.
+_DEFS_BASE = "https://effectful.invalid/$defs/"
 
-    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
-    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
-    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
-    causes a ``KeyError`` when the annotated type is composed into a model.
+
+def _bundle_refs(schema: dict) -> dict:
+    """``schema`` with its definitions addressed absolutely rather than by pointer.
+
+    Works around https://github.com/pydantic/pydantic/issues/12145: Pydantic's
+    ``GenerateJsonSchema`` does not merge a user-provided ``$defs`` into its
+    internal ref map, so a ``#/$defs/...`` ref in a `pydantic.WithJsonSchema`
+    value raises ``KeyError`` once the annotated type is composed into a model.
     """
-    defs = schema.get("$defs", {})
+    defs = schema.get("$defs") or {}
+    if not defs:
+        return schema
+    uris = {
+        name: _DEFS_BASE
+        + hashlib.sha256(
+            json.dumps(body, sort_keys=True, default=str).encode()
+        ).hexdigest()[:16]
+        for name, body in defs.items()
+    }
 
-    def _resolve(obj):
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref_name = obj["$ref"].split("/")[-1]
-                if ref_name in defs:
-                    return _resolve(defs[ref_name])
-            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
-        if isinstance(obj, list):
-            return [_resolve(item) for item in obj]
-        return obj
+    def walk(node: typing.Any) -> typing.Any:
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        return {
+            k: uris.get(v.removeprefix("#/$defs/"), v)
+            if k == "$ref" and isinstance(v, str)
+            else walk(v)
+            for k, v in node.items()
+        }
 
-    return _resolve(schema)
+    bundled = walk(schema)
+    bundled["$defs"] = {
+        uris[name]: {"$id": uris[name], **body}
+        for name, body in bundled["$defs"].items()
+    }
+    return bundled
+
+
+def _rebundle(schema: dict) -> dict:
+    """``schema`` in the JSON Schema subset the providers implement.
+
+    They take definitions only at the document root, refuse a remote reference
+    outright, and reject any keyword sitting beside a ``$ref``.
+    """
+    defs: dict[str, dict] = {}
+
+    def walk(node: typing.Any) -> typing.Any:
+        if isinstance(node, list):
+            return [walk(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+        for name, body in (node.get("$defs") or {}).items():
+            uri = body.get("$id")
+            defs[uri.removeprefix(_DEFS_BASE) if uri else name] = walk(
+                {k: v for k, v in body.items() if k != "$id"}
+            )
+        if isinstance(node.get("$ref"), str):
+            # Siblings go too, which a provider requires: it reads a `$ref` as
+            # the whole subschema rather than composing it with what sits
+            # beside it, the way draft 2020-12 does.
+            ref = node["$ref"]
+            if ref.startswith(_DEFS_BASE):
+                ref = f"#/$defs/{ref.removeprefix(_DEFS_BASE)}"
+            return {"$ref": ref}
+        return {k: walk(v) for k, v in node.items() if k != "$defs"}
+
+    document = walk(schema)
+    return {**document, "$defs": defs} if defs else document
 
 
 @dataclasses.dataclass(frozen=True, eq=True)
@@ -590,7 +644,7 @@ def _pydantic_type_complex(ty):
     """Encode ``complex`` as ``{"real": float, "imag": float}``."""
 
     schema = pydantic.TypeAdapter(_ComplexModel).json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
+    schema = _ensure_strict_json_schema(_bundle_refs(schema), path=(), root={})
 
     return typing.Annotated[
         ty,
@@ -635,7 +689,7 @@ def _pydantic_type_tuple(ty):
         return typing.Annotated[
             ty,
             pydantic.PlainSerializer(_nt_serialize),
-            pydantic.WithJsonSchema(_inline_refs(nt_model.model_json_schema())),
+            pydantic.WithJsonSchema(_bundle_refs(nt_model.model_json_schema())),
         ]
 
     args = typing.get_args(ty)
@@ -675,7 +729,7 @@ def _pydantic_type_tuple(ty):
         ty,
         pydantic.BeforeValidator(_decode),
         pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
+        pydantic.WithJsonSchema(_bundle_refs(model.model_json_schema())),
     ]
 
 
@@ -722,7 +776,7 @@ def _pydantic_type_image(ty: type[Image.Image]):
         pydantic.InstanceOf,
         pydantic.BeforeValidator(_validate_image),
         pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.WithJsonSchema(_bundle_refs(adapter.json_schema())),
     ]
 
 
@@ -871,7 +925,7 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": response_format["json_schema"]["schema"],
+                "parameters": _rebundle(response_format["json_schema"]["schema"]),
                 "strict": True,
             },
         }
@@ -888,7 +942,7 @@ def _pydantic_type_name_and_tool(ty: type[_NameAndTool]):
     to build a `TypeAdapter` for the `Tool` field and fail.
     """
     schema = pydantic.TypeAdapter(ChatCompletionToolParam).json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
+    schema = _ensure_strict_json_schema(_bundle_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
@@ -969,7 +1023,7 @@ def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
     # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
     # type) rather than litellm's (empty dict with extra="allow").
     schema = OpenAIChatCompletionMessageToolCall.model_json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
+    schema = _ensure_strict_json_schema(_bundle_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
@@ -1028,3 +1082,7 @@ def _advertised_names(
 
 class _BoxedResponse[T](pydantic.BaseModel):
     value: T
+
+    @classmethod
+    def model_json_schema(cls, *args, **kwargs) -> dict[str, typing.Any]:
+        return _rebundle(super().model_json_schema(*args, **kwargs))
