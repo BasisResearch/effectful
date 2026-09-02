@@ -43,9 +43,12 @@ class HistoryBuilder(ObjectInterpretation):
         they sit here: every message the harness records passes through this
         method, including the ones a failed attempt records on its way out, and
         those are the ones that get a history into a shape no provider will
-        accept. The third holds by construction -- `to_content_blocks` and
-        `_render_prompt_section` are the only sources of blocks and neither
-        builds an empty one -- so a violation is a bug in a producer.
+        accept.
+
+        The third check is about content. It holds already: the only sources of
+        content blocks are `to_content_blocks` and `_render_prompt_section`, and
+        neither builds an empty one. It is here to catch a producer that stops
+        holding to that.
         """
         history = cls.get_history()
         assert cls._carries_no_empty_block(message), (
@@ -62,7 +65,11 @@ class HistoryBuilder(ObjectInterpretation):
 
     @staticmethod
     def _carries_no_empty_block(message: Message) -> bool:
-        """Whether `message` is free of the empty text blocks Anthropic rejects."""
+        """Whether `message` is free of the empty text blocks Anthropic rejects.
+
+        String content is not checked. An empty string is a message with nothing
+        in it, which is a different problem from a block with nothing in it.
+        """
         content = message.get("content")
         return not isinstance(content, list) or not any(
             _is_empty_text_block(block) for block in content

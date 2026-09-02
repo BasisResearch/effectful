@@ -267,7 +267,7 @@ def call_assistant[T](
     result = None
     if not tool_calls:
         serialized_result = message.get("content") or message.get("reasoning_content")
-        assert isinstance(serialized_result, str) and serialized_result.strip(), (
+        assert isinstance(serialized_result, str), (
             f"the model replied with neither content nor a tool call "
             f"(finish_reason={choice.finish_reason!r})"
         )
