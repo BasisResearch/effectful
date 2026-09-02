@@ -39,11 +39,7 @@ class LiteLLMConfigurer(ObjectInterpretation):
         breakpoint from for string content.
 
         Empty blocks are skipped: Anthropic answers ``cache_control cannot be
-        set for empty text blocks``. `to_content_blocks` does not build one, so
-        only messages supplied from outside can contain one. Returning `None`
-        lets `_add_cache_control` mark an earlier message instead of losing the
-        breakpoint. An already-marked message returns itself, since that mark is
-        the breakpoint.
+        set for empty text blocks``. An already-marked message returns itself.
         """
         content = msg.get("content")
         if isinstance(content, str):
@@ -99,8 +95,6 @@ class LiteLLMConfigurer(ObjectInterpretation):
         never reach an `Agent`'s checkpointed transcript.
 
         If `_mark` declines a message, the scan continues to the one before it.
-        The request then caches a shorter prefix, rather than going out with
-        only one breakpoint.
         """
         out = list(messages)
         for i in reversed(range(len(out))):
@@ -112,8 +106,7 @@ class LiteLLMConfigurer(ObjectInterpretation):
                 break
         for i in range(len(out)):
             if out[i]["role"] == "system":
-                # There is only one system message, so there is no earlier one
-                # to fall back to.
+                # No earlier system message to fall back to.
                 marked = self._mark(out[i])
                 if marked is not None:
                     out[i] = marked
