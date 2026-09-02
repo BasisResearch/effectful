@@ -3648,7 +3648,7 @@ class TestEmptyContentBlocks:
 
 
 class TestEmptyReply:
-    """A reply with nothing to decode fails loudly, naming the finish_reason."""
+    """A reply with nothing to decode is retried, and reports the finish_reason."""
 
     @staticmethod
     def _response(content, finish_reason="stop", **extra):
@@ -3678,14 +3678,13 @@ class TestEmptyReply:
             handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
             handler(HistoryBuilder()),
         ):
-            with pytest.raises(AssertionError, match="finish_reason='length'"):
+            with pytest.raises(ResultDecodingError, match="finish_reason='length'"):
                 simple_prompt("test")
 
-    def test_a_blank_reply_is_retried_like_any_other_bad_output(self):
-        """Whitespace is text, so it reaches decoding and fails there, which is
-        the retryable path."""
+    @pytest.mark.parametrize("content", [None, "", "   "])
+    def test_an_empty_reply_is_retried_like_any_other_bad_output(self, content):
         capture = MockCompletionHandler(
-            [self._response("   "), make_text_response(json.dumps({"value": 4}))]
+            [self._response(content), make_text_response(json.dumps({"value": 4}))]
         )
 
         # `TenacityRetryer` goes inside `HistoryBuilder`: it appends the reply
@@ -3701,7 +3700,7 @@ class TestEmptyReply:
         ):
             assert generate_number(10) == 4
 
-        assert capture.call_count == 2, "the blank reply should have been retried"
+        assert capture.call_count == 2, "the empty reply should have been retried"
 
     def test_a_reply_carrying_only_reasoning_content_still_decodes(self):
         """The `content or reasoning_content` fallback is untouched."""
