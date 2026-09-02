@@ -52,6 +52,8 @@ import types
 import typing
 import uuid
 
+import typing_extensions
+
 import effectful.ops.types
 
 __all__ = ["Agent", "Skill", "Template", "Tool", "Encodable"]
@@ -562,13 +564,60 @@ else:
             already has the declared type.
 
         Custom types register their JSON representation with
-        `TypeToPydanticType`. Because the
-        encoding is derived from the *type*, it is the single source of truth
-        for both the schema shown to the model and the validation applied to
-        its output.
+        `Encodable.register`. Because the encoding is derived from the *type*,
+        it is the single source of truth for both the schema shown to the model
+        and the validation applied to its output.
         """
 
         def __class_getitem__(cls, item):
             from effectful.handlers.llm.harness.serialization import TypeToPydanticType
 
             return TypeToPydanticType().evaluate(item)
+
+        @classmethod
+        def register[F: collections.abc.Callable[..., typing.Any]](
+            cls, ty: typing_extensions.TypeForm
+        ) -> collections.abc.Callable[[F], F]:
+            """Give a type an encoding, or replace the one it has.
+
+            The decorated function receives a type expression whose arguments
+            are already encoded, and returns a Pydantic-compatible annotation
+            of that same type -- adding validators, a serializer and a JSON
+            schema, never changing what the annotation denotes.
+
+            >>> import typing, pydantic
+            >>> from effectful.handlers.llm import Encodable
+            >>> class Money:
+            ...     def __init__(self, cents: int):
+            ...         self.cents = cents
+
+            Pydantic cannot build a schema for `Money`, so nothing the model
+            writes decodes to one:
+
+            >>> pydantic.TypeAdapter(Money)  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+              ...
+            pydantic.errors.PydanticSchemaGenerationError: Unable to generate pydantic-core schema for Money
+
+            >>> @Encodable.register(Money)  # type: ignore[attr-defined]
+            ... def _encode_money(ty):
+            ...     return typing.Annotated[
+            ...         ty,
+            ...         pydantic.InstanceOf,
+            ...         pydantic.BeforeValidator(
+            ...             lambda v: v if isinstance(v, Money) else Money(v)
+            ...         ),
+            ...         pydantic.PlainSerializer(lambda money: money.cents),
+            ...         pydantic.WithJsonSchema({"type": "integer"}),
+            ...     ]
+            >>> adapter = pydantic.TypeAdapter(Encodable[Money])
+            >>> adapter.json_schema()
+            {'type': 'integer'}
+            >>> adapter.dump_python(Money(250), mode="json")
+            250
+            >>> adapter.validate_python(250).cents
+            250
+            """
+            from effectful.handlers.llm.harness.serialization import TypeToPydanticType
+
+            return TypeToPydanticType.register(ty)
