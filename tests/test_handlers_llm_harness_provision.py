@@ -51,7 +51,11 @@ from effectful.handlers.llm.harness.legibility.lexical import (
 )
 from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
-from effectful.handlers.llm.harness.serialization import _NameAndTool, to_content_blocks
+from effectful.handlers.llm.harness.serialization import (
+    _NameAndTool,
+    format_as_content_blocks,
+    to_content_blocks,
+)
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -3106,9 +3110,12 @@ def _assert_valid_anthropic_request(msgs) -> None:
 
     The two block assertions are upstream 400s, confirmed against the live API:
     ``messages: text content blocks must be non-empty`` and ``cache_control
-    cannot be set for empty text blocks``. Role alternation is deliberately not
-    asserted -- Anthropic accepts consecutive same-role turns, also confirmed
-    live. The no-turn-dropped check is the harness's invariant instead:
+    cannot be set for empty text blocks``. A block of whitespace is not one of
+    them; Anthropic accepts it.
+
+    Role alternation is not asserted. Anthropic accepts consecutive same-role
+    turns, also confirmed live, so requiring alternation would pin behaviour the
+    provider does not have. The no-turn-dropped check stands in for it:
     `anthropic_messages_pt` emits an assistant turn only ``if assistant_content``,
     so a message with nothing in it vanishes from the request silently.
     """
@@ -3140,13 +3147,13 @@ def _assert_valid_anthropic_request(msgs) -> None:
         if not isinstance(content, list):
             continue
         for block in walk(content):
-            assert (block.get("text") or "").strip(), (
+            assert block.get("text"), (
                 f"empty text block sent to Anthropic: {block} in {message}"
             )
         breakpoints += sum(1 for b in content if "cache_control" in b)
 
     for block in transformed.get("system") or []:
-        assert (block.get("text") or "").strip(), f"empty system block: {block}"
+        assert block.get("text"), f"empty system block: {block}"
         breakpoints += "cache_control" in block
 
     assert breakpoints <= 4, (
@@ -3173,7 +3180,11 @@ def _assert_valid_anthropic_request(msgs) -> None:
 
 
 def _empty_text_blocks(msgs) -> list:
-    """Every empty text block in `msgs`, with whether it carries a breakpoint."""
+    """Every empty text block in `msgs`, with whether it carries a breakpoint.
+
+    Empty means no text at all. Whitespace is content, and Anthropic accepts a
+    block of it -- see `_is_empty_text_block`.
+    """
     return [
         (msg["role"], "cache_control" in block)
         for msg in msgs
@@ -3181,7 +3192,7 @@ def _empty_text_blocks(msgs) -> list:
         for block in msg["content"]
         if isinstance(block, dict)
         and block.get("type") == "text"
-        and not (block.get("text") or "").strip()
+        and not block.get("text")
     ]
 
 
@@ -3535,12 +3546,32 @@ class TestEmptyContentBlocks:
         )
 
     def test_a_value_that_merely_contains_an_empty_string_is_unchanged(self):
-        """Only a block with nothing in it is dropped: `to_content_blocks` still
+        """Only a block with nothing in it is dropped. `to_content_blocks` still
         satisfies its linearization law, so an empty string *inside* an encoded
         value keeps its JSON quotes."""
         assert to_content_blocks("") == []
         assert to_content_blocks({"a": ""}) == [{"type": "text", "text": '{"a": ""}'}]
         assert to_content_blocks([]) == [{"type": "text", "text": "[]"}]
+
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            ("a{x}b", "ab"),
+            ("a{x!r}b", "a''b"),
+            ("a{x:>5}b", "a     b"),
+            ("a{x!r:>6}b", "a    ''b"),
+        ],
+    )
+    def test_a_conversion_still_runs_on_an_empty_value(self, template, expected):
+        """`to_content_blocks` emits no block for the empty string, but a
+        conversion or format spec can still turn it into something -- `{x!r}`
+        renders ``''``. Formatting has to run either way."""
+        assert format_as_content_blocks(template, {"x": ""}) == [
+            {"type": "text", "text": expected}
+        ]
+
+    def test_a_hole_that_formats_to_nothing_produces_no_block(self):
+        assert format_as_content_blocks("{x}", {"x": ""}) == []
 
     def test_empty_block_never_enters_stored_history(self):
         """`SQLitePersister` checkpoints the transcript, so a block repaired only
@@ -3614,7 +3645,7 @@ class TestEmptyContentBlocks:
         msgs = [
             {"role": "system", "content": [{"type": "text", "text": "sys"}]},
             {"role": "user", "content": [{"type": "text", "text": "q"}]},
-            {"role": "user", "content": [{"type": "text", "text": "   "}]},
+            {"role": "user", "content": [{"type": "text", "text": ""}]},
         ]
 
         marked = provider._add_cache_control(msgs)
@@ -3623,9 +3654,24 @@ class TestEmptyContentBlocks:
             f"breakpoint should fall back to the previous message. Got: {marked}"
         )
 
+    def test_whitespace_is_content(self):
+        """A block of spaces is not empty: Anthropic accepts one, so it keeps its
+        block and can carry the breakpoint like any other."""
+        provider = LiteLLMConfigurer(model="claude-sonnet-4-5")
+        blank = {"role": "user", "content": [{"type": "text", "text": "   "}]}
+
+        assert to_content_blocks("   ") == [{"type": "text", "text": "   "}]
+        assert _empty_text_blocks([blank]) == []
+        assert _has_block_cache_control(provider._mark(blank))
+
 
 class TestEmptyReply:
-    """A reply with neither text nor a tool call fails loudly, naming why."""
+    """A reply with nothing to decode fails loudly, naming the finish_reason.
+
+    Only a reply with no usable text at all reaches the assertion. A reply that
+    has text but does not decode -- whitespace where JSON was asked for, say --
+    is a `ResultDecodingError`, which `TenacityRetryer` retries as usual.
+    """
 
     @staticmethod
     def _response(content, finish_reason="stop", **extra):
@@ -3641,10 +3687,10 @@ class TestEmptyReply:
             model="test-model",
         )
 
-    @pytest.mark.parametrize("content", [None, "", "   "])
+    @pytest.mark.parametrize("content", [None, ""])
     def test_contentless_reply_names_the_finish_reason(self, content):
-        """An empty reply is always a symptom of something else -- a truncation,
-        a filtered response, a broken proxy -- and the finish_reason is the only
+        """An empty reply is a symptom of something else -- a truncation, a
+        filtered response, a broken proxy -- and the finish_reason is the only
         thing that says which."""
         capture = MockCompletionHandler(
             [self._response(content, finish_reason="length")]
@@ -3659,6 +3705,28 @@ class TestEmptyReply:
         ):
             with pytest.raises(AssertionError, match="finish_reason='length'"):
                 simple_prompt("test")
+
+    def test_a_blank_reply_is_retried_like_any_other_bad_output(self):
+        """Whitespace is text, so it decodes rather than asserting -- and fails
+        that decode, which is the retryable path."""
+        capture = MockCompletionHandler(
+            [self._response("   "), make_text_response(json.dumps({"value": 4}))]
+        )
+
+        # `TenacityRetryer` goes inside `HistoryBuilder`: it appends the reply
+        # that finally succeeded itself, so wrapping the other way records it
+        # twice.
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+            handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
+        ):
+            assert generate_number(10) == 4
+
+        assert capture.call_count == 2, "the blank reply should have been retried"
 
     def test_a_reply_carrying_only_reasoning_content_still_decodes(self):
         """The `content or reasoning_content` fallback is untouched: only a reply
