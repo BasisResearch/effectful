@@ -65,7 +65,6 @@ from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     EncodedFunction,
     TypeToPydanticType,
-    _bundle_refs,
     _serialize_callable,
 )
 from effectful.handlers.llm.harness.synthesis.function import (
@@ -283,15 +282,8 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
 
     return typing.Annotated[
         pydantic.InstanceOf[ty_],  # type: ignore
-        pydantic.BeforeValidator(_validate),
-        pydantic.PlainSerializer(lambda value: _serialize_callable(value)),
-        pydantic.WithJsonSchema(
-            _bundle_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
-            mode="validation",
-        ),
-        pydantic.WithJsonSchema(
-            EncodedFunction.model_json_schema(), mode="serialization"
-        ),
+        pydantic.BeforeValidator(_validate, json_schema_input_type=typed_enc),
+        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
 
@@ -453,15 +445,8 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
 
     return typing.Annotated[
         pydantic.InstanceOf[ty_],  # type: ignore
-        pydantic.BeforeValidator(_validate),
-        pydantic.PlainSerializer(_serialize_callable),
-        pydantic.WithJsonSchema(
-            _bundle_refs(pydantic.TypeAdapter(typed_enc).json_schema()),
-            mode="validation",
-        ),
-        pydantic.WithJsonSchema(
-            EncodedFunction.model_json_schema(), mode="serialization"
-        ),
+        pydantic.BeforeValidator(_validate, json_schema_input_type=typed_enc),
+        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
 

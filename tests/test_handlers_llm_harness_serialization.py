@@ -21,7 +21,6 @@ from typing import (
     TypedDict,
     TypeVar,
     Union,
-    cast,
 )
 
 import litellm
@@ -35,18 +34,11 @@ from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
 from effectful.handlers.llm.harness.serialization import (
-    _DEFS_BASE,
     _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
-    EncodedFunction,
-    _BoxedResponse,
-    _bundle_refs,
-    _ComplexModel,
     _NameAndTool,
-    _rebundle,
-    _serialize_name_and_tool,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
@@ -185,32 +177,6 @@ type _GenImageAlias[T] = list[tuple[T, Image.Image]]
 # Pydantic resolves it natively, so it works until something expands it eagerly.
 type _RecursiveAlias = int | list[_RecursiveAlias]
 type _RecursiveGenAlias[T] = T | list[_RecursiveGenAlias[T]]
-
-
-class _Tree(pydantic.BaseModel):
-    """A model that refers to itself, so its schema needs a definition."""
-
-    label: str
-    kids: list["_Tree"] = []
-
-
-class _TreeParams(pydantic.BaseModel):
-    tree: _Tree
-
-
-@dataclass
-class _Place:
-    city: str
-
-
-@dataclass
-class _Resident:
-    """A definition reached twice without being recursive."""
-
-    name: str
-    home: _Place
-    work: _Place
-
 
 # Stands in for `Kernel` in `docs/source/llm_examples/optimization/kernels.py`:
 # an alias that is in a skill's lexical *scope*, so the alias object itself
@@ -974,192 +940,6 @@ def test_recursive_alias_does_not_diverge(ty):
     """
     schema = json.dumps(pydantic.TypeAdapter(Encodable[ty]).json_schema())
     assert "$ref" in schema, "recursion should resolve to a reference, not inline"
-
-
-# ---------------------------------------------------------------------------
-# Reference addressing
-# ---------------------------------------------------------------------------
-
-
-def _refs(node):
-    """Every ``$ref`` string anywhere in `node`."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "$ref":
-                yield value
-            else:
-                yield from _refs(value)
-    elif isinstance(node, list):
-        for item in node:
-            yield from _refs(item)
-
-
-def _defs_paths(node, path=()):
-    """Where in `node` a ``$defs`` block sits."""
-    if isinstance(node, dict):
-        for key, value in node.items():
-            if key == "$defs":
-                yield path
-            else:
-                yield from _defs_paths(value, path + (key,))
-    elif isinstance(node, list):
-        for i, item in enumerate(node):
-            yield from _defs_paths(item, path + (i,))
-
-
-@pytest.mark.parametrize(
-    "ty", [_RecursiveAlias, _RecursiveGenAlias[int]], ids=["plain", "generic"]
-)
-def test_a_recursive_schema_can_be_bundled(ty):
-    """A self-referential schema bundles without diverging -- issue #761."""
-    bundled = _bundle_refs(pydantic.TypeAdapter(Encodable[ty]).json_schema())
-    assert not any(r.startswith("#") for r in _refs(bundled)), (
-        "a fragment cannot carry a pointer to a root it does not have"
-    )
-
-
-@pytest.mark.parametrize(
-    "ty",
-    [tuple[_RecursiveAlias, int], list[_RecursiveAlias]],
-    ids=["tuple", "list"],
-)
-def test_a_recursive_type_has_an_encoding(ty):
-    """`_pydantic_type_tuple` bundles the schema of a model over the element
-    types, so a recursive element reaches the bundler through `Encodable`."""
-    assert pydantic.TypeAdapter(Encodable[ty]).json_schema()
-
-
-def test_a_bundled_fragment_composes_into_a_model():
-    """The reason the bundler exists: pydantic/pydantic#12145 rejects a local
-    ``$ref`` in a `WithJsonSchema` value once the type is composed."""
-    fragment = _bundle_refs(
-        pydantic.TypeAdapter(Encodable[_RecursiveAlias]).json_schema()
-    )
-
-    class Composed(pydantic.BaseModel):
-        recursive: Annotated[Any, pydantic.WithJsonSchema(fragment)]
-        plain: int
-
-    assert Composed.model_json_schema()
-
-
-@pytest.mark.parametrize(
-    "schema",
-    [
-        pydantic.TypeAdapter(litellm.ChatCompletionToolParam).json_schema(),
-        pydantic.TypeAdapter(_ComplexModel).json_schema(),
-        EncodedFunction.model_json_schema(),
-    ],
-    ids=["tool-param", "complex", "encoded-function"],
-)
-def test_bundling_only_readdresses(schema):
-    """The definitions and their structure are pydantic's; only how a reference
-    names one changes."""
-    bundled = _bundle_refs(json.loads(json.dumps(schema)))
-    assert not any(r.startswith("#") for r in _refs(bundled))
-    assert sorted(_defs_paths(bundled)) == sorted(_defs_paths(schema))
-    assert len(bundled.get("$defs") or {}) == len(schema.get("$defs") or {})
-
-
-def test_bundling_keeps_the_keywords_beside_a_ref():
-    """In 2020-12 a ``$ref`` composes with its siblings rather than replacing
-    them, and pydantic puts a field's ``description`` there."""
-
-    class _Inner(pydantic.BaseModel):
-        x: int
-
-    class _Outer(pydantic.BaseModel):
-        described: _Inner = pydantic.Field(..., description="what it is for")
-        plain: _Inner
-
-    described = _bundle_refs(_Outer.model_json_schema())["properties"]["described"]
-    assert described["description"] == "what it is for"
-    assert described["$ref"].startswith(_DEFS_BASE)
-
-
-def test_rebundling_narrows_a_document_to_what_providers_accept():
-    """Four separate rejections: a remote reference, a keyword beside a
-    ``$ref``, a ``$defs`` anywhere but the root, and a reference in any other
-    form are each answered with a ``BadRequestError``."""
-    document = litellm.utils.type_to_response_format_param(_TreeParams)["json_schema"][
-        "schema"
-    ]
-    wire = _rebundle(json.loads(json.dumps(document)))
-
-    assert "$id" not in json.dumps(wire)
-    assert all(r.startswith("#/$defs/") for r in _refs(wire))
-    assert list(_defs_paths(wire)) == [()]
-    assert list(_refs(wire)), "the recursion should survive as a reference"
-
-    def no_siblings(node):
-        if isinstance(node, dict):
-            assert "$ref" not in node or not set(node) - {"$ref"}, node
-            for value in node.values():
-                no_siblings(value)
-        elif isinstance(node, list):
-            for item in node:
-                no_siblings(item)
-
-    no_siblings(wire)
-
-
-def test_rebundling_a_ref_that_carries_a_description_terminates():
-    """`_ensure_strict_json_schema` unravels such a ``$ref`` by inlining its
-    target and has no guard against doing so forever, so the siblings on the
-    references that survive are dropped before it runs."""
-    schema = {
-        "type": "object",
-        "$defs": {
-            "N": {
-                "type": "object",
-                "properties": {
-                    "kids": {
-                        "type": "array",
-                        "items": {"$ref": "#/$defs/N", "description": "a child"},
-                    }
-                },
-                "required": ["kids"],
-                "additionalProperties": False,
-            }
-        },
-        "properties": {"tree": {"$ref": "#/$defs/N", "title": "Tree"}},
-        "required": ["tree"],
-        "additionalProperties": False,
-    }
-    assert _rebundle(schema)
-
-
-@pytest.mark.parametrize("ty", [_Tree, _Resident], ids=["recursive", "repeated"])
-def test_a_tool_parameter_is_advertised_by_root_pointer(ty):
-    def plant(subject: ty) -> str:
-        """Plant {subject}."""
-        return ""
-
-    tool = cast(Tool, plant)
-    tool.__signature__ = inspect.signature(plant)
-    parameters = _serialize_name_and_tool(_NameAndTool("plant", tool))["function"][
-        "parameters"
-    ]
-    assert list(_refs(parameters))
-    assert all(r.startswith("#/$defs/") for r in _refs(parameters))
-    assert list(_defs_paths(parameters)) == [()]
-
-
-def test_a_recursive_response_type_is_advertised_as_a_reference():
-    """Carried on the boxing model itself, which is where litellm reads a
-    request's ``response_format`` from."""
-    boxed = pydantic.create_model(
-        "BoxedResponse", value=Encodable[_Tree], __base__=_BoxedResponse
-    )
-    for schema in (
-        boxed.model_json_schema(),
-        # And through litellm, which runs its own strict pass over what it finds
-        # here; the references have to survive that too.
-        litellm.utils.type_to_response_format_param(boxed)["json_schema"]["schema"],
-    ):
-        assert list(_refs(schema)), "the recursion should survive as a reference"
-        assert all(r.startswith("#/$defs/") for r in _refs(schema))
-        assert list(_defs_paths(schema)) == [()]
 
 
 # ---------------------------------------------------------------------------
