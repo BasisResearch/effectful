@@ -37,19 +37,7 @@ class HistoryBuilder(ObjectInterpretation):
 
     @classmethod
     def append_message(cls, message: Message) -> None:
-        """Append `message` to the ambient history, if it is legal where it lands.
-
-        Two of the checks are about position rather than content, which is why
-        they sit here: every message the harness records passes through this
-        method, including the ones a failed attempt records on its way out, and
-        those are the ones that get a history into a shape no provider will
-        accept.
-
-        The third check is about content. It holds already: the only sources of
-        content blocks are `to_content_blocks` and `_render_prompt_section`, and
-        neither builds an empty one. It is here to catch a producer that stops
-        holding to that.
-        """
+        """Append `message` to the ambient history, if it is legal where it lands."""
         history = cls.get_history()
         assert cls._carries_no_empty_block(message), (
             f"a message may not carry an empty text block: {message}"
@@ -65,11 +53,7 @@ class HistoryBuilder(ObjectInterpretation):
 
     @staticmethod
     def _carries_no_empty_block(message: Message) -> bool:
-        """Whether `message` is free of the empty text blocks Anthropic rejects.
-
-        String content is not checked. An empty string is a message with nothing
-        in it, which is a different problem from a block with nothing in it.
-        """
+        """Whether `message` is free of the empty text blocks Anthropic rejects."""
         content = message.get("content")
         return not isinstance(content, list) or not any(
             _is_empty_text_block(block) for block in content

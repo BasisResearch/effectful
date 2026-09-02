@@ -74,9 +74,7 @@ def to_content_blocks(
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
 
-    No block has empty text. Anthropic rejects a request containing one, and
-    rejects it again if a cache breakpoint sits on it. Whitespace is content, so
-    a block of spaces is kept.
+    No block has empty text; Anthropic rejects a request containing one.
     """
     if isinstance(value, str):
         return [ChatCompletionTextObject(type="text", text=value)] if value else []
@@ -117,11 +115,7 @@ def to_content_blocks(
 
 
 def _is_empty_text_block(block: typing.Any) -> bool:
-    """Whether `block` is a text block with no text.
-
-    This is the invariant `to_content_blocks` establishes, tested the same way:
-    a block of whitespace has content and is not empty. Anthropic accepts one.
-    """
+    """Whether `block` is a text block with no text."""
     return (
         isinstance(block, dict)
         and block.get("type") == "text"
@@ -138,10 +132,8 @@ def format_as_content_blocks(
     This is similar to str.format() but produces a list of content blocks
     instead of a single string, so that non-text content is preserved.
 
-    A conversion or format spec runs on the encoded value even when that value
-    is the empty string, which `to_content_blocks` emits no block for: ``{x!r}``
-    renders ``''`` and ``{x:>5}`` renders five spaces. Text that formats to
-    nothing still produces no block.
+    A conversion or format spec runs even on a value that encodes to ``""``, so
+    ``{x!r}`` renders ``''``. Text that formats to nothing produces no block.
     """
     formatter = string.Formatter()
     parts: list[OpenAIMessageContentListBlock] = []
