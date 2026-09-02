@@ -60,6 +60,7 @@ import abc
 import builtins
 import collections
 import collections.abc
+import contextvars
 import functools
 import inspect
 import numbers
@@ -129,9 +130,36 @@ class TypeEvaluator(abc.ABC):
     def _(self, typ: TypeConstant | TypeVariable):
         return typ
 
+    def _expand_alias(self, typ, value):
+        """Evaluate what ``typ`` aliases, unless ``typ`` is already being expanded.
+
+        A self-referential alias (``type JSON = int | list[JSON]``) has no finite
+        expansion, so the occurrence that closes the loop is left as the alias
+        itself and whoever consumes the result resolves it.  The set of aliases
+        currently being expanded lives on the evaluator, so a frozen dataclass
+        subclass cannot be used with an alias.
+        """
+        if not hasattr(self, "_expanding_aliases"):
+            setattr(self, "_expanding_aliases", set())
+        seen: set = getattr(self, "_expanding_aliases")
+        # Key on the alias, not the subscripted form: an alias that reapplies
+        # itself at a *different* argument (``type T[X] = list[T[list[X]]]``)
+        # never repeats a subscription, so only the alias itself terminates it.
+        alias = typing.get_origin(typ) if isinstance(typ, GenericAlias) else typ
+        if alias in seen:
+            return typ
+        seen.add(alias)
+        try:
+            return self.evaluate(value)
+        finally:
+            seen.discard(alias)
+
     @evaluate.register
     def _(self, typ: GenericAlias):
         origin, args = typing.get_origin(typ), typing.get_args(typ)
+        if isinstance(origin, typing.TypeAliasType):
+            # A subscripted generic alias: apply it, then evaluate what it names.
+            return self._expand_alias(typ, origin.__value__[args])
         return origin[self.evaluate(args)]  # type: ignore[index]
 
     @evaluate.register
@@ -174,7 +202,7 @@ class TypeEvaluator(abc.ABC):
 
     @evaluate.register
     def _(self, typ: typing.TypeAliasType):
-        return self.evaluate(typ.__value__)
+        return self._expand_alias(typ, typ.__value__)
 
     @evaluate.register
     def _(self, typ: typing.ForwardRef):
@@ -811,9 +839,39 @@ def _(typ: typing.NewType):
     return canonicalize(typ.__supertype__)
 
 
+_CANONICALIZING: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
+    "_CANONICALIZING", default=frozenset()
+)
+
+
+@dataclass(frozen=True)
+class _SelfReferentialAlias(Exception):
+    typ: typing.TypeAliasType
+
+
 @canonicalize.register
 def _(typ: typing.TypeAliasType):
-    return canonicalize(typ.__value__)
+    """Canonicalize what the alias names, unless it names itself.
+
+    A self-referential alias is its own canonical form: it has no finite
+    expansion, and keeping one expanded layer would not be idempotent -- each
+    further call would peel off another.  So the recursive occurrence aborts the
+    whole expansion, back to the alias that started it.  An alias reached *on the
+    way* re-raises, leaving its own frame to catch it, which is what makes
+    mutually recursive aliases terminate at the outermost of the two.
+    """
+    seen = _CANONICALIZING.get()
+    if typ in seen:
+        raise _SelfReferentialAlias(typ)
+    token = _CANONICALIZING.set(seen | {typ})
+    try:
+        return canonicalize(typ.__value__)
+    except _SelfReferentialAlias as e:
+        if e.typ is not typ:
+            raise  # another alias's recursion; the frame expanding it will catch
+        return typ
+    finally:
+        _CANONICALIZING.reset(token)
 
 
 @canonicalize.register
@@ -1112,6 +1170,17 @@ def _(value: tuple):
 @nested_type.register
 def _(value: str | bytes | range | None):
     return Box(type(value))
+
+
+@nested_type.register
+def _(value: typing.TypeAliasType):
+    """An alias names a type, so it has the nested type of the type it names.
+
+    Reached when an alias appears as a *value* rather than as an annotation --
+    read out of a scope, say, or passed to an operation -- where reporting
+    `typing.TypeAliasType` would hide what the alias is for.
+    """
+    return nested_type(value.__value__)
 
 
 _nested_type_dispatch = nested_type
