@@ -18,7 +18,7 @@ on:
       model:
         description: "Model to run the examples against"
         required: false
-        default: "gpt-4o-mini"
+        default: "gpt-5-mini"
 
 jobs:
   examples:
@@ -43,7 +43,7 @@ jobs:
       # example is a subprocess, so xdist gets real parallelism across them.
       - name: Run every example
         env:
-          EFFECTFUL_LLM_MODEL: ${{ github.event.inputs.model || 'gpt-4o-mini' }}
+          EFFECTFUL_LLM_MODEL: ${{ github.event.inputs.model || 'gpt-5-mini' }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |

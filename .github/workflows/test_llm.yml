@@ -15,7 +15,7 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ["3.13", "3.14"]
-        model: ["gpt-4o-mini"]
+        model: ["gpt-5-mini"]
         mypy: ["mypy", "not mypy"]
     name: "test-llm (py ${{ matrix.python-version }}, ${{ matrix.mypy }})"
     steps:
@@ -66,7 +66,7 @@ jobs:
 
       - name: Run the basics examples
         env:
-          EFFECTFUL_LLM_MODEL: gpt-4o-mini
+          EFFECTFUL_LLM_MODEL: gpt-5-mini
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
