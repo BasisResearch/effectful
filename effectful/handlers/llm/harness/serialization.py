@@ -7,7 +7,6 @@ payloads exchanged with the model, and the model's output is converted back.
 import abc
 import base64
 import collections.abc
-import contextvars
 import dataclasses
 import functools
 import inspect
@@ -39,7 +38,6 @@ from effectful.internals.unification import (
     GenericAlias,
     TypeEvaluator,
     UnionType,
-    canonicalize,
     nested_type,
 )
 from effectful.ops.types import Operation, Term
@@ -350,74 +348,6 @@ class _NameAndTool(typing.NamedTuple):
 
     name: str
     tool: Tool
-
-
-# TODO move upstream to unification.py
-@nested_type.register
-def _nested_type_alias(ty: typing.TypeAliasType):
-    return nested_type(ty.__value__)
-
-
-# TODO move upstream to unification.py
-def _expand_alias(
-    evaluator: TypeEvaluator, typ: typing.TypeAliasType, value: typing.Any
-):
-    """Evaluate what ``typ`` aliases, unless ``typ`` is already being expanded."""
-    if not hasattr(evaluator, "_expanding_aliases"):
-        setattr(evaluator, "_expanding_aliases", set())
-    seen: set[typing.Any] = getattr(evaluator, "_expanding_aliases")
-    if typ in seen:
-        return typ
-    seen.add(typ)
-    try:
-        return evaluator.evaluate(value)
-    finally:
-        seen.discard(typ)
-
-
-# TODO move upstream to unification.py
-@TypeEvaluator.evaluate.register  # type: ignore[attr-defined]
-def _evaluate_type_alias(self, typ: typing.TypeAliasType):
-    return _expand_alias(self, typ, typ.__value__)
-
-
-# TODO move upstream to unification.py
-@TypeEvaluator.evaluate.register  # type: ignore[attr-defined]
-def _evaluate_generic_alias(self, typ: GenericAlias):
-    origin, args = typing.get_origin(typ), typing.get_args(typ)
-    if isinstance(origin, typing.TypeAliasType):
-        return _expand_alias(self, typ, origin.__value__[args])
-    return origin[self.evaluate(args)]  # type: ignore[index]
-
-
-# TODO move upstream to unification.py
-_CANONICALIZING: contextvars.ContextVar[frozenset] = contextvars.ContextVar(
-    "_CANONICALIZING", default=frozenset()
-)
-
-
-# TODO move upstream to unification.py
-@dataclasses.dataclass(frozen=True)
-class _SelfReferentialAlias(Exception):
-    typ: typing.TypeAliasType
-
-
-# TODO move upstream to unification.py
-@canonicalize.register
-def _canonicalize_type_alias(typ: typing.TypeAliasType) -> typing.Any:
-    """Canonicalize what the alias names, unless it names itself."""
-    seen = _CANONICALIZING.get()
-    if typ in seen:
-        raise _SelfReferentialAlias(typ)
-    token = _CANONICALIZING.set(seen | {typ})
-    try:
-        return canonicalize(typ.__value__)
-    except _SelfReferentialAlias as e:
-        if e.typ is not typ:
-            raise  # another alias's recursion; the frame expanding it will catch
-        return typ
-    finally:
-        _CANONICALIZING.reset(token)
 
 
 class TypeToPydanticType(TypeEvaluator):
