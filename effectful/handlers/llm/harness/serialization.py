@@ -478,11 +478,12 @@ def _pydantic_type_base(ty: typing.Any) -> typing.Any:
                 json_schema_input_type=typing.Annotated[
                     str,
                     pydantic.Field(
+                        title=_UndecodableReturn.__schema_title__,
                         description=(
                             f"No decoding exists for `{name}`, so a direct reply of "
                             f"it cannot be decoded. Do not answer directly: call a "
                             f"tool that produces a final answer instead."
-                        )
+                        ),
                     ),
                 ],
             ),
@@ -498,6 +499,31 @@ def _best_effort_schema(
         return pydantic.TypeAdapter(Encodable[annotation]).json_schema(mode=mode)  # type: ignore
     except (pydantic.errors.PydanticUserError, TypeError):
         return {"description": inspect.formatannotation(annotation)}
+
+
+def _is_decodable(annotation: typing_extensions.TypeForm) -> bool:
+    """Whether the model can be asked to produce a value of ``annotation``.
+
+    False when its validation schema refuses anywhere within, and when it has no
+    such schema at all (`Operation`, `Term`).
+
+    The question is put to the generated schema rather than to the type, because
+    an encoding that supplies its own validation schema does not delegate inward:
+    a synthesized `Callable` is asked for as source, so it decodes whatever its
+    return type is.
+    """
+
+    def refuses(node: typing.Any) -> bool:
+        if isinstance(node, dict):
+            return node.get("title") == _UndecodableReturn.__schema_title__ or any(
+                refuses(v) for v in node.values()
+            )
+        return isinstance(node, list) and any(refuses(v) for v in node)
+
+    try:
+        return not refuses(pydantic.TypeAdapter(Encodable[annotation]).json_schema())  # type: ignore
+    except Exception:
+        return False
 
 
 @TypeToPydanticType.register(type)
@@ -530,6 +556,11 @@ class _UndecodableReturn:
     reply cannot be decoded soundly. Do not answer directly: call a tool that
     produces a final answer instead."""
 
+    # The `title` every refusing validation schema carries, so `_is_decodable` can
+    # recognize one without reading its prose. Deliberately not an identifier, like
+    # the context keys at the top of this module.
+    __schema_title__: typing.ClassVar[typing.Literal["$UNDECODABLE"]] = "$UNDECODABLE"
+
 
 def _fail_validation(value: typing.Any) -> typing.Any:
     raise ValueError(inspect.getdoc(_UndecodableReturn))
@@ -540,7 +571,10 @@ def _pydantic_type_undecodable_return(ty: type[_UndecodableReturn]) -> typing.An
     return typing.Annotated[
         str,
         pydantic.PlainValidator(_fail_validation, json_schema_input_type=str),
-        pydantic.Field(description=inspect.getdoc(_UndecodableReturn)),
+        pydantic.Field(
+            title=_UndecodableReturn.__schema_title__,
+            description=inspect.getdoc(_UndecodableReturn),
+        ),
     ]
 
 
@@ -815,10 +849,25 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
 
 
 def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
+    """Encode ``value`` as the JSON advertisement of the tool it names.
+
+    A tool with a parameter the model cannot produce is refused rather than
+    advertised: it would be offered as callable and then fail to decode every
+    call, spending a turn each time.  Its return type is not in question -- an
+    unencodable result reaches the model as text -- and the expression pathway
+    can still call it, with real Python values.
+    """
     name, tool = value
+    params = inspect.signature(tool).parameters
+    for param_name, param in params.items():
+        if not _is_decodable(param.annotation):
+            raise pydantic.errors.PydanticSchemaGenerationError(
+                f"`{name}` cannot be advertised as JSON: no value of parameter "
+                f"`{param_name}` could be decoded from the model's output"
+            )
     fields: dict[str, typing.Any] = {
         param_name: TypeToPydanticType().evaluate(param.annotation)
-        for param_name, param in inspect.signature(tool).parameters.items()
+        for param_name, param in params.items()
     }
     sig_model = pydantic.create_model(
         "Params",

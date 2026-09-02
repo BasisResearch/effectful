@@ -39,7 +39,9 @@ from effectful.handlers.llm.harness.serialization import (
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
     _BoxedResponse,
+    _is_decodable,
     _NameAndTool,
+    _UndecodableReturn,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
@@ -1163,6 +1165,55 @@ def test_unencodable_response_format_reaches_the_provider(ty):
     )
     schema = litellm.utils.type_to_response_format_param(box)
     assert "_WidgetWithRepr" in json.dumps(schema)
+
+
+@pytest.mark.parametrize("ty", [_UndecodableReturn, _WidgetWithRepr], ids=str)
+def test_refusals_announce_themselves_on_the_wire(ty):
+    """Both refusing schemas carry the title `_is_decodable` recognizes them by
+    -- the one for a return type never instantiated, and the one for a type with
+    no encoding -- and strict-mode post-processing leaves it alone."""
+    box = pydantic.create_model(
+        "BoxedResponse", value=Encodable[ty], __base__=_BoxedResponse
+    )
+    schema = litellm.utils.type_to_response_format_param(box)
+    assert _UndecodableReturn.__schema_title__ in json.dumps(schema)
+
+
+@pytest.mark.parametrize(
+    "ty,expected",
+    [
+        (int, True),
+        (Image.Image, True),
+        (dict[str, int], True),
+        (_WidgetWithRepr, False),
+        (list[_WidgetWithRepr], False),
+        (tuple[int, _WidgetWithRepr], False),
+        (Operation, False),
+    ],
+    ids=str,
+)
+def test_is_decodable(ty, expected):
+    """Whether the model can be *asked* for a value, as opposed to shown one.
+
+    False covers both ways a type can fail to name something the model could
+    send: a schema that refuses however deeply it sits, and no schema at all.
+    """
+    assert _is_decodable(ty) is expected
+
+
+def test_is_decodable_looks_past_an_encoding_that_replaces_its_arguments():
+    """A refusal only counts where the model would actually meet it.
+
+    `SkillBody` is asked for as source and decoded by compiling it, so its own
+    schema stands in for its arguments' -- which is what lets a Skill returning
+    an undecodable type still be answered by synthesizing one, the whole point
+    of refusing a direct reply. Reading the type rather than the schema it
+    generates gets this backwards and withdraws the tool that was the way out.
+    """
+    from effectful.handlers.llm.harness.synthesis.body import SkillBody
+
+    assert not _is_decodable(_WidgetWithRepr)
+    assert _is_decodable(SkillBody[[int], _WidgetWithRepr])
 
 
 def test_unencodable_element_does_not_block_encoding_its_container():

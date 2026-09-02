@@ -96,7 +96,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Skill, Tool
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation
 
 calls = []
 
@@ -124,6 +124,12 @@ def handled_tool(x: int) -> int:
 def op_tool(op: Operation) -> str:
     """A tool whose parameter type has no JSON advertisement at all."""
     return op.__name__
+
+
+@Tool.define
+def interp_tool(i: Interpretation) -> str:
+    """A tool whose parameter type advertises but cannot be decoded."""
+    return str(len(i))
 
 
 @Tool.define
@@ -600,7 +606,8 @@ def test_505_generic_tool_in_scope_does_not_break_unrelated_skill(poly_mod):
     assert result == "just text"
 
 
-def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
+@pytest.mark.parametrize("skipped", ["op_tool", "interp_tool"])
+def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog, skipped):
     # Under the JSON pathway a tool whose advertisement cannot be encoded is
     # skipped (with a warning) instead of breaking every request it is merely
     # in scope for. The skip happens at encoding time, in `call_assistant`'s
@@ -610,6 +617,10 @@ def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
     # *generic* tool still advertises there, but degraded to untyped `{}`
     # parameter schemas -- the #489 decode ambiguity the expression pathway
     # exists to fix.)
+    #
+    # Two ways a parameter can fail to describe a value the model could send:
+    # `op_tool`'s has no schema at all, and `interp_tool`'s has one that no
+    # reply satisfies. Both make the tool uncallable, so both are skipped.
     advertised: list[list] = []
 
     class _SpecCapture(ObjectInterpretation):
@@ -630,9 +641,9 @@ def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
         assert poly_mod.grow([1, 2, 3]) == "just text"
     names = {spec["function"]["name"] for specs in advertised for spec in specs}
     assert "other_tool" in names and "extend_sequence" in names
-    assert "op_tool" not in names
+    assert skipped not in names
     assert any(
-        "op_tool" in record.message and record.levelname == "WARNING"
+        skipped in record.message and record.levelname == "WARNING"
         for record in caplog.records
     )
 
