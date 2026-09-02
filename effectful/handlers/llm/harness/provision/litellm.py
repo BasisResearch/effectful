@@ -11,6 +11,7 @@ from effectful.handlers.llm.harness.hooks import (
     ResultDecodingError,
     completion,
 )
+from effectful.handlers.llm.harness.serialization import _is_empty_text_block
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -28,32 +29,47 @@ class LiteLLMConfigurer(ObjectInterpretation):
         }
 
     @staticmethod
-    def _mark(msg: Message) -> Message:
-        """`msg`, with a `cache_control` breakpoint on its last content block.
+    def _mark(msg: Message) -> Message | None:
+        """`msg`, with a `cache_control` breakpoint on its last non-empty content
+        block -- or `None` if it has none.
 
         A message whose content is a plain string -- which the assembled system
         prompt is not, but a hand-written or externally supplied message may be
         -- takes the message-level key instead, the only form litellm reads a
         breakpoint from for string content.
+
+        Empty blocks are skipped because Anthropic answers ``cache_control
+        cannot be set for empty text blocks``. `to_content_blocks` no longer
+        builds one, so this is reached only by messages supplied from outside --
+        the same messages the string case above exists for. `None` lets
+        `_add_cache_control` fall back to an earlier message; a message that is
+        already marked returns itself, since that mark is the breakpoint.
         """
         content = msg.get("content")
         if isinstance(content, str):
+            if not content.strip():
+                return None
             return typing.cast(Message, {**msg, "cache_control": {"type": "ephemeral"}})
-        if not isinstance(content, list) or not content:
-            return msg
-        last_block = content[-1]
-        if not isinstance(last_block, dict) or "cache_control" in last_block:
-            return msg
-        return typing.cast(
-            Message,
-            {
-                **msg,
-                "content": [
-                    *content[:-1],
-                    {**last_block, "cache_control": {"type": "ephemeral"}},
-                ],
-            },
-        )
+        if not isinstance(content, list):
+            return None
+        for i in reversed(range(len(content))):
+            block = content[i]
+            if not isinstance(block, dict) or _is_empty_text_block(block):
+                continue
+            if "cache_control" in block:
+                return msg
+            return typing.cast(
+                Message,
+                {
+                    **msg,
+                    "content": [
+                        *content[:i],
+                        {**block, "cache_control": {"type": "ephemeral"}},
+                        *content[i + 1 :],
+                    ],
+                },
+            )
+        return None
 
     def _add_cache_control(
         self,
@@ -81,15 +97,26 @@ class LiteLLMConfigurer(ObjectInterpretation):
         Returns a new list, leaving the caller's messages untouched, so these
         transport-level annotations never reach the stored history -- and so
         never reach an `Agent`'s checkpointed transcript.
+
+        A message `_mark` declines is stepped over: the scan keeps walking back
+        until one takes the breakpoint, so a request whose newest message has
+        nothing markable in it caches a shorter prefix rather than going out
+        with one breakpoint.
         """
         out = list(messages)
         for i in reversed(range(len(out))):
             if out[i]["role"] in ("user", "tool"):
-                out[i] = self._mark(out[i])
+                marked = self._mark(out[i])
+                if marked is None:
+                    continue
+                out[i] = marked
                 break
         for i in range(len(out)):
             if out[i]["role"] == "system":
-                out[i] = self._mark(out[i])
+                # Only one system message is ever sent: stop either way.
+                marked = self._mark(out[i])
+                if marked is not None:
+                    out[i] = marked
                 break
         return out
 

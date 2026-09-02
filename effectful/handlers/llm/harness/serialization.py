@@ -73,17 +73,20 @@ def to_content_blocks(
     Inside JSON structures, separators match ``json.dumps`` defaults so that
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
+
+    No block is empty: Anthropic rejects an empty text block outright, and
+    rejects it again when a cache breakpoint lands on one.
     """
     if isinstance(value, str):
-        return [ChatCompletionTextObject(type="text", text=value)]
+        return [ChatCompletionTextObject(type="text", text=value)] if value else []
 
     buf: list[str] = []
     blocks: list[OpenAIMessageContentListBlock] = []
 
     def flush() -> None:
-        if buf:
-            blocks.append(ChatCompletionTextObject(type="text", text="".join(buf)))
-            buf.clear()
+        if text := "".join(buf):
+            blocks.append(ChatCompletionTextObject(type="text", text=text))
+        buf.clear()
 
     def walk(v: typing.Any) -> None:
         if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
@@ -110,6 +113,18 @@ def to_content_blocks(
     walk(value)
     flush()
     return blocks
+
+
+def _is_empty_text_block(block: typing.Any) -> bool:
+    """Whether `block` is a text block Anthropic will reject as empty.
+
+    Whitespace-only counts, matching litellm's own ``.strip()`` test.
+    """
+    return (
+        isinstance(block, dict)
+        and block.get("type") == "text"
+        and not (block.get("text") or "").strip()
+    )
 
 
 def format_as_content_blocks(
