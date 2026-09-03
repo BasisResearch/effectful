@@ -240,9 +240,9 @@ def _is_python(text: str, *, partial: bool = False) -> bool:
     """Whether `text` looks like a Python source snippet worth highlighting.
 
     Detects code by *content* rather than schema/field name, so it covers every
-    `Encodable` type that serializes Python as a string -- the synthesis
-    `SynthesizedFunction.code` field, `exec_code`'s `types.CodeType`
-    argument, and any future code-carrying tool -- uniformly. Requires a
+    `Encodable` type that serializes Python as a string -- a synthesized
+    `Callable`, `exec_code`'s `types.CodeType` argument, and any future
+    code-carrying tool -- uniformly. Requires a
     multi-line string that parses as a module with at least one real statement
     (not a lone expression), which excludes prose and JSON-as-string.
 
@@ -261,8 +261,8 @@ def _is_python(text: str, *, partial: bool = False) -> bool:
 def _extract_code(args: typing.Any, *, partial: bool = False) -> str | None:
     """Return an embedded Python source string from parsed tool-call arguments.
 
-    Walks nested dicts (a synthesized callable is ``{"implementation":
-    {"code": ...}}``; `exec_code` is a flat ``{"code": ...}``) and returns
+    Walks nested dicts (a synthesized callable is ``{"implementation": ...}``;
+    `exec_code` is ``{"code": ...}``) and returns
     the first string value that :func:`_is_python` recognizes. ``partial`` is
     forwarded, and is set while streaming, where the payload is source cut
     mid-line and has to be judged as a prefix rather than as a module.
