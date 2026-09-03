@@ -3,11 +3,10 @@
 `TyTypeChecker` is interchangeable with
 `~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` -- same
 operation, same contract, a different checker behind it. ty is a compiled binary
-that needs no cache warmup and builds no module graph in this process, so a check
-costs milliseconds where mypy's first check costs seconds; mypy reuses a private
-incremental cache for later checks. On the failure path ty reports the offending
-line with its own hints rather than a line of JSON. Prefer it unless a stack
-specifically needs mypy's analysis.
+that needs no per-call cache and builds no module graph in this process, so a
+check costs milliseconds where mypy's costs seconds, and on the failure path it
+reports the offending line with ty's own hints rather than a line of JSON. Prefer
+it unless a stack specifically needs mypy's analysis.
 
 Either checker is independent of any executor: it says how generated code is
 *checked*, not how it is parsed, compiled or run, so it is installed alongside
