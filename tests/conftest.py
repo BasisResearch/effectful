@@ -12,7 +12,7 @@ from effectful.handlers.llm.harness.hooks import Tool, completion
 from effectful.handlers.llm.harness.legibility.lexical import _tools_in_scope
 from effectful.ops.syntax import ObjectInterpretation, implements
 
-EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-5-mini")
+EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4.1-mini")
 
 _HAS_LLM_API_KEY = litellm.validate_environment(model=EFFECTFUL_LLM_MODEL)[
     "keys_in_environment"
