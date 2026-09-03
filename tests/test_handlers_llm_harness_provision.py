@@ -51,6 +51,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
 )
 from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.serialization import _NameAndTool
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -1545,11 +1546,11 @@ class TestCallableSynthesis:
             add_func = synthesize_adder()
             assert callable(add_func)
 
-            # Encode it back to SynthesizedFunction
+            # Encode it back to source
             adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
             encoded = adapter.dump_python(add_func, mode="json")
-            assert isinstance(encoded, dict)
-            assert "def " in encoded["code"]
+            assert isinstance(encoded, str)
+            assert "def " in encoded
 
             # Decode it again and verify it still works
             decoded = adapter.validate_python(encoded)
@@ -1611,7 +1612,7 @@ def make_write_and_run_body_response(
     synthesis ``write_and_run_body`` tool with a function it wrote."""
     return make_tool_call_response(
         "write_and_run_body",
-        json.dumps({"implementation": {"code": code}, "compact": compact}),
+        json.dumps({"implementation": code, "compact": compact}),
         tool_call_id=tool_call_id,
     )
 
@@ -1890,9 +1891,7 @@ class TestSynthesizeAndCall:
                                     "name": "write_and_run_body",
                                     "arguments": json.dumps(
                                         {
-                                            "implementation": {
-                                                "code": "def double_it(x: int) -> int:\n    return x * 2\n"
-                                            }
+                                            "implementation": "def double_it(x: int) -> int:\n    return x * 2\n"
                                         }
                                     ),
                                 },
@@ -1937,6 +1936,27 @@ class TestSynthesizeAndCall:
             FinalBodySynthesizer._SubmitSolutionTool.define(
                 variadic, variadic.__signature__.bind()
             )
+
+    def test_implementation_is_advertised_as_a_bare_string(self):
+        """The tool the model actually sees takes source as a JSON string, with no
+        object to assemble and no `$ref` to resolve (#775)."""
+
+        @Skill.define
+        def add(a: int, b: int) -> int:
+            """Add {a} and {b}."""
+            raise NotHandled
+
+        tool = FinalBodySynthesizer._SubmitSolutionTool.define(
+            add, add.__signature__.bind(1, 2)
+        )
+        advertised = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+            _NameAndTool("write_and_run_body", tool), mode="json", context={}
+        )
+        implementation = advertised["function"]["parameters"]["properties"][
+            "implementation"
+        ]
+        assert implementation["type"] == "string"
+        assert "$ref" not in json.dumps(implementation)
 
 
 class TestSynthesizeAndCallDoctests:

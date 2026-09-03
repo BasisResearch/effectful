@@ -712,32 +712,25 @@ def _pydantic_type_image(ty: type[Image.Image]):
     ]
 
 
-# The *serialization* view of a synthesized callable: the shape the model reads
-# when a function is handed to it as a value (e.g. a tool's return) -- just the
-# source, with none of the synthesis instructions the `SynthesizedFunction` subtype
-# carries for the generation direction. Its JSON schema (docstring included, since
-# pydantic renders it as the schema `description`) is what every synthesized-callable
-# encoding serializes as, so keep the docstring model-facing.
-class EncodedFunction(pydantic.BaseModel):
-    """A function, encoded as a string of its complete Python source."""
+# The *serialization* view of a synthesized callable: the shape the model reads when
+# a function is handed to it as a value (e.g. a tool's return) -- the bare source,
+# with none of the synthesis instructions the validation direction carries.
+EncodedFunction = typing.Annotated[
+    str,
+    pydantic.Field(
+        description="A function, as a string of its complete Python source."
+    ),
+]
 
-    code: str = pydantic.Field(..., description="Python source defining the function.")
 
+def _serialize_callable(value: collections.abc.Callable) -> str:
+    """Encode a callable as its source, or as a stub when there is none.
 
-def _serialize_callable(value: collections.abc.Callable) -> EncodedFunction:
-    """Encode a callable back to its ``code`` form (source, or a stub).
-
-    Emits a plain `EncodedFunction` -- which is exactly what the serialization JSON
-    schema declares -- rather than the `SynthesizedFunction` subclass that governs
-    the *other* direction. The two directions carry different obligations, and
-    conflating them was a real bug: `SynthesizedFunction`'s constraints ("the last
-    statement must be a function definition", "every parameter must be annotated")
-    are demands on code a model is *writing*, and a value being serialized is under
-    no such obligation. It is any callable that reached this point -- a class handed
-    back by a lexical-scope read, or an inner function a Skill *body* returned,
-    which was never required to annotate anything -- and re-validating its recovered
-    source rejected those with a `ValidationError` raised from inside pydantic's
-    serializer, aborting the whole call rather than encoding the value.
+    The synthesis constraints ("the last statement must be a function definition",
+    "every parameter must be annotated") are demands on code a model is *writing*;
+    a value being serialized is under no such obligation -- it may be a class from a
+    lexical-scope read, or an inner function a Skill body returned -- so they are
+    deliberately not re-applied here.
     """
     try:
         source = inspect.getsource(value)
@@ -745,7 +738,7 @@ def _serialize_callable(value: collections.abc.Callable) -> EncodedFunction:
         source = None
 
     if source:
-        return EncodedFunction(code=textwrap.dedent(source))
+        return textwrap.dedent(source)
 
     name = getattr(value, "__name__", None)
     docstring = inspect.getdoc(value)
@@ -759,11 +752,10 @@ def _serialize_callable(value: collections.abc.Callable) -> EncodedFunction:
     except (ValueError, TypeError):
         sig_str = "(...)"
 
-    stub_code = f'''def {name}{sig_str}:
+    return f'''def {name}{sig_str}:
     """{docstring}"""
     ...
 '''
-    return EncodedFunction(code=stub_code)
 
 
 @TypeToPydanticType.register(collections.abc.Callable)

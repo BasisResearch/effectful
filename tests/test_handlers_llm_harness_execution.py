@@ -32,7 +32,6 @@ from effectful.handlers.llm.harness.hooks import AgentLoop
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
-    SynthesizedFunction,
     _recover_skill_def,
     _splice_function,
 )
@@ -318,9 +317,7 @@ def test_decode_runtime_only_pydantic_model_issue_576():
         fn = pydantic.TypeAdapter(
             Encodable[Callable[[MyModel], MyModel]]
         ).validate_python(
-            SynthesizedFunction(
-                code="def identity(a: MyModel) -> MyModel:\n    return a"
-            ),
+            "def identity(a: MyModel) -> MyModel:\n    return a",
             context={"MyModel": MyModel},
         )
         assert fn(MyModel(x=1, y="hi")) == MyModel(x=1, y="hi")
@@ -363,9 +360,7 @@ def test_decode_with_anchor_typechecks_and_runs():
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
-            SynthesizedFunction(
-                code="def count_a(s: str) -> int:\n    return s.count('a')"
-            ),
+            "def count_a(s: str) -> int:\n    return s.count('a')",
             context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
         )
         assert fn("banana") == 3
@@ -376,7 +371,7 @@ def test_decode_with_anchor_rejects_bad_code():
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
-                SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
+                "def count_a(s: str) -> str:\n    return s",
                 context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
@@ -387,7 +382,7 @@ def test_decode_without_anchor_skips_typecheck():
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         fn = ta.validate_python(
-            SynthesizedFunction(code="def count_a(s: str) -> str:\n    return s"),
+            "def count_a(s: str) -> str:\n    return s",
             context={},
         )
         assert callable(fn)
@@ -401,21 +396,21 @@ def test_decode_with_anchor_rejects_non_nestable():
         ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
         with pytest.raises(Exception):
             ta.validate_python(
-                SynthesizedFunction(
-                    code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
-                ),
+                "from os import *\ndef count_a(s: str) -> int:\n    return 0",
                 context={_TYPE_CHECK_ANCHOR_KEY: _count_char},
             )
 
 
 def test_decode_without_anchor_still_rejects_non_nestable():
-    # The splice-time scan is anchor-conditional, but `SynthesizedFunction` states the
-    # no-star-import rule to the model as an unconditional constraint on `code`
-    # -- so it is enforced unconditionally too, and the anchorless path rejects it just
-    # as the spliced one does (here at model validation, before any provider runs).
+    # The splice-time scan is anchor-conditional, but the no-star-import rule is
+    # stated to the model as an unconditional constraint on the source -- so it is
+    # enforced unconditionally too, and the anchorless path rejects it just as the
+    # spliced one does (here before any provider runs).
+    ta = pydantic.TypeAdapter(Encodable[Callable[[str], int]])
     with pytest.raises(pydantic.ValidationError):
-        SynthesizedFunction(
-            code="from os import *\ndef count_a(s: str) -> int:\n    return 0"
+        ta.validate_python(
+            "from os import *\ndef count_a(s: str) -> int:\n    return 0",
+            context={},
         )
 
 
@@ -426,10 +421,8 @@ def test_decode_without_anchor_still_rejects_non_nestable():
 
 def test_restricted_blocks_private_attribute_access():
     """RestrictedPython blocks access to underscore-prefixed attributes by default."""
-    source = SynthesizedFunction(
-        code="""def get_private(s: str) -> int:
+    source = """def get_private(s: str) -> int:
     return s.__class__.__name__"""
-    )
     # Should raise due to restricted attribute access
     with pytest.raises(Exception):  # Could be NameError or AttributeError
         with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
@@ -446,10 +439,8 @@ def test_restricted_with_custom_policy():
     class CustomPolicy(RestrictingNodeTransformer):
         pass
 
-    source = SynthesizedFunction(
-        code="""def add(a: int, b: int) -> int:
+    source = """def add(a: int, b: int) -> int:
     return a + b"""
-    )
     with (
         handler(TYPE_CHECKER()),
         handler(RestrictedPythonExecutor(policy=CustomPolicy)),
@@ -473,10 +464,8 @@ def test_builtins_in_env_does_not_bypass_security():
     dangerous_ctx = {"__builtins__": builtins.__dict__}
 
     # Test 1: open() should not be usable even with __builtins__ in context
-    source_open = SynthesizedFunction(
-        code="""def read_file(path: str) -> str:
+    source_open = """def read_file(path: str) -> str:
     return open(path).read()"""
-    )
     with pytest.raises(Exception):  # Could be NameError, ValueError, or other
         with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
@@ -485,11 +474,9 @@ def test_builtins_in_env_does_not_bypass_security():
             fn("/etc/passwd")
 
     # Test 2: __import__ should not be usable
-    source_import = SynthesizedFunction(
-        code="""def get_os_name() -> str:
+    source_import = """def get_os_name() -> str:
     os = __import__('os')
     return os.name"""
-    )
     with pytest.raises(Exception):
         with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[], str]]).validate_python(
@@ -498,10 +485,8 @@ def test_builtins_in_env_does_not_bypass_security():
             fn()
 
     # Test 3: Verify safe code still works with dangerous context
-    source_safe = SynthesizedFunction(
-        code="""def add(a: int, b: int) -> int:
+    source_safe = """def add(a: int, b: int) -> int:
     return a + b"""
-    )
     with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
         fn = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).validate_python(
             source_safe, context=dangerous_ctx
@@ -509,10 +494,8 @@ def test_builtins_in_env_does_not_bypass_security():
         assert fn(2, 3) == 5, "Safe code should still work"
 
     # Test 4: Private attribute access should still be blocked
-    source_private = SynthesizedFunction(
-        code="""def get_class(s: str) -> str:
+    source_private = """def get_class(s: str) -> str:
     return s.__class__.__name__"""
-    )
     with pytest.raises(Exception):
         with handler(TYPE_CHECKER()), handler(RestrictedPythonExecutor()):
             fn = pydantic.TypeAdapter(Encodable[Callable[[str], str]]).validate_python(
@@ -1237,7 +1220,7 @@ class TestRunDoctestsThroughCallableDecode:
         with handler(TYPE_CHECKER()), handler(provider):
             return pydantic.TypeAdapter(
                 Encodable[Callable[[str, str], int]]
-            ).validate_python(SynthesizedFunction(code=code), context={})
+            ).validate_python(code, context={})
 
     def test_decode_runs_passing_doctests(self):
         fn = self._decode(

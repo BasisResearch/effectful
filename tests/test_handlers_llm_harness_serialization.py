@@ -42,6 +42,7 @@ from effectful.handlers.llm.harness.serialization import (
     _is_decodable,
     _NameAndTool,
     _UndecodableReturn,
+    format_as_content_blocks,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
@@ -848,7 +849,7 @@ def test_encodable_callable_produces_valid_schema_631():
     adapter = pydantic.TypeAdapter(Encodable[Callable[[int], int]])
     schema = adapter.json_schema()
     assert isinstance(schema, dict)
-    assert "properties" in schema
+    assert schema["type"] == "string"
 
 
 def test_dataclass_with_encodable_tuple_field_626():
@@ -952,8 +953,8 @@ def test_recursive_alias_does_not_diverge(ty):
 @pytest.mark.xfail(
     strict=True,
     reason="The alias now reaches the type-expression encoding and gets a real "
-    "schema, but `Kernel` aliases a *callable*, whose schema is `EncodedFunction` "
-    "-- correct, and signature-free, as every callable schema here is. So the "
+    "schema, but `Kernel` aliases a *callable*, whose schema is a bare source "
+    "string -- correct, and signature-free, as every callable schema here is. So the "
     "encoding says 'a function' without saying `list[float]`. An alias to any "
     "other shape (see the tuple case) comes out fully described.",
 )
@@ -1054,7 +1055,7 @@ def test_class_value_is_not_encoded_as_a_function():
     encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
         int, mode="json", context={}
     )
-    assert "code" not in encoded
+    assert isinstance(encoded, dict), "a type encodes as a schema, not as source"
     assert "def int" not in json.dumps(encoded)
 
 
@@ -1072,7 +1073,7 @@ def test_dataclass_value_routes_to_the_callable_encoding():
     encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
         _Point, mode="json", context={}
     )
-    assert "class _Point" in encoded["code"]
+    assert "class _Point" in encoded
 
 
 @pytest.mark.parametrize("value", [int, list[int], int | str], ids=str)
@@ -1390,16 +1391,11 @@ def _int_pair_anchor() -> Callable[[int, int], int]:
 
 # Callable error cases: (type, ctx, source, exc_type, anchor)
 #
-# Sources are passed as raw ``{"code": ...}`` dicts, not pre-built
-# ``SynthesizedFunction`` instances: structurally-invalid code (e.g. a non-function
-# last statement) is rejected by ``SynthesizedFunction``'s own field validator, so
-# building it eagerly here would raise at collection. A dict defers that validation
-# to the decoder (``model_validate``), which is the real path an LLM's JSON takes.
 CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[..., int],
         {},
-        {"code": "x = 42"},
+        "x = 42",
         ValueError,
         None,
         id="non-function-last-stmt",
@@ -1407,7 +1403,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"code": "def add(a: int) -> int:\n    return a"},
+        "def add(a: int) -> int:\n    return a",
         ValueError,
         None,
         id="wrong-param-count",
@@ -1415,7 +1411,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"code": "def add(a: int, b: int) -> str:\n    return str(a + b)"},
+        "def add(a: int, b: int) -> str:\n    return str(a + b)",
         TypeError,
         _int_pair_anchor,
         id="wrong-return-type",
@@ -1423,7 +1419,7 @@ CALLABLE_ERROR_CASES = [
     pytest.param(
         Callable[[int, int], int],
         {},
-        {"code": "def add(a: int, b: int):\n    return a + b"},
+        "def add(a: int, b: int):\n    return a + b",
         ValueError,
         None,
         id="missing-return-annotation",
@@ -1661,10 +1657,49 @@ def test_encodable_code_schema_is_a_string():
 
 
 # ============================================================================
+# A synthesized callable is a bare string on the wire, in both directions (#775)
+# ============================================================================
+
+
+@pytest.mark.parametrize("mode", ["validation", "serialization"])
+def test_callable_schema_is_a_bare_string_with_no_refs(mode):
+    """A function is a JSON string, not an object wrapping one.
+
+    The absence of `$ref`/`$defs` is the point: a provider that decodes structured
+    output approximately has no object to assemble and no escaping to get right.
+    """
+    schema = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).json_schema(
+        mode=mode
+    )
+    assert schema["type"] == "string"
+    assert "$ref" not in json.dumps(schema)
+    assert "$defs" not in schema
+
+
+def test_callable_round_trips_through_its_string_encoding():
+    """Serializing a function and validating the result back yields a working one."""
+    adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
+    encoded = adapter.dump_python(fn_add, mode="json", context={})
+    assert isinstance(encoded, str)
+    with handler(TyTypeChecker()), handler(BuiltinExecutor()):
+        decoded = adapter.validate_python(encoded, context={})
+    assert decoded(2, 3) == fn_add(2, 3)
+
+
+def test_callable_in_a_prompt_arrives_as_unescaped_source():
+    """A function spliced into a prompt reaches the model as source, not as source
+    escaped inside a JSON object."""
+    blocks = format_as_content_blocks("{fn}", {"fn": fn_add})
+    text = "".join(b["text"] for b in blocks)
+    assert text.strip().startswith("def fn_add")
+    assert "\\n" not in text
+
+
+# ============================================================================
 # Serializing a callable: `Encodable[Callable]`'s two directions carry different
 # obligations
 #
-# Validation decodes code the model *wrote*, and holds it to `SynthesizedFunction`'s
+# Validation decodes code the model *wrote*, and holds it to the synthesis
 # constraints. Serialization encodes a value that already exists, which was never
 # under those constraints -- a class read out of the lexical scope, or an inner
 # function a Skill *body* returned. Conflating the two aborted the enclosing call
@@ -1700,19 +1735,20 @@ def test_serialize_callable_does_not_reapply_synthesis_constraints(label, value)
     encoded = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]]).dump_python(
         value, mode="json", context={}
     )
-    assert "code" in encoded, label
-    assert encoded["code"].strip(), label
+    assert isinstance(encoded, str), label
+    assert encoded.strip(), label
 
 
 def test_serialize_callable_matches_its_declared_schema():
-    """What serialization emits is what its JSON schema promises: the plain
-    `EncodedFunction` shape, with none of the synthesis constraints attached."""
+    """What serialization emits is what its JSON schema promises: a bare source
+    string, with none of the synthesis constraints attached."""
     adapter = pydantic.TypeAdapter(Encodable[Callable[[int, int], int]])
     schema = adapter.json_schema(mode="serialization")
     encoded = adapter.dump_python(
         _outer_returning_unannotated(), mode="json", context={}
     )
-    assert set(encoded) <= set(schema["properties"])
+    assert schema["type"] == "string"
+    assert isinstance(encoded, str)
 
 
 @pytest.mark.parametrize(
@@ -1728,4 +1764,4 @@ def test_serialize_tool_value_encodes_the_callable_it_is(ty):
     encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
         _tool_add, mode="json", context={}
     )
-    assert "def _tool_add" in encoded["code"]
+    assert "def _tool_add" in encoded

@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"code\":\"from typing import Callable\\n\\ndef generate_example_paragraph() -> str:\\n    return (\\n        \\\"The cat decided to go for a walk. \\\"\\n        \\\"Suddenly, it tripped and went tumbling. \\\"\\n        \\\"The owner thought about getting another. \\\"\\n        \\\"Everyone called him a lunatic.\\\"\\n    )\"}}",
+        "content": "{\"value\":\"from typing import Callable\\n\\ndef generate_example_paragraph() -> str:\\n    return (\\n        \\\"The cat decided to go for a walk. \\\"\\n        \\\"Suddenly, it tripped and went tumbling. \\\"\\n        \\\"The owner thought about getting another. \\\"\\n        \\\"Everyone called him a lunatic.\\\"\\n    )\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,
