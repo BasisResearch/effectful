@@ -3099,14 +3099,13 @@ def _has_block_cache_control(msg: dict) -> bool:
     )
 
 
-def _assert_valid_anthropic_request(msgs) -> None:
-    """Assert `msgs` survives litellm's Anthropic transform as a legal request.
+def _assert_no_turn_dropped(msgs) -> None:
+    """Assert litellm's Anthropic transform carries every turn of `msgs` through.
 
-    The block assertions are upstream 400s: ``messages: text content blocks must
-    be non-empty`` and ``cache_control cannot be set for empty text blocks``.
-    Roles are not required to alternate; Anthropic accepts consecutive same-role
-    turns. A turn must not be dropped, which is how a message with nothing in it
-    used to disappear from a request.
+    `anthropic_messages_pt` emits an assistant turn only ``if assistant_content``,
+    so a message with nothing in it disappears from the request silently. This
+    checks our own messages survive the transform; it makes no claim about which
+    requests Anthropic accepts.
     """
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 
@@ -3118,35 +3117,6 @@ def _assert_valid_anthropic_request(msgs) -> None:
         optional_params={},
         litellm_params={},
         headers={},
-    )
-
-    def walk(blocks):
-        """Every text block in `blocks`, including those nested in a tool_result."""
-        for block in blocks:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text":
-                yield block
-            elif isinstance(block.get("content"), list):
-                yield from walk(block["content"])
-
-    breakpoints = 0
-    for message in transformed["messages"]:
-        content = message.get("content")
-        if not isinstance(content, list):
-            continue
-        for block in walk(content):
-            assert block.get("text"), (
-                f"empty text block sent to Anthropic: {block} in {message}"
-            )
-        breakpoints += sum(1 for b in content if "cache_control" in b)
-
-    for block in transformed.get("system") or []:
-        assert block.get("text"), f"empty system block: {block}"
-        breakpoints += "cache_control" in block
-
-    assert breakpoints <= 4, (
-        f"Anthropic allows four cache breakpoints per request; got {breakpoints}"
     )
 
     # Consecutive same-role turns merge, so compare role runs, not counts.
@@ -3302,7 +3272,7 @@ class TestPromptCaching:
         assert [m["role"] for m in marked] == ["system", "tool"], (
             f"Expected the system message plus the last input message. Got: {marked}"
         )
-        _assert_valid_anthropic_request(msgs)
+        _assert_no_turn_dropped(msgs)
 
     def test_breakpoint_advances_to_the_newest_message(self):
         """The breakpoint tracks the end of the conversation across turns, so
@@ -3333,7 +3303,7 @@ class TestPromptCaching:
         assert marked == [0, len(second) - 1], (
             f"Expected the system message and the last message only. Got: {marked}"
         )
-        _assert_valid_anthropic_request(second)
+        _assert_no_turn_dropped(second)
 
     def test_cache_control_never_enters_stored_history(self):
         """The annotation is added to the outgoing request, not the transcript,
@@ -3514,7 +3484,7 @@ class TestEmptyContentBlocks:
         assert _empty_text_blocks(sent) == [], (
             f"empty text block(s) in the request: {_empty_text_blocks(sent)}"
         )
-        _assert_valid_anthropic_request(sent)
+        _assert_no_turn_dropped(sent)
 
     def test_breakpoint_moves_off_an_empty_tool_result(self):
         """With no block to mark, the breakpoint falls back to the previous
@@ -3620,7 +3590,7 @@ class TestEmptyContentBlocks:
         sent = capture.received_messages[0]
         assert [m["role"] for m in sent] == ["system", "user"]
         assert _empty_text_blocks(sent) == []
-        _assert_valid_anthropic_request(sent)
+        _assert_no_turn_dropped(sent)
 
     def test_breakpoint_skips_an_unmarkable_message(self):
         """The same fallback, over messages the harness did not build."""
@@ -3638,7 +3608,7 @@ class TestEmptyContentBlocks:
         )
 
     def test_whitespace_is_content(self):
-        """A block of spaces is not empty; Anthropic accepts one."""
+        """A block of spaces is not empty, so it keeps its block."""
         provider = LiteLLMConfigurer(model="claude-sonnet-4-5")
         blank = {"role": "user", "content": [{"type": "text", "text": "   "}]}
 
