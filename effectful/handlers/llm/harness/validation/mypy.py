@@ -60,14 +60,20 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         "--disable-error-code=empty-body",
     )
 
-    # Mypy is incremental by default, but only when successive invocations see the
-    # same cache. Keep one private cache root for this handler's lifetime and split
-    # it by leniency because those modes use cache-affecting options; alternating
-    # them through one cache would invalidate the previous mode on every call.
-    # `TemporaryDirectory` removes the whole root when the handler is discarded.
-    _cache_root: tempfile.TemporaryDirectory = dataclasses.field(
+    # Strict and lenient checks use cache-affecting options, so each gets its own
+    # incremental cache for this handler's lifetime. `TemporaryDirectory` removes
+    # each cache when the handler is discarded.
+    _strict_cache: tempfile.TemporaryDirectory = dataclasses.field(
         default_factory=lambda: tempfile.TemporaryDirectory(
-            prefix="effectful_mypy_cache_"
+            prefix="effectful_mypy_strict_cache_"
+        ),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _lenient_cache: tempfile.TemporaryDirectory = dataclasses.field(
+        default_factory=lambda: tempfile.TemporaryDirectory(
+            prefix="effectful_mypy_lenient_cache_"
         ),
         init=False,
         repr=False,
@@ -78,16 +84,18 @@ class MypyTypeChecker(PromptInjectingInterpretation):
     # must not write the same incremental cache at once, so serialize checks that
     # share a mode. Strict and lenient calls use different caches and can still run
     # concurrently. The synthesized source gets its own directory below as well.
-    _cache_locks: dict[bool, threading.Lock] = dataclasses.field(
-        default_factory=lambda: {False: threading.Lock(), True: threading.Lock()},
+    _strict_lock: threading.Lock = dataclasses.field(
+        default_factory=threading.Lock,
         init=False,
         repr=False,
         compare=False,
     )
-
-    def _cache_dir(self, lenient: bool) -> str:
-        """The persistent cache for one cache-compatible checking mode."""
-        return os.path.join(self._cache_root.name, "lenient" if lenient else "strict")
+    _lenient_lock: threading.Lock = dataclasses.field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
 
     @staticmethod
     def _region_errors(
@@ -147,7 +155,9 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             # Keep the source path unique per call even though the cache persists.
             # Mypy can accept a same-path, same-size source from its mtime fast path;
             # changing the path makes it validate the source hash before reuse.
-            with self._cache_locks[lenient]:
+            cache = self._lenient_cache if lenient else self._strict_cache
+            lock = self._lenient_lock if lenient else self._strict_lock
+            with lock:
                 proc = subprocess.run(
                     [
                         sys.executable,
@@ -155,7 +165,7 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                         "mypy",
                         tf_path,
                         "--cache-dir",
-                        self._cache_dir(lenient),
+                        cache.name,
                         "--no-error-summary",
                         "--output=json",
                         "--ignore-missing-imports",
