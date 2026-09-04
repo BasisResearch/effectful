@@ -3,7 +3,6 @@ import collections.abc
 import inspect
 import linecache
 import logging
-import textwrap
 import types
 import typing
 
@@ -210,160 +209,154 @@ def _splice_function(
     return checked_source, lo, hi
 
 
-class SynthesizedFunction(EncodedFunction):
-    """
-    Structured output for function synthesis.
-    """
+# Constraints 1-3 below, shared by every synthesis site; each site appends its own.
+_COMMON_CONSTRAINTS: list[str] = [
+    "The code MUST be one complete syntactically valid Python module.",
+    "The code MUST NOT use star imports or ``__future__`` imports.",
+    "The function definition MUST be the LAST statement - do not add any code after it.",
+]
 
-    code: str = pydantic.Field(
-        ...,
-        description=textwrap.dedent("""
-        A string containing the complete Python source code for the function.
-        The code MUST satisfy the following constraints, or it will fail validation:
+_FUNCTION_CONSTRAINTS: list[str] = [
+    "The function MUST have type annotations for all parameters and the return type.",
+    "You may include doctest examples (lines starting with >>>) inside the function's "
+    "docstring to demonstrate and verify its behavior; these examples are run as tests.",
+]
 
-        <constraints>
-        1. The code MUST be one complete syntactically valid Python module.
-        2. The code MUST NOT use star imports or ``__future__`` imports.
-        3. The function definition MUST be the LAST statement - do not add any code after it.
-        4. The function MUST have type annotations for all parameters and the return type.
-        5. You may include doctest examples (lines starting with >>>) inside the function's
-        docstring to demonstrate and verify its behavior; these examples are run as tests.
-        </constraints>
-        """),
+
+def _param_names(param_types: typing.Iterable[typing.Any], receiver: bool) -> list[str]:
+    names = [getattr(t, "__name__", str(t)) for t in param_types]
+    # A method's callable type already carries the receiver as its first parameter,
+    # under an uninformative Agent-class type; relabel it so the model reproduces
+    # it rather than inventing one.
+    if receiver and names:
+        names[0] = "self"
+    return names
+
+
+def _signature_str(
+    typ: type[collections.abc.Callable], *, receiver: bool = False
+) -> str:
+    """Render a ``Callable[[...], ...]`` signature by type *name* (not its
+    fully-qualified ``repr``), so the model sees ``Callable[[State], int]`` rather
+    than ``collections.abc.Callable[[pkg.mod.State], builtins.int]``."""
+    args = typing.get_args(typ)
+    if not args:
+        return "Callable"
+    param_types, return_type = args
+    params_str = (
+        "..." if param_types is ... else ", ".join(_param_names(param_types, receiver))
     )
+    return_str = getattr(return_type, "__name__", str(return_type))
+    return f"Callable[[{params_str}], {return_str}]"
 
-    # A general `Callable` is type-checked against the requested signature, so it must
-    # be fully annotated. A Skill *body* is instead checked against the enclosing
-    # Skill's own signature (`splice_skill_body`), which already carries the
-    # annotations -- so its subclasses waive this and may omit the `self` receiver.
-    _require_annotations: typing.ClassVar[bool] = True
 
-    @pydantic.field_validator("code")
-    @classmethod
-    def _validate_code(cls, value: str) -> str:
-        module: ast.AST = ast.parse(value)
+def _synthesized_source_schema(
+    typ: type[collections.abc.Callable],
+    subject: str,
+    extra_constraints: collections.abc.Sequence[str],
+    *,
+    receiver: bool = False,
+) -> typing.Any:
+    """The validation-side annotation for synthesized source: a bare string carrying
+    the requested signature and the constraints it will be held to."""
+    constraints = "\n".join(
+        f"{i}. {c}" for i, c in enumerate([*_COMMON_CONSTRAINTS, *extra_constraints], 1)
+    )
+    return typing.Annotated[
+        str,
+        pydantic.Field(
+            description=(
+                f"The complete Python source for {subject}, with signature "
+                f"<signature>{_signature_str(typ, receiver=receiver)}</signature>.\n"
+                f"The code MUST satisfy the following constraints, or it will fail "
+                f"validation:\n\n<constraints>\n{constraints}\n</constraints>"
+            )
+        ),
+    ]
 
-        if not isinstance(module, ast.Module) or not module.body:
+
+def _checked_source(
+    value: typing.Any, *, require_annotations: bool
+) -> str | collections.abc.Callable:
+    """The model's source, held to the constraints its schema states -- or an
+    already-decoded callable, passed through untouched."""
+    if not isinstance(value, str):
+        if callable(value):
+            return value
+        raise ValueError(
+            f"expected Python source as a string, got {type(value).__name__}"
+        )
+
+    module: ast.AST = ast.parse(value)
+
+    if not isinstance(module, ast.Module) or not module.body:
+        raise ValueError("decode() requires module code with at least one statement.")
+
+    last_stmt = module.body[-1]
+    if not isinstance(last_stmt, ast.FunctionDef):
+        raise ValueError(
+            f"decode() requires the last statement to be a function definition, "
+            f"got {type(last_stmt).__name__}"
+        )
+
+    if require_annotations:
+        for arg in last_stmt.args.args:
+            if arg.annotation is None:
+                raise ValueError(
+                    f"decode() requires all parameters to have type annotations, "
+                    f"parameter '{arg.arg}' is missing an annotation"
+                )
+        if last_stmt.returns is None:
             raise ValueError(
-                "decode() requires module code with at least one statement."
+                "decode() requires the function to have a return type annotation"
             )
 
-        last_stmt = module.body[-1]
-        if not isinstance(last_stmt, ast.FunctionDef):
+    for stmt in module.body:
+        if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
             raise ValueError(
-                f"decode() requires the last statement to be a function definition, "
-                f"got {type(last_stmt).__name__}"
+                "decode() does not allow __future__ imports in the module code"
             )
 
-        if cls._require_annotations:
-            for arg in last_stmt.args.args:
-                if arg.annotation is None:
+    for stmt in module.body:
+        if isinstance(stmt, ast.ImportFrom) and stmt.names:
+            for alias in stmt.names:
+                if alias.name == "*":
                     raise ValueError(
-                        f"decode() requires all parameters to have type annotations, "
-                        f"parameter '{arg.arg}' is missing an annotation"
+                        "decode() does not allow star imports in the module code"
                     )
-            if last_stmt.returns is None:
-                raise ValueError(
-                    "decode() requires the function to have a return type annotation"
-                )
 
-        for stmt in module.body:
-            if isinstance(stmt, ast.ImportFrom) and stmt.module == "__future__":
-                raise ValueError(
-                    "decode() does not allow __future__ imports in the module code"
-                )
-
-        for stmt in module.body:
-            if isinstance(stmt, ast.ImportFrom) and stmt.names:
-                for alias in stmt.names:
-                    if alias.name == "*":
-                        raise ValueError(
-                            "decode() does not allow star imports in the module code"
-                        )
-
-        return value
-
-    @classmethod
-    def _create_model_from_callable_type(
-        cls, typ: type[collections.abc.Callable]
-    ) -> type[typing.Self]:
-        """Create a SynthesizedFunction subclass carrying the requested signature in
-        the model-facing description.
-
-        Uses ``pydantic.create_model`` so the rendered signature (and any
-        subclass-specific instructions) ride in the JSON schema ``description`` sent
-        to the model. Subclasses customize the receiver rendering via `_param_names`
-        and add guidance via `_extra_instructions`.
-        """
-        doc = (
-            f"Python function with signature "
-            f"<signature>{cls._signature_str(typ)}</signature>"
-            f"{cls._extra_instructions()}"
-        )
-        return pydantic.create_model(
-            "TypedSynthesizedFunction",
-            __base__=cls,
-            __doc__=doc,
-        )
-
-    @classmethod
-    def _signature_str(cls, typ: type[collections.abc.Callable]) -> str:
-        """Render a ``Callable[[...], ...]`` signature by type *name* (not its
-        fully-qualified ``repr``), so the model sees ``Callable[[State], int]`` rather
-        than ``collections.abc.Callable[[pkg.mod.State], builtins.int]``."""
-        args = typing.get_args(typ)
-        if not args:
-            return "Callable"
-        param_types, return_type = args
-        params_str = (
-            "..." if param_types is ... else ", ".join(cls._param_names(param_types))
-        )
-        return_str = getattr(return_type, "__name__", str(return_type))
-        return f"Callable[[{params_str}], {return_str}]"
-
-    @classmethod
-    def _param_names(cls, param_types: typing.Iterable[typing.Any]) -> list[str]:
-        return [getattr(t, "__name__", str(t)) for t in param_types]
-
-    @classmethod
-    def _extra_instructions(cls) -> str:
-        return ""
+    return value
 
 
 @TypeToPydanticType.register(collections.abc.Callable)
 def _pydantic_callable(ty: typing.Any) -> typing.Any:
     """Pydantic-compatible Annotated type for a parameterized `Callable` value.
 
-    The model *produces* a function (as ``code``); it is synthesized,
+    The model *produces* a function, as a string of its source; it is synthesized,
     type-checked in the enclosing Skill's scope, and its own doctests are run.
     Skill-body synthesis (`write_and_run_body`) has its own encoding,
     `_pydantic_skill_body`.
     """
-    typed_enc = SynthesizedFunction._create_model_from_callable_type(
-        collections.abc.Callable[..., typing.Any] if not typing.get_args(ty) else ty  # type: ignore[arg-type]
+    schema = _synthesized_source_schema(
+        collections.abc.Callable[..., typing.Any] if not typing.get_args(ty) else ty,  # type: ignore[arg-type]
+        "the function",
+        _FUNCTION_CONSTRAINTS,
     )
 
     def _validate(
-        value: SynthesizedFunction | dict | str | collections.abc.Callable,
+        value: str | collections.abc.Callable,
         info: pydantic.ValidationInfo,
     ) -> collections.abc.Callable:
-        if isinstance(value, str):
-            value = typed_enc.model_validate({"code": value})
-        elif isinstance(value, dict):
-            value = typed_enc.model_validate(value)
-        elif isinstance(value, EncodedFunction):
-            value = typed_enc.model_validate(value.model_dump())
-        elif callable(value):
+        value = _checked_source(value, require_annotations=True)
+        if not isinstance(value, str):
             return value
-
-        assert isinstance(value, typed_enc)
 
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
 
         filename = f"<synthesis:{id(value)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.code, filename
+            value, filename
         )
 
         if anchor is not None and _recover_skill_def(anchor) is not None:
@@ -388,12 +381,11 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         return result
 
     # Distinct schemas per direction: validation (the model *produces* a function)
-    # carries the synthesis instructions; serialization (the model *reads* an
-    # encoded function) shows only the `code` shape `_serialize_synthesized`
-    # emits, with no synthesis prose.
+    # carries the synthesis instructions; serialization (the model *reads* one) is
+    # bare source, with no synthesis prose.
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.BeforeValidator(_validate, json_schema_input_type=typed_enc),
+        pydantic.BeforeValidator(_validate, json_schema_input_type=schema),
         pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
