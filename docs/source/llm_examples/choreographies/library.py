@@ -113,7 +113,7 @@ is what gives `scatter` a pool to hand work to::
 Calling it is all there is to it -- the skill calls inside need a model behind
 them, which the module launcher supplies::
 
-    python -m effectful.handlers.llm.harness your_choreography.py --model gpt-4o-mini
+    python -m effectful.handlers.llm.harness your_choreography.py
 
 ``multi_agent_choreography.py``, alongside this module, is a complete, runnable
 version: agents with tools, a review-and-fix loop, and resumption.

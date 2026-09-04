@@ -31,22 +31,6 @@ Demonstrates:
 - the data/skill module split that keeps the held-out test honest: each
   problem's ``code_context`` contains its reference solution, and lives in a
   module the solver's system prompt only names
-
-Run with::
-
-    python -m effectful.handlers.llm.harness \\
-        docs/source/llm_examples/optimization/ds1000.py \\
-        --model gpt-5-mini --reasoning-effort low --tool-choice none
-
-Expect a few minutes: ~10 solver calls plus a backward call per training
-problem and one accumulation per parameter. Results are stochastic run to run,
-and the model matters: the run above flipped the held-out problem FAIL -> PASS
-(the direct attempt returned the whole ``OptimizeResult`` where the test wants
-``res.x``; training on ``scipy_716`` taught exactly that contract). A weaker
-model (gpt-4o-mini) visibly *learns* -- its trained attempts fix the
-L-BFGS-B bounds format its direct attempt crashed on -- but tends to keep
-failing the held-out problem on some other of its four simultaneous
-requirements.
 """
 
 import argparse
