@@ -38,7 +38,10 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
+    _BoxedResponse,
+    _is_decodable,
     _NameAndTool,
+    _UndecodableReturn,
     to_content_blocks,
 )
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
@@ -701,8 +704,8 @@ def test_metadata_does_not_make_an_unencodable_type_encodable():
     """Orthogonality in the other direction: metadata is not a way in.
 
     A type the registry cannot encode is equally undecodable annotated, and
-    fails the same way -- so attaching a contract never turns a clear schema
-    error into something subtler.
+    refuses the same way -- so attaching a contract never turns a refusal into
+    a schema that promises the type.
 
     Stated on the *validation* schema rather than on building the adapter,
     since an unencodable type is still serializable (see
@@ -715,10 +718,9 @@ def test_metadata_does_not_make_an_unencodable_type_encodable():
 
     marker = pydantic.AfterValidator(lambda v: v)
     for ty in (Widget, Annotated[Widget, marker]):
-        with pytest.raises(
-            pydantic.errors.PydanticInvalidForJsonSchema, match="no `Encodable`"
-        ):
-            pydantic.TypeAdapter(Encodable[ty]).json_schema()
+        schema = pydantic.TypeAdapter(Encodable[ty]).json_schema()
+        assert schema["type"] == "string"
+        assert "No decoding exists" in schema["description"]
 
 
 # ============================================================================
@@ -1128,18 +1130,100 @@ def test_unencodable_type_serializes_but_does_not_decode():
     degradation -- worst case the model reads a `repr` -- and it happens on
     paths that never asked the model for anything: a tool result, a value
     spliced into a prompt, a trace. Decoding is not, because nothing rebuilds
-    an arbitrary object from that text, so the validation schema refuses
-    instead of promising a string.
+    an arbitrary object from that text, so the validation schema asks for a
+    string that nothing satisfies rather than one that would decode.
     """
     adapter = pydantic.TypeAdapter(Encodable[_WidgetWithRepr])
     assert (
         adapter.dump_python(_WidgetWithRepr(1), mode="json") == "_WidgetWithRepr(n=1)"
     )
     assert adapter.json_schema(mode="serialization")["type"] == "string"
-    with pytest.raises(
-        pydantic.errors.PydanticInvalidForJsonSchema, match="_WidgetWithRepr"
-    ):
-        adapter.json_schema()
+
+    validation = adapter.json_schema()
+    assert validation["type"] == "string"
+    assert "_WidgetWithRepr" in validation["description"]
+    with pytest.raises(pydantic.ValidationError):
+        adapter.validate_python("_WidgetWithRepr(n=1)")
+
+
+@pytest.mark.parametrize(
+    "ty",
+    [_WidgetWithRepr, list[_WidgetWithRepr], tuple[int, _WidgetWithRepr]],
+    ids=["bare", "nested", "in-tuple"],
+)
+def test_unencodable_response_format_reaches_the_provider(ty):
+    """Refusing with a schema rather than an exception is what keeps a response
+    format buildable, which is the obligation `Encodable` carries: a `Skill`
+    returning such a type answers by calling a final-answer tool, and never gets
+    to if assembling the request cannot be done at all.
+
+    However deep the unencodable type sits, the refusal is emitted at that leaf
+    and names it, leaving every other part its real schema.
+    """
+    box = pydantic.create_model(
+        "BoxedResponse", value=Encodable[ty], __base__=_BoxedResponse
+    )
+    schema = litellm.utils.type_to_response_format_param(box)
+    assert "_WidgetWithRepr" in json.dumps(schema)
+
+
+@pytest.mark.parametrize("ty", [_UndecodableReturn, _WidgetWithRepr], ids=str)
+def test_refusals_announce_themselves_on_the_wire(ty):
+    """Both refusing schemas carry the title `_is_decodable` recognizes them by
+    -- the one for a return type never instantiated, and the one for a type with
+    no encoding -- and strict-mode post-processing leaves it alone."""
+    box = pydantic.create_model(
+        "BoxedResponse", value=Encodable[ty], __base__=_BoxedResponse
+    )
+    schema = litellm.utils.type_to_response_format_param(box)
+    assert _UndecodableReturn.__schema_title__ in json.dumps(schema)
+
+
+@pytest.mark.parametrize(
+    "ty,expected",
+    [
+        (int, True),
+        (Image.Image, True),
+        (dict[str, int], True),
+        (_WidgetWithRepr, False),
+        (list[_WidgetWithRepr], False),
+        (tuple[int, _WidgetWithRepr], False),
+        (Operation, False),
+    ],
+    ids=str,
+)
+def test_is_decodable(ty, expected):
+    """Whether the model can be *asked* for a value, as opposed to shown one.
+
+    False covers both ways a type can fail to name something the model could
+    send: a schema that refuses however deeply it sits, and no schema at all.
+    """
+    assert _is_decodable(ty) is expected
+
+
+def test_is_decodable_looks_past_an_encoding_that_replaces_its_arguments():
+    """A refusal only counts where the model would actually meet it.
+
+    `SkillBody` is asked for as source and decoded by compiling it, so its own
+    schema stands in for its arguments' -- which is what lets a Skill returning
+    an undecodable type still be answered by synthesizing one, the whole point
+    of refusing a direct reply. Reading the type rather than the schema it
+    generates gets this backwards and withdraws the tool that was the way out.
+    """
+    from effectful.handlers.llm.harness.synthesis.body import SkillBody
+
+    assert not _is_decodable(_WidgetWithRepr)
+    assert _is_decodable(SkillBody[[int], _WidgetWithRepr])
+
+
+def test_unencodable_element_does_not_block_encoding_its_container():
+    """A container is sendable when its parts are. One part having no decoding
+    does not change that: the refusal is that element's, in one direction."""
+    adapter = pydantic.TypeAdapter(Encodable[tuple[int, _WidgetWithRepr]])
+    assert adapter.dump_python((7, _WidgetWithRepr(1)), mode="json", context={}) == {
+        "item_0": 7,
+        "item_1": "_WidgetWithRepr(n=1)",
+    }
 
 
 def test_unencodable_value_rendering_is_stable_across_runs():
