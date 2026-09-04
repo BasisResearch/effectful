@@ -27,7 +27,6 @@ from litellm import (
     ChatCompletionToolParam,
     OpenAIMessageContentListBlock,
 )
-from openai.lib._pydantic import _ensure_strict_json_schema
 from openai.types.chat import (
     ChatCompletionMessageToolCall as OpenAIChatCompletionMessageToolCall,
 )
@@ -282,30 +281,6 @@ def _render_prompt_section(
     return [ChatCompletionTextObject(type="text", text=heading), *blocks]
 
 
-def _inline_refs(schema: dict) -> dict:
-    """Inline ``$ref`` pointers so ``WithJsonSchema`` never emits orphan refs.
-
-    Workaround for https://github.com/pydantic/pydantic/issues/12145 —
-    Pydantic's ``GenerateJsonSchema`` does not merge user-provided ``$defs``
-    into its internal ref map, so any ``$ref`` in a ``WithJsonSchema`` value
-    causes a ``KeyError`` when the annotated type is composed into a model.
-    """
-    defs = schema.get("$defs", {})
-
-    def _resolve(obj):
-        if isinstance(obj, dict):
-            if "$ref" in obj:
-                ref_name = obj["$ref"].split("/")[-1]
-                if ref_name in defs:
-                    return _resolve(defs[ref_name])
-            return {k: _resolve(v) for k, v in obj.items() if k != "$defs"}
-        if isinstance(obj, list):
-            return [_resolve(item) for item in obj]
-        return obj
-
-    return _resolve(schema)
-
-
 @dataclasses.dataclass(frozen=True, eq=True)
 class DecodedToolCall[T]:
     """
@@ -433,15 +408,13 @@ def _pydantic_type_base(ty: typing.Any) -> typing.Any:
         return typing.Annotated[
             ty,
             pydantic.InstanceOf,
-            pydantic.PlainSerializer(_serialize_unencodable),
-            _NoEncoding(ty),
-            pydantic.WithJsonSchema(
-                {
-                    "type": "string",
-                    "description": inspect.formatannotation(ty),
-                },
-                mode="serialization",
+            pydantic.PlainSerializer(
+                _serialize_unencodable,
+                return_type=typing.Annotated[
+                    str, pydantic.Field(description=inspect.formatannotation(ty))
+                ],
             ),
+            _NoEncoding(ty),
         ]
 
 
@@ -465,16 +438,18 @@ def _pydantic_type_type(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.PlainSerializer(_best_effort_schema),
-        pydantic.WithJsonSchema(
-            {
-                "type": "object",
-                "additionalProperties": True,
-                "description": (
-                    "A Python type, as the JSON schema of its encoding. Shown for "
-                    "reference; a type cannot be reconstructed from its schema."
+        pydantic.PlainSerializer(
+            _best_effort_schema,
+            return_type=typing.Annotated[
+                dict[str, typing.Any],
+                pydantic.Field(
+                    description=(
+                        "A Python type, as the JSON schema of its encoding. Shown "
+                        "for reference; a type cannot be reconstructed from its "
+                        "schema."
+                    )
                 ),
-            }
+            ],
         ),
     ]
 
@@ -519,14 +494,12 @@ def _serialize_complex(value: complex) -> _ComplexModel:
 def _pydantic_type_complex(ty):
     """Encode ``complex`` as ``{"real": float, "imag": float}``."""
 
-    schema = pydantic.TypeAdapter(_ComplexModel).json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
-
     return typing.Annotated[
         ty,
-        pydantic.BeforeValidator(_validate_complex),
-        pydantic.PlainSerializer(_serialize_complex),
-        pydantic.WithJsonSchema(schema),
+        pydantic.BeforeValidator(
+            _validate_complex, json_schema_input_type=_ComplexModel
+        ),
+        pydantic.PlainSerializer(_serialize_complex, return_type=_ComplexModel),
     ]
 
 
@@ -546,7 +519,6 @@ def _pydantic_type_tuple(ty):
         hints = typing.get_type_hints(ty)
         nt_fields: list[str] = list(ty._fields)
         nt_types = [hints.get(f, typing.Any) for f in nt_fields]
-        nt_adapters = [pydantic.TypeAdapter(t) for t in nt_types]
         nt_model = pydantic.create_model(
             ty.__name__,
             __config__={"extra": "forbid"},
@@ -554,18 +526,20 @@ def _pydantic_type_tuple(ty):
             **{f: (t, ...) for f, t in zip(nt_fields, nt_types)},
         )
 
-        def _nt_serialize(value, info: pydantic.SerializationInfo):
-            return {
-                f: nt_adapters[i].dump_python(
-                    getattr(value, f), mode="json", context=info.context
-                )
-                for i, f in enumerate(nt_fields)
-            }
+        def _nt_serialize(value):
+            return nt_model.model_construct(**{f: getattr(value, f) for f in nt_fields})
+
+        def _nt_decode(value):
+            """Reshape the named-field object form back into the positional tuple
+            Pydantic validates a `NamedTuple` from."""
+            if isinstance(value, collections.abc.Mapping):
+                return tuple(value[f] for f in nt_fields)
+            return value
 
         return typing.Annotated[
             ty,
-            pydantic.PlainSerializer(_nt_serialize),
-            pydantic.WithJsonSchema(_inline_refs(nt_model.model_json_schema())),
+            pydantic.BeforeValidator(_nt_decode, json_schema_input_type=nt_model),
+            pydantic.PlainSerializer(_nt_serialize, return_type=nt_model),
         ]
 
     args = typing.get_args(ty)
@@ -580,8 +554,6 @@ def _pydantic_type_tuple(ty):
     # tuple[()] (empty args with origin) maps to zero fields; otherwise use args.
     effective: list[typing.Any] = list(args)
 
-    adapters = [pydantic.TypeAdapter(a) for a in effective]
-
     model = pydantic.create_model(
         "TupleItems",
         __config__={"extra": "forbid"},
@@ -595,17 +567,13 @@ def _pydantic_type_tuple(ty):
             return tuple(value[f"item_{i}"] for i in range(len(effective)))
         return value
 
-    def _serialize(value, info: pydantic.SerializationInfo):
-        return {
-            f"item_{i}": adapters[i].dump_python(v, mode="json", context=info.context)
-            for i, v in enumerate(value)
-        }
+    def _serialize(value):
+        return model.model_construct(**{f"item_{i}": v for i, v in enumerate(value)})
 
     return typing.Annotated[
         ty,
-        pydantic.BeforeValidator(_decode),
-        pydantic.PlainSerializer(_serialize),
-        pydantic.WithJsonSchema(_inline_refs(model.model_json_schema())),
+        pydantic.BeforeValidator(_decode, json_schema_input_type=model),
+        pydantic.PlainSerializer(_serialize, return_type=model),
     ]
 
 
@@ -646,13 +614,15 @@ def _serialize_image(value: Image.Image) -> ChatCompletionImageObject:
 
 @TypeToPydanticType.register(Image.Image)
 def _pydantic_type_image(ty: type[Image.Image]):
-    adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.BeforeValidator(_validate_image),
-        pydantic.PlainSerializer(_serialize_image),
-        pydantic.WithJsonSchema(_inline_refs(adapter.json_schema())),
+        pydantic.BeforeValidator(
+            _validate_image, json_schema_input_type=ChatCompletionImageObject
+        ),
+        pydantic.PlainSerializer(
+            _serialize_image, return_type=ChatCompletionImageObject
+        ),
     ]
 
 
@@ -660,15 +630,15 @@ def _pydantic_type_image(ty: type[Image.Image]):
 # when a function is handed to it as a value (e.g. a tool's return) -- just the
 # source, with none of the synthesis instructions the `SynthesizedFunction` subtype
 # carries for the generation direction. Its JSON schema (docstring included, since
-# pydantic renders it as the schema `description`) is the ``mode="serialization"``
-# schema of every synthesized-callable encoding, so keep the docstring model-facing.
+# pydantic renders it as the schema `description`) is what every synthesized-callable
+# encoding serializes as, so keep the docstring model-facing.
 class EncodedFunction(pydantic.BaseModel):
     """A function, encoded as a string of its complete Python source."""
 
     code: str = pydantic.Field(..., description="Python source defining the function.")
 
 
-def _serialize_callable(value: collections.abc.Callable) -> dict:
+def _serialize_callable(value: collections.abc.Callable) -> EncodedFunction:
     """Encode a callable back to its ``code`` form (source, or a stub).
 
     Emits a plain `EncodedFunction` -- which is exactly what the serialization JSON
@@ -689,7 +659,7 @@ def _serialize_callable(value: collections.abc.Callable) -> dict:
         source = None
 
     if source:
-        return EncodedFunction(code=textwrap.dedent(source)).model_dump()
+        return EncodedFunction(code=textwrap.dedent(source))
 
     name = getattr(value, "__name__", None)
     docstring = inspect.getdoc(value)
@@ -707,7 +677,7 @@ def _serialize_callable(value: collections.abc.Callable) -> dict:
     """{docstring}"""
     ...
 '''
-    return EncodedFunction(code=stub_code).model_dump()
+    return EncodedFunction(code=stub_code)
 
 
 @TypeToPydanticType.register(collections.abc.Callable)
@@ -715,10 +685,7 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.PlainSerializer(_serialize_callable),
-        pydantic.WithJsonSchema(
-            EncodedFunction.model_json_schema(), mode="serialization"
-        ),
+        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
 
@@ -727,10 +694,7 @@ def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.PlainSerializer(_serialize_callable),
-        pydantic.WithJsonSchema(
-            EncodedFunction.model_json_schema(), mode="serialization"
-        ),
+        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
 
@@ -817,14 +781,15 @@ def _pydantic_type_name_and_tool(ty: type[_NameAndTool]):
     would route to `_pydantic_type_tuple`'s NamedTuple branch, which would try
     to build a `TypeAdapter` for the `Tool` field and fail.
     """
-    schema = pydantic.TypeAdapter(ChatCompletionToolParam).json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.BeforeValidator(_validate_name_and_tool),
-        pydantic.PlainSerializer(_serialize_name_and_tool),
-        pydantic.WithJsonSchema(schema),
+        pydantic.BeforeValidator(
+            _validate_name_and_tool, json_schema_input_type=ChatCompletionToolParam
+        ),
+        pydantic.PlainSerializer(
+            _serialize_name_and_tool, return_type=ChatCompletionToolParam
+        ),
     ]
 
 
@@ -864,7 +829,7 @@ def _validate_tool_call(
 
 def _serialize_tool_call(
     value: DecodedToolCall, info: pydantic.SerializationInfo
-) -> dict:
+) -> OpenAIChatCompletionMessageToolCall:
     ctx = info.context or {}
     encoded_args: dict[str, typing.Any] = {}
     if value.source is not None:
@@ -891,21 +856,23 @@ def _serialize_tool_call(
                 "arguments": json.dumps(encoded_args),
             },
         }
-    ).model_dump(mode="json")
+    )
 
 
 @TypeToPydanticType.register(DecodedToolCall)
 def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
     # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
     # type) rather than litellm's (empty dict with extra="allow").
-    schema = OpenAIChatCompletionMessageToolCall.model_json_schema()
-    schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
-        pydantic.BeforeValidator(_validate_tool_call),
-        pydantic.PlainSerializer(_serialize_tool_call),
-        pydantic.WithJsonSchema(schema),
+        pydantic.BeforeValidator(
+            _validate_tool_call,
+            json_schema_input_type=OpenAIChatCompletionMessageToolCall,
+        ),
+        pydantic.PlainSerializer(
+            _serialize_tool_call, return_type=OpenAIChatCompletionMessageToolCall
+        ),
     ]
 
 
