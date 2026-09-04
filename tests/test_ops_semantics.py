@@ -23,7 +23,13 @@ from effectful.ops.syntax import (
     defop,
     implements,
 )
-from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import (
+    ApplyOperation,
+    Interpretation,
+    NotHandled,
+    Operation,
+    Term,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -317,6 +323,131 @@ def test_fwd_simple():
 
     with handler({plus_1: plus_1_fwd}):
         assert plus_1(1) == 2
+
+
+def test_fwd_from_operation_handler_to_apply_handler():
+    @Operation.define
+    def f(x: int) -> int:
+        return x + 1
+
+    calls = []
+
+    def f_handler(x):
+        calls.append(("f", x))
+        return fwd()
+
+    def apply_handler(op, *args, **kwargs):
+        calls.append(("apply", op, args, kwargs))
+        return fwd()
+
+    with handler({apply: apply_handler}), handler({f: f_handler}):
+        assert f(1) == 2
+
+    assert calls == [("f", 1), ("apply", f, (1,), {})]
+
+
+def test_fwd_from_operation_handler_to_apply_handler_with_replacement_args():
+    @Operation.define
+    def f(x: int) -> int:
+        return x
+
+    apply_args = []
+
+    def apply_handler(op, *args, **kwargs):
+        apply_args.append((op, args, kwargs))
+        return fwd(op, *args, **kwargs)
+
+    with handler({apply: apply_handler}), handler({f: lambda x: fwd(x + 1)}):
+        assert f(1) == 2
+
+    assert apply_args == [(f, (2,), {})]
+
+
+def test_fwd_through_apply_handlers_is_associative():
+    calls = []
+
+    @Operation.define
+    def f() -> int:
+        calls.append("default")
+        return 1
+
+    def forwarding(name):
+        def impl(*args, **kwargs):
+            calls.append(name)
+            return fwd()
+
+        return impl
+
+    h0 = {apply: forwarding("left apply")}
+    h1 = {f: forwarding("exact")}
+    h2 = {apply: forwarding("right apply")}
+    expected = ["exact", "right apply", "left apply", "default"]
+
+    for intp in (
+        coproduct(coproduct(h0, h1), h2),
+        coproduct(h0, coproduct(h1, h2)),
+    ):
+        calls.clear()
+        with handler(intp):
+            assert f() == 1
+        assert calls == expected
+
+    calls.clear()
+    with handler(h0), handler(h1), handler(h2):
+        assert f() == 1
+    assert calls == expected
+
+
+def test_fwd_through_apply_operation_subtypes():
+    calls = []
+
+    class BaseOperation(Operation):
+        pass
+
+    class DerivedOperation(BaseOperation):
+        pass
+
+    @DerivedOperation.define
+    def f(x: int) -> int:
+        calls.append("default")
+        return x + 1
+
+    def forwarding(name):
+        def impl(*args, **kwargs):
+            calls.append(name)
+            return fwd()
+
+        return impl
+
+    assert isinstance(Operation.__apply__, ApplyOperation)
+    assert isinstance(BaseOperation.__apply__, ApplyOperation)
+    assert isinstance(DerivedOperation.__apply__, ApplyOperation)
+    assert not isinstance(f, ApplyOperation)
+
+    with handler(
+        {
+            Operation.__apply__: forwarding("apply"),
+            BaseOperation.__apply__: forwarding("base apply"),
+            DerivedOperation.__apply__: forwarding("derived apply"),
+            f: forwarding("exact"),
+        }
+    ):
+        assert f(1) == 2
+
+    assert calls == ["exact", "derived apply", "base apply", "apply", "default"]
+
+    # Unhandled intermediate apply operations proceed directly to their defaults,
+    # so the base apply handler sees the original operation exactly once.
+    calls.clear()
+    with handler(
+        {
+            Operation.__apply__: forwarding("apply"),
+            f: forwarding("exact"),
+        }
+    ):
+        assert f(1) == 2
+
+    assert calls == ["exact", "apply", "default"]
 
 
 @pytest.mark.parametrize("op,args", OPERATION_CASES)

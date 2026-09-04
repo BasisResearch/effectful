@@ -510,10 +510,15 @@ class Operation[**Q, V]:
             return self
 
     @functools.cached_property
-    def _default_rule_with_args(self):
+    def _next_rule_with_args(self):
         from effectful.internals.runtime import _restore_args
 
-        return _restore_args(self.__default_rule__)
+        rule = (
+            self.__default_rule__
+            if isinstance(self, ApplyOperation)
+            else functools.partial(self.__apply__, self)
+        )
+        return _restore_args(rule)
 
     def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
@@ -523,22 +528,23 @@ class Operation[**Q, V]:
 
         self_handler = intp.get(self)
         if self_handler is not None:
-            # ensure that fwd is bound to the default rule. if this handler has
-            # a bound fwd, it will override this binding
-            fwd_intp = typing.cast(Interpretation, {fwd: self._default_rule_with_args})
+            # Operation handlers forward through apply before reaching the default.
+            # Apply handlers forward to their own generated/default implementation.
+            fwd_intp = typing.cast(Interpretation, {fwd: self._next_rule_with_args})
             with handler(fwd_intp):
                 return self_handler(*args, **kwargs)
-        elif args and isinstance(args[0], Operation) and self is args[0].__apply__:
-            # Prevent infinite recursion when calling self.apply directly
+        elif isinstance(self, ApplyOperation):
             return self.__default__(*args, **kwargs)
         else:
             return self.__apply__(self, *args, **kwargs)
 
-    def __init_subclass__(cls, **kwargs) -> None:
-        assert "__apply__" not in cls.__dict__ or cls is Operation, (
-            "Cannot manually override apply"
-        )
-        assert isinstance(cls.__apply__, Operation)
+    def __init_subclass__(cls, *, _generate_apply: bool = True, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+        if not _generate_apply:
+            return
+
+        assert "__apply__" not in cls.__dict__, "Cannot manually override apply"
+        assert isinstance(cls.__apply__, ApplyOperation)
 
         cls.__apply__ = cls.__apply__.define(
             staticmethod(
@@ -550,6 +556,10 @@ class Operation[**Q, V]:
                 )
             )
         )
+
+
+class ApplyOperation[**Q, V](Operation[Q, V], _generate_apply=False):
+    """An operation that implements application for an Operation subclass."""
 
 
 def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
@@ -584,7 +594,7 @@ def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) ->
     return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
-Operation.__apply__ = Operation.define(staticmethod(__apply__))
+Operation.__apply__ = ApplyOperation.define(staticmethod(__apply__))
 del __apply__
 
 
