@@ -21,6 +21,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import typing
 
 # trigger mypy installation errors early
@@ -57,6 +58,43 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         "--disable-error-code=no-redef",
         "--disable-error-code=return",
         "--disable-error-code=empty-body",
+    )
+
+    # Strict and lenient checks use cache-affecting options, so each gets its own
+    # incremental cache for this handler's lifetime. `TemporaryDirectory` removes
+    # each cache when the handler is discarded.
+    _strict_cache: tempfile.TemporaryDirectory = dataclasses.field(
+        default_factory=lambda: tempfile.TemporaryDirectory(
+            prefix="effectful_mypy_strict_cache_"
+        ),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _lenient_cache: tempfile.TemporaryDirectory = dataclasses.field(
+        default_factory=lambda: tempfile.TemporaryDirectory(
+            prefix="effectful_mypy_lenient_cache_"
+        ),
+        init=False,
+        repr=False,
+        compare=False,
+    )
+
+    # A handler may be shared by concurrent Skill calls. Independent mypy processes
+    # must not write the same incremental cache at once, so serialize checks that
+    # share a mode. Strict and lenient calls use different caches and can still run
+    # concurrently. The synthesized source gets its own directory below as well.
+    _strict_lock: threading.Lock = dataclasses.field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
+    )
+    _lenient_lock: threading.Lock = dataclasses.field(
+        default_factory=threading.Lock,
+        init=False,
+        repr=False,
+        compare=False,
     )
 
     @staticmethod
@@ -114,23 +152,29 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             tf_path = os.path.join(tmpdir, "_synthesized.py")
             with open(tf_path, "w", encoding="utf-8") as f:
                 f.write(source)
-            proc = subprocess.run(
-                [
-                    sys.executable,
-                    "-m",
-                    "mypy",
-                    tf_path,
-                    "--cache-dir",
-                    os.path.join(tmpdir, "cache"),
-                    "--no-error-summary",
-                    "--output=json",
-                    "--ignore-missing-imports",
-                    "--disable-error-code=import-untyped",
-                    *(self.lenient_flags if lenient else []),
-                ],
-                capture_output=True,
-                text=True,
-            )
+            # Keep the source path unique per call even though the cache persists.
+            # Mypy can accept a same-path, same-size source from its mtime fast path;
+            # changing the path makes it validate the source hash before reuse.
+            cache = self._lenient_cache if lenient else self._strict_cache
+            lock = self._lenient_lock if lenient else self._strict_lock
+            with lock:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        "-m",
+                        "mypy",
+                        tf_path,
+                        "--cache-dir",
+                        cache.name,
+                        "--no-error-summary",
+                        "--output=json",
+                        "--ignore-missing-imports",
+                        "--disable-error-code=import-untyped",
+                        *(self.lenient_flags if lenient else []),
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
             stdout, stderr, status = proc.stdout, proc.stderr, proc.returncode
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
