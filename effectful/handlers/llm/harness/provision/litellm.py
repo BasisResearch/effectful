@@ -11,6 +11,7 @@ from effectful.handlers.llm.harness.hooks import (
     ResultDecodingError,
     completion,
 )
+from effectful.handlers.llm.harness.serialization import _is_empty_text_block
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -28,32 +29,43 @@ class LiteLLMConfigurer(ObjectInterpretation):
         }
 
     @staticmethod
-    def _mark(msg: Message) -> Message:
-        """`msg`, with a `cache_control` breakpoint on its last content block.
+    def _mark(msg: Message) -> Message | None:
+        """`msg`, with a `cache_control` breakpoint on its last non-empty content
+        block, or `None` if it has no block to put one on.
 
         A message whose content is a plain string -- which the assembled system
         prompt is not, but a hand-written or externally supplied message may be
         -- takes the message-level key instead, the only form litellm reads a
         breakpoint from for string content.
+
+        Empty blocks are skipped: Anthropic answers ``cache_control cannot be
+        set for empty text blocks``. An already-marked message returns itself.
         """
         content = msg.get("content")
         if isinstance(content, str):
+            if not content:
+                return None
             return typing.cast(Message, {**msg, "cache_control": {"type": "ephemeral"}})
-        if not isinstance(content, list) or not content:
-            return msg
-        last_block = content[-1]
-        if not isinstance(last_block, dict) or "cache_control" in last_block:
-            return msg
-        return typing.cast(
-            Message,
-            {
-                **msg,
-                "content": [
-                    *content[:-1],
-                    {**last_block, "cache_control": {"type": "ephemeral"}},
-                ],
-            },
-        )
+        if not isinstance(content, list):
+            return None
+        for i in reversed(range(len(content))):
+            block = content[i]
+            if not isinstance(block, dict) or _is_empty_text_block(block):
+                continue
+            if "cache_control" in block:
+                return msg
+            return typing.cast(
+                Message,
+                {
+                    **msg,
+                    "content": [
+                        *content[:i],
+                        {**block, "cache_control": {"type": "ephemeral"}},
+                        *content[i + 1 :],
+                    ],
+                },
+            )
+        return None
 
     def _add_cache_control(
         self,
@@ -81,15 +93,23 @@ class LiteLLMConfigurer(ObjectInterpretation):
         Returns a new list, leaving the caller's messages untouched, so these
         transport-level annotations never reach the stored history -- and so
         never reach an `Agent`'s checkpointed transcript.
+
+        If `_mark` declines a message, the scan continues to the one before it.
         """
         out = list(messages)
         for i in reversed(range(len(out))):
             if out[i]["role"] in ("user", "tool"):
-                out[i] = self._mark(out[i])
+                marked = self._mark(out[i])
+                if marked is None:
+                    continue
+                out[i] = marked
                 break
         for i in range(len(out)):
             if out[i]["role"] == "system":
-                out[i] = self._mark(out[i])
+                # No earlier system message to fall back to.
+                marked = self._mark(out[i])
+                if marked is not None:
+                    out[i] = marked
                 break
         return out
 

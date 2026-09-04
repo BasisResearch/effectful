@@ -51,7 +51,12 @@ from effectful.handlers.llm.harness.legibility.lexical import (
 )
 from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
-from effectful.handlers.llm.harness.serialization import _NameAndTool
+from effectful.handlers.llm.harness.serialization import (
+    _is_empty_text_block,
+    _NameAndTool,
+    format_as_content_blocks,
+    to_content_blocks,
+)
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -3094,6 +3099,58 @@ def _has_block_cache_control(msg: dict) -> bool:
     )
 
 
+def _assert_no_turn_dropped(msgs) -> None:
+    """Assert litellm's Anthropic transform carries every turn of `msgs` through.
+
+    `anthropic_messages_pt` emits an assistant turn only ``if assistant_content``,
+    so a message with nothing in it disappears from the request silently. This
+    checks our own messages survive the transform; it makes no claim about which
+    requests Anthropic accepts.
+    """
+    from litellm.llms.anthropic.chat.transformation import AnthropicConfig
+
+    # A deep copy, because the transform rewrites messages in place and `msgs`
+    # is the captured request the caller goes on to assert against.
+    transformed = AnthropicConfig().transform_request(
+        model="claude-sonnet-4-5",
+        messages=json.loads(json.dumps(list(msgs))),
+        optional_params={},
+        litellm_params={},
+        headers={},
+    )
+
+    # Consecutive same-role turns merge, so compare role runs, not counts.
+    def runs(roles):
+        out = []
+        for role in roles:
+            if not out or out[-1] != role:
+                out.append(role)
+        return out
+
+    sent = runs(
+        "user" if m["role"] in ("user", "tool") else m["role"]
+        for m in msgs
+        if m["role"] != "system"
+    )
+    assert runs(m["role"] for m in transformed["messages"]) == sent, (
+        f"a turn was dropped by the Anthropic transform: sent {sent}, "
+        f"got {[m['role'] for m in transformed['messages']]}"
+    )
+
+
+def _empty_text_blocks(msgs) -> list:
+    """Every empty text block in `msgs`, with whether it carries a breakpoint."""
+    return [
+        (msg["role"], "cache_control" in block)
+        for msg in msgs
+        if isinstance(msg.get("content"), list)
+        for block in msg["content"]
+        if isinstance(block, dict)
+        and block.get("type") == "text"
+        and not block.get("text")
+    ]
+
+
 class CachingAgent(Agent):
     """A test agent with persistent history."""
 
@@ -3215,6 +3272,7 @@ class TestPromptCaching:
         assert [m["role"] for m in marked] == ["system", "tool"], (
             f"Expected the system message plus the last input message. Got: {marked}"
         )
+        _assert_no_turn_dropped(msgs)
 
     def test_breakpoint_advances_to_the_newest_message(self):
         """The breakpoint tracks the end of the conversation across turns, so
@@ -3245,6 +3303,7 @@ class TestPromptCaching:
         assert marked == [0, len(second) - 1], (
             f"Expected the system message and the last message only. Got: {marked}"
         )
+        _assert_no_turn_dropped(second)
 
     def test_cache_control_never_enters_stored_history(self):
         """The annotation is added to the outgoing request, not the transcript,
@@ -3373,6 +3432,260 @@ class TestPromptCaching:
             if isinstance(content, list):
                 for block in content:
                     assert "cache_control" not in block
+
+
+# ============================================================================
+# Empty content blocks
+#
+# Regression tests for GitHub issue #762.
+# ============================================================================
+
+
+@Tool.define
+def silent_tool() -> str:
+    """A tool whose output is empty -- an empty file, a search with no hits."""
+    return ""
+
+
+@Skill.define
+def use_silent_tool() -> str:
+    """Consult the note and report what it said."""
+    raise NotHandled
+
+
+class TestEmptyContentBlocks:
+    """No message the harness builds may carry an empty text block."""
+
+    @staticmethod
+    def _consult_the_note():
+        capture = MockCompletionHandler(
+            [
+                make_tool_call_response("silent_tool", "{}"),
+                make_text_response("it was empty"),
+            ]
+        )
+        # `capture` is terminal, so it goes below the provider: the breakpoint is
+        # only added if `LiteLLMConfigurer.completion` runs and forwards into it.
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+        ):
+            use_silent_tool()
+        return capture
+
+    def test_empty_tool_result_carries_no_empty_block(self):
+        """A tool returning ``""`` used to encode to a single empty text block,
+        in the one place `_add_cache_control` puts its second breakpoint."""
+        sent = self._consult_the_note().received_messages[-1]
+
+        assert _empty_text_blocks(sent) == [], (
+            f"empty text block(s) in the request: {_empty_text_blocks(sent)}"
+        )
+        _assert_no_turn_dropped(sent)
+
+    def test_breakpoint_moves_off_an_empty_tool_result(self):
+        """With no block to mark, the breakpoint falls back to the previous
+        message rather than being dropped."""
+        sent = self._consult_the_note().received_messages[-1]
+
+        marked = [m["role"] for m in sent if _has_cache_control(m)]
+        assert marked == ["system", "user"], (
+            f"expected the breakpoint to fall back to the user message. Got: {marked}"
+        )
+
+    def test_a_value_that_merely_contains_an_empty_string_is_unchanged(self):
+        """`to_content_blocks` still satisfies its linearization law: an empty
+        string inside an encoded value keeps its JSON quotes."""
+        assert to_content_blocks("") == []
+        assert to_content_blocks({"a": ""}) == [{"type": "text", "text": '{"a": ""}'}]
+        assert to_content_blocks([]) == [{"type": "text", "text": "[]"}]
+
+    @pytest.mark.parametrize(
+        "value", ["", "   ", "x", {}, [], {"a": ""}, {"a": [1, ""]}, 0, None]
+    )
+    def test_to_content_blocks_agrees_with_is_empty_text_block(self, value):
+        """The invariant `HistoryBuilder.append_message` asserts."""
+        assert not any(_is_empty_text_block(b) for b in to_content_blocks(value))
+
+    @pytest.mark.parametrize(
+        ("template", "expected"),
+        [
+            ("a{x}b", "ab"),
+            ("a{x!r}b", "a''b"),
+            ("a{x:>5}b", "a     b"),
+            ("a{x!r:>6}b", "a    ''b"),
+        ],
+    )
+    def test_a_conversion_still_runs_on_an_empty_value(self, template, expected):
+        """A conversion or format spec can turn an empty value into something."""
+        assert format_as_content_blocks(template, {"x": ""}) == [
+            {"type": "text", "text": expected}
+        ]
+
+    def test_a_hole_that_formats_to_nothing_produces_no_block(self):
+        assert format_as_content_blocks("{x}", {"x": ""}) == []
+
+    def test_empty_block_never_enters_stored_history(self):
+        """`SQLitePersister` checkpoints the transcript, so a block repaired
+        only on the way out would still be durable."""
+        capture = MockCompletionHandler(
+            [
+                make_tool_call_response("silent_tool", "{}"),
+                make_text_response("it was empty"),
+            ]
+        )
+        agent = CachingAgent()
+
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+        ):
+            agent.ask("what does the note say?")
+
+        assert _empty_text_blocks(agent.__history__) == []
+
+    def test_exec_code_with_no_output_is_sendable(self):
+        """`exec_code` returns the empty string for a snippet that printed
+        nothing, and is in the default `harness()` stack."""
+
+        def run_silent(exec_code):
+            bound_args = inspect.signature(exec_code).bind(
+                pydantic.TypeAdapter(Encodable[CodeType]).validate_python("x = 1 + 1")
+            )
+            tc = DecodedToolCall(exec_code, bound_args, "call_exec", "exec_code")
+            return call_tool(tc)[0]
+
+        msg = _drive_repl(run_silent)
+        assert msg["role"] == "tool"
+        assert _empty_text_blocks([msg]) == [], (
+            f"exec_code produced an empty block: {msg}"
+        )
+
+    def test_call_user_never_emits_an_empty_block(self):
+        """`call_user` and `call_system` render through `_render_prompt_section`,
+        which drops empty text."""
+
+        @Skill.define
+        def ask_about(topic: str, note: str) -> str:
+            """Say something about {topic}. {note}"""
+            raise NotHandled
+
+        capture = MockCompletionHandler([make_text_response("ok")])
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+        ):
+            # Both holes encode to "", so the rendered prompt ends on one.
+            ask_about("", "")
+
+        sent = capture.received_messages[0]
+        assert [m["role"] for m in sent] == ["system", "user"]
+        assert _empty_text_blocks(sent) == []
+        _assert_no_turn_dropped(sent)
+
+    def test_breakpoint_skips_an_unmarkable_message(self):
+        """The same fallback, over messages the harness did not build."""
+        provider = LiteLLMConfigurer(model="claude-sonnet-4-5")
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "sys"}]},
+            {"role": "user", "content": [{"type": "text", "text": "q"}]},
+            {"role": "user", "content": [{"type": "text", "text": ""}]},
+        ]
+
+        marked = provider._add_cache_control(msgs)
+
+        assert [_has_block_cache_control(m) for m in marked] == [True, True, False], (
+            f"breakpoint should fall back to the previous message. Got: {marked}"
+        )
+
+    def test_whitespace_is_content(self):
+        """A block of spaces is not empty, so it keeps its block."""
+        provider = LiteLLMConfigurer(model="claude-sonnet-4-5")
+        blank = {"role": "user", "content": [{"type": "text", "text": "   "}]}
+
+        assert to_content_blocks("   ") == [{"type": "text", "text": "   "}]
+        assert _empty_text_blocks([blank]) == []
+        assert _has_block_cache_control(provider._mark(blank))
+
+
+class TestEmptyReply:
+    """A reply with nothing to decode is retried, and reports the finish_reason."""
+
+    @staticmethod
+    def _response(content, finish_reason="stop", **extra):
+        return ModelResponse(
+            id="test",
+            choices=[
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content, **extra},
+                    "finish_reason": finish_reason,
+                }
+            ],
+            model="test-model",
+        )
+
+    @pytest.mark.parametrize("content", [None, ""])
+    def test_contentless_reply_names_the_finish_reason(self, content):
+        """The finish_reason is the only thing that says why the reply is empty."""
+        capture = MockCompletionHandler(
+            [self._response(content, finish_reason="length")]
+        )
+
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+        ):
+            with pytest.raises(ResultDecodingError, match="finish_reason='length'"):
+                simple_prompt("test")
+
+    @pytest.mark.parametrize("content", [None, "", "   "])
+    def test_an_empty_reply_is_retried_like_any_other_bad_output(self, content):
+        capture = MockCompletionHandler(
+            [self._response(content), make_text_response(json.dumps({"value": 4}))]
+        )
+
+        # `TenacityRetryer` goes inside `HistoryBuilder`: it appends the reply
+        # that finally succeeded itself, so wrapping the other way records it
+        # twice.
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+            handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
+        ):
+            assert generate_number(10) == 4
+
+        assert capture.call_count == 2, "the empty reply should have been retried"
+
+    def test_a_reply_carrying_only_reasoning_content_still_decodes(self):
+        """The `content or reasoning_content` fallback is untouched."""
+        capture = MockCompletionHandler(
+            [self._response("", reasoning_content=json.dumps({"value": 7}))]
+        )
+
+        with (
+            handler(capture),
+            handler(AgentLoop()),
+            handler(LexicalToolExtractor()),
+            handler(LiteLLMConfigurer(model="claude-sonnet-4-5")),
+            handler(HistoryBuilder()),
+        ):
+            assert generate_number(10) == 7
 
 
 # ============================================================================
