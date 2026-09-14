@@ -344,6 +344,59 @@ def test_defdata_renaming():
     assert let2.args[2].args[1].op == y
 
 
+def test_renaming_leaves_untouched_subterms_by_identity():
+    """Renaming rebuilds only the spine that mentions the bound variable."""
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    closed = mul(y(), 3)  # mentions y, not x
+    f = deffn(add(x(), closed), x)
+
+    assert f.args[1] is not x  # the binder was renamed
+    assert f.args[0].args[1] is closed  # the subterm that avoids it was not rebuilt
+
+
+def test_the_unrenamed_term_is_dropped_once_read():
+    """``defdata`` records a renamed node's original operands; ``evaluate`` drops them.
+
+    The record holds those operands strongly, so its lifetime is what keeps a node
+    from pinning the tree it was built from. Only a node fresh from the constructor
+    is ever consulted, so reading it in ``evaluate`` is also the last use of it.
+    """
+    import gc
+    import weakref
+
+    from effectful.internals.runtime import cache
+
+    @defop
+    def mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    x = defop(int, name="x")
+    body = mul(x(), 3)
+    f = deffn(body, x)  # renamed, so f.args[0] is a rebuilt copy of body
+
+    # A node that has not been evaluated still holds what it was built from.
+    assert getattr(f, "__unrenamed_term__", None) is not None
+
+    with cache():
+        assert evaluate(f) is f
+
+    assert getattr(f, "__unrenamed_term__", None) is None
+
+    reference = weakref.ref(body)
+    del body
+    gc.collect()
+    assert reference() is None  # nothing in f keeps the pre-renaming body alive
+
+
 def test_defop_singledispatch():
     """Test that defop can be used with singledispatch functions."""
 
@@ -1601,6 +1654,42 @@ def test_bench_nested_binder_construction(benchmark):
     def run():
         with cache():
             return _make_nested_term(10)
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_beta_reduction_chain_over_a_shared_term(benchmark):
+    """Benchmark a chain of ``n`` lambdas applied to one shared closed term of size ``m``.
+
+    Expected to be O(n + m): each application walks only the spine that mentions the
+    binder, and the closed term is handed through untouched. Without that it is
+    O(n * m), because every level copies the whole term below it.
+    """
+    from effectful.internals.runtime import cache
+
+    @defop
+    def _benchmark_chain_add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def _benchmark_chain_mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    n, m = 30, 30
+
+    def run():
+        with cache():
+            y = defop(int, name="y")
+            closed: Expr[int] = 0
+            for _ in range(m):
+                closed = _benchmark_chain_mul(y(), closed)
+
+            term = closed
+            for _ in range(n):
+                x = defop(int, name="x")
+                term = deffn(_benchmark_chain_add(x(), term), x)(1)
+            return term
 
     result = benchmark(run)
     assert isinstance(result, Term)
