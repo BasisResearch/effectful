@@ -14,6 +14,10 @@ import tenacity
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.durability.truncation import (
+    DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+    ToolOutputTruncator,
+)
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
@@ -58,6 +62,7 @@ def harness(
     tool_calling: typing.Literal["auto", "code", "json"] = "auto",
     tool_collection: typing.Literal["none", "explicit", "auto"] = "explicit",
     check_contracts: bool = True,
+    max_tool_output_chars: int | None = DEFAULT_TOOL_OUTPUT_MAX_CHARS,
     **provider_config,
 ) -> Interpretation:
     """
@@ -81,22 +86,24 @@ def harness(
        for ``"json"``).
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
-    3. `HistoryBuilder` -- accumulate the message history of a call.
-    4. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
-    5. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
-    6. The ``type_checker`` and the ``eval_provider`` -- check and run
+    3. `ToolOutputTruncator` -- bound each textual tool result before it enters
+       history (unless ``max_tool_output_chars=None``).
+    4. `HistoryBuilder` -- accumulate the message history of a call.
+    5. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
+    6. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
+    7. The ``type_checker`` and the ``eval_provider`` -- check and run
        model-authored Python (each omitted for ``"none"``).
-    7. `StatefulReplSynthesizer` and `FinalBodySynthesizer` -- answer a call by
+    8. `StatefulReplSynthesizer` and `FinalBodySynthesizer` -- answer a call by
        running a snippet, and by synthesizing a function and calling it. Both
        are omitted when ``eval_provider="none"``: each advertises a tool
        (``exec_code``, ``write_and_run_body``) that only an executor can decode.
-    8. `PydanticSkillArgValidator` -- enforce the pre-conditions a caller
+    9. `PydanticSkillArgValidator` -- enforce the pre-conditions a caller
        wrote into a `Skill`'s parameter annotations (if ``check_contracts``).
-    9. `TenacityRetryer` -- retry malformed/failing model output (if
-       ``num_retries``).
-    10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
+    10. `TenacityRetryer` -- retry malformed/failing model output (if
+        ``num_retries``).
+    11. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
         SQLite after each successful call (if ``persist_db``).
-    11. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+    12. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
     Args:
         num_retries: Attempts for malformed/failing model output (via
@@ -154,6 +161,9 @@ def harness(
             model-supplied argument is still validated as the tool call is
             decoded, and metadata on a *return* annotation is enforced by the
             decoder either way.
+        max_tool_output_chars: Maximum text characters retained in each tool
+            result, including the truncation notice. The beginning and end are
+            kept. Pass ``None`` to disable truncation.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -180,6 +190,8 @@ def harness(
 
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
+    if max_tool_output_chars is not None:
+        h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
     h = coproduct(h, HistoryBuilder())
 
     if render:
