@@ -488,6 +488,16 @@ def _deffn_type_rule(
 setattr(deffn, "__type_rule__", types.MethodType(_deffn_type_rule, deffn))
 
 
+class _Renaming(dict):
+    """The interpretation :func:`defdata` installs to rename binders.
+
+    Marked with the variables it renames so that :func:`evaluate` can return a term
+    untouched when the term mentions none of them.
+    """
+
+    vars: frozenset[Operation]
+
+
 def _build_term[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
     op: Operation[..., T],
@@ -601,25 +611,39 @@ def defdata[T](
         # here would recompute binders and rename each child again at every
         # level, re-traversing the subtree once per level of nesting.
         rebuild = functools.partial(_build_term, __dispatch)
-        with interpreter(
+        intp = _Renaming(
             {apply: rebuild, ConstructorOperation.__apply__: apply.__default_rule__}
             | renaming_ctx
-        ):
+        )
+        intp.vars = frozenset(renaming_ctx)
+        with interpreter(intp):
             return evaluate(expr)
 
-    renamed_args = op.__signature__.bind(*args, **kwargs)
-    renamed_args.apply_defaults()
+    bound_args = op.__signature__.bind(*args, **kwargs)
+    bound_args.apply_defaults()
 
     args_ = [
         evaluate_with_renaming(arg, bindings.args[i])
-        for (i, arg) in enumerate(renamed_args.args)
+        for (i, arg) in enumerate(bound_args.args)
     ]
     kwargs_ = {
         k: evaluate_with_renaming(v, bindings.kwargs[k])
-        for (k, v) in renamed_args.kwargs.items()
+        for (k, v) in bound_args.kwargs.items()
     }
 
-    return _build_term(__dispatch, op, *args_, **kwargs_)
+    term = _build_term(__dispatch, op, *args_, **kwargs_)
+
+    if renaming and isinstance(term, Term):
+        # Record the operands as they were before renaming, so that ``evaluate`` can
+        # tell that this node is a rebuild of one it already holds, differing from it
+        # only by its fresh binders. Read and discarded there; see ``_evaluate_term``.
+        object.__setattr__(
+            term,
+            "__unrenamed_term__",
+            _BaseTerm(op, *bound_args.args, **bound_args.kwargs),
+        )
+
+    return term
 
 
 def _construct_dataclass_term[T](

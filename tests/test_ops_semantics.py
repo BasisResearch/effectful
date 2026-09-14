@@ -1,7 +1,9 @@
+import collections.abc
 import contextlib
 import dataclasses
 import itertools
 import logging
+import operator
 from collections.abc import Callable, Mapping, MutableSequence
 from typing import Annotated, Any, Literal, TypeVar, Union
 
@@ -1459,3 +1461,357 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+# ---------------------------------------------------------------------------
+# Identity-preserving evaluation.
+#
+# Evaluating a term hands back the objects it already held wherever nothing
+# changed, rather than a structurally equal copy. Everything keyed on node
+# identity depends on it: the evaluation cache, and any memo table a client
+# builds on top of one.
+
+
+@defop
+def _add(x: int, y: int) -> int:
+    raise NotHandled
+
+
+@defop
+def _mul(x: int, y: int) -> int:
+    raise NotHandled
+
+
+_ARITH: Interpretation = {_add: operator.add, _mul: operator.mul}
+
+
+def _reachable(expr) -> list[Term]:
+    """Every distinct :class:`Term` reachable from ``expr``, compared by identity."""
+    seen: dict[int, Term] = {}
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Term) and id(node) not in seen:
+            seen[id(node)] = node
+            stack.extend(node.args)
+            stack.extend(node.kwargs.values())
+        elif isinstance(node, tuple | list):
+            stack.extend(node)
+    return list(seen.values())
+
+
+def test_evaluate_of_an_unchanged_term_is_the_term():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    term = _add(x(), _mul(2, 3))
+
+    with cache():
+        assert evaluate(term) is term
+
+
+def test_evaluate_compares_containers_without_their_protocols():
+    """Recognizing an unchanged container must not depend on ``len`` or on key equality.
+
+    A value need only support what the rule that rebuilt it used. ``jax``'s
+    ``Rotation`` is a tuple subclass whose ``__len__`` raises, and a term used as a
+    mapping key has ``__eq__`` and ``__hash__`` that are themselves operations, so
+    asking either of them a question builds a term rather than answering it.
+    """
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+
+    class NoLen(tuple):
+        def __len__(self):
+            raise TypeError("no len")
+
+    key = _add(x(), 1)
+
+    for value in (NoLen((_mul(2, 3),)), {key: _mul(2, 3)}):
+        with cache():
+            assert evaluate(value) is value
+
+
+def test_discarded_rebuilds_do_not_accumulate_in_the_cache():
+    """Re-evaluating a term in one cache scope leaves nothing behind.
+
+    Evaluating a lambda builds a renamed copy, compares it, and throws it away. The
+    copy is typed on the way out, so it briefly holds cache entries of its own. They
+    have to go with it: the cache keys terms weakly, so nothing is left once the copy
+    is collected. A term that could not be weakly referenced, or a rebuild cached
+    against something that outlives it, would turn every re-evaluation into a leak
+    for as long as the scope is open.
+    """
+    import gc
+
+    from effectful.internals.runtime import cache
+
+    def entries(store):
+        """Every ``(expression, interpretation)`` pair the store holds.
+
+        Counted rather than just the expressions: a discarded rebuild is reached as
+        the *value* of an entry recorded under the throwaway interpretation that built
+        it, so counting expressions alone stays flat while the store grows.
+        """
+        gc.collect()
+        return sum(len(inner.data) for inner in store.data.values())
+
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
+    # Nested, so that rebuilding the outer lambda renames it while the inner ones
+    # keep binders of their own.
+    f = deffn(deffn(deffn(_add(_add(x(), y()), z()), z), y), x)
+
+    with cache() as store:
+        for _ in range(10):
+            assert evaluate(f) is f
+        warm = entries(store)
+
+        for _ in range(100):
+            assert evaluate(f) is f
+        assert entries(store) == warm
+
+        # Nothing in the store is a lambda the result does not contain.
+        reachable, stack = set(), [f]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, Term) and id(node) not in reachable:
+                reachable.add(id(node))
+                stack.extend(node.args)
+                stack.extend(node.kwargs.values())
+        assert not [
+            k
+            for k in store
+            if isinstance(k, Term) and k.op is deffn and id(k) not in reachable
+        ]
+
+
+def test_evaluate_compares_unordered_containers_without_regard_to_order():
+    """Mappings and sets are unordered, so recognizing a rebuild must not read order.
+
+    A rebuilt mapping happens to be built in the original's iteration order today, so
+    comparing pairwise would pass while depending on that. Sequences are ordered and
+    do compare pairwise.
+    """
+    from effectful.ops.semantics import _is_rebuild
+
+    x = defop(int, name="x")
+    a, b = _add(x(), 1), _add(x(), 2)
+
+    assert _is_rebuild({"p": a, "q": b}, {"q": b, "p": a})
+    assert not _is_rebuild({"p": a}, {"p": b})
+    assert not _is_rebuild({"p": a}, {"q": a})
+    assert not _is_rebuild({"p": a, "q": b}, {"p": a})
+
+    assert _is_rebuild({a, b}, {b, a})
+    assert not _is_rebuild({a}, {b})
+
+    assert not _is_rebuild([a, b], [b, a])
+
+
+def test_evaluate_of_an_unchanged_dataclass_is_the_dataclass():
+    from effectful.internals.runtime import cache
+
+    @dataclasses.dataclass(frozen=True)
+    class Box:
+        inner: object
+        tag: str = "t"
+
+    x = defop(int, name="x")
+    box = Box(_add(x(), 1))
+
+    with cache():
+        assert evaluate(box) is box
+
+
+def test_beta_reduction_shares_subterms_that_do_not_mention_the_binder():
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    closed = _mul(y(), 3)  # mentions y, not x
+    f = deffn(_add(x(), closed), x)
+
+    with cache():
+        result = f(1)
+
+    assert isinstance(result, Term) and result.op is _add
+    assert result.args[0] == 1
+    assert result.args[1] is closed
+
+
+def test_beta_reduction_still_substitutes_and_computes_under_handlers():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    f = deffn(_add(x(), _mul(2, 3)), x)
+
+    with handler(_ARITH), cache():
+        assert f(1) == 7
+
+
+def test_an_unchanged_lambda_is_handed_back_not_renamed():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    # Construction renamed x once; evaluating the result must not rename it again.
+    f = deffn(_add(x(), 1), x)
+
+    with cache():
+        assert evaluate(f) is f
+
+
+def test_a_changed_lambda_gets_a_fresh_binder():
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    g = deffn(deffn(_add(x(), y()), x), y)  # substituting y changes the inner body
+
+    with cache():
+        result = g(5)
+
+    assert isinstance(result, Term) and result.op is deffn
+    assert result.args[1] is not x and x not in fvsof(result)
+
+
+def test_substitution_stops_at_a_binder_for_the_substituted_variable():
+    """A variable may be free in one part of a term and bound in another.
+
+    Constructing a binder renames it, so reaching this needs the fresh binder taken
+    back out of the node that introduced it. Substituting that variable must replace
+    the free occurrence and leave the bound one alone.
+    """
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    f = deffn(_mul(x(), 2), x)
+    var = f.args[1]  # f's own binder, made fresh when f was built
+    term = _add(var(), f)
+    assert var in fvsof(term)
+
+    with cache():
+        result = evaluate(term, intp={var: lambda: 5})
+
+    assert result.args[0] == 5  # the free occurrence is substituted
+    assert result.args[1] is f  # the binder and its body are untouched
+
+
+def test_substitution_does_not_capture_a_shared_lambdas_binder():
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import defdata
+
+    call = defdata.dispatch(collections.abc.Callable).__call__
+
+    x = defop(int, name="x")
+    f = deffn(_mul(x(), 2), x)
+    body = _add(x(), call(f, 1))
+
+    with handler(_ARITH), cache():
+        assert deffn(body, x)(5) == 7  # 5 + 2; capturing substitution would give 12
+
+
+def test_analyses_see_past_shadowed_binders():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    f = deffn(_add(x(), y()), x)
+
+    assert x not in fvsof(f) and y in fvsof(f)
+    assert typeof(f) is collections.abc.Callable
+    assert typeof(_add(x(), 1)) is int
+
+
+def test_beta_reduction_under_an_apply_handler_reaches_every_node():
+    """Sharing must not hide nodes from an ``apply`` handler.
+
+    An ``apply`` handler is not a term constructor, so none of the shortcuts may fire
+    on its behalf: it has to be offered every node, as ``fvsof`` and ``typeof`` are.
+    """
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    f = deffn(_add(x(), _mul(y(), 3)), x)
+
+    class Recording(ObjectInterpretation):
+        def __init__(self):
+            self.ops: list[Operation] = []
+
+        @implements(apply)
+        def _(self, op, *args, **kwargs):
+            self.ops.append(op)
+            return op.__default_rule__(*args, **kwargs)
+
+    recording = Recording()
+    with handler(recording), cache():
+        result = f(1)
+
+    assert isinstance(result, Term)
+    assert {_add, _mul, y} <= set(recording.ops)
+
+
+@pytest.mark.timeout(20)
+def test_evaluate_dag_under_binders_no_exponential_blowup():
+    """A DAG shared beneath binders is evaluated once per node, not once per path.
+
+    Evaluating an operand of a binder adds handlers for the variables bound in it,
+    which makes another interpretation. Evaluation is memoized on the identity of the
+    interpretation it runs under, so every node below a binder is a miss against what
+    was cached for it outside, and a child reached along both operands of ``depth``
+    nested binders would be evaluated ``2 ** depth`` times. Two things prevent that:
+    the added interpretation is shared between operands that bind the same variables,
+    and a term none of those variables can occur in is evaluated under the enclosing
+    interpretation instead, where it is already cached.
+
+    ``test_evaluate_dag_no_exponential_blowup`` shares nodes through tuples, which
+    bind nothing, so it does not reach this path.
+    """
+    from effectful.internals.runtime import cache
+
+    call_count = 0
+
+    @defop
+    def counted() -> int:
+        raise NotHandled
+
+    def counted_handler():
+        nonlocal call_count
+        call_count += 1
+        return 42
+
+    @defop
+    def Bind[S, T, A, B](
+        var: Annotated[Operation[[], S], Scoped[A]],
+        left: Annotated[T, Scoped[A | B]],
+        right: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        raise NotHandled
+
+    depth = 20
+    node = counted()
+    for _ in range(depth):
+        node = Bind(defop(int), node, node)  # both operands are the same object
+
+    with cache(), handler({counted: counted_handler}):
+        evaluate(node)
+
+    assert call_count == 1
+
+
+@pytest.mark.timeout(20)
+def test_deep_sharing_stays_linear():
+    """A chain of lambdas over a shared closed term never copies that term.
+
+    Bounded by a timeout rather than asserted on time: the regression this guards
+    against is quadratic growth in both nodes and work, which shows up as the chain
+    getting longer.
+    """
+    from effectful.internals.runtime import cache
+
+    y = defop(int, name="y")
+    closed = _mul(y(), 3)
+
+    term = closed
+    with cache():
+        for _ in range(50):
+            x = defop(int, name="x")
+            term = deffn(_add(x(), term), x)(1)
+
+    found = [node for node in _reachable(term) if node.op is _mul]
+    assert len(found) == 1 and found[0] is closed
