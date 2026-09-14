@@ -1695,6 +1695,181 @@ def test_bench_beta_reduction_chain_over_a_shared_term(benchmark):
     assert isinstance(result, Term)
 
 
+@defop
+def _analysis_add(x: int, y: int) -> int:
+    raise NotHandled
+
+
+def _analysis_body(var: Operation, size: int) -> Expr[int]:
+    """A balanced tree of ``size`` additions, every node of which mentions ``var``."""
+    if size <= 1:
+        return _analysis_add(var(), size)
+    return _analysis_add(
+        _analysis_body(var, size // 2), _analysis_body(var, size - size // 2)
+    )
+
+
+def _count_term_visits(thunk) -> int:
+    """How many terms ``evaluate`` visits while ``thunk`` runs."""
+    visited = 0
+    registered = evaluate.dispatch(Term)
+
+    def counting(expr, **kwargs):
+        nonlocal visited
+        visited += 1
+        return registered(expr, **kwargs)
+
+    evaluate.register(Term)(counting)
+    try:
+        thunk()
+    finally:
+        evaluate.register(Term)(registered)
+    return visited
+
+
+@pytest.mark.parametrize("analyse", [typeof, fvsof], ids=["typeof", "fvsof"])
+def test_analysing_a_binder_does_not_walk_the_body(analyse):
+    """Analyzing a binder must not re-analyze a body that is already analyzed.
+
+    The operands of a binder are evaluated under a shadow that re-enters the bound
+    variables as unhandled. Building one where the interpretation handles none of them
+    yields an interpretation equal to the one passed in but new, and no cache entry is
+    keyed by it, so every analysis of a lambda used to walk its whole body again --
+    ``typeof`` and ``fvsof`` handle no variables at all, so both did.
+    """
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    visits = {}
+    for size in (100, 400, 1600):
+        var = defop(int, name="x")
+        with cache():
+            body = _analysis_body(var, size)
+            analyse(body)  # everything below the binder is now analyzed
+
+            # The node ``_build_term`` types, built directly so that no renaming
+            # rebuilds the body and the analysis is the only work left to do.
+            raw = _BaseTerm(deffn, body, var)
+            visits[size] = _count_term_visits(lambda: analyse(raw))
+
+    assert visits[100] == visits[400] == visits[1600], (
+        f"analyzing a binder scales with its body: {visits}"
+    )
+
+
+def test_typeof_answers_from_the_signature_where_it_can():
+    """Most operations fix the type of their nodes, so the operands need not be read."""
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    @defop
+    def _concrete(x: int) -> int:
+        raise NotHandled
+
+    @defop
+    def _generic[S](x: S) -> S:
+        raise NotHandled
+
+    with cache():
+        body = _analysis_body(defop(int, name="x"), 400)
+
+        # A concrete return annotation is the answer, whatever the operands are.
+        assert _count_term_visits(lambda: typeof(_BaseTerm(_concrete, body))) == 0
+        assert typeof(_BaseTerm(_concrete, body)) is int
+
+        # One that depends on the operands has to read them.
+        assert _count_term_visits(lambda: typeof(_BaseTerm(_generic, body))) > 0
+        assert typeof(_BaseTerm(_generic, body)) is int
+
+    # The answer is left where a node whose type does depend on its operands will find
+    # it, as the full annotation: reduced to what dispatch needs, ``list[int]`` would
+    # reach the node above as ``list`` and take its type parameter with it.
+    @defop
+    def _mklist(x: int) -> list[int]:
+        raise NotHandled
+
+    @defop
+    def _first[S](xs: list[S]) -> S:
+        raise NotHandled
+
+    assert typeof(_mklist(1)) is list
+    assert typeof(_first(_mklist(1))) is int
+
+
+@defop
+def _churn_let[S, T, A](
+    var: Annotated[Operation[[], S], Scoped[A]],
+    val: S,
+    body: Annotated[T, Scoped[A]],
+) -> T:
+    raise NotHandled
+
+
+def _churn_nested(free: Operation, depth: int, width: int) -> Expr[int]:
+    """``depth`` nested binders, each over a body of ``width`` nodes mentioning ``free``."""
+    body: Expr[int] = free()
+    for _ in range(depth):
+        var = defop(int, name="v")
+        for _ in range(width):
+            body = _analysis_add(var(), body)
+        body = _churn_let(var, 1, body)
+    return body
+
+
+def test_bench_rebuilding_through_binders(benchmark):
+    """Benchmark substituting one variable through nested binders."""
+    from effectful.internals.runtime import cache
+
+    def run():
+        free = defop(int, name="free")
+        with cache():
+            term = _churn_nested(free, 16, 8)
+            return evaluate(term, intp={free: functools.partial(lambda u: u, 99)})
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_analysing_a_binder(benchmark):
+    """Benchmark analyzing a binder whose body is already analyzed.
+
+    Should be O(1): the operands carry their own analyses, and the binder adds one node.
+    """
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    with cache():
+        var = defop(int, name="x")
+        body = _analysis_body(var, 400)
+        fvsof(body)
+
+        result = benchmark(lambda: fvsof(_BaseTerm(deffn, body, var)))
+
+    assert var not in result
+
+
+def test_bench_apply_then_wrap_layering(benchmark):
+    """Benchmark building a lambda in layers: apply an existing lambda, wrap, repeat.
+
+    Each layer beta-copies the body and then renames the copy's binder, so the number of
+    nodes built is ~2 * depth per node of the result. What this guards is the cost of
+    each of those constructions, not their number.
+    """
+    from effectful.internals.runtime import cache
+
+    def run():
+        with cache():
+            var = defop(int, name="x")
+            term = deffn(_analysis_body(var, 400), var)
+            for index in range(5):
+                arg = defop(int, name=f"q{index}")
+                term = deffn(_analysis_add(term(arg()), 1), arg)
+            return term
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
 # ---------------------------------------------------------------------------
 # Operation calls whose arguments are large dataclasses.
 #

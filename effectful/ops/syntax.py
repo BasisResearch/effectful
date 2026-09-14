@@ -581,8 +581,25 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, evaluate
+    from effectful.internals.runtime import RECONSTRUCTING, interpreter
+    from effectful.ops.semantics import _binds_vars, apply, evaluate
+
+    replaced = RECONSTRUCTING.get()
+    if (
+        isinstance(replaced, Term)
+        and replaced.op is op
+        and len(replaced.args) == len(args)
+        and replaced.kwargs.keys() == kwargs.keys()
+        and all(x is y for x, y in zip(replaced.args, args))
+        and all(v is replaced.kwargs[k] for k, v in kwargs.items())
+    ):
+        return replaced
+
+    if not _binds_vars(op):
+        # Nothing to rename, so none of the machinery below would do anything
+        plain = op.__signature__.bind(*args, **kwargs)
+        plain.apply_defaults()
+        return _build_term(__dispatch, op, *plain.args, **plain.kwargs)
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
