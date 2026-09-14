@@ -2,6 +2,7 @@ import collections.abc
 import contextlib
 import dataclasses
 import functools
+import inspect
 import operator
 import types
 import typing
@@ -304,14 +305,6 @@ class _Shadow(dict):
 
 
 def _shadowed(intp: Interpretation, bound) -> Interpretation:
-    """``intp`` with each variable in ``bound`` re-entered as an unhandled operation.
-
-    Built fresh each time and kept by nothing: an interpretation is a cache key, so
-    anything holding one alive holds every result computed under it, and a renaming
-    interpretation would then keep the copy it was used to build. Terms below the
-    binder are not stranded by the fresh identity, because a term none of ``bound``
-    can occur in is evaluated under ``parent`` instead.
-    """
     shadow = _Shadow(
         coproduct(intp, {b: functools.partial(b.__apply__, b) for b in bound})
     )
@@ -321,7 +314,7 @@ def _shadowed(intp: Interpretation, bound) -> Interpretation:
 
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    from effectful.internals.runtime import get_interpretation
+    from effectful.internals.runtime import RECONSTRUCTING, get_interpretation
 
     intp = get_interpretation()
 
@@ -337,19 +330,22 @@ def _evaluate_term(expr: Term, **kwargs):
     if isinstance(intp, _Shadow) and not (fvsof(expr) & intp.bound):
         return evaluate(expr, intp=intp.parent)
 
-    if _binds_vars(expr.op):
+    binds_vars = _binds_vars(expr.op)
+    if binds_vars:
         # A variable bound in an operand is re-entered there as an unhandled
         # operation, so that a substitution for it stops at this binder instead of
         # reaching inside it. The bound set differs per operand: ``Let`` binds its
         # variable in the body but not in the value.
         bindings = expr.op.__fvs_rule__(*expr.args, **expr.kwargs)
         args = tuple(
-            evaluate(arg, intp=_shadowed(intp, bound)) if bound else evaluate(arg)
+            evaluate(arg, intp=_shadowed(intp, bound))
+            if bound and any(b in intp for b in bound)
+            else evaluate(arg)
             for arg, bound in zip(expr.args, bindings.args, strict=True)
         )
         kwargs = {
             k: evaluate(v, intp=_shadowed(intp, bindings.kwargs[k]))
-            if bindings.kwargs[k]
+            if bindings.kwargs[k] and any(b in intp for b in bindings.kwargs[k])
             else evaluate(v)
             for k, v in expr.kwargs.items()
         }
@@ -357,7 +353,12 @@ def _evaluate_term(expr: Term, **kwargs):
         args = tuple(evaluate(arg) for arg in expr.args)
         kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
 
-    return expr.op(*args, **kwargs)
+    # set context for fast path in defdata to avoid rename-then-discard
+    token = RECONSTRUCTING.set(expr)
+    try:
+        return expr.op(*args, **kwargs)
+    finally:
+        RECONSTRUCTING.reset(token)
 
 
 @evaluate.register(Operation)
@@ -521,6 +522,14 @@ def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
     """
     from effectful.internals.unification import Box, nested_type
 
+    if isinstance(term, Term) and (constant := _constant_type(term.op)) is not None:
+        from effectful.internals.runtime import EVAL_CACHE, cache_put
+
+        store = EVAL_CACHE.get()
+        if store is not None:
+            cache_put(store, term, _TYPEOF_INTP, Box(constant))
+        return typing.cast(type[T], _simple_type(constant))
+
     type_or_value = evaluate(term, intp=_TYPEOF_INTP)
     if not keep_params and isinstance(type_or_value, Box):
         return _simple_type(type_or_value.value)
@@ -528,6 +537,41 @@ def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
         return typing.cast(type[T], type(type_or_value))
     else:
         return typing.cast(type[T], nested_type(type_or_value).value)
+
+
+@weak_memoize(cache=weakref.WeakKeyDictionary())
+def _constant_type(op: Operation) -> type | None:
+    """The analysis of every node of ``op``, where the operands cannot change it.
+
+    :meth:`Operation.__type_rule__` hands back the return annotation untouched unless it
+    has free type variables, so for most operations the answer is in the signature and
+    the operands need not be analyzed at all. ``None`` where they do.
+
+    The annotation as written, not what :func:`typeof` reduces it to: a node above this
+    one unifies against the full type, so ``list[int]`` may not arrive there as ``list``.
+    """
+    from effectful.internals.unification import freetypevars
+
+    if isinstance(op, ConstructorOperation):
+        # Not analyzed through ``apply``, so the rule above is not the one that applies.
+        return None
+
+    anno = op.__signature__.return_annotation
+    if typing.get_origin(anno) is typing.Annotated:
+        anno = typing.get_args(anno)[0]
+
+    if anno is inspect.Parameter.empty:
+        return object
+    elif anno is None:
+        return type(None)
+    elif freetypevars(anno):
+        return None
+
+    try:
+        _simple_type(anno)  # a union annotation, which _simple_type rejects
+    except TypeError:
+        return None
+    return anno
 
 
 class _FvsAnalysis(typing.NamedTuple):
