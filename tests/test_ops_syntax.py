@@ -906,7 +906,15 @@ def test_defun_1():
         assert x not in fvsof(f1)
 
         assert syntactic_eq(f1(1), y() + 2)
-        assert syntactic_eq(f1(x()), x() + y() + 1)
+
+        # At an open argument the application stands rather than inlining the
+        # body; substituting a value for that argument reduces it.
+        call = defdata.dispatch(collections.abc.Callable).__call__
+        applied = f1(x())
+        assert isinstance(applied, Term) and applied.op is call
+        assert applied.args[0] is f1
+        with handler({x: lambda: 1}):
+            assert syntactic_eq(evaluate(applied), y() + 2)
 
 
 def test_defun_2():
@@ -977,9 +985,13 @@ def test_defun_4():
         assert syntactic_eq(add1_twice(1), 3) and syntactic_eq(
             compose(add1, add1)(1), 3
         )
-        assert syntactic_eq(add1_twice(x()), x() + 2) and syntactic_eq(
-            compose(add1, add1)(x()), x() + 2
-        )
+        # At an open argument the applications stand rather than inlining the
+        # composed body; substituting a value for ``x`` reduces them.
+        call = defdata.dispatch(collections.abc.Callable).__call__
+        applied = [add1_twice(x()), compose(add1, add1)(x())]
+        assert all(isinstance(a, Term) and a.op is call for a in applied)
+        with handler({x: lambda: 1}):
+            assert all(syntactic_eq(evaluate(a), 3) for a in applied)
 
 
 def test_defun_5():

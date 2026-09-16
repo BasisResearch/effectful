@@ -438,7 +438,10 @@ def deffn[T, A, B](
     :returns: A callable term.
 
     :func:`deffn` terms are eliminated by the :func:`call` operation, which
-    performs beta-reduction.
+    performs beta-reduction at values. Applied to an argument that is itself a
+    term, the application stands as a node instead, so that the body is shared
+    between call sites rather than copied into each of them. Substituting values
+    for that argument's free variables later reduces it.
 
     **Example usage**:
 
@@ -454,6 +457,12 @@ def deffn[T, A, B](
     deffn(...)
     >>> term(3, y=4)
     10
+
+    Applied to an open argument the same term stands:
+
+    >>> z = defop(int, name='z')
+    >>> isinstance(term(z(), y=4), Term)
+    True
 
     .. note::
 
@@ -785,6 +794,9 @@ class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
         from effectful.ops.semantics import evaluate, fvsof, handler
 
         if isinstance(self, Term) and self.op is deffn:
+            if any(not v.__signature__.parameters for v in fvsof((args, kwargs))):
+                raise NotHandled
+
             body: Expr[Callable[P, T]] = self.args[0]
             argvars: tuple[Operation, ...] = self.args[1:]
             kwvars: dict[str, Operation] = self.kwargs
