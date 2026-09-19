@@ -1705,7 +1705,8 @@ def _analysis_body(var: Operation, size: int) -> Expr[int]:
     if size <= 1:
         return _analysis_add(var(), size)
     return _analysis_add(
-        _analysis_body(var, size // 2), _analysis_body(var, size - size // 2)
+        _analysis_body(var, size // 2),  # type: ignore[arg-type]
+        _analysis_body(var, size - size // 2),  # type: ignore[arg-type]
     )
 
 
@@ -1811,7 +1812,7 @@ def _churn_nested(free: Operation, depth: int, width: int) -> Expr[int]:
     for _ in range(depth):
         var = defop(int, name="v")
         for _ in range(width):
-            body = _analysis_add(var(), body)
+            body = _analysis_add(var(), body)  # type: ignore[arg-type]
         body = _churn_let(var, 1, body)
     return body
 

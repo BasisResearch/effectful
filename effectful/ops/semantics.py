@@ -525,9 +525,12 @@ def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
     if isinstance(term, Term) and (constant := _constant_type(term.op)) is not None:
         from effectful.internals.runtime import EVAL_CACHE, cache_put
 
+        boxed = Box(constant)
         store = EVAL_CACHE.get()
         if store is not None:
-            cache_put(store, term, _TYPEOF_INTP, Box(constant))
+            cache_put(store, term, _TYPEOF_INTP, boxed)
+        if keep_params:
+            return typing.cast(type[T], nested_type(boxed).value)
         return typing.cast(type[T], _simple_type(constant))
 
     type_or_value = evaluate(term, intp=_TYPEOF_INTP)
