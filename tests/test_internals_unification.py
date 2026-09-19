@@ -744,6 +744,135 @@ def test_infer_return_type_failure(
         unify(sig, bound)
 
 
+# --- Calling a Callable[P, T]: `*args: P.args` against the components of P ---
+#
+# The shape of ``_CallableTerm.__call__``. Per the typing spec, such a function
+# may be called with ``(*args, **kwargs)` exactly when ``args`` has the type
+# ``P.args``, so the arguments are matched against ``P``'s components rather
+# than against the ``P.args`` annotation, which denotes nothing on its own.
+
+
+def call_paramspec[**P, T](
+    f: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    return f(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "callee,args,expected",
+    [
+        # A monomorphic callee: the return type never depended on the arguments.
+        (collections.abc.Callable[[int], str], (int,), str),
+        # A polymorphic callee: its variables are solved by the call.
+        (collections.abc.Callable[[T], T], (int,), int),
+        (collections.abc.Callable[[T], T], (str,), str),
+        (collections.abc.Callable[[list[T]], T], (list[int],), int),
+        (collections.abc.Callable[[T, U], dict[T, U]], (int, str), dict[int, str]),
+        # A subclass argument still unifies with the declared parameter.
+        (collections.abc.Callable[[int], str], (bool,), str),
+        # ``...`` is consistent with any signature, so it constrains nothing.
+        (collections.abc.Callable[..., str], (int, str), str),
+    ],
+)
+def test_unify_paramspec_args(callee, args: tuple, expected):
+    sig = inspect.signature(call_paramspec)
+    result = substitute(sig.return_annotation, unify(sig, sig.bind(callee, *args)))
+    assert canonicalize(result) == canonicalize(expected)
+
+
+@pytest.mark.parametrize("args", [(), (int, int)])
+def test_unify_paramspec_args_arity_mismatch_is_unconstrained(args: tuple):
+    """A call of the wrong arity is invalid, but inference does not reject it.
+
+    Matching what lines up and leaving the rest alone keeps inference out of the
+    business of checking calls, which nothing here does today.
+    """
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], *args)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is str
+
+
+def test_unify_paramspec_args_conflicting_argument():
+    """A conflicting argument is rejected, as it is for an ordinary parameter."""
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], str)
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, bound)
+
+
+def test_unify_paramspec_args_forwarded():
+    """Forwarding another call's ``*args`` supplies components, not types.
+
+    There is nothing to match them against, so they constrain nothing, but the
+    return type still resolves.
+    """
+    (Q,) = call_paramspec.__type_params__[:1]
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], Q.args)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is str
+
+
+def test_canonicalize_unbounded_paramspec():
+    """An unbounded ``ParamSpec`` is canonical whichever way it was built.
+
+    One built at runtime reports its absent bound as ``NoneType`` where ``**P``
+    reports ``None``, and reading that as a bound rejects every ``ParamSpec``
+    ``_freshen`` produces, which in turn fails any unification against a type
+    that mentions one.
+    """
+    (declared,) = call_paramspec.__type_params__[:1]
+    constructed = typing.ParamSpec("constructed")
+
+    assert canonicalize(declared) is declared
+    assert canonicalize(constructed) is constructed
+
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[declared, int], int)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is int
+
+    # A bound that is really a bound is still out of scope.
+    bounded = typing.ParamSpec("bounded", bound=collections.abc.Callable[..., int])
+    with pytest.raises(TypeError, match="nonempty attributes"):
+        canonicalize(bounded)
+
+
+def test_unify_paramspec_solution_representation():
+    """A solved ``ParamSpec`` has one representation, whatever generic solved it.
+
+    ``typing.get_args`` reports a parameter list as a list for ``Callable`` and
+    as a tuple for every other generic, so without normalizing, two equal
+    solutions compare unequal -- which ``_unify_union`` decides by.
+    """
+
+    from effectful.ops.types import Operation
+
+    class Holder[**P]:
+        pass
+
+    def from_holder[**P](z: Holder[P]) -> Holder[P]: ...
+
+    def from_callable[**P, R](c: collections.abc.Callable[P, R]) -> R: ...
+
+    def from_operation[**P, R](o: Operation[P, R]) -> R: ...
+
+    solutions = []
+    for func, arg in [
+        (from_holder, Holder[[int, str]]),
+        (from_callable, collections.abc.Callable[[int, str], bool]),
+        (from_operation, Operation[[int, str], bool]),
+    ]:
+        sig = inspect.signature(func)
+        (pspec,) = [p for p in func.__type_params__ if isinstance(p, typing.ParamSpec)]
+        solutions.append(unify(sig, sig.bind(arg))[pspec])
+
+    assert solutions == [[int, str]] * 3
+
+    # Normalizing must not break substituting back into the generic it came from.
+    sig = inspect.signature(from_holder)
+    subs = unify(sig, sig.bind(Holder[[int, str]]))
+    assert substitute(sig.return_annotation, subs) == Holder[[int, str]]
+
+
 @pytest.mark.parametrize(
     "value,expected",
     [
