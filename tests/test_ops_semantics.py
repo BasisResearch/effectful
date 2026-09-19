@@ -2,8 +2,8 @@ import contextlib
 import dataclasses
 import itertools
 import logging
-from collections.abc import Callable, Mapping
-from typing import Annotated, Any, Literal, Union
+from collections.abc import Callable, Mapping, MutableSequence
+from typing import Annotated, Any, Literal, TypeVar, Union
 
 import pytest
 
@@ -885,6 +885,88 @@ def test_typeof_generic():
 
     # Generic types are simplified to their origin type
     assert typeof(box_value(42)) is Box
+
+
+def test_typeof_keep_params_generic():
+    """``keep_params`` returns the inferred type with its parameters intact."""
+
+    @defop
+    def digits(n: int) -> list[int]:
+        raise NotHandled
+
+    @defop
+    def counts(key: str) -> dict[str, int]:
+        raise NotHandled
+
+    assert typeof(digits(1)) is list
+    assert typeof(digits(1), keep_params=True) == list[int]
+
+    assert typeof(counts("a")) is dict
+    assert typeof(counts("a"), keep_params=True) == dict[str, int]
+
+
+def test_typeof_keep_params_polymorphic():
+    """Parameters resolved from the arguments survive into the returned type."""
+
+    @defop
+    def wrap[T](value: T) -> list[T]:
+        raise NotHandled
+
+    @defop
+    def pair[T, U](key: T, value: U) -> dict[T, U]:
+        raise NotHandled
+
+    assert typeof(wrap(1), keep_params=True) == list[int]
+    assert typeof(wrap("a"), keep_params=True) == list[str]
+    assert typeof(pair(1, "a"), keep_params=True) == dict[int, str]
+
+
+def test_typeof_keep_params_unresolved_typevar():
+    """A parameter the arguments don't determine comes back as the variable itself.
+
+    So ``keep_params=True`` can return something that is not a runtime class,
+    where the simplified form always collapses to one.
+    """
+    S = TypeVar("S")
+
+    @defop
+    def unknown(n: int) -> list[S]:
+        raise NotHandled
+
+    assert typeof(unknown(1)) is list
+    assert typeof(unknown(1), keep_params=True) == list[S]
+
+
+def test_typeof_keep_params_literal():
+    """``keep_params`` skips the collapse of a ``Literal`` to its value type."""
+
+    @defop
+    def get_mode() -> Literal["read", "write"]:
+        raise NotHandled
+
+    assert typeof(get_mode()) is str
+    assert typeof(get_mode(), keep_params=True) == Literal["read", "write"]
+
+
+def test_typeof_keep_params_values():
+    """For a value rather than a term, the parameters come from its contents.
+
+    Note the asymmetry with the term cases above: a value's type is read off the
+    value, so it is canonicalized to an abstract base (``MutableSequence``),
+    where a term's is read off the annotations that produced it (``list``).
+    """
+    x = defop(int, name="x")
+
+    assert typeof(1, keep_params=True) is int
+
+    assert typeof([1, 2]) is list
+    assert typeof([1, 2], keep_params=True) == MutableSequence[int]
+
+    # A collection of terms is described by the types of its elements.
+    assert typeof([x()], keep_params=True) == MutableSequence[int]
+
+    assert typeof(x) is Operation
+    assert typeof(x, keep_params=True) == Operation[[], int]
 
 
 def test_typeof_dataclass_does_not_run_constructor_with_inferred_types():

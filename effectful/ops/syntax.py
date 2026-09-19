@@ -4,6 +4,7 @@ import functools
 import inspect
 import numbers
 import operator
+import types
 import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
@@ -405,8 +406,8 @@ defop = Operation.define
 @Operation.define
 def deffn[T, A, B](
     body: Annotated[T, Scoped[A | B]],
-    *args: Annotated[Operation, Scoped[A]],
-    **kwargs: Annotated[Operation, Scoped[A]],
+    *args: Annotated[Operation[[], Any], Scoped[A]],
+    **kwargs: Annotated[Operation[[], Any], Scoped[A]],
 ) -> Annotated[Callable[..., T], Scoped[B]]:
     """An operation that represents a lambda function.
 
@@ -441,6 +442,29 @@ def deffn[T, A, B](
 
     """
     raise NotHandled
+
+
+def _deffn_type_rule(
+    self: Operation, body: Any, *args: Operation[[], Any], **kwargs: Operation[[], Any]
+) -> Any:
+    """Type rule for :func:`deffn`, which Python typing can't express.
+
+    The declared return type is ``Callable[..., T]`` because a signature cannot
+    relate the parameter types to the variadic ``args``. Here the bound
+    variables are in hand, so each parameter type is read off its variable.
+    """
+    ret = type(self).__type_rule__(self, body, *args, **kwargs)
+
+    # A ``Callable`` cannot express keyword parameters, so a ``deffn`` with
+    # keyword variables keeps the imprecise ``Callable[..., T]``.
+    if kwargs or typing.get_origin(ret) is not collections.abc.Callable:
+        return ret
+
+    argtypes: list[type] = [arg.__type_rule__() for arg in args]
+    return collections.abc.Callable[argtypes, typing.get_args(ret)[-1]]
+
+
+setattr(deffn, "__type_rule__", types.MethodType(_deffn_type_rule, deffn))
 
 
 def _build_term[T](
