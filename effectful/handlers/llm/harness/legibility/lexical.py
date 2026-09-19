@@ -303,7 +303,7 @@ class ImplicitToolExtractor(LexicalToolExtractor):
         owner = type(obj.__self__)
         if not hasattr(cls_tool, "_name_on_instance"):
             cls_tool.__set_name__(owner, fn.__name__)
-        bound = cls_tool.__get__(obj.__self__, owner)
+        bound: typing.Any = cls_tool.__get__(obj.__self__, owner)
         if not isinstance(bound, Tool):
             return None  # e.g. an instance with free variables; nothing to offer
         if not hasattr(bound, "__implicit_target__"):
