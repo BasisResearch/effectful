@@ -973,6 +973,46 @@ def test_typeof_keep_params_unresolved_typevar():
     assert typeof(unknown(1), keep_params=True) == list[S]
 
 
+def test_typeof_type_argument_binds_typevar():
+    """An operation taking ``type[T]`` is instantiated by the class it is given.
+
+    The class arrives as a value, so it is ``nested_type`` that has to report it
+    as ``type[C]`` for ``T`` to have anything to bind to.
+    """
+
+    @defop
+    def make[T](cls: type[T]) -> T:
+        raise NotHandled
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert typeof(make(int)) is int
+    assert typeof(make(int), keep_params=True) is int
+    assert typeof(make(Foo), keep_params=True) is Foo
+
+
+def test_typeof_class_argument_to_callable_parameter_is_unconstrained():
+    """A class object satisfies a ``Callable`` pattern but constrains nothing.
+
+    Synthesizing the constructor's signature is out of scope, so ``T`` stays
+    free rather than picking up ``__init__``'s ``-> None``.
+    """
+    S = TypeVar("S")
+
+    @defop
+    def build(f: Callable[..., S]) -> S:
+        raise NotHandled
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert typeof(build(Foo), keep_params=True) == S
+    assert typeof(build(int), keep_params=True) == S
+
+
 def test_typeof_keep_params_literal():
     """``keep_params`` skips the collapse of a ``Literal`` to its value type."""
 

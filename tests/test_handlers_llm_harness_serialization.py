@@ -1056,21 +1056,21 @@ def test_class_value_is_not_encoded_as_a_function():
     assert "def int" not in json.dumps(encoded)
 
 
-def test_dataclass_value_routes_to_the_callable_encoding():
-    """A known asymmetry, recorded rather than claimed as desirable.
+def test_dataclass_value_encodes_as_a_type_like_any_other_class():
+    """A dataclass class encodes as a type, the same as `int` does.
 
-    `nested_type` reports a class as `type` *unless* it can reconstruct a full
-    `Callable` signature from ``__init__``, which it can for a dataclass. So a
-    dataclass handed over as a value encodes as its source -- like `_LexicalEnum`
-    above, and informative in its own right -- while `int` encodes as a type.
-    The two are not the same encoding, and evening them out means changing
-    `nested_type` rather than anything here.
+    It used to encode as its *source*: `nested_type` reported a class as `type`
+    unless it could reconstruct a `Callable` signature from ``__init__``, which
+    it can for a dataclass. Now that a class object reports `type[C]`, the two
+    reach the same encoding.
     """
     typ = nested_type(_Point).value
+    assert typ == type[_Point]
     encoded = pydantic.TypeAdapter(Encodable[typ]).dump_python(
         _Point, mode="json", context={}
     )
-    assert "class _Point" in encoded["code"]
+    assert "code" not in encoded
+    assert encoded["properties"]["x"]["type"] == "integer"
 
 
 @pytest.mark.parametrize("value", [int, list[int], int | str], ids=str)

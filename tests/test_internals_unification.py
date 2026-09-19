@@ -1,5 +1,6 @@
 import collections.abc
 import dataclasses
+import enum
 import functools
 import inspect
 import typing
@@ -812,6 +813,102 @@ def test_unify_paramspec_args_forwarded():
     assert substitute(sig.return_annotation, unify(sig, bound)) is str
 
 
+# --- Concatenate: parameters prepended to those a ParamSpec stands for ---
+
+
+def drop_prepended[**P, R](
+    f: collections.abc.Callable[typing.Concatenate[int, P], R],
+) -> collections.abc.Callable[P, R]: ...
+
+
+def call_with_prepended[R](
+    f: collections.abc.Callable[typing.Concatenate[int, ...], R],
+) -> R: ...
+
+
+@pytest.mark.parametrize(
+    "callee,expected",
+    [
+        # ``P`` is solved to what is left after the prepended parameter.
+        (
+            collections.abc.Callable[[int, str], bool],
+            collections.abc.Callable[[str], bool],
+        ),
+        (collections.abc.Callable[[int], bool], collections.abc.Callable[[], bool]),
+        (
+            collections.abc.Callable[[int, str, float], bool],
+            collections.abc.Callable[[str, float], bool],
+        ),
+        # ``...`` is consistent with any signature, so it satisfies the
+        # prepended parameter and leaves the rest unknown.
+        (collections.abc.Callable[..., bool], collections.abc.Callable[..., bool]),
+    ],
+)
+def test_unify_concatenate_solves_remaining_parameters(callee, expected):
+    sig = inspect.signature(drop_prepended)
+    assert substitute(sig.return_annotation, unify(sig, sig.bind(callee))) == expected
+
+
+@pytest.mark.parametrize(
+    "callee",
+    [
+        collections.abc.Callable[[], bool],  # prepended parameter absent
+        collections.abc.Callable[[str], bool],  # present but not assignable
+    ],
+)
+def test_unify_concatenate_requires_prepended_parameters(callee):
+    """The prepended parameters "are required to be present ... and be assignable"."""
+    sig = inspect.signature(drop_prepended)
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(callee))
+
+
+def test_unify_concatenate_gradual_tail():
+    """With a trailing ``...``, "any additional parameters are permitted"."""
+    sig = inspect.signature(call_with_prepended)
+
+    for callee in [
+        collections.abc.Callable[[int], bool],
+        collections.abc.Callable[[int, str], bool],
+        collections.abc.Callable[[int, str, float], bool],
+    ]:
+        assert substitute(sig.return_annotation, unify(sig, sig.bind(callee))) is bool
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(collections.abc.Callable[[str], bool]))
+
+
+def test_unify_concatenate_as_a_solution():
+    """A ``ParamSpec`` may be solved *to* a ``Concatenate`` rather than from one."""
+
+    def identity[**P, R](
+        f: collections.abc.Callable[P, R],
+    ) -> collections.abc.Callable[P, R]: ...
+
+    (Q,) = [
+        p for p in drop_prepended.__type_params__ if isinstance(p, typing.ParamSpec)
+    ]
+    sig = inspect.signature(identity)
+    callee = collections.abc.Callable[typing.Concatenate[int, Q], bool]
+
+    result = substitute(sig.return_annotation, unify(sig, sig.bind(callee)))
+    params, ret = typing.get_args(result)
+    assert ret is bool
+    # The concrete side is freshened, so compare the shape rather than the tail.
+    assert typing.get_args(params)[0] is int
+
+
+def test_canonicalize_concatenate():
+    """A ``Concatenate`` canonicalizes componentwise rather than to ``...``."""
+    (Q,) = [
+        p for p in drop_prepended.__type_params__ if isinstance(p, typing.ParamSpec)
+    ]
+
+    canonical = canonicalize(typing.Concatenate[list, Q])
+    assert canonical == typing.Concatenate[collections.abc.MutableSequence, Q]
+    assert canonicalize(canonical) == canonical
+
+
 def test_canonicalize_unbounded_paramspec():
     """An unbounded ``ParamSpec`` is canonical whichever way it was built.
 
@@ -893,7 +990,7 @@ def test_unify_paramspec_solution_representation():
         (Box(int), int),
         # Boxed generic aliases pass through
         (Box(list[int]), list[int]),
-        (int, type),
+        (int, type[int]),
         # Empty collections
         ([], list),
         ({}, dict),
@@ -1100,6 +1197,131 @@ def test_nested_type_eager_annotation_produces_precise_type():
     arg_types, return_type = typing.get_args(inferred)
     assert list(arg_types) == [ClientSession]
     assert return_type is int
+
+
+def test_nested_type_class_object_is_type_of_class():
+    """A class object inhabits ``type[C]``, not ``C`` (typing spec, "type[]")."""
+
+    class Plain:
+        pass
+
+    class Meta(type):
+        pass
+
+    class WithMeta(metaclass=Meta):
+        pass
+
+    assert nested_type(int).value == type[int]
+    assert nested_type(object).value == type[object]
+    assert nested_type(Plain).value == type[Plain]
+    assert nested_type(WithMeta).value == type[WithMeta]
+
+
+def test_nested_type_class_object_ignores_init_return_annotation():
+    """``__init__``'s ``-> None`` is not the constructor's return type.
+
+    The Callable branch used to claim ``Callable[[int], None]`` here, which made
+    ``unify`` bind a ``Callable[..., T]`` pattern's ``T`` to ``None``.
+    """
+
+    class Annotated:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert nested_type(Annotated).value == type[Annotated]
+
+
+def test_nested_type_enum_class_is_type_of_class():
+    """An ``Enum`` class is a Collection of its members, but still a class.
+
+    The ``Collection`` branch wins singledispatch over the one on ``type``, so it
+    has to defer for a value that is itself a class.
+    """
+
+    class Color(enum.Enum):
+        R = 1
+        G = 2
+
+    assert nested_type(Color).value == type[Color]
+    # An instance still reports the enum class it belongs to.
+    assert nested_type(Color.R).value is Color
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        typing.Any,
+        int | str,
+        typing.Literal[1],
+        typing.Annotated[int, "meta"],
+        list[int],
+        collections.abc.Callable[[int], str],
+        typing.Callable[[int], str],
+    ],
+)
+def test_nested_type_non_class_type_value_widens_to_class(value):
+    """Only a class becomes ``type[C]``.
+
+    The spec requires ``type[]``'s argument to be a concrete class object, and a
+    consumer that builds a schema from the result relies on that: ``type[int]``
+    is a type it can render, ``type[list[int]]`` is not. So every other
+    type-denoting value keeps the ``Box(type(value))`` widening it had.
+    """
+    assert nested_type(value).value is type(value)
+
+
+def test_unify_type_of_class_binds_typevar():
+    """``type[T]`` binds against the class a caller passed."""
+    T = typing.TypeVar("T")
+    assert unify(type[T], type[int]) == {T: int}
+    assert unify(type[T], nested_type(int).value) == {T: int}
+
+
+def test_unify_distributes_type_over_union():
+    """The spec's ``type[A | B] == type[A] | type[B]`` holds of unification.
+
+    Both spellings must yield the same substitution, which they only do if a
+    variable bound against a union accommodates every member rather than
+    conflicting on the second one.
+    """
+    T = typing.TypeVar("T")
+    assert unify(type[T], type[int | str]) == unify(type[T], type[int] | type[str])
+    assert unify(type[T], type[int] | type[str]) == {T: int | str}
+
+
+def test_unify_binds_variable_to_the_join_of_union_members():
+    """A variable under a union subtype binds to the join, not the first member.
+
+    Every member still has to unify -- a union is assignable to the pattern only
+    if each of its members is -- so a member that cannot unify at all is still
+    an error.
+    """
+    T = typing.TypeVar("T")
+    assert unify(T, int | str) == {T: int | str}
+    assert unify(list[T], list[int] | list[str]) == {T: int | str}
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(int, int | str)
+
+    # A conflicting binding is still a conflict when no union is involved.
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(T, str, {T: int})
+
+
+def test_unify_callable_pattern_against_type_binds_nothing():
+    """A class object is callable, so ``type[C]`` satisfies a ``Callable``
+    pattern, but no constructor signature is synthesized: nothing binds, and in
+    particular unification does not fail."""
+    T = typing.TypeVar("T")
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert unify(collections.abc.Callable[..., T], type[int]) == {}
+    assert unify(collections.abc.Callable[[int], T], type[Foo]) == {}
+    # Bare ``type`` behaved this way before class values gained a parameter.
+    assert unify(collections.abc.Callable[..., T], type) == {}
 
 
 def sequence_getitem[T](seq: collections.abc.Sequence[T], index: int) -> T:

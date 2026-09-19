@@ -90,6 +90,7 @@ else:
 
 TypeVariable = typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec
 ParamSpecComponent = typing.ParamSpecArgs | typing.ParamSpecKwargs
+ParameterConcatenation = typing._ConcatenateGenericAlias  # type: ignore
 TypeApplication = GenericAlias | UnionType
 TypeExpression = TypeVariable | ParamSpecComponent | TypeConstant | TypeApplication
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
@@ -314,6 +315,10 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
         return _unify_paramspec_component(typ, subtyp, subs)
     elif isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
         return _unify_typevar(typ, subtyp, subs)
+    elif isinstance(typ, ParameterConcatenation) or isinstance(
+        subtyp, ParameterConcatenation
+    ):
+        return _unify_concatenate(typ, subtyp, subs)
     elif isinstance(typ, collections.abc.Sequence) or isinstance(
         subtyp, collections.abc.Sequence
     ):
@@ -384,6 +389,17 @@ def _unify_sequence(typ, subtyp, subs: Substitutions) -> Substitutions:
     return subs
 
 
+def _join(typ: TypeExpressions, other: TypeExpressions) -> TypeExpressions:
+    """The union of two bindings for the same variable."""
+    if typ == other:
+        return typ
+    if isinstance(typ, collections.abc.Sequence) or isinstance(
+        other, collections.abc.Sequence
+    ):
+        raise TypeError(f"Cannot join parameter lists {typ} and {other}.")
+    return typ | other  # type: ignore[operator,return-value]
+
+
 @typing.overload
 def _unify_union(
     typ: UnionType, subtyp: TypeExpression, subs: Substitutions
@@ -400,10 +416,16 @@ def _unify_union(typ, subtyp, subs: Substitutions) -> Substitutions:
     if typ == subtyp:
         return subs
     elif isinstance(subtyp, UnionType):
-        # If subtyp is a union, try to unify with each argument
+        # ``A | B`` is assignable to the pattern only if each member is, so every
+        # member must unify -- but against the *same* incoming substitution. A
+        # variable the pattern binds has to accommodate all of them, so it binds
+        # to their join rather than to whichever member was seen first. This is
+        # what makes the spec's ``type[A | B] == type[A] | type[B]`` hold here.
+        joined = dict(subs)
         for arg in typing.get_args(subtyp):
-            subs = unify(typ, arg, subs)
-        return subs
+            for var, binding in unify(typ, arg, subs).items():
+                joined[var] = _join(joined[var], binding) if var in joined else binding
+        return joined
     elif isinstance(typ, UnionType):
         unifiers: list[Substitutions] = []
         for arg in typing.get_args(typ):
@@ -588,6 +610,14 @@ def _unify_generic(typ, subtyp, subs: Substitutions) -> Substitutions:
             return unify(typ, collections.abc.Callable[callable_params, op_ret], subs)  # type: ignore
         elif typing.get_origin(typ) == typing.get_origin(subtyp):
             return unify(typing.get_args(typ), typing.get_args(subtyp), subs)
+        elif typing.get_origin(subtyp) is type and not (
+            isinstance(typing.get_origin(typ), type)
+            and issubclass(typing.get_origin(typ), type)
+        ):
+            # A class object is callable, so `type[C]` satisfies a `Callable`
+            # pattern, but synthesizing C's constructor signature is out of
+            # scope: bind nothing, as bare ``type`` does.
+            return unify(typ, type, subs)
         elif types.get_original_bases(typing.get_origin(subtyp)):
             for base in types.get_original_bases(typing.get_origin(subtyp)):
                 if isinstance(base, type | GenericAlias) and issubclass(
@@ -682,6 +712,51 @@ def _unify_paramspec_component(typ, subtyp, subs: Substitutions) -> Substitution
         return subs
 
     return unify(list(params), list(subtyp), subs)
+
+
+def _unify_concatenate(typ, subtyp, subs: Substitutions) -> Substitutions:
+    """Unify a ``Concatenate`` with the parameter list it describes.
+
+    ``Concatenate[X, Y, P]`` "represents the parameters represented by ``P``
+    with two positional-only parameters prepended", so it matches a parameter
+    list whose first two entries match ``X`` and ``Y``, and solves ``P`` to what
+    remains. A trailing ``...`` instead of a ``P`` means the prepended
+    parameters "are required to be present in the input signature and be
+    assignable, but any additional parameters are permitted".
+    """
+    if isinstance(typ, ParameterConcatenation) and isinstance(
+        subtyp, ParameterConcatenation
+    ):
+        *prefix, tail = typing.get_args(typ)
+        *subprefix, subtail = typing.get_args(subtyp)
+        if len(prefix) != len(subprefix):
+            raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
+        return unify([*prefix, tail], [*subprefix, subtail], subs)
+
+    concat, other = (
+        (typ, subtyp) if isinstance(typ, ParameterConcatenation) else (subtyp, typ)
+    )
+    *prefix, tail = typing.get_args(concat)
+
+    def directed(concat_side, other_side):
+        return (
+            unify(concat_side, other_side, subs)
+            if concat is typ
+            else unify(other_side, concat_side, subs)
+        )
+
+    if isinstance(other, types.EllipsisType):
+        # Consistent with any signature, so the prepended parameters are
+        # satisfied and whatever follows them is unknown.
+        return directed(tail, other)
+    elif not isinstance(other, collections.abc.Sequence) or len(other) < len(prefix):
+        raise TypeError(f"Cannot unify {typ} with {subtyp} given {subs}. ")
+    elif isinstance(tail, types.EllipsisType):
+        return directed(list(prefix), list(other[: len(prefix)]))
+    else:
+        return directed(
+            [*prefix, tail], [*other[: len(prefix)], list(other[len(prefix) :])]
+        )
 
 
 def _freshen(tp: typing.Any):
@@ -915,7 +990,7 @@ def _(typ: typing.TypeAliasType):
 
 @canonicalize.register
 def _(typ: typing._ConcatenateGenericAlias):  # type: ignore
-    return Ellipsis
+    return typing.Concatenate[tuple(canonicalize(a) for a in typing.get_args(typ))]
 
 
 @canonicalize.register
@@ -997,6 +1072,14 @@ def nested_type(value) -> Box[TypeExpression]:
         <class 'float'>
         >>> nested_type(True).value
         <class 'bool'>
+
+        # A class object inhabits `type[C]`, which is what lets a `type[T]`
+        # parameter bind `T` to the class a caller passed. Only a class: a
+        # subscripted generic or a union is not itself a class object.
+        >>> nested_type(int).value
+        type[int]
+        >>> nested_type(list[int]).value
+        <class 'types.GenericAlias'>
 
         # Boxed type objects pass through unchanged
         >>> nested_type(Box(int)).value
@@ -1138,6 +1221,16 @@ def _(value: collections.abc.Callable):
 
 
 @nested_type.register
+def _(value: type):
+    return Box(type[value])
+
+
+@nested_type.register(type(typing.Any))  # type: ignore
+def _(value: type[typing.Any]):
+    return Box(type(value))  # `Any` is a special form, not a class
+
+
+@nested_type.register
 def _(value: collections.abc.Mapping):
     if value and isinstance(value, effectful.ops.types.Interpretation):
         return Box(effectful.ops.types.Interpretation)
@@ -1176,6 +1269,9 @@ def _(value: collections.abc.Mapping):
 
 @nested_type.register
 def _(value: collections.abc.Collection):
+    if isinstance(value, type):
+        return nested_type.dispatch(type)(value)
+
     typ = canonicalize(type(value))
     if not (
         isinstance(typ, type) and hasattr(typ, "__class_getitem__")
