@@ -89,8 +89,9 @@ else:
     UnionType = types.UnionType | typing._UnionGenericAlias
 
 TypeVariable = typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec
+ParamSpecComponent = typing.ParamSpecArgs | typing.ParamSpecKwargs
 TypeApplication = GenericAlias | UnionType
-TypeExpression = TypeVariable | TypeConstant | TypeApplication
+TypeExpression = TypeVariable | ParamSpecComponent | TypeConstant | TypeApplication
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
 
 Substitutions = collections.abc.Mapping[TypeVariable, TypeExpressions]
@@ -309,6 +310,8 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
 
     if typ is subtyp or typ == subtyp:
         return subs
+    elif isinstance(typ, ParamSpecComponent) or isinstance(subtyp, ParamSpecComponent):
+        return _unify_paramspec_component(typ, subtyp, subs)
     elif isinstance(typ, TypeVariable) or isinstance(subtyp, TypeVariable):
         return _unify_typevar(typ, subtyp, subs)
     elif isinstance(typ, collections.abc.Sequence) or isinstance(
@@ -340,6 +343,11 @@ def _unify_typevar(
 
 
 def _unify_typevar(typ, subtyp, subs: Substitutions) -> Substitutions:
+    if isinstance(typ, typing.ParamSpec) and isinstance(subtyp, tuple):
+        subtyp = list(subtyp)
+    elif isinstance(subtyp, typing.ParamSpec) and isinstance(typ, tuple):
+        typ = list(typ)
+
     if isinstance(typ, TypeVariable) and isinstance(subtyp, TypeVariable):
         return subs if typ == subtyp else {typ: subtyp, **subs}
     elif isinstance(typ, TypeVariable) and not isinstance(subtyp, TypeVariable):
@@ -628,6 +636,10 @@ def _unify_signature(
 
         ptyp, psubtyp = param.annotation, subtyp.arguments[name]
         if param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
+            ptyp, typing.ParamSpecArgs
+        ):
+            subs = unify(ptyp, _freshen(psubtyp), subs)
+        elif param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
             psubtyp, collections.abc.Sequence
         ):
             for psubtyp_item in _freshen(psubtyp):
@@ -640,11 +652,36 @@ def _unify_signature(
         elif param.kind not in {
             inspect.Parameter.VAR_KEYWORD,
             inspect.Parameter.VAR_POSITIONAL,
-        } or isinstance(psubtyp, typing.ParamSpecArgs | typing.ParamSpecKwargs):
+        }:
             subs = unify(ptyp, _freshen(psubtyp), subs)
         else:
             raise TypeError(f"Cannot unify {param} with {psubtyp} given {subs}")
     return subs
+
+
+@typing.overload
+def _unify_paramspec_component(
+    typ: ParamSpecComponent, subtyp: TypeExpressions, subs: Substitutions
+) -> Substitutions: ...
+
+
+@typing.overload
+def _unify_paramspec_component(
+    typ: TypeExpressions, subtyp: ParamSpecComponent, subs: Substitutions
+) -> Substitutions: ...
+
+
+def _unify_paramspec_component(typ, subtyp, subs: Substitutions) -> Substitutions:
+    if not isinstance(typ, typing.ParamSpecArgs) or not isinstance(
+        subtyp, collections.abc.Sequence
+    ):
+        return subs
+
+    params = substitute(typ.__origin__, subs)
+    if not isinstance(params, collections.abc.Sequence) or len(params) != len(subtyp):
+        return subs
+
+    return unify(list(params), list(subtyp), subs)
 
 
 def _freshen(tp: typing.Any):
@@ -763,7 +800,9 @@ def _(typ: typing.TypeVar):
 @canonicalize.register
 def _(typ: typing.ParamSpec):
     if (
-        typ.__bound__
+        # An unbounded ``ParamSpec`` reports ``NoneType`` when built at runtime
+        # and ``None`` when declared with ``**P``; neither is a bound.
+        typ.__bound__ not in (None, types.NoneType)
         or typ.__covariant__
         or typ.__contravariant__
         or getattr(typ, "__default__", None) is not getattr(typing, "NoDefault", None)
@@ -885,8 +924,8 @@ def _(typ: typing._AnyMeta):  # type: ignore
 
 
 @canonicalize.register
-def _(typ: typing.ParamSpecArgs | typing.ParamSpecKwargs):
-    return typing.Any
+def _(typ: ParamSpecComponent):
+    return typ
 
 
 @canonicalize.register

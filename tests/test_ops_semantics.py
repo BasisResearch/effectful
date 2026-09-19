@@ -887,6 +887,42 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_typeof_application_of_polymorphic_callable():
+    """Applying a callable term resolves the callee's own type variables.
+
+    The arguments of the call are matched against the components of the ``P`` in
+    ``__call__``'s ``self: Callable[P, T]``, so a polymorphic callee is
+    instantiated by the call rather than left at its bound.
+    """
+    S = TypeVar("S")
+
+    mono = defop(Callable[[int], str], name="mono")
+    poly = defop(Callable[[S], S], name="poly")
+    elem = defop(Callable[[list[S]], S], name="elem")
+    curried = defop(Callable[[int], Callable[[str], bool]], name="curried")
+    gradual = defop(Callable[..., str], name="gradual")
+
+    assert typeof(mono()(3)) is str
+    assert typeof(poly()(3)) is int
+    assert typeof(poly()("a")) is str
+    assert typeof(elem()([1, 2, 3])) is int
+
+    # The parameter types of an intermediate result survive the first call.
+    assert typeof(curried()(1), keep_params=True) == Callable[[str], bool]
+    assert typeof(curried()(1)("a")) is bool
+
+    # ``...`` is consistent with any signature, so it constrains nothing.
+    assert typeof(gradual()(1, 2, k=3)) is str
+
+
+def test_typeof_application_conflicting_argument():
+    """A conflicting argument is rejected, as it is for an ordinary parameter."""
+    mono = defop(Callable[[int], str], name="mono")
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        mono()("a")
+
+
 def test_typeof_keep_params_generic():
     """``keep_params`` returns the inferred type with its parameters intact."""
 
