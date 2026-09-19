@@ -1,14 +1,13 @@
 import functools
 import operator
 from collections.abc import Iterable
-from typing import Any, cast
+from typing import Any
 
 import torch
 
 from effectful.handlers.torch import sizesof
-from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import deffn, defop
-from effectful.ops.types import Interpretation, Operation
+from effectful.ops.types import Operation
 
 
 class IndexSet(dict[str, set[int]]):
@@ -235,20 +234,7 @@ def gather(value: torch.Tensor, indexset: IndexSet) -> torch.Tensor:
     }
 
     args = [v() for v in binding.values()]
-
-    # Each replacement mentions the very variable it replaces, so substituting them
-    # into ``value`` directly would reintroduce what it eliminates. Building the
-    # lambda renames the index variables apart from those free occurrences, which is
-    # what makes substituting them simultaneously safe. Substitute against the
-    # renamed binders rather than applying the term, since the default call rule
-    # leaves an application at open arguments standing.
-    fn = deffn(value, *binding.keys())
-    subs: Interpretation = {
-        v: functools.partial(lambda x: x, a)
-        for v, a in zip(fn.args[1:], args, strict=True)
-    }
-    with handler(subs):
-        return cast(torch.Tensor, evaluate(fn.args[0]))
+    return deffn(value, *binding.keys())(*args)
 
 
 def stack(
