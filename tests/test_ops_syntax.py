@@ -231,6 +231,98 @@ def test_deffn_keyword_args():
     assert isinstance(result2, Term)
 
 
+def test_deffn_type_rule_parameter_types():
+    """``deffn`` fills in the parameter types its declared signature cannot.
+
+    The declared return type is ``Callable[..., T]``, since a signature cannot
+    relate the parameter types to the variadic binders. The type rule reads each
+    parameter type off its binder instead.
+    """
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    assert typeof(deffn(y(), x), keep_params=True) == Callable[[int], str]
+    assert typeof(deffn(y(), x, y), keep_params=True) == Callable[[int, str], str]
+    assert typeof(deffn(y()), keep_params=True) == Callable[[], str]
+
+    # The body type is the return type, not a second ``Callable`` wrapped
+    # around it: a function returning a function has exactly two arrows.
+    assert (
+        typeof(deffn(deffn(y(), x), x), keep_params=True)
+        == Callable[[int], Callable[[int], str]]
+    )
+
+
+def test_deffn_type_rule_keyword_binders():
+    """A ``Callable`` cannot express keyword parameters, so those stay imprecise."""
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    assert typeof(deffn(y(), x, k=y), keep_params=True) == Callable[..., str]
+    assert typeof(deffn(y(), k=y), keep_params=True) == Callable[..., str]
+
+
+def test_deffn_type_rule_requires_nullary_binders():
+    """Reading a parameter type off a binder assumes the binder takes none itself.
+
+    ``deffn`` declares its binders as ``Operation[[], Any]``, and a binder that
+    takes arguments of its own fails to unify with that.
+    """
+    x = defop(int, name="x")
+
+    @defop
+    def h[T](a: T) -> T:
+        raise NotHandled
+
+    binder: typing.Any = h  # the annotation forbids this binder; check the runtime
+    with pytest.raises(TypeError, match="Cannot unify"):
+        deffn(x(), binder)
+
+
+def test_deffn_type_rule_resolves_argument_types():
+    """The refined type lets a consumer's signature recover the parameter types."""
+
+    @defop
+    def domain[S, T](f: Callable[[S], T]) -> S:
+        raise NotHandled
+
+    @defop
+    def codomain[S, T](f: Callable[[S], T]) -> T:
+        raise NotHandled
+
+    @defop
+    def second[S, U, T](f: Callable[[S, U], T]) -> U:
+        raise NotHandled
+
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    f = deffn(y(), x)
+    assert typeof(domain(f)) is int
+    assert typeof(codomain(f)) is str
+
+    g = deffn(x(), x, y)
+    assert typeof(second(g)) is str
+
+    # Dispatch is unaffected: the refined type still simplifies to ``Callable``.
+    assert typeof(f) is collections.abc.Callable
+
+    # With keyword binders there is no parameter type to recover.
+    assert typeof(domain(deffn(y(), x=x))) is object
+
+
+def test_trace_type_rule_resolves_argument_types():
+    """A traced function carries its parameter types through ``deffn``."""
+
+    @defop
+    def domain[S, T](f: Callable[[S], T]) -> S:
+        raise NotHandled
+
+    def to_str(x: int) -> str:
+        return str(x)
+
+    traced = trace(to_str)
+    assert typeof(traced, keep_params=True) == Callable[[int], str]
+    assert typeof(domain(traced)) is int
+
+
 def test_defdata_renaming():
     @defop
     def Let[S, T, A, B](

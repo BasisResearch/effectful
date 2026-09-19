@@ -24,6 +24,10 @@ from effectful.ops.types import (
     Term,
 )
 
+if typing.TYPE_CHECKING:
+    import typing_extensions
+
+
 apply = Operation.__apply__
 
 
@@ -322,8 +326,23 @@ class _TypeofIntp(ObjectInterpretation):
 _TYPEOF_INTP = _TypeofIntp()
 
 
-def typeof[T](term: Expr[T]) -> type[T]:
+@typing.overload
+def typeof[T](
+    term: Expr[T], *, keep_params: typing.Literal[False] = False
+) -> type[T]: ...
+
+
+@typing.overload
+def typeof[T](
+    term: Expr[T], *, keep_params: typing.Literal[True]
+) -> typing_extensions.TypeForm[T]: ...
+
+
+def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
     """Return the type of an expression.
+
+    :param keep_params: Return the full inferred type rather than a class to
+        dispatch on, keeping type parameters that would otherwise be dropped.
 
     **Example usage**:
 
@@ -343,13 +362,27 @@ def typeof[T](term: Expr[T]) -> type[T]:
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
+    By default the result is simplified to a class, which is what dispatching
+    on a term's type needs. ``keep_params`` returns the parameters as well:
+
+    >>> @defop
+    ... def duplicate[T](x: T) -> list[T]:
+    ...     raise NotHandled
+    >>> typeof(duplicate("a"))
+    <class 'list'>
+    >>> typeof(duplicate("a"), keep_params=True)
+    list[str]
+
     """
-    from effectful.internals.unification import Box
+    from effectful.internals.unification import Box, nested_type
 
     type_or_value = evaluate(term, intp=_TYPEOF_INTP)
-    if isinstance(type_or_value, Box):
+    if not keep_params and isinstance(type_or_value, Box):
         return _simple_type(type_or_value.value)
-    return typing.cast(type[T], type(type_or_value))
+    elif not keep_params:
+        return typing.cast(type[T], type(type_or_value))
+    else:
+        return typing.cast(type[T], nested_type(type_or_value).value)
 
 
 class _FvsAnalysis(typing.NamedTuple):
