@@ -335,7 +335,7 @@ def typeof[T](
 @typing.overload
 def typeof[T](
     term: Expr[T], *, keep_params: typing.Literal[True]
-) -> typing_extensions.TypeForm[T]: ...
+) -> "typing_extensions.TypeForm[T]": ...
 
 
 def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
