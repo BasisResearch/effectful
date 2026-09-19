@@ -887,6 +887,29 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_typeof_variadic_typevartuple_operation():
+    """An operation may be variadic over a ``TypeVarTuple``.
+
+    Its ``*args`` annotation is an unpacking, which cannot carry the ``Scoped``
+    annotation inferred for every other parameter, so the parameter is left
+    unannotated and sits in the root scope: it binds nothing, and the argument
+    types still reach the return type.
+    """
+
+    @defop
+    def pack[*Ts](*args: *Ts) -> tuple[*Ts]:
+        raise NotHandled
+
+    assert typeof(pack(1, "a"), keep_params=True) == tuple[int, str]
+    assert typeof(pack(1), keep_params=True) == tuple[int]
+    assert typeof(pack(), keep_params=True) == tuple[()]
+    assert typeof(pack(1, "a")) is tuple
+
+    # Nothing is bound by the variadic, so a free variable stays free.
+    x = defop(int, name="x")
+    assert x in fvsof(pack(x()))
+
+
 def test_typeof_application_of_polymorphic_callable():
     """Applying a callable term resolves the callee's own type variables.
 

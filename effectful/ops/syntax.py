@@ -151,6 +151,19 @@ class Scoped(Annotation):
             param = typing.cast(type, typing.get_origin(param))
         return isinstance(param, type) and issubclass(param, Operation)
 
+    @staticmethod
+    def _param_is_unpacked(param: type | inspect.Parameter) -> bool:
+        """Whether a parameter is annotated with an unpacking, as ``*args: *Ts``.
+
+        Such a parameter cannot carry a :class:`Scoped` annotation, because the
+        first argument of an ``Annotated`` must be a type expression and an
+        unpacking is not one. It is left unannotated and taken to be in the root
+        scope, so it binds nothing.
+        """
+        if isinstance(param, inspect.Parameter):
+            param = param.annotation
+        return typing.get_origin(param) is typing.Unpack
+
     @classmethod
     def _get_param_ordinal(cls, param: type | inspect.Parameter) -> collections.abc.Set:
         """
@@ -178,7 +191,13 @@ class Scoped(Annotation):
         :returns: The intersection of the `ordinal`s of all :class:`Scoped` annotations.
         """
         return set(cls._get_param_ordinal(sig.return_annotation)).intersection(
-            *(cls._get_param_ordinal(p) for p in sig.parameters.values())
+            *(
+                cls._get_param_ordinal(p)
+                for p in sig.parameters.values()
+                # An unannotated parameter is in the root scope, so it leaves
+                # the intersection alone rather than emptying it.
+                if not cls._param_is_unpacked(p)
+            )
         )
 
     @classmethod
@@ -293,7 +312,9 @@ class Scoped(Annotation):
             *(p.annotation for p in sig.parameters.values()),
         ):
             new_scope = cls(ordinal=cls._get_param_ordinal(anno) | root_ordinal)
-            if typing.get_origin(anno) is Annotated:
+            if cls._param_is_unpacked(anno):
+                new_anno = anno
+            elif typing.get_origin(anno) is Annotated:
                 new_anno = typing.get_args(anno)[0]
                 new_anno = Annotated[new_anno, new_scope]
                 for other in typing.get_args(anno)[1:]:
