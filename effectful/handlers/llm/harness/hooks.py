@@ -690,7 +690,7 @@ class AgentLoop(PromptInjectingInterpretation):
 
         message = call_user(self._skill_user_prompt(skill, env))
 
-        result: T | None = None
+        result: T | ToolCallExecutionError | None = None
         is_final: bool = False
         response_type = _instantiate_return_type(skill, bound_args)
         while not is_final:
