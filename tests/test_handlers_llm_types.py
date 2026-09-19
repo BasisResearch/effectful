@@ -72,8 +72,8 @@ class SkillStringIntp(ObjectInterpretation):
             )
         )
         skill_result = model_input["content"]
-        assert len(skill_result) == 1
-        return skill_result[0]["text"]
+        assert len(skill_result) == 1  # type: ignore[arg-type]
+        return skill_result[0]["text"]  # type: ignore[index,return-value]
 
 
 def test_skill_formatting_simple():

@@ -310,13 +310,25 @@ class Skill[**P, T](Tool[P, T]):
                 setattr(owner, attr, Agent.__dict__[attr])
         Agent.register(owner)
 
-    def __get__[S](self, instance: S | None, owner: type[S] | None = None):
+    @typing.overload
+    def __get__(self, instance: None, owner: "type | None" = None) -> "typing.Self": ...
+
+    @typing.overload
+    def __get__[S, **Q](
+        self: "Skill[typing.Concatenate[S, Q], T]",
+        instance: S,
+        owner: "type[S] | None" = None,
+    ) -> "Skill[Q, T]": ...
+
+    def __get__[S](
+        self, instance: "S | None", owner: "type[S] | None" = None
+    ) -> "Skill[..., T] | typing.Self":
         if hasattr(self, "_name_on_instance") and hasattr(
             instance, self._name_on_instance
         ):
             return getattr(instance, self._name_on_instance)
 
-        result = super().__get__(instance, owner)
+        result: Skill[..., T] = super().__get__(instance, owner)  # type: ignore[assignment]
         self_param_name = list(self.__signature__.parameters.keys())[0]
         result.__context__ = self.__context__.new_child({self_param_name: instance})
         if isinstance(instance, Agent):

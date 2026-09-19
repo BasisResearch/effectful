@@ -103,7 +103,7 @@ def sort_add(x: Expr[int], y: Expr[int]) -> Expr[int]:
         case Term(add_, (a, Term(vx, ()))), Term(vy, ()) if add_ == add and id(vx) > id(
             vy
         ):
-            return (a + vy()) + vx()
+            return (a + vy()) + vx()  # type: ignore
         case _:
             return fwd()
 

@@ -1398,7 +1398,7 @@ class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
 class ConstructorOperation[**Q, V](Operation[Q, V]):
     @classmethod
     @functools.cache
-    def define[T](
+    def define[T](  # type: ignore[override]
         cls, constructor: type[T] | Callable[..., T]
     ) -> "ConstructorOperation[Any, T]":
         if not isinstance(constructor, type):

@@ -156,7 +156,9 @@ def _bind_dims_tensor(
         for i, o in enumerate(dims)
         if not isinstance(o, Term) or o.op not in names_set
     ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    dim_ops: list[Operation | None] = [
+        a.op if isinstance(a, Term) else None for a in dims
+    ]
     perm = [dim_ops.index(o) for o in names] + reindex_dims
     tensor = tensor.permute(perm)
     return tensor[(slice(None),) * len(names) + tuple(dims[i] for i in reindex_dims)]
