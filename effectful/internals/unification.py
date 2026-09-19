@@ -91,6 +91,7 @@ else:
 TypeVariable = typing.TypeVar | typing.TypeVarTuple | typing.ParamSpec
 ParamSpecComponent = typing.ParamSpecArgs | typing.ParamSpecKwargs
 ParameterConcatenation = typing._ConcatenateGenericAlias  # type: ignore
+UnpackedForm = typing._UnpackGenericAlias  # type: ignore
 TypeApplication = GenericAlias | UnionType
 TypeExpression = TypeVariable | ParamSpecComponent | TypeConstant | TypeApplication
 TypeExpressions = TypeExpression | collections.abc.Sequence[TypeExpression]
@@ -319,6 +320,8 @@ def unify(typ, subtyp, subs: Substitutions = {}) -> Substitutions:
         subtyp, ParameterConcatenation
     ):
         return _unify_concatenate(typ, subtyp, subs)
+    elif isinstance(typ, UnpackedForm) or isinstance(subtyp, UnpackedForm):
+        return _unify_unpacked(typ, subtyp, subs)
     elif isinstance(typ, collections.abc.Sequence) or isinstance(
         subtyp, collections.abc.Sequence
     ):
@@ -382,11 +385,95 @@ def _unify_sequence(
 def _unify_sequence(typ, subtyp, subs: Substitutions) -> Substitutions:
     if isinstance(typ, types.EllipsisType) or isinstance(subtyp, types.EllipsisType):
         return subs
-    if len(typ) != len(subtyp):
+
+    split, subsplit = _split_unpacked(typ), _split_unpacked(subtyp)
+    if split is not None and subsplit is not None:
+        # Two variable-length holes only line up if the fixed ends do.
+        prefix, star, suffix = split
+        subprefix, substar, subsuffix = subsplit
+        if len(prefix) != len(subprefix) or len(suffix) != len(subsuffix):
+            raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
+        subs = _unify_sequence(prefix, subprefix, subs)
+        subs = _unify_sequence(suffix, subsuffix, subs)
+        return unify(star, substar, subs)
+    elif split is not None or subsplit is not None:
+        starred, other = (typ, subtyp) if split is not None else (subtyp, typ)
+        prefix, star, suffix = split if split is not None else subsplit  # type: ignore[misc]
+        if len(other) < len(prefix) + len(suffix):
+            raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
+
+        end = len(other) - len(suffix)
+        head, middle, tail = other[: len(prefix)], other[len(prefix) : end], other[end:]
+
+        def directed(starred_side, other_side):
+            return (
+                unify(starred_side, other_side, subs)
+                if starred is typ
+                else unify(other_side, starred_side, subs)
+            )
+
+        subs = directed(prefix, tuple(head))
+        subs = directed(suffix, tuple(tail))
+        return directed(star, tuple(middle))
+    elif len(typ) != len(subtyp):
         raise TypeError(f"Cannot unify sequence {typ} with {subtyp} given {subs}. ")
-    for p_item, c_item in zip(typ, subtyp):
-        subs = unify(p_item, c_item, subs)
-    return subs
+    else:
+        for p_item, c_item in zip(typ, subtyp):
+            subs = unify(p_item, c_item, subs)
+        return subs
+
+
+def _unify_unpacked(typ, subtyp, subs: Substitutions) -> Substitutions:
+    """Unify an unpacked type expression with the members it stands for.
+
+    A ``*Ts`` is solved to the members it covers, as an unpacked tuple of them,
+    which is the form that splices back in on substitution. An unpacked
+    unbounded tuple instead constrains each of those members, since it "is
+    equivalent to the behavior of ``*args: int``, which accepts zero or more
+    values".
+    """
+    pattern_unpacks = isinstance(typ, UnpackedForm)
+
+    def directed(unpacked_side, other_side):
+        return (
+            unify(unpacked_side, other_side, subs)
+            if pattern_unpacks
+            else unify(other_side, unpacked_side, subs)
+        )
+
+    if pattern_unpacks and isinstance(subtyp, UnpackedForm):
+        return unify(typing.get_args(typ)[0], typing.get_args(subtyp)[0], subs)
+
+    unpacked, members = (typ, subtyp) if pattern_unpacks else (subtyp, typ)
+    (unpacked,) = typing.get_args(unpacked)
+    if not isinstance(members, collections.abc.Sequence):
+        return subs
+    elif isinstance(unpacked, typing.TypeVarTuple):
+        return directed(unpacked, typing.Unpack[tuple[tuple(members)]])  # type: ignore[misc]
+    elif _is_fixed_tuple(unpacked):
+        return directed(typing.get_args(unpacked), tuple(members))
+    else:
+        (element, _) = typing.get_args(unpacked)
+        for member in members:
+            subs = directed(element, member)
+        return subs
+
+
+def _split_unpacked(seq) -> tuple[tuple, TypeExpressions, tuple] | None:
+    """Split a sequence around the one member that unpacks, if there is one.
+
+    "Only a single type variable tuple may appear in a type parameter list",
+    because more than one would leave it ambiguous which members each of them
+    covers. The runtime does not enforce that, so the ambiguity is rejected here
+    rather than resolved arbitrarily.
+    """
+    starred = [i for i, item in enumerate(seq) if isinstance(item, UnpackedForm)]
+    if not starred:
+        return None
+    elif len(starred) > 1:
+        raise TypeError(f"Cannot unify sequence {seq} with more than one unpacking.")
+    (i,) = starred
+    return tuple(seq[:i]), seq[i], tuple(seq[i + 1 :])
 
 
 def _join(typ: TypeExpressions, other: TypeExpressions) -> TypeExpressions:
@@ -662,12 +749,19 @@ def _unify_signature(
                 inspect.Parameter.VAR_POSITIONAL,
                 inspect.Parameter.VAR_KEYWORD,
             }
-            continue
-
-        ptyp, psubtyp = param.annotation, subtyp.arguments[name]
-        if param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
-            ptyp, typing.ParamSpecArgs
+            # ``bind`` omits a variadic that received nothing, which for
+            # ``*args: *Ts`` is the information that ``Ts`` is empty.
+            empty: tuple | dict = (
+                () if param.kind is inspect.Parameter.VAR_POSITIONAL else {}
+            )
+            ptyp, psubtyp = param.annotation, empty
+        else:
+            ptyp, psubtyp = param.annotation, subtyp.arguments[name]
+        if param.kind is inspect.Parameter.VAR_POSITIONAL and (
+            isinstance(ptyp, typing.ParamSpecArgs | UnpackedForm)
         ):
+            # ``P.args`` and ``*Ts`` both denote the whole tuple of positional
+            # arguments, so they unify against all of them at once.
             subs = unify(ptyp, _freshen(psubtyp), subs)
         elif param.kind is inspect.Parameter.VAR_POSITIONAL and isinstance(
             psubtyp, collections.abc.Sequence
@@ -904,7 +998,11 @@ def _(typ: UnionType):
 @canonicalize.register
 def _(typ: GenericAlias):
     origin, args = typing.get_origin(typ), typing.get_args(typ)
-    if origin is tuple and len(args) == 2 and args[-1] is Ellipsis:  # Variadic tuple
+    if _unpacked_target(typ) is not None:
+        # Checked before the variadic rule below, which would otherwise read
+        # ``*tuple[X, ...]`` as the ``tuple[X, ...]`` it stars and erase the star.
+        return canonicalize.dispatch(typing._UnpackGenericAlias)(typ)  # type: ignore[attr-defined]
+    elif origin is tuple and len(args) == 2 and args[-1] is Ellipsis:  # Variadic tuple
         return collections.abc.Sequence[canonicalize(args[0])]  # type: ignore
     elif isinstance(origin, typing._SpecialForm):
         if len(args) == 1:
@@ -912,12 +1010,52 @@ def _(typ: GenericAlias):
         else:
             raise TypeError(f"Cannot canonicalize type {typ}")
     else:
-        return canonicalize(origin)[tuple(canonicalize(a) for a in args)]  # type: ignore
+        return canonicalize(origin)[_canonicalize_args(args)]  # type: ignore
 
 
 @canonicalize.register
 def _(typ: list | tuple):
-    return type(typ)(canonicalize(item) for item in typ)
+    return type(typ)(_canonicalize_args(typ))
+
+
+def _unpacked_target(typ) -> TypeExpressions | None:
+    """What an unpacked type expression unpacks, or ``None`` if it is not one.
+
+    ``*Ts`` and ``Unpack[Ts]`` are the same expression, but ``*tuple[X, ...]``
+    is an ordinary ``tuple`` alias carrying an ``__unpacked__`` flag rather than
+    an ``Unpack``, so the two spellings have to be recognized separately.
+    """
+    if isinstance(typ, typing._UnpackGenericAlias):  # type: ignore[attr-defined]
+        return typing.get_args(typ)[0]
+    elif getattr(typ, "__unpacked__", False):
+        return typing.get_origin(typ)[typing.get_args(typ)]
+    else:
+        return None
+
+
+def _is_fixed_tuple(typ) -> bool:
+    """A ``tuple`` of known length, whose members can be spliced into a parent."""
+    args = typing.get_args(typ)
+    return typing.get_origin(typ) is tuple and not (
+        len(args) == 2 and args[-1] is Ellipsis
+    )
+
+
+def _canonicalize_args(args) -> tuple:
+    """Canonicalize type arguments, splicing in those that unpack a fixed tuple.
+
+    Every type checker renders ``tuple[int, *tuple[str, bool]]`` as
+    ``tuple[int, str, bool]``, so splicing here leaves the unbounded
+    ``*tuple[X, ...]`` as the only variable-length form left to match.
+    """
+    canonical: list = []
+    for arg in args:
+        target = _unpacked_target(arg)
+        if target is not None and _is_fixed_tuple(target):
+            canonical.extend(_canonicalize_args(typing.get_args(target)))
+        else:
+            canonical.append(canonicalize(arg))
+    return tuple(canonical)
 
 
 @canonicalize.register
@@ -1015,7 +1153,12 @@ def _(typ: typing._ProtocolMeta):
 
 @canonicalize.register
 def _(typ: typing._UnpackGenericAlias):  # type: ignore
-    raise TypeError(f"Cannot canonicalize type {typ}")
+    target = _unpacked_target(typ)
+    if typing.get_origin(target) is tuple:
+        members = _canonicalize_args(typing.get_args(target))
+        return typing.Unpack[tuple[members]]  # type: ignore[valid-type]
+    else:
+        return typing.Unpack[canonicalize(target)]
 
 
 @canonicalize.register
@@ -1225,7 +1368,7 @@ def _(value: type):
     return Box(type[value])
 
 
-@nested_type.register(type(typing.Any))  # type: ignore
+@nested_type.register(type(typing.Any))
 def _(value: type[typing.Any]):
     return Box(type(value))  # `Any` is a special form, not a class
 
