@@ -909,6 +909,167 @@ def test_canonicalize_concatenate():
     assert canonicalize(canonical) == canonical
 
 
+# --- TypeVarTuple: a variable-length run of type arguments ---
+
+
+# The patterns are read back off real signatures: a ``TypeVarTuple`` pulled out
+# of ``__type_params__`` is only a variable, and writing type expressions with
+# it is not something a type checker will accept.
+def tail_of[*Ts](xs: tuple[int, *Ts]) -> tuple[*Ts]: ...
+
+
+def head_of[*Ts](xs: tuple[*Ts, int]) -> tuple[*Ts]: ...
+
+
+def middle_of[*Ts](xs: tuple[int, *Ts, str]) -> tuple[*Ts]: ...
+
+
+def args_to_tuple[*Ts](*args: *Ts) -> tuple[*Ts]: ...
+
+
+def _pattern(func, name: str = "xs"):
+    return inspect.signature(func).parameters[name].annotation
+
+
+def _subscript(base, *args):
+    """Build a type at runtime, unread by a type checker."""
+    return base[args]
+
+
+@pytest.mark.parametrize(
+    "typ,expected",
+    [
+        # Every type checker renders a fixed-length unpacking spliced, so the
+        # members are canonically the enclosing type's own arguments.
+        (tuple[int, *tuple[str, bool]], tuple[int, str, bool]),
+        (tuple[int, *tuple[str, *tuple[bool, float]]], tuple[int, str, bool, float]),
+        # An unbounded unpacking is not spliced, and keeps its ``tuple`` shape:
+        # the rule that turns ``tuple[X, ...]`` into a ``Sequence`` must not
+        # reach inside it, or it would unpack something that is not a tuple.
+        # The starred and ``Unpack`` spellings are what these cases tell apart,
+        # so the expected side is written out rather than starred.
+        (tuple[int, *tuple[str, ...]], tuple[int, typing.Unpack[tuple[str, ...]]]),  # noqa: UP044
+        (
+            tuple[int, *tuple[list, ...]],
+            tuple[int, typing.Unpack[tuple[collections.abc.MutableSequence, ...]]],  # noqa: UP044
+        ),
+        # Unstarred, the same alias still normalizes to a ``Sequence``.
+        (tuple[str, ...], collections.abc.Sequence[str]),
+    ],
+)
+def test_canonicalize_unpacked(typ, expected):
+    assert canonicalize(typ) == expected
+    assert canonicalize(canonicalize(typ)) == canonicalize(typ)
+
+
+def test_canonicalize_unpacked_typevartuple():
+    """``*Ts`` is already the canonical spelling: it *is* ``Unpack[Ts]``."""
+    pattern = _pattern(tail_of)
+    assert canonicalize(pattern) == pattern
+    assert typing.get_args(pattern)[1] == typing.Unpack[tail_of.__type_params__[0]]
+
+
+@pytest.mark.parametrize(
+    "func,concrete,expected",
+    [
+        (tail_of, tuple[int, str, bool], typing.Unpack[tuple[str, bool]]),
+        (head_of, tuple[str, bool, int], typing.Unpack[tuple[str, bool]]),
+        (middle_of, tuple[int, bool, float, str], typing.Unpack[tuple[bool, float]]),
+        # The run it covers may be empty.
+        (tail_of, tuple[int], typing.Unpack[tuple[()]]),
+    ],
+)
+def test_unify_typevartuple_solves_the_run(func, concrete, expected):
+    (ts,) = func.__type_params__
+    assert unify(_pattern(func), concrete) == {ts: expected}
+
+
+@pytest.mark.parametrize(
+    "pattern,concrete",
+    [
+        (_pattern(middle_of), tuple[int]),  # fixed ends do not fit
+        (_pattern(tail_of), tuple[str, bool]),  # prefix does not match
+        # Which run is which? The runtime allows writing it; the spec does not.
+        (
+            _subscript(
+                tuple,
+                _pattern(args_to_tuple, "args"),
+                _pattern(args_to_tuple, "args"),
+            ),
+            tuple[int, str],
+        ),
+    ],
+)
+def test_unify_typevartuple_rejects(pattern, concrete):
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(pattern, concrete)
+
+
+@pytest.mark.parametrize(
+    "concrete,expected",
+    [
+        (tuple[int, str, bool], tuple[str, bool]),
+        (tuple[int], tuple[()]),
+    ],
+)
+def test_unify_typevartuple_round_trips_through_substitute(concrete, expected):
+    """The solution is stored unpacked, which is the form that splices back in."""
+    sig = inspect.signature(tail_of)
+    subs = unify(sig, sig.bind(concrete))
+    assert substitute(sig.return_annotation, subs) == expected
+
+
+def test_unify_star_args_of_unbounded_tuple():
+    """``*args: *tuple[int, ...]`` constrains every argument.
+
+    Only ``get_type_hints`` spells such an annotation as an ``Unpack``;
+    ``inspect.signature`` alone leaves the bare starred ``tuple`` that the
+    source wrote. ``Operation.__signature__`` resolves hints, so annotations
+    reach unification already in the form ``canonicalize`` normalizes to.
+    """
+
+    def homogeneous(*args: *tuple[int, ...]) -> bool: ...
+
+    hints = typing.get_type_hints(homogeneous)
+    sig = inspect.signature(homogeneous).replace(
+        parameters=[
+            p.replace(annotation=hints[p.name])
+            for p in inspect.signature(homogeneous).parameters.values()
+        ]
+    )
+
+    assert unify(sig, sig.bind(int, int)) == {}
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(int, str))
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ((int, str), tuple[int, str]),
+        ((int,), tuple[int]),
+        # "If no arguments are passed ... behaves like an empty tuple".
+        ((), tuple[()]),
+    ],
+)
+def test_unify_typevartuple_star_args(args, expected):
+    """ "The types of the individual arguments become the types in" ``Ts``."""
+    sig = inspect.signature(args_to_tuple)
+    subs = unify(sig, sig.bind(*args))
+    assert substitute(sig.return_annotation, subs) == expected
+
+
+def test_unify_unpacked_unbounded_tuple_constrains_each_member():
+    """An unpacked unbounded tuple "accepts zero or more values" of its type."""
+    pattern = tuple[int, *tuple[str, ...]]
+
+    assert unify(pattern, tuple[int]) == {}
+    assert unify(pattern, tuple[int, str, str]) == {}
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(pattern, tuple[int, bool])
+
+
 def test_canonicalize_unbounded_paramspec():
     """An unbounded ``ParamSpec`` is canonical whichever way it was built.
 
