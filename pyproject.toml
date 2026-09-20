@@ -41,8 +41,7 @@ torch = ["torch>=2.10"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
 numpyro = [
-  "numpyro<0.22",
-  "jax<0.10"
+  "numpyro>=0.19",
 ]
 llm = [
   # 1.92.0 ships no wheel, so it builds from sdist; on Python 3.14 that build pulls
