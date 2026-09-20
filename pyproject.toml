@@ -41,7 +41,7 @@ torch = ["torch>=2.10"]
 pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
 numpyro = [
-  "numpyro>=0.19",
+  "numpyro<0.22",
   "jax<0.10"
 ]
 llm = [
