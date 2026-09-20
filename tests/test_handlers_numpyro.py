@@ -12,8 +12,8 @@ import effectful.handlers.jax.monoid  # noqa: F401
 import effectful.handlers.jax.numpy as jnp
 import effectful.handlers.numpyro as dist
 from effectful.handlers.jax import bind_dims, jax_getitem, sizesof, unbind_dims
-from effectful.ops.monoid import LogSumExp, Product, Sum
-from effectful.ops.semantics import typeof
+from effectful.ops.monoid import LogSumExp, Min, Optimum, Product, Sum
+from effectful.ops.semantics import handler, typeof
 from effectful.ops.syntax import deffn, defop
 from effectful.ops.types import Operation, Term
 from tests._monoid_helpers import JaxBackend
@@ -1058,3 +1058,87 @@ def test_expand_to_event_chain_end_to_end_mcmc():
         mcmc.run(jr.PRNGKey(0))
 
     assert mcmc.get_samples()["theta"].shape == (20, 3)
+
+
+def test_nest_constraint_min_reduce():
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+    constrained = dist.constraint_stream(
+        numpyro.distributions.constraints.positive, jnp.asarray(1.0)
+    )
+
+    with handler(dist.NestConstraintMinReduce()):
+        result = Min.reduce(x(), {x: constrained, y: range(3)})
+
+    assert isinstance(result, Term) and result.op is Min.reduce
+    inner, outer_streams = result.args
+    assert list(outer_streams.values()) == [range(3)]
+    assert isinstance(inner, Term) and inner.op is Min.reduce
+    assert len(inner.args[1]) == 1
+    inner_stream = next(iter(inner.args[1].values()))
+    assert isinstance(inner_stream, Term) and inner_stream.op is dist.constraint_stream
+
+
+def test_adam_constraint_min_reduce():
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+    streams = {
+        x: dist.constraint_stream(
+            numpyro.distributions.constraints.positive, jnp.asarray(0.5)
+        ),
+        y: dist.constraint_stream(
+            numpyro.distributions.constraints.real, jnp.asarray(0.0)
+        ),
+    }
+    objective = Optimum(
+        (x() - 2.0) ** 2 + (y() + 1.0) ** 2,
+        {"x": x(), "y": y()},
+    )
+
+    with handler(dist.AdamConstraintMinReduce(step_size=0.05, num_steps=500)):
+        result = Min.reduce(objective, streams)
+
+    assert isinstance(result, Optimum)
+    assert jnp.allclose(result.value, 0.0, atol=1e-5)
+    assert jnp.allclose(result.assignment["x"], 2.0, atol=1e-4)
+    assert jnp.allclose(result.assignment["y"], -1.0, atol=1e-4)
+
+
+def test_adam_constraint_min_reduce_initializes_with_feasible_like():
+    x = defop(jax.Array, name="x")
+    constraint = numpyro.distributions.constraints.interval(-2.0, 4.0)
+    stream = dist.constraint_stream(constraint, jnp.asarray(100.0))
+
+    with handler(dist.AdamConstraintMinReduce(num_steps=0)):
+        result = Min.reduce(x(), {x: stream})
+
+    assert jnp.allclose(result, 1.0)
+
+
+def test_adam_constraint_min_reduce_forwards_mixed_bundle():
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+    constrained = dist.constraint_stream(
+        numpyro.distributions.constraints.real, jnp.asarray(0.0)
+    )
+
+    with handler(dist.AdamConstraintMinReduce()):
+        result = Min.reduce(x() ** 2, {x: constrained, y: range(2)})
+
+    assert isinstance(result, Term) and result.op is Min.reduce
+    assert len(result.args[1]) == 2
+
+
+def test_nest_constraint_min_reduce_preserves_stream_dependencies():
+    x = defop(jax.Array, name="x")
+    y = defop(jax.Array, name="y")
+    constrained = dist.constraint_stream(
+        numpyro.distributions.constraints.positive, jnp.asarray(1.0)
+    )
+
+    with handler(dist.NestConstraintMinReduce()):
+        result = Min.reduce(x(), {x: constrained, y: (x(),)})
+
+    assert isinstance(result, Term) and result.op is Min.reduce
+    assert len(result.args[1]) == 2
+    assert not (isinstance(result.args[0], Term) and result.args[0].op is Min.reduce)

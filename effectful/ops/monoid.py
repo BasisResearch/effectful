@@ -203,10 +203,16 @@ class MonoidWithZero[T](Monoid[T]):
         self.zero = zero
 
 
+@dataclass(frozen=True)
+class Optimum[T]:
+    """A value together with an assignment that attains it."""
+
+    value: T
+    assignment: Mapping[Operation, Any]
+
+
 Min = Monoid(name="Min", identity=float("inf"))
 Max = Monoid(name="Max", identity=-float("inf"))
-ArgMin = Monoid(name="ArgMin", identity=(Min.identity, None))
-ArgMax = Monoid(name="ArgMax", identity=(Max.identity, None))
 Sum = Group(name="Sum", identity=0)
 Product = MonoidWithZero(name="Product", identity=1, zero=0)
 LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
@@ -1573,34 +1579,6 @@ class LogSumExpPlus(ObjectInterpretation):
         )
 
 
-class ArgMinPlus(ObjectInterpretation):
-    """Scalar score implementation of :data:`ArgMin`."""
-
-    @implements(ArgMin.plus)
-    def plus(self, *args):
-        if not args or not all(isinstance(a, tuple) for a in args):
-            return fwd()
-        if any(isinstance(a[0], Term) for a in args):
-            return fwd()
-        if not all(isinstance(a[0], int | float) for a in args):
-            return fwd()
-        return min(args, key=lambda a: a[0])
-
-
-class ArgMaxPlus(ObjectInterpretation):
-    """Scalar score implementation of :data:`ArgMax`."""
-
-    @implements(ArgMax.plus)
-    def plus(self, *args):
-        if not args or not all(isinstance(a, tuple) for a in args):
-            return fwd()
-        if any(isinstance(a[0], Term) for a in args):
-            return fwd()
-        if not all(isinstance(a[0], int | float) for a in args):
-            return fwd()
-        return max(args, key=lambda a: a[0])
-
-
 def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
     merged = {}
     for d in dicts:
@@ -1611,6 +1589,72 @@ def _disjoint_merge[K, V](*dicts: Mapping[K, V]) -> Mapping[K, V]:
                 raise ValueError(f"Duplicate key found: '{key}'")
             merged[key] = value
     return merged
+
+
+class PlusOptimum(ObjectInterpretation):
+    """Sum values that are annotated with a minimizing (or maximizing) assignment."""
+
+    def _is_reducible(self, args):
+        return (
+            args
+            and any(isinstance(a, Optimum) for a in args)
+            and all(not fvsof(a.value if isinstance(a, Optimum) else a) for a in args)
+        )
+
+    def _optimum_min_max(self, func, *args):
+        return (
+            func(args, key=lambda a: a.value if isinstance(a, Optimum) else a)
+            if self._is_reducible(args)
+            else fwd()
+        )
+
+    @implements(Min.plus)
+    def _min_plus(self, *args):
+        return self._optimum_min_max(min, *args)
+
+    @implements(Max.plus)
+    def _max_plus(self, *args):
+        return self._optimum_min_max(max, *args)
+
+    @implements(Sum.plus)
+    def _sum_plus(self, *args):
+        return (
+            Optimum(
+                Sum.plus(
+                    *(arg.value if isinstance(arg, Optimum) else arg for arg in args)
+                ),
+                _disjoint_merge(
+                    *(
+                        arg.assignment if isinstance(arg, Optimum) else {}
+                        for arg in args
+                    )
+                ),
+            )
+            if self._is_reducible(args)
+            else fwd()
+        )
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        return (
+            monoid.plus(*(a.value if isinstance(a, Optimum) else a for a in args))
+            if self._is_reducible(args)
+            else fwd()
+        )
+
+
+class PlusCastOptimum(ObjectInterpretation):
+    """Upcast non-Optimum arguments to Monoid.plus."""
+
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        num_optimum = sum(isinstance(a, Optimum) for a in args)
+        if 0 < num_optimum < len(args):
+            new_args = (
+                Optimum(a, {}) if not isinstance(a, Optimum) else a for a in args
+            )
+            return monoid.plus(*new_args)
+        return fwd()
 
 
 class CartesianProductPlus(ObjectInterpretation):
@@ -2130,15 +2174,13 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
-    SumInverse(),
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
-    ArgMinPlus(),
-    ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
     IntersectionPlus(),
+    PlusOptimum(),
     ReduceWhereToMasks(),
 )
 
@@ -2190,6 +2232,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusOrder(),
     PlusCastFloat(),
     PlusCastIterable(),
+    PlusOptimum(),
+    PlusCastOptimum(),
     MaskFusion(),
     MaskBool(),
     WhereHoist(),
@@ -2202,8 +2246,6 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
-    ArgMinPlus(),
-    ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
     AndPlus(),

@@ -1039,7 +1039,7 @@ def syntactic_hash(__dispatch: Callable[[type], Callable[[Any], int]], x) -> int
     :param x: A term.
     :returns: An integer hash.
     """
-    if dataclasses.is_dataclass(x) and not isinstance(x, type):
+    if dataclasses.is_dataclass(x) and not isinstance(x, type | Term):
         return hash(
             (
                 "dataclass",
