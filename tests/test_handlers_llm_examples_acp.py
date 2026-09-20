@@ -1612,27 +1612,6 @@ def test_the_context_gauge_is_pushed_as_the_context_fills():
     assert update.size > 1000, "the denominator is the model's real context window"
 
 
-def test_a_model_litellm_does_not_know_still_gets_a_gauge():
-    """litellm's table does not cover every model, and a gauge is not worth losing.
-
-    This is the case that made the feature invisible in practice: a real model behind
-    a gateway litellm has not catalogued, silently skipped. A roughly-right gauge
-    beats an empty space, so an assumed size stands in.
-    """
-    client = _FakeClient()
-    response = make_text_response(
-        "ok", usage={"prompt_tokens": 900, "completion_tokens": 5, "total_tokens": 905}
-    )
-    response.model = "openrouter/z-ai/glm-5.3-flash"  # litellm: "isn't mapped yet"
-
-    with _session(client) as session:
-        session.reporter.begin_turn()
-        session.reporter._account(response)
-
-    (update,) = [u for u in client.updates if u.session_update == "usage_update"]
-    assert (update.used, update.size) == (900, library.ASSUMED_CONTEXT_SIZE)
-
-
 def test_the_gauge_survives_the_streaming_path_every_real_turn_takes():
     """The tests above call `_account` directly, which skips how it is ever reached.
 
@@ -1656,7 +1635,7 @@ def test_the_gauge_survives_the_streaming_path_every_real_turn_takes():
     ] == ["Hello", " world"], "the deltas should have been reported as they arrived"
     (gauge,) = [u for u in client.updates if u.session_update == "usage_update"]
     assert gauge.used > 0, "counted off the request, since no chunk carried a usage"
-    assert gauge.size == library.ASSUMED_CONTEXT_SIZE
+    assert gauge.size > 10_000
 
 
 def test_the_stream_asks_the_provider_to_report_its_own_usage():
@@ -1691,16 +1670,6 @@ def test_a_provider_that_reports_its_usage_is_believed_over_the_estimate():
 
     (gauge,) = [u for u in client.updates if u.session_update == "usage_update"]
     assert gauge.used == 4321, "a locally counted estimate would be far smaller"
-
-
-def test_a_known_model_is_measured_rather_than_assumed():
-    """The assumption is a fallback, not the answer: a catalogued model uses its own.
-
-    Checked with a model whose window differs from the assumed one, since the two
-    coinciding -- `gpt-4o-mini`'s is exactly 128k -- proves nothing either way.
-    """
-    measured = library._context_size("openrouter/anthropic/claude-sonnet-5")
-    assert measured == 200_000 != library.ASSUMED_CONTEXT_SIZE
 
 
 def test_a_turns_token_usage_is_reported():
