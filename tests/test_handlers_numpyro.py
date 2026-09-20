@@ -898,7 +898,7 @@ def test_reduce_enumerable_distribution(
         body(value()), {value: weight_monoid.weighted(support, weight)}
     )
     monoid_backend.check_rewrite(
-        lhs=lhs, rhs=rhs, rule=dist.ReduceEnumerableDistribution()
+        lhs=lhs, rhs=rhs, rule=dist.ReduceDistribution()
     )
 
 
