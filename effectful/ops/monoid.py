@@ -892,6 +892,36 @@ class ReducePartial(ObjectInterpretation):
         return fwd()
 
 
+@Operation.define
+def is_ready(expr: Expr) -> bool:
+    return not fvsof(expr)
+
+
+class PlusPartial(ObjectInterpretation):
+    @implements(Monoid.plus)
+    def plus(self, monoid, *args):
+        """Evaluate maximal concrete runs without reordering symbolic operands."""
+        n_concrete = sum(is_ready(arg) for arg in args)
+        if not (0 < n_concrete < len(args)):
+            return fwd()
+
+        progress = False
+        new_args = []
+        for ready, group in itertools.groupby(args, key=is_ready):
+            run = tuple(group)
+            if not ready or len(run) < 2:
+                new_args.extend(run)
+                continue
+
+            result = monoid.plus(*run)
+            if isinstance(result, Term) and _is_monoid_plus(result.op):
+                new_args.extend(run)
+            else:
+                new_args.append(result)
+                progress = True
+        return monoid.plus(*new_args) if progress else fwd()
+
+
 class ReduceFusion(ObjectInterpretation):
     """Implements the identity
     reduce(R, S1, reduce(R, S2, body)) = reduce(R, S1 ∪ S2, body)
@@ -1507,6 +1537,26 @@ class ProductPlus(ObjectInterpretation):
         if not _scalar_args(args):
             return fwd()
         return functools.reduce(operator.mul, args)
+
+
+class AndPlus(ObjectInterpretation):
+    """Scalar implementation of :data:`And`."""
+
+    @implements(And.plus)
+    def plus(self, *args):
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        return all(args)
+
+
+class OrPlus(ObjectInterpretation):
+    """Scalar implementation of :data:`Or`."""
+
+    @implements(Or.plus)
+    def plus(self, *args):
+        if any(isinstance(arg, Term) for arg in args):
+            return fwd()
+        return any(args)
 
 
 class LogSumExpPlus(ObjectInterpretation):
@@ -2128,6 +2178,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceWeightedStream(),
     ReduceMaskHoist(),
     EliminateSingletonStreams(),
+    PlusPartial(),
     PlusEmpty(),
     PlusSingle(),
     PlusAssoc(),
@@ -2147,6 +2198,16 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceDependentRangeMask(),
     ReduceDisequalityMask(),
     ContractLongestStream(),
+    SumPlus(),
+    MinPlus(),
+    MaxPlus(),
+    ProductPlus(),
+    ArgMinPlus(),
+    ArgMaxPlus(),
+    CartesianProductPlus(),
+    UnionPlus(),
+    AndPlus(),
+    OrPlus(),
 )
 """``NormalizeIntp`` applies pure-Term rewrites (associativity, distributivity,
 identity elimination, fusion, factorization, etc.) that drive a reduce
