@@ -5,14 +5,29 @@ import math
 import operator
 import typing
 from collections import UserDict, defaultdict
-from collections.abc import Callable, Generator, Iterable, Mapping, Sequence, Sized
+from collections.abc import (
+    Callable,
+    Generator,
+    Iterable,
+    Mapping,
+    Sequence,
+    Sized,
+)
 from dataclasses import dataclass
 from graphlib import TopologicalSorter
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import effectful.ops.syntax
 from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import coproduct, evaluate, fvsof, fwd, handler, typeof
+from effectful.ops.semantics import (
+    coproduct,
+    evaluate,
+    fvsof,
+    fwd,
+    handler,
+    sizeof,
+    typeof,
+)
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
@@ -84,7 +99,7 @@ def inner_stream(
     )
 
 
-def inner_streams_first(streams: dict[Operation, Expr]) -> Iterable[Operation]:
+def inner_streams_first(streams: Streams) -> Iterable[Operation]:
     """Iterable over streams where dependent streams precede their dependencies."""
     stream_vars = set(streams.keys())
 
@@ -198,12 +213,28 @@ LogSumExp = Monoid(name="LogSumExp", identity=float("-inf"))
 CartesianProduct: MonoidWithZero[Sequence[Mapping]] = MonoidWithZero(
     name="CartesianProduct", identity=[{}], zero=[]
 )
-Union: Monoid[Sequence[Mapping]] = Monoid(name="Union", identity=[])
+Union: Monoid[Iterable] = Monoid(name="Union", identity=[])
+Intersection: MonoidWithZero[Iterable] = MonoidWithZero(
+    name="Intersection",
+    identity=Operation.define(Iterable, name="universal")(),
+    zero=[],
+)
 And = MonoidWithZero(name="And", identity=True, zero=False)
 Or = Monoid(name="Or", identity=False)
 
 
-def _conjuncts(mask) -> Sequence[Term]:
+@Operation.define
+def as_iterable(value: Iterable) -> Iterable:
+    raise NotHandled
+
+
+def _unwrap_as_iterable[T](arg: Iterable[T]) -> Iterable[T]:
+    if isinstance(arg, Term) and arg.op is as_iterable:
+        return arg.args[0]  # type: ignore
+    return arg
+
+
+def _conjuncts(mask) -> Sequence[Expr]:
     """Return the conjuncts of an ``And`` mask as a flat tuple."""
     match mask:
         case Term(And.plus, elems, {}):
@@ -227,7 +258,7 @@ class _ExtensiblePredicate[T]:
         return t in self.elems
 
 
-is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or})
+is_commutative = _ExtensiblePredicate({Max, Min, Sum, Product, And, Or, Union})
 is_idempotent = _ExtensiblePredicate({Max, Min, And, Or})
 
 
@@ -273,6 +304,7 @@ distributes_over: _ExtensibleBinaryRelation[Monoid, Monoid] = _ExtensibleBinaryR
     (Product, Sum),
     (CartesianProduct, Union),
     (And, Or),
+    (Intersection, Union),
 )
 
 
@@ -341,12 +373,21 @@ class MaskFusion(ObjectInterpretation):
 is_equality = _ExtensiblePredicate({_NumberTerm.__eq__})
 
 
-def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
+def solve_group_equality(
+    equality: Term[bool],
+    index: int,
+    *,
+    side: typing.Literal["left", "right"] | None = None,
+) -> Term[bool]:
     """Isolate one argument of a group ``plus`` in an equality.
 
     Given ``G.plus(a0, ..., an) == b``, isolate the argument at ``index``.
-    Negative indices follow normal Python indexing. The group expression may
-    occur on either side of the equality.
+    Negative indices follow normal Python indexing. ``side`` selects which
+    side to isolate when both sides are group expressions; when omitted, the
+    leftmost side that is a group expression is selected.
+
+    The result preserves operand order and is therefore valid for
+    noncommutative groups.
     """
     if not (
         isinstance(equality, Term)
@@ -357,6 +398,8 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
         raise TypeError("expected an equality Term")
     if not isinstance(index, int):
         raise TypeError("argument index must be an integer")
+    if side not in (None, "left", "right"):
+        raise ValueError("side must be 'left' or 'right'")
 
     left, right = equality.args
 
@@ -366,13 +409,23 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
         monoid = value.op.__self__
         return monoid if isinstance(monoid, Group) else None
 
-    monoid = group_plus(left)
-    if monoid is not None:
-        plus_term, other = left, right
-    elif (monoid := group_plus(right)) is not None:
-        plus_term, other = right, left
+    left_group = group_plus(left)
+    right_group = group_plus(right)
+    if (
+        left_group is not None
+        and right_group is not None
+        and left_group is not right_group
+    ):
+        raise TypeError("equality sides must use the same Group.plus")
+
+    if side == "left" or (side is None and left_group is not None):
+        monoid, plus_term, other = left_group, left, right
+    elif side == "right" or (side is None and right_group is not None):
+        monoid, plus_term, other = right_group, right, left
     else:
         raise TypeError("expected an equality containing a Group.plus Term")
+    if monoid is None:
+        raise TypeError(f"expected {side} side to be a Group.plus Term")
 
     assert isinstance(plus_term, Term)
     try:
@@ -390,95 +443,226 @@ def solve_group_equality(equality: Term[bool], index: int) -> Term[bool]:
     return equality.op(target, isolated)
 
 
-class ReduceEqualityMaskRange(ObjectInterpretation):
-    """M.reduce(M.mask(v, And.plus(i = x, *m)), {i: range(N)} ∪ S) ≡
-    M.mask(M.reduce(M.mask(v, *m), {i: [x]} ∪ S), And.plus(0 <= x, x < N))
+@dataclass(frozen=True)
+class _EqualitySolution:
+    stream_op: Operation
+    rhs: Expr
 
-    The equality constraint ``i = x`` on a range-stream reduce is discharged by
-    a gather (the stream becomes the singleton ``[x]``) guarded by a bounds
-    check.
 
-    When the reduce body is a ``plus`` of the same monoid, the rule distributes
-    the reduce over the plus -- but only when doing so exposes an eliminable
-    equality mask in some summand. This is a *targeted* split (it leaves
-    ``ReduceSplit`` conservative): summands whose reduced index appears in an
-    equality become gathers, while the rest stay as ordinary masked reduces.
+def _solve_stream_equality(
+    equality: Expr[bool], streams: Streams
+) -> tuple[_EqualitySolution, ...]:
+    """Return all group-law solutions for bare stream operands in an equality."""
+    if not (
+        isinstance(equality, Term)
+        and is_equality(equality.op)
+        and len(equality.args) == 2
+        and not equality.kwargs
+    ):
+        return ()
+
+    def stream_symbol(value):
+        if (
+            isinstance(value, Term)
+            and not value.args
+            and not value.kwargs
+            and value.op in streams
+        ):
+            return value.op
+        return None
+
+    left, right = equality.args
+    solutions: list[_EqualitySolution] = []
+
+    # Direct equalities do not need a group. Preserve the existing behavior of
+    # leaving equalities between two bare stream symbols for a separate rule.
+    for stream_term, expr in ((left, right), (right, left)):
+        stream_op = stream_symbol(stream_term)
+        if (
+            stream_op is not None
+            and stream_symbol(expr) is None
+            and stream_op not in fvsof(expr)
+        ):
+            solutions.append(_EqualitySolution(stream_op, expr))
+
+    def group_of(value):
+        if not (isinstance(value, Term) and _is_monoid_plus(value.op)):
+            return None
+        monoid = value.op.__self__
+        return monoid if isinstance(monoid, Group) else None
+
+    left_group, right_group = group_of(left), group_of(right)
+    if (
+        left_group is not None
+        and right_group is not None
+        and left_group is not right_group
+    ):
+        return tuple(solutions)
+
+    sides: tuple[tuple[typing.Literal["left", "right"], Expr], ...] = (
+        ("left", left),
+        ("right", right),
+    )
+    for side, value in sides:
+        if group_of(value) is None:
+            continue
+        assert isinstance(value, Term)
+        for index, operand in enumerate(value.args):
+            stream_op = stream_symbol(operand)
+            if stream_op is None:
+                continue
+            solved = solve_group_equality(equality, index, side=side)
+            rhs = solved.args[1]
+            if stream_op not in fvsof(rhs):
+                solutions.append(_EqualitySolution(stream_op, rhs))
+
+    return tuple(solutions)
+
+
+class ReduceEqualityMask(ObjectInterpretation):
+    """Eliminate a batch of equalities by intersecting streams with singletons.
+
+    For either orientation of an equality between a reduced variable and an
+    expression that is not another reduced-variable symbol::
+
+        M.reduce(M.mask(v, And.plus(i == x, *m)), {i: I} | S)
+          == M.reduce(M.mask(v, And.plus(*m)),
+                      {i: Intersection.plus(I, [x])} | S)
+
+    The expression ``x`` may also be isolated from an equality between two
+    ``Group.plus`` expressions. Group inverses are applied in order, so this is
+    valid for noncommutative groups. ``x`` may depend on streams in ``S``.
+    Keeping those streams in the outer bundle makes the intersection pointwise,
+    so this rewrite does not require idempotence or source-variable liveness
+    checks. A separate :class:`ReduceIntersectionSingletonRange` rule lowers
+    intersections with simple ranges to singleton gathers guarded by bounds
+    masks.
     """
 
     @staticmethod
-    def _match_eq(cond, streams):
-        """If ``cond`` is ``stream_op == key`` (either order) where ``stream_op``
-        is a ``range(0, N)`` stream and ``key`` is stream-independent, return
-        ``(stream_op, key)``; otherwise ``None``."""
+    def _rhs_cost(expr) -> tuple[float, ...]:
+        return (len(fvsof(expr)), sizeof(expr))
 
-        def test(op, stream_op, mask_key):
-            return (
-                is_equality(op)
-                and stream_op in streams
-                and _is_simple_range(streams[stream_op])
-                and not (fvsof(mask_key) & set(streams))
-            )
+    @staticmethod
+    def _can_restrict(stream) -> bool:
+        """Whether an equality may add the first restriction to ``stream``.
 
-        match cond:
-            case Term(op, (Term(stream_op, (), {}), mask_key), {}) if test(
-                op, stream_op, mask_key
-            ):
-                return (stream_op, mask_key)
-            case Term(op, (mask_key, Term(stream_op, (), {})), {}) if test(
-                op, stream_op, mask_key
-            ):
-                return (stream_op, mask_key)
-            case _:
-                return None
+        A stream already represented by an intersection, or by the singleton
+        produced when lowering one, has already had a substitution variable
+        selected. Leaving further equalities in the mask allows singleton
+        substitution to turn them into residual conditions instead of building
+        nested intersections.
+        """
+        stream = _unwrap_as_iterable(stream)
+        if isinstance(stream, Term) and stream.op is Intersection.plus:
+            return False
+        return not (isinstance(stream, Sequence) and len(stream) == 1)
 
-    def _eliminate(self, monoid, value, mask, streams):
-        """Discharge one eliminable equality constraint via a gather, or return
-        ``None`` if no constraint is eliminable."""
+    @classmethod
+    def _eliminate(cls, monoid, value, mask, streams):
         conds = _conjuncts(mask)
-        for i, cond in enumerate(conds):
-            matched = self._match_eq(cond, streams)
-            if matched is None:
-                continue
-            stream_op, mask_key = matched
-            stream = streams[stream_op]
-            return monoid.reduce(
-                monoid.mask(
-                    monoid.mask(
-                        value,
-                        And.plus(stream.start <= mask_key, mask_key < stream.stop),
-                    ),
-                    And.plus(*(c for (j, c) in enumerate(conds) if i != j)),
-                ),
-                {stream_op: (mask_key,)}
-                | {k: v for (k, v) in streams.items() if k != stream_op},
-            )
-        return None
+        matched_conds = [
+            (i, solution.stream_op, solution.rhs)
+            for i, cond in enumerate(conds)
+            for solution in _solve_stream_equality(cond, streams)
+            if cls._can_restrict(streams[solution.stream_op])
+        ]
+        ranked_conds = sorted(matched_conds, key=lambda c: (*cls._rhs_cost(c[2]), c[0]))
 
-    def _summand_eliminable(self, monoid, summand, streams):
-        return (
-            isinstance(summand, Term)
-            and _is_monoid_mask(summand.op)
-            and summand.op.__self__ == monoid
-            and self._eliminate(monoid, summand.args[0], summand.args[1], streams)
-            is not None
+        # Build a compatible batch greedily. A conjunct and lhs may each occur
+        # only once in the batch, and none of the batch's lhs variables may
+        # occur in any of its rhs expressions. Other equalities remain in the
+        # mask; once a selected stream becomes an intersection or singleton,
+        # they are retained until substitution turns them into residual masks.
+        selected = []
+        selected_indices = set()
+        selected_lhs = set()
+        selected_rhs_fvs = set()
+        for candidate in ranked_conds:
+            index, stream_op, expr = candidate
+            expr_fvs = fvsof(expr)
+            if (
+                index in selected_indices
+                or stream_op in selected_lhs
+                or stream_op in selected_rhs_fvs
+                or selected_lhs & expr_fvs
+            ):
+                continue
+            selected.append(candidate)
+            selected_indices.add(index)
+            selected_lhs.add(stream_op)
+            selected_rhs_fvs.update(expr_fvs)
+
+        if not selected:
+            return None
+
+        new_mask = monoid.mask(
+            value,
+            And.plus(*(c for i, c in enumerate(conds) if i not in selected_indices)),
         )
+        replacements = {
+            stream_op: Intersection.plus(streams[stream_op], [expr])
+            for _, stream_op, expr in selected
+        }
+        new_streams = {
+            stream_op: replacements.get(stream_op, stream)
+            for stream_op, stream in streams.items()
+        }
+        return monoid.reduce(new_mask, new_streams)
 
     @implements(Monoid.reduce)
     def _(self, monoid, body, streams):
-        if not isinstance(body, Term):
+        if not (
+            isinstance(body, Term)
+            and _is_monoid_mask(body.op)
+            and body.op.__self__ == monoid
+        ):
             return fwd()
 
-        # single mask body: discharge an equality constraint directly
-        if _is_monoid_mask(body.op) and body.op.__self__ == monoid:
-            result = self._eliminate(monoid, body.args[0], body.args[1], streams)
-            return result if result is not None else fwd()
+        result = self._eliminate(monoid, body.args[0], body.args[1], streams)
+        return result if result is not None else fwd()
 
-        # plus body: distribute the reduce only when it exposes an eliminable
-        # equality mask in some summand
-        if _is_monoid_plus(body.op) and body.op.__self__ == monoid:
-            if any(self._summand_eliminable(monoid, s, streams) for s in body.args):
-                return monoid.plus(*(monoid.reduce(s, streams) for s in body.args))
 
+class ReduceIntersectionSingletonRange(ObjectInterpretation):
+    """Lower the intersection of a simple range and a singleton stream.
+
+    M.reduce(v, {i: Intersection.plus(range(N), [x])} | S)
+      == M.reduce(M.mask(v, 0 <= x < N), {i: (x,)} | S)
+
+    The singleton expression may depend on streams in ``S``; the resulting
+    dependent singleton is eliminated later by :class:`EliminateSingletonStreams`.
+    """
+
+    @staticmethod
+    def _match(stream):
+        match stream:
+            case Term(op, (lhs, rhs), {}) if op is Intersection.plus:
+                pass
+            case _:
+                return None
+
+        lhs, rhs = _unwrap_as_iterable(lhs), _unwrap_as_iterable(rhs)
+        if _is_simple_range(lhs) and isinstance(rhs, list) and len(rhs) == 1:
+            return lhs, rhs[0]
+        if _is_simple_range(rhs) and isinstance(lhs, list) and len(lhs) == 1:
+            return rhs, lhs[0]
+        return None
+
+    @implements(Monoid.reduce)
+    def reduce(self, monoid, body, streams):
+        for stream_op, stream in streams.items():
+            matched = self._match(stream)
+            if matched is None:
+                continue
+            range_stream, value = matched
+            return monoid.reduce(
+                monoid.mask(
+                    body,
+                    And.plus(range_stream.start <= value, value < range_stream.stop),
+                ),
+                {stream_op: (value,)}
+                | {k: v for k, v in streams.items() if k is not stream_op},
+            )
         return fwd()
 
 
@@ -733,7 +917,7 @@ class ReduceSplit(ObjectInterpretation):
 
 @Operation.define
 def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
-    """Used by `ReduceFactorization` to choose a contraction when there is
+    """Used by `Factor` to choose a contraction when there is
     ambiguity. Takes the factors and streams that are eligible for contraction
     (innermost and non-universal).
 
@@ -756,8 +940,24 @@ def choose_contraction(factors: Sequence[Any], streams: Streams) -> Operation:
 
 
 class Factor(ObjectInterpretation):
+    def mask_plus(
+        self,
+        outer_monoid: Monoid,
+        inner_monoid: Monoid,
+        *factor_conds: tuple[Literal["factor", "mask"], Expr],
+    ) -> Expr:
+        """Turn a flat list of factors and masks into a masked plus."""
+        factors: list[Expr] = []
+        conds: list[Expr] = []
+        for k, f in factor_conds:
+            (factors if k == "factor" else conds).append(f)
+
+        term = inner_monoid.plus(*factors)
+        term = term if not conds else outer_monoid.mask(term, And.plus(*conds))
+        return term
+
     @implements(Monoid.reduce)
-    def reduce(self, monoid, body, streams):
+    def reduce(self, monoid: Monoid, body, streams: Streams):
         """reduce(⊗(F_v ∪ F_rest), {v} ∪ S) = reduce(⊗F_rest ⊗ reduce(⊗F_v, {v}), S)
 
         where F_v = factors mentioning v, F_rest = the others. Fires only when
@@ -781,10 +981,11 @@ class Factor(ObjectInterpretation):
             return fwd()
 
         # Optionally peel an outer mask of the reduce monoid.
-        cond = None
         plus_term = body
+        conds: Sequence[Term] = ()
         if _is_monoid_mask(body.op) and body.op.__self__ is monoid:
             plus_term, cond = body.args
+            conds = _conjuncts(cond)
 
         if not (
             isinstance(plus_term, Term)
@@ -795,8 +996,9 @@ class Factor(ObjectInterpretation):
 
         inner = plus_term.op.__self__
         stream_keys = set(streams)
-        cond_fvs = fvsof(cond) if cond is not None else set()
-        factors = [(a, fvsof(a) | cond_fvs) for a in plus_term.args]
+        factors: list[tuple[Literal["factor", "mask"], Expr]] = [
+            ("factor", a) for a in plus_term.args
+        ] + [("mask", c) for c in conds]
 
         # candidates: innermost-eligible (no remaining stream depends on v),
         # non-universal (some factor doesn't mention v)
@@ -804,9 +1006,7 @@ class Factor(ObjectInterpretation):
         for k, v in streams.items():
             if any(k in fvsof(vv) for kk, vv in streams.items() if k is not kk):
                 continue
-            if len({i for i, (_, fvs) in enumerate(factors) if k in fvs}) == len(
-                factors
-            ):
+            if all(k in fvsof(factor) for (_, factor) in factors):
                 continue  # v is universal: leave it in the outer core
             eligible[k] = v
 
@@ -818,22 +1018,20 @@ class Factor(ObjectInterpretation):
             inner_stream = choose_contraction(plus_term.args, eligible)
 
         inner_factor_ids = frozenset(
-            i for i, (_, fvs) in enumerate(factors) if inner_stream in fvs
+            i for i, (_, factor) in enumerate(factors) if inner_stream in fvsof(factor)
         )
 
-        inner_factors = [factors[i][0] for i in sorted(inner_factor_ids)]
+        inner_factors = [factors[i] for i in sorted(inner_factor_ids)]
         inner_stream_keys = {inner_stream}
         inner_deps = set().union(
-            *(factors[i][1] for i in inner_factor_ids),
+            *(fvsof(factors[i][1]) for i in inner_factor_ids),
             fvsof(streams[inner_stream]) & stream_keys,
         )
 
-        outer_factors = [
-            a for i, (a, _) in enumerate(factors) if i not in inner_factor_ids
-        ]
+        outer_factors = [a for i, a in enumerate(factors) if i not in inner_factor_ids]
         outer_stream_keys = stream_keys - inner_stream_keys
         outer_factor_deps = set().union(
-            *(vars for i, (_, vars) in enumerate(factors) if i not in inner_factor_ids)
+            *(fvsof(f) for i, (_, f) in enumerate(factors) if i not in inner_factor_ids)
         )
 
         # find all streams that are used in the inner factors/streams and are
@@ -854,12 +1052,12 @@ class Factor(ObjectInterpretation):
                 outer_stream_keys -= {s}
 
         inner_streams = {k: v for (k, v) in streams.items() if k in inner_stream_keys}
-        inner_red = monoid.reduce(inner.plus(*inner_factors), inner_streams)
+        inner_red = monoid.reduce(
+            self.mask_plus(monoid, inner, *inner_factors), inner_streams
+        )
 
         rest_streams = {k: s for k, s in streams.items() if k in outer_stream_keys}
-        new_body = inner.plus(*outer_factors, inner_red)
-        if cond is not None:
-            new_body = monoid.mask(new_body, cond)
+        new_body = self.mask_plus(monoid, inner, *outer_factors, ("factor", inner_red))
         return monoid.reduce(new_body, rest_streams) if rest_streams else new_body
 
 
@@ -1271,6 +1469,16 @@ class SumPlus(ObjectInterpretation):
         return -value
 
 
+class SumInverse(ObjectInterpretation):
+    """Scalar implementation of :meth:`Sum.inverse`."""
+
+    @implements(Sum.inverse)
+    def inverse(self, value):
+        if isinstance(value, Term) or not isinstance(value, int | float):
+            return fwd()
+        return -value
+
+
 class MinPlus(ObjectInterpretation):
     """Scalar implementation of :data:`Min`."""
 
@@ -1360,11 +1568,8 @@ class CartesianProductPlus(ObjectInterpretation):
 
     @implements(CartesianProduct.plus)
     def plus(self, *args):
-        if not args:
-            return fwd()
-        if any(isinstance(x, Term) for x in args):
-            return fwd()
-        if not all(isinstance(x, Iterable) for x in args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if not args or any(isinstance(x, Term) for x in args):
             return fwd()
         return [_disjoint_merge(*vals) for vals in itertools.product(*args)]
 
@@ -1372,13 +1577,46 @@ class CartesianProductPlus(ObjectInterpretation):
 class UnionPlus(ObjectInterpretation):
     @implements(Union.plus)
     def plus(self, *args):
-        if not args:
-            return fwd()
-        if any(isinstance(x, Term) for x in args):
-            return fwd()
-        if not all(isinstance(x, Iterable) for x in args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if not args or any(isinstance(x, Term) for x in args):
             return fwd()
         return list(itertools.chain(*args))
+
+
+class IntersectionPlus(ObjectInterpretation):
+    """Pure-Python implementation of :data:`Intersection`.
+
+    The result preserves the order and multiplicity of the first iterable and
+    retains each of its elements that occurs in every subsequent iterable.
+    """
+
+    @implements(Intersection.plus)
+    def plus(self, *args):
+        args = tuple(_unwrap_as_iterable(arg) for arg in args)
+        if (
+            not args
+            or any(isinstance(arg, Term) for arg in args)
+            or any(fvsof(arg) for arg in args)
+        ):
+            return fwd()
+
+        first, *rest = args
+        rest = [tuple(values) for values in rest]
+        return [value for value in first if all(value in values for values in rest)]
+
+
+class PlusCastIterable(ObjectInterpretation):
+    """Cast heterogeneous iterable arguments to a common iterable type."""
+
+    @implements(Monoid.plus)
+    def _plus(self, monoid, *args):
+        if monoid not in (Intersection, Union):
+            return fwd()
+
+        if not args or all(isinstance(a, Term) and a.op == as_iterable for a in args):
+            return fwd()
+
+        return monoid.plus(*(as_iterable(arg) for arg in args))
 
 
 is_scalar = _ExtensiblePredicate({Min, Max, Sum, Product, And, Or})
@@ -1842,6 +2080,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ReducePartial(),
     DeltaConcrete(),
     SumPlus(),
+    SumInverse(),
     MinPlus(),
     MaxPlus(),
     ProductPlus(),
@@ -1849,7 +2088,7 @@ EvaluateIntp = _ExtensibleInterpretation().extend(
     ArgMaxPlus(),
     CartesianProductPlus(),
     UnionPlus(),
-    ReduceEqualityMaskRange(),
+    IntersectionPlus(),
     ReduceWhereToMasks(),
 )
 
@@ -1882,6 +2121,8 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     ReduceFusion(),
     ReduceUnion(),
     ReduceSplit(),
+    ReduceEqualityMask(),
+    ReduceIntersectionSingletonRange(),
     Factor(),
     ReduceDistributeCartesianProduct(),
     ReduceWeightedStream(),
@@ -1897,6 +2138,7 @@ NormalizeIntp = _ExtensibleInterpretation().extend(
     PlusConsecutiveDups(),
     PlusOrder(),
     PlusCastFloat(),
+    PlusCastIterable(),
     MaskFusion(),
     MaskBool(),
     WhereHoist(),

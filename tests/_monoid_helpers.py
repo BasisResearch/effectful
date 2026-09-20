@@ -168,11 +168,11 @@ class Backend(ABC):
     def eq(self, a: Any, b: Any) -> bool:
         raise NotImplementedError
 
+    @staticmethod
     @abstractmethod
     def strategy(
-        self,
         arg_types: tuple[type, ...] = (),
-        ret: Literal["scalar", "stream"] = "scalar",
+        ret: Literal["scalar", "stream"] | type = "scalar",
     ) -> SearchStrategy:
         raise NotImplementedError
 
@@ -180,7 +180,7 @@ class Backend(ABC):
         self,
         name: str,
         arg_types: tuple[type, ...] = (),
-        ret: Literal["scalar", "stream"] = "scalar",
+        ret: Literal["scalar", "stream"] | type = "scalar",
     ) -> Operation:
         """Build a fresh, unhandled Operation whose parameter and return
         annotations are derived from this backend.
@@ -190,7 +190,7 @@ class Backend(ABC):
         each of type ``scalar_typ``.
         """
         scalar = self.scalar_typ
-        out = self.stream_typ if ret == "stream" else scalar
+        out = self.stream_typ if ret == "stream" else scalar if ret == "scalar" else ret
         params = ", ".join(f"_a{i}" for i in range(len(arg_types)))
         ns: dict[str, Any] = {"NotHandled": NotHandled}
         exec(f"def _fn({params}):\n    raise NotHandled\n", ns)
@@ -328,28 +328,28 @@ class IntBackend(Backend):
         lambda x: [0, x, x + 1],
     ]
 
+    @staticmethod
     def strategy(
-        self,
         arg_types: tuple[type, ...] = (),
-        ret: Literal["scalar", "stream"] = "scalar",
+        ret: Literal["scalar", "stream"] | type = "scalar",
     ) -> SearchStrategy:
         match arg_types, ret:
-            case (), "scalar":
+            case (), ("scalar" | builtins.int):
                 return st.integers(min_value=-100, max_value=100).map(deffn)
             case (), "stream":
                 scalars = st.integers(min_value=-100, max_value=100)
                 return st.lists(scalars, max_size=2).map(deffn)
             case (builtins.int,), "scalar":
-                return st.sampled_from(self._unary_num_fns)
+                return st.sampled_from(IntBackend._unary_num_fns)
             case (builtins.int, builtins.int), "scalar":
-                return st.sampled_from(self._binary_num_fns)
+                return st.sampled_from(IntBackend._binary_num_fns)
             case (builtins.int, builtins.int, builtins.int), "scalar":
                 return st.tuples(
-                    st.sampled_from(self._binary_num_fns),
-                    st.sampled_from(self._binary_num_fns),
+                    st.sampled_from(IntBackend._binary_num_fns),
+                    st.sampled_from(IntBackend._binary_num_fns),
                 ).map(lambda fg: lambda a, b, c: fg[0](a, fg[1](b, c)))
             case (builtins.int,), "stream":
-                return st.sampled_from(self._unary_list_fns)
+                return st.sampled_from(IntBackend._unary_list_fns)
         raise NotImplementedError(
             f"No int strategy for op with return {ret!r} and {arg_types} args"
         )
@@ -385,12 +385,14 @@ class JaxBackend(Backend):
         lambda a, b: a * b,
     ]
 
+    @staticmethod
     def strategy(
-        self,
         arg_types: tuple[type, ...] = (),
-        ret: Literal["scalar", "stream"] = "scalar",
+        ret: Literal["scalar", "stream"] | type = "scalar",
     ) -> st.SearchStrategy[Callable]:
         match arg_types, ret:
+            case (), builtins.int:
+                return IntBackend.strategy((), builtins.int)
             case (), "scalar":
                 return (
                     st.lists(
@@ -412,16 +414,16 @@ class JaxBackend(Backend):
                     .map(deffn)
                 )
             case (jax.Array,), "scalar":
-                return st.sampled_from(self._unary_jax_scalar_fns)
+                return st.sampled_from(JaxBackend._unary_jax_scalar_fns)
             case (jax.Array, jax.Array), "scalar":
-                return st.sampled_from(self._binary_jax_scalar_fns)
+                return st.sampled_from(JaxBackend._binary_jax_scalar_fns)
             case (jax.Array, jax.Array, jax.Array), "scalar":
                 return st.tuples(
-                    st.sampled_from(self._binary_jax_scalar_fns),
-                    st.sampled_from(self._binary_jax_scalar_fns),
+                    st.sampled_from(JaxBackend._binary_jax_scalar_fns),
+                    st.sampled_from(JaxBackend._binary_jax_scalar_fns),
                 ).map(lambda fg: lambda a, b, c: fg[0](a, fg[1](b, c)))
             case (jax.Array,), "stream":
-                return st.sampled_from(self._unary_jax_stream_fns)
+                return st.sampled_from(JaxBackend._unary_jax_stream_fns)
 
         raise NotImplementedError(
             f"No jax strategy for op with return {ret!r} and {arg_types} args"
