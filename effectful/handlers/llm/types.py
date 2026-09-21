@@ -334,7 +334,6 @@ class Skill[**P, T](Tool[P, T]):
         if isinstance(instance, Agent):
             assert isinstance(result, Skill) and not hasattr(result, "__history__")
             result.__history__ = instance.__history__  # type: ignore[attr-defined]
-            result.__self__ = instance  # type: ignore[attr-defined]
         return result
 
     @classmethod

@@ -50,10 +50,16 @@ def run(coro, timeout: float = TIMEOUT) -> Any:
 
 
 def _key(skill) -> str:
-    """``agent-id.skill-name`` for a bound skill, else its name."""
-    agent = getattr(skill, "__self__", None)
+    """``agent-id.skill-name`` for a skill bound to an agent, else its name.
+
+    Keyed on ``__history__`` rather than ``__self__``, as `library.py` does:
+    every instance-bound operation carries ``__self__``, but only one bound to
+    an agent has the history -- and an ``__agent_id__`` to name it by.
+    """
     name = skill.__name__
-    return f"{agent.__agent_id__}.{name}" if agent is not None else name
+    if not hasattr(skill, "__history__"):
+        return name
+    return f"{skill.__self__.__agent_id__}.{name}"
 
 
 class MockLLM(ObjectInterpretation):

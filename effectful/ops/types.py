@@ -543,6 +543,9 @@ class Operation[**Q, V]:
                         return default_result
 
                 instance_op = self.define(types.MethodType(_instance_op, instance))
+                # The operation this one is a binding of, and what it is bound to,
+                # named as on types.MethodType, which the other branches return.
+                instance_op.__func__, instance_op.__self__ = self, instance  # type: ignore[attr-defined]
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:

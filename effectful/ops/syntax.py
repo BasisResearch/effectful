@@ -488,6 +488,30 @@ def _deffn_type_rule(
 setattr(deffn, "__type_rule__", types.MethodType(_deffn_type_rule, deffn))
 
 
+def _reconstructs(replaced: Term, op: Operation, args, kwargs) -> bool:
+    """Whether ``replaced`` is the node being rebuilt: ``op`` over the very same operands.
+
+    Its class-operation form counts too. A bound operation builds ``op(instance, *args)``
+    and re-heads the result, so a node headed by the bound operation re-enters here
+    headed by ``op`` with the instance in front.
+    """
+    if replaced.op is not op:
+        if not (
+            args
+            and getattr(replaced.op, "__func__", None) is op
+            and getattr(replaced.op, "__self__", None) is args[0]
+        ):
+            return False
+        args = args[1:]
+
+    return (
+        len(replaced.args) == len(args)
+        and replaced.kwargs.keys() == kwargs.keys()
+        and all(x is y for x, y in zip(replaced.args, args))
+        and all(v is replaced.kwargs[k] for k, v in kwargs.items())
+    )
+
+
 class _Renaming(dict):
     """The interpretation :func:`defdata` installs to rename binders.
 
@@ -585,14 +609,7 @@ def defdata[T](
     from effectful.ops.semantics import _binds_vars, apply, evaluate
 
     replaced = RECONSTRUCTING.get()
-    if (
-        isinstance(replaced, Term)
-        and replaced.op is op
-        and len(replaced.args) == len(args)
-        and replaced.kwargs.keys() == kwargs.keys()
-        and all(x is y for x, y in zip(replaced.args, args))
-        and all(v is replaced.kwargs[k] for k, v in kwargs.items())
-    ):
+    if isinstance(replaced, Term) and _reconstructs(replaced, op, args, kwargs):
         return replaced
 
     if not _binds_vars(op):

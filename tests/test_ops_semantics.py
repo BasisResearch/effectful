@@ -1815,3 +1815,111 @@ def test_deep_sharing_stays_linear():
 
     found = [node for node in _reachable(term) if node.op is _mul]
     assert len(found) == 1 and found[0] is closed
+
+
+# A binding operation defined as a method reaches terms through
+# `Operation.__get__`, which binds it to the instance. Such a node is built in two
+# steps -- once under the class operation, then re-headed under the bound one -- and
+# the sharing above has to survive both.
+
+
+@dataclasses.dataclass(frozen=True)
+class _Folder:
+    """A binding operation defined as a method, in the shape of a fold."""
+
+    name: str
+
+    @Operation.define
+    def reduce[A, B, U](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Mapping[Operation[[], int], list[int]], Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        raise NotHandled
+
+
+_TOTAL = _Folder("total")
+
+
+def _reduction(z: Operation[[], int], body=None):
+    return _TOTAL.reduce(_add(z(), 1) if body is None else body, {z: [0, 1, 2]})
+
+
+def test_a_bound_operation_binds_the_variables_of_its_streams():
+    z = defop(int, name="z")
+    node = _reduction(z)
+
+    assert node.op is _TOTAL.reduce
+    assert z not in fvsof(node)
+    assert next(iter(node.args[1])) is not z
+
+
+def test_evaluate_of_an_unchanged_bound_operation_node_is_the_node():
+    from effectful.internals.runtime import cache
+
+    z = defop(int, name="z")
+    node = _reduction(z)
+
+    with cache():
+        assert [evaluate(node) is node for _ in range(3)] == [True, True, True]
+
+
+def test_substitution_keeps_a_bound_operation_node_it_does_not_mention():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z)
+
+    with cache():
+        row = deffn((node, s()), s)(7)
+
+    assert row[0] is node and row[1] == 7
+
+
+def test_a_bound_operation_node_mentioned_twice_stays_one_object():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z)
+
+    with cache():
+        row = deffn((node, node, s()), s)(7)
+
+    assert row[0] is node and row[1] is node
+
+
+def test_a_bound_operation_node_survives_a_surrounding_binder():
+    from effectful.internals.runtime import cache
+
+    z, w = defop(int, name="z"), defop(int, name="w")
+    node = _reduction(z)
+    f = deffn((node, w()), w)
+
+    with cache():
+        assert evaluate(f) is f
+        assert f(9)[0] is node
+
+
+def test_substitution_reaching_inside_a_bound_operation_node_rewrites_it():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z, body=_add(z(), s()))
+
+    with cache():
+        result = deffn(node, s)(5)
+
+    assert result is not node
+    assert result.op is _TOTAL.reduce
+    assert s not in fvsof(result)
+
+
+def test_handlers_on_the_class_and_the_bound_operation_both_fire():
+    z = defop(int, name="z")
+    body, streams = _add(z(), 1), {z: [0, 1, 2]}
+
+    with handler({_Folder.reduce: lambda *a, **k: "class"}):
+        assert _TOTAL.reduce(body, streams) == "class"
+
+    with handler({_TOTAL.reduce: lambda *a, **k: "bound"}):
+        assert _TOTAL.reduce(body, streams) == "bound"
