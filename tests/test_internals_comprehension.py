@@ -14,6 +14,7 @@ import itertools
 import keyword
 import math
 import operator
+import sys
 import typing
 from collections.abc import Iterable, Mapping
 
@@ -269,6 +270,31 @@ DESUGARINGS = [
             M.mask(f(x()), And.plus(p(x()), p(x() + 1))), {x: (1, 2)}
         ),
         id="filter-clauses-conjoin",
+    ),
+    pytest.param(
+        # A chain long enough that the first filter's forward jump over the
+        # rest of it needs a two-byte argument on 3.13 and later.
+        lambda: (
+            f(x)
+            for x in (1, 2)
+            if p(x + 0)
+            if p(x + 1)
+            if p(x + 2)
+            if p(x + 3)
+            if p(x + 4)
+            if p(x + 5)
+            if p(x + 6)
+            if p(x + 7)
+            if p(x + 8)
+            if p(x + 9)
+            if p(x + 10)
+            if p(x + 11)
+        ),
+        lambda M, x: M.reduce(
+            M.mask(f(x()), functools.reduce(And.plus, (p(x() + k) for k in range(12)))),
+            {x: (1, 2)},
+        ),
+        id="a-dozen-filter-clauses-conjoin",
     ),
     pytest.param(
         lambda: (f(x) for x in (1, 2) if p(x) and p(x + 1)),
@@ -795,6 +821,14 @@ CONDITIONALS = [
         ),
         id="nested-in-the-iterable",
     ),
+    pytest.param(
+        lambda: (
+            (y * 2 if y % 2 else y)
+            for x in range(4)
+            for y in (range(x) if x % 2 else range(1))
+        ),
+        id="in-the-body-and-in-a-later-stream",
+    ),
 ]
 
 UNPACKING = [
@@ -1009,8 +1043,6 @@ WALRUS = [
     ),
 ]
 
-# These must stay on one line: Python 3.12's `dis` mis-reports jumps for
-# multiline comprehensions, which the disassembler suite covers directly.
 STRESS = [
     pytest.param(
         lambda: (
@@ -1023,7 +1055,7 @@ STRESS = [
             if y < x
         ),
         id="many-filters",
-    ),  # fmt: skip
+    ),
     pytest.param(
         lambda: (
             len([y if y > 1 else -y for y in range(3)])
@@ -1031,7 +1063,7 @@ STRESS = [
             if (x if x % 2 == 1 else x % 2 == 0)
         ),
         id="nested-ternary",
-    ),  # fmt: skip
+    ),
     pytest.param(
         lambda: (
             sum(y * z for z in range(y))
@@ -1040,7 +1072,7 @@ STRESS = [
             if y % 2 == 0 or y == 1
         ),
         id="reduction-in-a-nest",
-    ),  # fmt: skip
+    ),
 ]
 
 PROGRAMS = [
@@ -1100,6 +1132,11 @@ PROGRAMS = [
     ),
 ]
 
+# A conditional in a filter, written over several lines, collapses to a `NOP`.
+# Written as source because the layout is what produces it and a formatter would
+# take it away.
+A_NOP_IN_THE_BYTECODE = "(\n x\n for x in range(3)\n if (x if x else 1)\n)"
+
 MULTILINE = [
     pytest.param(
         lambda: (x * y for x in range(4) if x % 2 == 0 for y in range(x) if y > 0),
@@ -1108,6 +1145,10 @@ MULTILINE = [
     pytest.param(
         lambda: (x if x > 2 else -x for x in range(6)),
         id="split-ternary",
+    ),
+    pytest.param(
+        lambda: eval(A_NOP_IN_THE_BYTECODE),
+        id="a-conditional-filter-over-lines",
     ),
 ]
 
@@ -1342,6 +1383,32 @@ CALLS_AND_DISPLAYS = [
         lambda: ({"a": x, "b": x * 2}["b"] for x in range(4)), id="an-indexed-dict"
     ),
     pytest.param(lambda: (len([x, x + 1, x + 2]) * x for x in range(4)), id="a-list"),
+    pytest.param(
+        lambda: (round(x) for x in range(5)),
+        id="a-rounded-target",
+        marks=pytest.mark.xfail(
+            sys.version_info < (3, 14),
+            raises=TypeError,
+            strict=True,
+            reason="`__round__` passes its default `ndigits` of None straight on, "
+            "which `int.__round__` only accepts from 3.14",
+        ),
+    ),
+    pytest.param(
+        lambda: (sum([*[1, 2], x]) for x in range(3)), id="a-starred-item-in-a-display"
+    ),
+    pytest.param(lambda: (sum((*[1, 2], x)) for x in range(3)), id="a-starred-tuple"),
+    pytest.param(
+        lambda: (sum([*[x, x + 1], 5]) for x in range(3)), id="a-target-spread"
+    ),
+    pytest.param(
+        lambda: (len({"c": 2, **{"a": 1}, "b": x}) for x in range(3)),
+        id="a-spread-between-keys",
+    ),
+    pytest.param(
+        lambda: (len({**{"a": 1}, "b": x}) for x in range(3)),
+        id="a-double-starred-item-in-a-display",
+    ),
     pytest.param(lambda: (x for x in range(6) if len({1, 2, 3}) > 2), id="a-set"),
     pytest.param(
         lambda: (sum([1, 2, 3, 4][1:3]) * x for x in range(3)), id="a-sliced-list"
@@ -1506,47 +1573,9 @@ LAMBDA_POSITIONS = [
 # the same way written out as a reduction, so the gap is in the term classes.
 BEYOND_A_TERM = [
     pytest.param(
-        # The disassembler mis-reads a conditional jump whose target needs an
-        # `EXTENDED_ARG`, which a chain of about a dozen filters reaches.
-        lambda: (
-            f(a)
-            for a in xs()
-            if p(a + 0)
-            if p(a + 1)
-            if p(a + 2)
-            if p(a + 3)
-            if p(a + 4)
-            if p(a + 5)
-            if p(a + 6)
-            if p(a + 7)
-            if p(a + 8)
-            if p(a + 9)
-            if p(a + 10)
-            if p(a + 11)
-        ),
-        id="a-dozen-filter-clauses",
-        marks=pytest.mark.xfail(raises=AssertionError, strict=True),
-    ),
-    pytest.param(
         lambda: (divmod(x, 3)[0] for x in range(9)),
         id="divmod-of-an-element",
         marks=pytest.mark.xfail(raises=TypeError, strict=True),
-    ),
-    pytest.param(
-        lambda: (round(x) for x in range(5)),
-        id="rounding-an-element",
-        marks=pytest.mark.xfail(raises=TypeError, strict=True),
-    ),
-    pytest.param(
-        # The disassembler cannot merge the branches of a conditional in the
-        # body with those of one in a later iterable.
-        lambda: (
-            (y * 2 if y % 2 else y)
-            for x in range(4)
-            for y in (range(x) if x % 2 else range(1))
-        ),
-        id="conditionals-in-the-body-and-in-a-later-stream",
-        marks=pytest.mark.xfail(raises=ValueError, strict=True),
     ),
     pytest.param(
         lambda: (pow(x, 2, 7) for x in range(6)),
@@ -2344,16 +2373,10 @@ REJECTED = [
         id="an-attribute-of-a-target",
     ),
     pytest.param(
-        lambda: (len([*range(x), 1]) for x in range(3)),
-        AssertionError,
-        None,
-        id="a-starred-item-in-a-display",
-    ),
-    pytest.param(
-        lambda: (len({**{"a": 1}, "b": x}) for x in range(3)),
-        AssertionError,
-        None,
-        id="a-double-starred-item-in-a-display",
+        lambda: (sum(range(x)) for x in range(3)),
+        TypeError,
+        "__index__",
+        id="a-range-of-a-target",
     ),
     pytest.param(
         lambda: (y for x in range(3) for y in {x, x + 1}),
@@ -2438,6 +2461,12 @@ SILENT_HAZARDS = [
         0,
         2,
         id="membership-in-a-string-is-not-a-substring",
+    ),
+    pytest.param(
+        lambda: (len({*[1, 2], x}) for x in range(3)),
+        9,
+        7,
+        id="a-set-never-holds-an-element-twice",
     ),
     pytest.param(lambda: (len(str(x)) for x in range(12)), 36, 14, id="text"),
     pytest.param(lambda: (len(repr(x)) for x in range(12)), 552, 14, id="repr"),
