@@ -692,6 +692,22 @@ def test_eliminate_singleton_into_sibling(monoid, backend: Backend):
 
 
 @pytest.mark.parametrize("monoid", ALL_MONOIDS)
+def test_eliminate_singleton_keeps_sharing(monoid, backend: Backend):
+    """A subterm shared by the body and a sibling stream is rebuilt once."""
+    x, y, a = backend.define_vars("x", "y", "a", ret="scalar")
+    f = backend.define_vars("f", arg_types=(backend.scalar_typ,), ret="stream")
+    h = backend.define_vars("h", arg_types=(backend.scalar_typ,), ret="scalar")
+
+    shared = h(x())
+    with handler(EliminateSingletonStreams()):
+        result = monoid.reduce(shared, {x: (a(),), y: f(shared)})
+
+    body, streams = result.args
+    (stream_body,) = (value.args[0] for value in streams.values())
+    assert body is stream_body
+
+
+@pytest.mark.parametrize("monoid", ALL_MONOIDS)
 def test_eliminate_singleton_only_stream(monoid, backend: Backend):
     """When the length-1 stream is the only stream, reducing over the now-empty
     nest yields the substituted body itself (not the monoid identity)."""
