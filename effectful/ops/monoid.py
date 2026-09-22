@@ -817,27 +817,35 @@ class PlusDistr(ObjectInterpretation):
 
 
 class PlusOrder(ObjectInterpretation):
-    """Normalize plus ordering for commutative monoids.
+    """Group equal arguments in order of first occurrence.
 
     x ⊕ y ⊕ x = x ⊕ x ⊕ y
 
+    First-occurrence order is invariant under alpha-renaming. Sorting by
+    syntactic hashes or object identities is not: freshening a reduction's
+    binders can reverse its factors and prevent normalization from stabilizing.
     """
-
-    @staticmethod
-    def _term_sort_key(t: Term) -> tuple[int, int]:
-        return (syntactic_hash(t), id(t))
 
     @implements(Monoid.plus)
     def plus(self, monoid, *args):
         if not is_commutative(monoid):
             return fwd()
 
-        sorted_args = tuple(
-            sorted(range(len(args)), key=lambda i: self._term_sort_key(args[i]))
-        )
-        if sorted_args == tuple(range(len(args))):
+        groups: list[list] = []
+        buckets: dict[int, list[list]] = {}
+        for arg in args:
+            bucket = buckets.setdefault(syntactic_hash(arg), [])
+            group = next((g for g in bucket if syntactic_eq(g[0], arg)), None)
+            if group is None:
+                group = []
+                groups.append(group)
+                bucket.append(group)
+            group.append(arg)
+
+        grouped = tuple(itertools.chain.from_iterable(groups))
+        if all(a is b for a, b in zip(grouped, args, strict=True)):
             return fwd()
-        return monoid.plus(*(args[i] for i in sorted_args))
+        return monoid.plus(*grouped)
 
 
 class PlusConsecutiveDups(ObjectInterpretation):
@@ -2344,11 +2352,12 @@ result is therefore unique.
 
 The normal form is **not fully canonical**, however: semantically equal but
 differently-presented inputs can reach distinct (still semantically equal)
-forms. Commutative ``plus`` arguments are sorted by :class:`PlusOrder`, and
-consecutive syntactically equal arguments are removed for idempotent monoids by
-:class:`PlusConsecutiveDups`. This provides limited AC normalization, but the
-sort key uses object identity to break syntactic-hash ties, and duplicates are
-preserved for non-idempotent monoids. Moreover, variable-elimination order
+forms. For commutative ``plus``, :class:`PlusOrder` groups syntactically equal
+arguments in order of first occurrence; :class:`PlusConsecutiveDups` removes
+consecutive duplicates for idempotent monoids. Distinct arguments keep their
+relative first-occurrence order, which is stable under binder freshening.
+This provides limited AC normalization without an identity-based order on
+variables; duplicates remain for non-idempotent monoids. Variable-elimination order
 depends on ``streams`` insertion order via
 :func:`choose_contraction`/:func:`outer_stream`, while argument order remains
 significant for noncommutative monoids. Downstream code therefore relies only
