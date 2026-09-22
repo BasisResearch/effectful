@@ -559,6 +559,56 @@ def test_plus_commutative_idempotent_long(monoid, backend: Backend):
     )
 
 
+@pytest.mark.parametrize("monoid", COMMUTATIVE)
+def test_plus_order_preserves_first_occurrence(monoid):
+    """Grouping equal arguments does not choose an order on distinct atoms."""
+    x, y = Operation.define(float, name="x"), Operation.define(float, name="y")
+    a, b = x(), y()
+    for first, second in ((a, b), (b, a)):
+        term = monoid.plus(first, second, first)
+        expected = monoid.plus(first, first, second)
+        with handler(PlusOrder()):
+            actual = evaluate(term)
+            assert syntactic_eq(actual, expected)
+            assert evaluate(actual) is actual
+
+
+def test_plus_order_handles_hash_collisions(monkeypatch):
+    """Hash buckets accelerate grouping; equality determines membership."""
+    x, y = Operation.define(float, name="x"), Operation.define(float, name="y")
+    term = Product.plus(x(), y(), x(), y())
+    expected = Product.plus(x(), x(), y(), y())
+    monkeypatch.setattr("effectful.ops.monoid.syntactic_hash", lambda _: 0)
+
+    with handler(PlusOrder()):
+        assert syntactic_eq(evaluate(term), expected)
+
+
+@pytest.mark.parametrize("binder", ["reduce", "lambda"])
+def test_plus_order_stable_after_binder_freshening(binder):
+    """A normalized binding term remains unchanged on reevaluation."""
+
+    @Operation.define
+    def f(x: float) -> float:
+        raise NotHandled
+
+    @Operation.define
+    def g(x: float) -> float:
+        raise NotHandled
+
+    x = Operation.define(float, name="x")
+    source = Operation.define(Iterable[float], name="source")
+    with handler(NormalizeIntp):
+        for _ in range(32):
+            body = Product.plus(f(x()), g(x()))
+            term = (
+                Sum.reduce(body, {x: source()})
+                if binder == "reduce"
+                else deffn(body, x)
+            )
+            assert evaluate(term) is term
+
+
 @pytest.mark.parametrize("monoid", WITH_ZERO)
 def test_plus_zero(monoid, backend: Backend):
     a = backend.define_vars("a", ret="scalar")
