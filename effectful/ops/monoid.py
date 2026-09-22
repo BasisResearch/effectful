@@ -1810,12 +1810,14 @@ class EliminateSingletonStreams(ObjectInterpretation):
             return fwd()
 
         subs = {k: deffn(v) for k, v in singletons.items()}
-        new_body = handler(subs)(evaluate)(body)
-        new_streams = {
-            kk: handler(subs)(evaluate)(vv)
-            for kk, vv in streams.items()
-            if kk not in singletons
-        }
+        rest = {k: v for k, v in streams.items() if k not in singletons}
+        # Evaluate the body and the surviving streams together under one handler,
+        # as ``ReducePartial`` does: evaluation is memoized per interpretation
+        # object, so separate handlers would rebuild a shared subterm once per
+        # operand.
+        eval_args = handler(subs)(evaluate)((body, rest))
+        assert isinstance(eval_args, tuple)
+        new_body, new_streams = eval_args
         # reduce over no streams is a single (empty) assignment, i.e. the body
         # itself -- not the monoid identity.
         return monoid.reduce(new_body, new_streams)
