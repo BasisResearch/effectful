@@ -101,20 +101,13 @@ def inner_stream(
 
 def inner_streams_first(streams: Streams) -> Iterable[Operation]:
     """Iterable over streams where dependent streams precede their dependencies."""
-    stream_vars = set(streams.keys())
-
-    no_dependents = set()
-    succ = defaultdict(set)
-    for k, v in streams.items():
-        preds = fvsof(v) & stream_vars
-        if preds:
-            for pred in preds:
-                succ[pred].add(k)
-        else:
-            no_dependents.add(k)
-
-    topo = TopologicalSorter(succ)
-    return topo.static_order()
+    # Seed every stream as a vertex. A graph built only from dependency edges
+    # omits any stream that neither depends on nor is depended on by another, so
+    # a bundle of independent streams would traverse as empty. Successors are
+    # listed in ``streams`` order to keep the traversal deterministic.
+    fvs = {k: fvsof(v) for k, v in streams.items()}
+    dependents = {k: [d for d in streams if k in fvs[d]] for k in streams}
+    return TopologicalSorter(dependents).static_order()
 
 
 class Monoid[W]:

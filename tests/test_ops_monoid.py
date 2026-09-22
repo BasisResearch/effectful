@@ -61,6 +61,7 @@ from effectful.ops.monoid import (
     WhereHoist,
     as_iterable,
     distributes_over,
+    inner_streams_first,
     is_commutative,
     is_idempotent,
     solve_group_equality,
@@ -1029,6 +1030,30 @@ def test_reduce_intersection_singleton_range(backend: Backend, monoid):
         rhs=rhs,
         rule=coproduct(ReduceIntersectionSingletonRange(), PlusCastIterable()),
     )
+
+
+def test_inner_streams_first_orders_every_stream(backend: Backend):
+    """Every stream is a vertex; dependents precede their dependencies."""
+    x, y, z = backend.define_vars("x", "y", "z", ret="scalar")
+    mu, rho = backend.define_vars("mu", "rho", ret="stream")
+    dep = backend.define_vars("dep", arg_types=(backend.scalar_typ,), ret="stream")
+
+    streams = {x: mu(), y: dep(x()), z: rho()}
+    order = list(inner_streams_first(streams))
+    position = {id(op): i for i, op in enumerate(order)}
+
+    assert set(order) == set(streams)
+    assert position[id(y)] < position[id(x)]
+    assert list(inner_streams_first(streams)) == order
+
+
+def test_inner_streams_first_all_independent(backend: Backend):
+    """A stream with no dependency in either direction is still traversed."""
+    x, y = backend.define_vars("x", "y", ret="scalar")
+    mu, nu = backend.define_vars("mu", "nu", ret="stream")
+
+    streams = {x: mu(), y: nu()}
+    assert set(inner_streams_first(streams)) == set(streams)
 
 
 def test_reduce_independent_1(backend: Backend):
