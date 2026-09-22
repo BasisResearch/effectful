@@ -320,6 +320,16 @@ def _is_monoid_plus(op: Operation) -> bool:
     return isinstance(owner, Monoid) and op is owner.plus
 
 
+def _is_ite(expr: Expr) -> bool:
+    """True if ``expr`` is a three-argument :func:`ite` term."""
+    return (
+        isinstance(expr, Term)
+        and expr.op is ite
+        and len(expr.args) == 3
+        and not expr.kwargs
+    )
+
+
 def _is_monoid_reduce(op: Operation) -> bool:
     """True if ``op`` is the ``reduce`` operation of some :class:`Monoid`."""
     owner = getattr(op, "__self__", None)
@@ -1835,33 +1845,29 @@ class WhereHoist(ObjectInterpretation):
         if len(args) < 2:
             return fwd()
 
-        for i, arg in enumerate(args):
-            if not (
-                isinstance(arg, Term)
-                and arg.op is ite
-                and len(arg.args) == 3
-                and not arg.kwargs
-            ):
+        for arg in args:
+            if not _is_ite(arg):
                 continue
 
-            cond, when_true, when_false = arg.args
+            # Select *every* argument guarded by this condition, not just this
+            # one: each occurrence left behind splits the whole plus again, so
+            # k occurrences of one conditional would cost 2**k branches.
+            cond = arg.args[0]
+            branches = tuple(
+                a.args[1:] if _is_ite(a) and syntactic_eq(a.args[0], cond) else (a, a)
+                for a in args
+            )
             return ite(
                 cond,
-                monoid.plus(*args[:i], when_true, *args[i + 1 :]),
-                monoid.plus(*args[:i], when_false, *args[i + 1 :]),
+                monoid.plus(*(when_true for when_true, _ in branches)),
+                monoid.plus(*(when_false for _, when_false in branches)),
             )
 
         return fwd()
 
     @implements(Monoid.reduce)
     def reduce(self, monoid, body, streams):
-        if not (
-            streams
-            and isinstance(body, Term)
-            and body.op is ite
-            and len(body.args) == 3
-            and not body.kwargs
-        ):
+        if not (streams and _is_ite(body)):
             return fwd()
 
         cond, when_true, when_false = body.args

@@ -132,6 +132,50 @@ def test_plus_ite_hoist(backend: Backend):
     backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
 
 
+def test_plus_ite_hoist_shares_guard(backend: Backend):
+    """Arguments under the same condition select together in a single split."""
+    cond_lhs, cond_rhs, a, b, c, d = backend.define_vars(
+        "cond_lhs", "cond_rhs", "a", "b", "c", "d", ret="scalar"
+    )
+    cond = cond_lhs() == cond_rhs()
+    lhs = Product.plus(ite(cond, a(), b()), ite(cond, c(), d()))
+    rhs = ite(cond, Product.plus(a(), c()), Product.plus(b(), d()))
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
+
+
+def test_plus_ite_hoist_repeated_conditional(backend: Backend):
+    """A conditional repeated k times splits once, not into 2**k branches."""
+    cond_lhs, cond_rhs, a, b = backend.define_vars(
+        "cond_lhs", "cond_rhs", "a", "b", ret="scalar"
+    )
+    cond = cond_lhs() == cond_rhs()
+    shared = ite(cond, a(), b())
+    k = 6
+    lhs = Product.plus(*(shared for _ in range(k)))
+    rhs = ite(
+        cond,
+        Product.plus(*(a() for _ in range(k))),
+        Product.plus(*(b() for _ in range(k))),
+    )
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
+
+
+def test_plus_ite_hoist_distinct_guards(backend: Backend):
+    """Different conditions still split independently, outermost first."""
+    p, q, a, b, c, d = backend.define_vars("p", "q", "a", "b", "c", "d", ret="scalar")
+    cond_p, cond_q = p() == 0, q() == 0
+    lhs = Product.plus(ite(cond_p, a(), b()), ite(cond_q, c(), d()))
+    rhs = ite(
+        cond_p,
+        ite(cond_q, Product.plus(a(), c()), Product.plus(a(), d())),
+        ite(cond_q, Product.plus(b(), c()), Product.plus(b(), d())),
+    )
+
+    backend.check_rewrite(lhs=lhs, rhs=rhs, rule=WhereHoist())
+
+
 def test_reduce_ite_hoist(backend: Backend):
     """An ``ite`` with a stream-independent condition hoists."""
     i, out_i, out_j = backend.define_vars("i", "out_i", "out_j", ret="scalar")
