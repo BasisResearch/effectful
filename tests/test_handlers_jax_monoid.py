@@ -26,7 +26,8 @@ from effectful.ops.monoid import (
     Sum,
 )
 from effectful.ops.semantics import coproduct, evaluate, handler
-from tests._monoid_helpers import JaxBackend
+from effectful.ops.syntax import defop
+from tests._monoid_helpers import JaxBackend, syntactic_eq_alpha
 
 MONOIDS = [
     pytest.param(monoid, reductor, id=monoid.__name__)
@@ -533,3 +534,61 @@ def test_plated_einsum(spec, plates, rng_key):
 
     actual = einsum(spec, *operands, plates=plates)
     assert torch.allclose(torch.tensor(actual), expected, atol=1e-4, rtol=1e-4)
+
+
+# ============================================================================
+# COMPREHENSIONS OVER ARRAYS
+# ============================================================================
+
+# A comprehension is another way to write a reduction, so an array body reaches
+# the array rules through one just as it does when the reduction is written out.
+
+_CONCRETE = coproduct(EvaluateIntp, NormalizeIntp)
+
+_A = jnp.arange(5.0)
+_B = jnp.arange(20.0).reshape(4, 5)
+
+
+def _reduce_concretely(term):
+    with handler(_CONCRETE):
+        return evaluate(term)
+
+
+ARRAY_COMPREHENSIONS = [
+    pytest.param(
+        lambda: (jax_getitem(_A, [x]) for x in range(5)),
+        lambda i: Sum.reduce(jax_getitem(_A, [i()]), {i: range(5)}),
+        id="indexed-by-a-target",
+    ),
+    pytest.param(
+        lambda: (jax_getitem(_A, [x]) + x for x in range(5)),
+        lambda i: Sum.reduce(jax_getitem(_A, [i()]) + i(), {i: range(5)}),
+        id="indexed-and-added-to",
+    ),
+    pytest.param(
+        lambda: (jax_getitem(_A, [x]) for x in range(5) if x != 2),
+        lambda i: Sum.reduce(Sum.mask(jax_getitem(_A, [i()]), i() != 2), {i: range(5)}),
+        id="masked",
+    ),
+]
+
+
+@pytest.mark.parametrize("comprehension,written", ARRAY_COMPREHENSIONS)
+def test_a_comprehension_over_an_array_reduces_like_the_reduction_it_means(
+    comprehension, written
+):
+    target = defop(int, name="i")
+    assert syntactic_eq_alpha(
+        _reduce_concretely(Sum(comprehension())), _reduce_concretely(written(target))
+    )
+
+
+def test_a_two_index_comprehension_over_an_array():
+    i, j = defop(int, name="i"), defop(int, name="j")
+    written = Sum.reduce(jax_getitem(_B, [i(), j()]), {i: range(4), j: range(5)})
+    assert syntactic_eq_alpha(
+        _reduce_concretely(
+            Sum(jax_getitem(_B, [x, y]) for x in range(4) for y in range(5))
+        ),
+        _reduce_concretely(written),
+    )
