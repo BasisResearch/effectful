@@ -74,10 +74,12 @@ import acp.schema
 import pydantic
 from PIL import Image
 
-from effectful.handlers.llm import Agent
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, handler
 from effectful.ops.types import Interpretation
+
+if typing.TYPE_CHECKING:
+    from effectful.handlers.llm import Agent
 
 LIBRARY = "library"
 """The module holding the reloadable half of the server; see `_library`."""
@@ -205,7 +207,7 @@ class SessionCancelled(BaseException):
 
 
 @dataclasses.dataclass
-class ACPSession[A: Agent]:
+class ACPSession[A: "Agent"]:
     """Everything the server keeps for one ACP session.
 
     ACP has no such object -- it addresses sessions by id and leaves the rest to the

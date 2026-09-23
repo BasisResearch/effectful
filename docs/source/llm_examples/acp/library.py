@@ -34,6 +34,7 @@ import concurrent.futures
 import contextlib
 import dataclasses
 import functools
+import inspect
 import json
 import sys
 import typing
@@ -65,7 +66,7 @@ from server import (  # noqa: F401 -- re-exported, so this module is the one to 
     _title_from,
 )
 
-from effectful.handlers.llm import Encodable, Tool
+from effectful.handlers.llm import Agent, Encodable, Tool
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     PromptInjectingInterpretation,
@@ -1434,16 +1435,98 @@ class SlashCommand:
     spec: acp.schema.AvailableCommand
     """The advertisement: name, description, and the input hint, if any."""
 
-    run: collections.abc.Callable[["EffectfulACPAgent", ACPSession, str], str]
+    run: collections.abc.Callable[[EffectfulACPAgent, ACPSession, str], str]
     """The behaviour: handed the server, the session and the argument text."""
 
 
-def _run_clear(server: "EffectfulACPAgent", session: ACPSession, argument: str) -> str:
+_SLASH_COMMANDS: dict[str, SlashCommand] = {}
+"""Every command, dispatch and advertisement together, filled by `register_command`."""
+
+
+type _Command = collections.abc.Callable[
+    typing.Concatenate[EffectfulACPAgent, ACPSession, ...], str
+]
+
+
+@typing.overload
+def register_command[F: _Command](fn: F, /) -> F: ...
+
+
+@typing.overload
+def register_command[F: _Command](
+    *, name: str | None = None, hint: str | None = None
+) -> collections.abc.Callable[[F], F]: ...
+
+
+def register_command[F: _Command](
+    fn: F | None = None, /, *, name: str | None = None, hint: str | None = None
+) -> F | collections.abc.Callable[[F], F]:
+    """Register `fn` as ``/name``, advertised as an ACP `AvailableCommand`.
+
+    The name defaults to the function's; the description is the docstring's first
+    paragraph. `fn` takes ``(server, session)`` then any number of positional `str`
+    parameters, filled from the argument text split on whitespace, the last taking
+    the remainder; missing trailing ones take their defaults. The hint is the
+    parameters as ``<required> [optional]`` unless `hint` is given.
+    """
+
+    def register(fn: F) -> F:
+        command = name or fn.__name__
+        # Dispatch reads the name up to the first space after the slash.
+        if command.split() != [command] or command.startswith("/"):
+            raise ValueError(f"{command!r} is not a slash command name")
+        if command in _SLASH_COMMANDS:
+            raise ValueError(f"/{command} is registered twice")
+        description = " ".join((inspect.getdoc(fn) or "").split("\n\n")[0].split())
+        if not description:
+            raise TypeError(f"/{command} needs a docstring to describe it")
+        params = list(inspect.signature(fn).parameters.values())[2:]
+        for param in params:
+            if param.kind is not param.POSITIONAL_OR_KEYWORD:
+                raise TypeError(f"/{command}: `{param.name}` must be positional")
+            if param.annotation not in (str, param.empty):
+                raise TypeError(f"/{command}: `{param.name}` must be a `str`")
+        required = sum(param.default is param.empty for param in params)
+        usage = hint or " ".join(
+            f"<{param.name}>" if param.default is param.empty else f"[{param.name}]"
+            for param in params
+        )
+        input = None
+        if params:
+            input = acp.schema.AvailableCommandInput(
+                acp.schema.UnstructuredCommandInput(hint=usage)
+            )
+
+        def run(server: EffectfulACPAgent, session: ACPSession, argument: str) -> str:
+            # maxsplit=-1 for a nullary command splits fully, so any word is too many.
+            words = argument.split(maxsplit=len(params) - 1)
+            if not params and words:
+                return f"`/{command}` takes no argument."
+            if not required <= len(words) <= len(params):
+                return f"Usage: `/{command} {usage}`"
+            return fn(server, session, *words)
+
+        _SLASH_COMMANDS[command] = SlashCommand(
+            spec=acp.schema.AvailableCommand(
+                name=command, description=description, input=input
+            ),
+            run=run,
+        )
+        return fn
+
+    return register if fn is None else register(fn)
+
+
+@register_command
+def clear[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -> str:
+    """Forget the conversation so far, keeping this session open."""
     session.agent.__history__.clear()
     return "Cleared. I have forgotten the conversation up to here."
 
 
-def _run_status(server: "EffectfulACPAgent", session: ACPSession, argument: str) -> str:
+@register_command
+def status[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -> str:
+    """Show the mode, model and directories this session is using."""
     roots = "\n".join(f"- `{root}`" for root in session.roots) or "- (none)"
     mode = next(
         (m.name for m in SESSION_MODES if m.id == session.mode_id),
@@ -1457,14 +1540,17 @@ def _run_status(server: "EffectfulACPAgent", session: ACPSession, argument: str)
     )
 
 
-def _run_mode(server: "EffectfulACPAgent", session: ACPSession, mode_id: str) -> str:
-    """``/mode`` with no argument reports; with one, switches.
+@register_command(hint=" | ".join(mode.id for mode in SESSION_MODES))
+def mode[A: "Agent"](
+    server: "EffectfulACPAgent[A]", session: ACPSession[A], mode_id: str = ""
+) -> str:
+    """Switch how much this agent may do without asking.
 
-    The editor's own picker sends `session/set_config_option`, and this sends
-    nothing -- it is already inside the agent. What it must do instead is *say* the
-    mode changed, on both channels a client might be listening to:
-    `current_mode_update` for one that reads `modes`, and the config options for
-    one that reads those.
+    With no argument it lists the modes instead. The editor's own picker sends
+    `session/set_config_option`, and this sends nothing -- it is already inside the
+    agent. What it must do instead is *say* the mode changed, on both channels a
+    client might be listening to: `current_mode_update` for one that reads `modes`,
+    and the config options for one that reads those.
     """
     offered = {mode.id: mode for mode in SESSION_MODES}
     if not mode_id:
@@ -1491,42 +1577,6 @@ def _run_mode(server: "EffectfulACPAgent", session: ACPSession, mode_id: str) ->
     )
     return f"Mode is now **{offered[mode_id].name}**. {offered[mode_id].description}"
 
-
-_SLASH_COMMANDS: dict[str, SlashCommand] = {
-    command.spec.name: command
-    for command in (
-        SlashCommand(
-            spec=acp.schema.AvailableCommand(
-                name="clear",
-                description="Forget the conversation so far, keeping this session open.",
-            ),
-            run=_run_clear,
-        ),
-        SlashCommand(
-            spec=acp.schema.AvailableCommand(
-                name="status",
-                description="Show the mode, model and directories this session is using.",
-            ),
-            run=_run_status,
-        ),
-        SlashCommand(
-            spec=acp.schema.AvailableCommand(
-                name="mode",
-                description="Switch how much this agent may do without asking.",
-                # A command may take an argument, and the hint is what the editor
-                # shows after the name while the user is typing it. Derived from
-                # `SESSION_MODES`, as everything mode-shaped is.
-                input=acp.schema.AvailableCommandInput(
-                    acp.schema.UnstructuredCommandInput(
-                        hint=" | ".join(mode.id for mode in SESSION_MODES)
-                    )
-                ),
-            ),
-            run=_run_mode,
-        ),
-    )
-}
-"""Every command, dispatch and advertisement together. See `SlashCommand`."""
 
 SLASH_COMMANDS: tuple[acp.schema.AvailableCommand, ...] = tuple(
     command.spec for command in _SLASH_COMMANDS.values()
