@@ -1565,6 +1565,32 @@ def status[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -
 
 
 @register_command
+def usage[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -> str:
+    """Show how full this session's context window is.
+
+    A pure function of the conversation: litellm counts the tokens the history
+    would be sent as, and prices the conversation from the same messages. This is
+    an estimate -- the provider's own accounting, which the `usage_update` gauge
+    reports, sees cache reads and per-request trims that a recount of the history
+    cannot -- but it needs no state, so it answers at any point in the session,
+    including after a reload.
+    """
+    try:
+        model = session.model
+    except AttributeError:
+        return "Unknown model -- set the picker or `EFFECTFUL_LLM_MODEL`."
+    messages = list(session.agent.__history__)
+    size = _context_size(model)
+    used = litellm.token_counter(model=model, messages=messages) if messages else 0
+    lines = [f"**Context** {used:,} / {size:,} tokens ({used / size:.0%} full)"]
+    with contextlib.suppress(Exception):
+        if cost := litellm.completion_cost(model=model, messages=messages):
+            lines.append(f"**Estimated cost so far** ${cost:.4f}")
+    lines.append(f"**Messages** {len(messages)}")
+    return "\n\n".join(lines)
+
+
+@register_command
 def mode[A: "Agent"](
     server: "EffectfulACPAgent[A]", session: ACPSession[A], mode: Mode | None = None
 ) -> str:
