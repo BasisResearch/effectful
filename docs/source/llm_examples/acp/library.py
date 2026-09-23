@@ -37,6 +37,7 @@ import enum
 import functools
 import inspect
 import json
+import re
 import sys
 import types
 import typing
@@ -1631,6 +1632,62 @@ def mode[A: "Agent"](
     )
     chosen = offered[mode.value]
     return f"Mode is now **{chosen.name}**. {chosen.description}"
+
+
+@register_command
+def set_model[A: "Agent"](
+    server: "EffectfulACPAgent[A]", session: ACPSession[A], model: str | None = None
+) -> str:
+    """Switch which model answers this session, by its litellm name.
+
+    With no argument it shows the model in use. The argument is passed to
+    `litellm.completion` as its ``model`` parameter exactly as given, and litellm
+    is asked to resolve the provider before the session takes it -- so a name the
+    request would refuse is refused here, where it costs a lookup, rather than at
+    the turn, where it costs the conversation. `session/set_config_option`
+    validates against the models this server was started with, because a picker
+    can only offer what it was handed; a name typed by hand is not so bounded,
+    and one litellm accepts is added to `server.models`, so the picker offers
+    what the user has proved works.
+    """
+    if model is None:
+        current = session.model or "as configured at launch"
+        return (
+            f"**Model** {current}\n\n"
+            "Set one with `/set_model <model>`, e.g. `/set_model openai/gpt-4o-mini` -- the "
+            "name `litellm.completion` will be given."
+        )
+    try:
+        _, provider, _, _ = litellm.get_llm_provider(model=model)
+        info = litellm.get_model_info(model=model)
+    except Exception as e:
+        # litellm decorates its errors with colour and a provider list; both are
+        # noise in a chat bubble, so keep one line of the plain text.
+        reason = re.sub(r"\x1b\[[0-9;]*m", "", str(e)).splitlines()[0].strip()
+        reason = re.sub(r"^[A-Za-z_][\w.]*Error: ", "", reason)
+        return f"`{model}` is not a model litellm can call: {reason}"
+    # Stored as the user spelled it, not as litellm resolved it: it validated as
+    # given, and what the session records is what the picker and `/status` show.
+    session.model = model
+    if model not in server.models:
+        server.models = (*server.models, model)
+    # A picker redraws from `config_options`, which is why `/mode` announces the
+    # same pair; the mode update is the only one of the two it has no use for.
+    session.notify(
+        acp.schema.ConfigOptionUpdate(
+            session_update="config_option_update",
+            config_options=server._config_options(session),
+        )
+    )
+    # `_retitle` recorded the session earlier this turn, with the model this
+    # replaced; recording again is what makes the choice survive a restart that
+    # follows this command as the session's last act.
+    SessionIndex.record(session)
+    lines = [f"Model is now **{model}** ({provider or 'unknown provider'})."]
+    rate = info.get("input_cost_per_token")
+    if rate is not None:
+        lines.append(f"About ${rate * 1_000_000:.2f}/M input tokens.")
+    return "\n\n".join(lines)
 
 
 def slash_commands() -> dict[str, SlashCommand]:
