@@ -57,19 +57,23 @@ import inspect
 import io
 import json
 import linecache
+import operator
 import os
 import pathlib
 import sqlite3
+import subprocess
 import symtable
 import sys
+import tempfile
 import threading
-import types
+import traceback
 import typing
 import urllib.parse
 import urllib.request
 import uuid
 
 import acp
+import acp.connection
 import acp.interfaces
 import acp.schema
 import pydantic
@@ -86,13 +90,96 @@ LIBRARY = "library"
 """The module holding the reloadable half of the server; see `_library`."""
 
 
-def _library() -> types.ModuleType:
-    """The tools, handlers and slash commands, as they now are.
+class _Reporter(typing.Protocol):
+    """What `EffectfulACPAgent.prompt` asks of a session's reporter."""
 
-    Looked up on each use rather than imported, so that ``--autoreload`` can re-run
-    `library` while this module, which holds the live server, keeps running.
+    def begin_turn(self) -> None: ...
+    def abandon(self) -> None: ...
+    def stop_reason(self) -> acp.schema.StopReason: ...
+    def usage(self) -> acp.schema.Usage | None: ...
+
+
+class _Command(typing.Protocol):
+    """What announcing and dispatching a slash command ask of it."""
+
+    @property
+    def spec(self) -> acp.schema.AvailableCommand: ...
+
+    @property
+    def run(
+        self,
+    ) -> collections.abc.Callable[["EffectfulACPAgent", "ACPSession", str], str]: ...
+
+
+class _Library(typing.Protocol):
+    """Everything this module takes from `library`, and so the line between them.
+
+    `library` may change while the server runs; this may not. Each name here is
+    re-read on every use and never kept across a reload, which is what makes a
+    live edit to what is *behind* it safe:
+
+    * `SESSION_MODES` -- announced when a session opens and again after every
+      reload (`EffectfulACPAgent._announce_config`), which also moves a session off
+      a mode no longer offered.
+    * `session_handlers` -- the handlers a session's turns run under, and the
+      reporter among them, rebuilt for every session on reload.
+    * `slash_commands` -- announced when a session opens and after every reload,
+      and looked up on each dispatch.
+    * `message_as_text` -- turns a message into notification text, on each
+      ``session/load``.
+
+    Changing *this* -- a name, a signature, the shape of a command or a reporter --
+    needs a restart, since the code here that relies on it is not re-run.
+    Checked statically against `library` below, and at run time, by name only,
+    in `_library`.
     """
-    return importlib.import_module(LIBRARY)
+
+    SESSION_MODES: tuple[acp.schema.SessionMode, ...]
+
+    def session_handlers(
+        self, session: "ACPSession", /
+    ) -> tuple[_Reporter, Interpretation]: ...
+
+    def slash_commands(self) -> collections.abc.Mapping[str, _Command]: ...
+
+    def tool_kind(self, name: str) -> acp.schema.ToolKind | None: ...
+
+    def message_as_text(self, message: typing.Any) -> str: ...
+
+
+def _library() -> _Library:
+    """`library` as it now is, looked up on each use rather than imported.
+
+    So that ``--autoreload`` can re-run `library` while this module, which holds
+    the live server, keeps running; see `_Library` for what may change that way.
+
+    Raises:
+        TypeError: If `library` no longer defines every name `_Library` lists.
+    """
+    library = importlib.import_module(LIBRARY)
+    # `hasattr` rather than a runtime-checkable `isinstance`, which reads attributes
+    # statically and so cannot see the names of a module hmr has re-run.
+    _LIBRARY_NAMES = sorted(
+        {*_Library.__annotations__}
+        | {
+            n
+            for n, v in vars(_Library).items()
+            if inspect.isfunction(v) and n[0] != "_"
+        }
+    )
+    if missing := [name for name in _LIBRARY_NAMES if not hasattr(library, name)]:
+        raise TypeError(f"`{LIBRARY}` no longer defines {', '.join(missing)}")
+    return typing.cast(_Library, library)
+
+
+if typing.TYPE_CHECKING:
+    # Relative, because the type checker sees this directory as a package and would
+    # not find a bare `library`, and `ignore_missing_imports` would make that `Any`
+    # -- a check that passes whatever `library` says. Never run: `library` imports
+    # this module.
+    from . import library as _checked_library
+
+    _: _Library = _checked_library
 
 
 type ContentBlock = (
@@ -154,6 +241,9 @@ def _offered_models() -> tuple[str, ...]:
     listed = os.environ.get(OFFER_MODELS_ENV, "").split(",")
     return tuple(model.strip() for model in listed if model.strip())
 
+
+RESTART_STATE_ENV = "EFFECTFUL_ACP_RESTART_STATE"
+"""Names the file a server leaves for the process replacing it; see `restart`."""
 
 FLUSH_TIMEOUT = 5.0
 """How long a turn waits for its queued updates to reach the editor before answering.
@@ -474,7 +564,9 @@ class SessionIndex:
             cwd                    TEXT NOT NULL,
             additional_directories TEXT NOT NULL DEFAULT '[]',
             title                  TEXT,
-            updated_at             TEXT NOT NULL
+            updated_at             TEXT NOT NULL,
+            mode                   TEXT,
+            model                  TEXT
         )
     """
 
@@ -493,6 +585,21 @@ class SessionIndex:
         if conn is not None:
             with conn:
                 conn.execute(cls.SCHEMA)
+                # A table made before these columns existed does not get them from
+                # ``IF NOT EXISTS``.
+                columns = {
+                    row[1] for row in conn.execute("PRAGMA table_info(acp_sessions)")
+                }
+                for column in ("mode", "model"):
+                    if column not in columns:
+                        try:
+                            conn.execute(
+                                f"ALTER TABLE acp_sessions ADD COLUMN {column} TEXT"
+                            )
+                        except sqlite3.OperationalError as e:
+                            # Another process upgraded the table in the meantime.
+                            if "duplicate column" not in str(e):
+                                raise
         return conn
 
     @classmethod
@@ -515,13 +622,16 @@ class SessionIndex:
             conn.execute(
                 """
                 INSERT INTO acp_sessions
-                    (session_id, cwd, additional_directories, title, updated_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (session_id, cwd, additional_directories, title, updated_at,
+                     mode, model)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     cwd = excluded.cwd,
                     additional_directories = excluded.additional_directories,
                     title = COALESCE(excluded.title, acp_sessions.title),
-                    updated_at = excluded.updated_at
+                    updated_at = excluded.updated_at,
+                    mode = excluded.mode,
+                    model = excluded.model
                 """,
                 (
                     session.session_id,
@@ -529,8 +639,32 @@ class SessionIndex:
                     json.dumps(list(session.additional_directories)),
                     session.title or None,
                     datetime.datetime.now(datetime.UTC).isoformat(),
+                    session.mode_id,
+                    session.model,
                 ),
             )
+
+    @classmethod
+    def get(cls, session_id: str) -> dict[str, typing.Any] | None:
+        """What was last recorded about `session_id`, or `None`."""
+        conn = cls.open()
+        if conn is None:
+            return None
+        row = conn.execute(
+            "SELECT cwd, additional_directories, title, mode, model "
+            "FROM acp_sessions WHERE session_id = ?",
+            (session_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cwd, directories, title, mode, model = row
+        return {
+            "cwd": cwd,
+            "additional_directories": json.loads(directories),
+            "title": title,
+            "mode": mode,
+            "model": model,
+        }
 
     @classmethod
     def page(
@@ -729,10 +863,14 @@ def _bound_names(file: pathlib.Path) -> set[str] | None:
     """The names `file` binds at module level, or `None` if they cannot be known.
 
     A star import binds its module's ``__all__``, or else its public names, as that
-    module now stands; one that cannot be looked up makes the answer unknowable.
+    module now stands; one that cannot be looked up makes the answer unknowable, as
+    does a file that does not parse, whose module hmr leaves as it was.
     """
     source = file.read_text()
-    table = symtable.symtable(source, str(file), "exec")
+    try:
+        table = symtable.symtable(source, str(file), "exec")
+    except SyntaxError:
+        return None
     bound = {
         s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()
     }
@@ -813,6 +951,15 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self.models = _offered_models() if models is None else tuple(models)
         self.page_size = page_size
         self.sessions: dict[str, ACPSession[A]] = {}
+        # Set by `serve`, and what `restart` needs: the protocol's own stdout, and the
+        # state a restarted predecessor left behind.
+        self._channel: typing.TextIO | None = None
+        self._stdout: asyncio.StreamWriter | None = None
+        self._restored: str | None = None
+        self._unanswered: set[typing.Any] = set()
+        self._restarting: asyncio.Task | None = None
+        self._stdin: asyncio.StreamReader | None = None
+        self._cwd = os.getcwd()
 
     @property
     def agent_capabilities(self) -> acp.schema.AgentCapabilities:
@@ -974,13 +1121,23 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         roots = tuple(additional_directories or ())
         if session_id not in self.sessions:
-            self.sessions[session_id] = ACPSession(
+            session = self.sessions[session_id] = ACPSession(
                 agent=self.make_agent(session_id),
                 client=self.client,
                 client_capabilities=self.client_capabilities,
                 cwd=cwd,
                 additional_directories=roots,
             )
+            # A session this process has not seen may be one it recorded before a
+            # restart or a crash; its settings come back with it.
+            with self._current_stack():
+                recorded = SessionIndex.get(session_id)
+            if recorded is not None:
+                session.title = recorded["title"] or ""
+                if recorded["model"] is not None:
+                    session.model = recorded["model"]
+                if recorded["mode"] in {m.id for m in _library().SESSION_MODES}:
+                    session.mode_id = recorded["mode"]
         else:
             # An editor may reopen a session it still has open, and may do so from a
             # different window onto a different directory. The conversation is the
@@ -1026,6 +1183,227 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
 
     def on_connect(self, conn: acp.interfaces.Client) -> None:
         self.client = conn
+        if self._restored is not None:
+            try:
+                self._resume_after_restart(self._restored)
+            except Exception:
+                print(f"could not resume:\n{traceback.format_exc()}", file=sys.stderr)
+            self._restored = None
+
+    def _observe(self, event: acp.connection.StreamEvent) -> None:
+        """Keep count of the editor's requests this server has not yet answered.
+
+        Told of each message after it is written, so a request leaves the count only
+        once its answer is on the pipe -- which is what `restart` waits for.
+        """
+        message = event.message
+        if "id" not in message:
+            return
+        if event.direction is acp.connection.StreamDirection.INCOMING:
+            if "method" in message:
+                self._unanswered.add(message["id"])
+        elif "method" not in message:
+            self._unanswered.discard(message["id"])
+
+    def restart(self, requested_by: ACPSession[A]) -> str:
+        """Replace this process with a fresh one, keeping the editor and every session.
+
+        ACP has no way for an agent to restart: the editor owns the process, and the
+        only reconnection the protocol knows is the editor starting a new one and
+        loading its sessions again. So the replacement happens underneath it. Once
+        every request is answered -- this one included -- and nothing is left to
+        write, the process `exec`s itself with its own command line. That keeps its
+        pid and its pipes, so the editor sees a pause and nothing else.
+
+        Each session comes back the way `load_session` brings one back after a crash:
+        its history from the persistence checkpoint, its settings from
+        `SessionIndex`. Which sessions were open, and what the editor said at
+        ``initialize``, are the only things the editor will not say again; they go to
+        a file named by `RESTART_STATE_ENV`, which `on_connect` in the new process
+        reads. Anything not yet checkpointed is lost, as it would be in a crash.
+
+        Refused unless every other session is idle -- no turn running, no request
+        unanswered -- rather than deferred: a deferred restart would say it was
+        restarting and then not, for as long as that work took. Once accepted, new
+        turns and sessions are refused until the `exec` (`_refuse_while_restarting`),
+        so nothing can start while it waits for this request to be answered. And
+        refused if the code it would restart into does not import
+        (`_check_restartable`), since after the `exec` there is no going back.
+
+        Returns the reply to the user.
+        """
+        if self._channel is None or self._stdout is None:
+            return "Restarting needs the server to be serving over stdio."
+        with self._current_stack():
+            persisting = SessionIndex.available()
+        if not persisting:
+            return "Restarting needs `--persist-db`, to bring the sessions back."
+        if self._restarting is not None:
+            return "Already restarting."
+        busy = [
+            f"`{s.title or s.session_id}`"
+            for s in self.sessions.values()
+            if s is not requested_by and s.lock.locked()
+        ]
+        if busy:
+            return (
+                f"A turn is running in {', '.join(busy)}. Restart once it has ended, "
+                f"or cancel it first."
+            )
+        # This request is one of them.
+        if len(self._unanswered) > 1:
+            return "The editor is waiting on another request. Restart once it is done."
+        if (problem := self._check_restartable()) is not None:
+            return f"Not restarting: the new process would fail to start.\n\n{problem}"
+        self._restarting = asyncio.get_running_loop().create_task(
+            self._restart(requested_by)
+        )
+        return "Restarting. This session and its conversation carry over."
+
+    def _refuse_while_restarting(self) -> None:
+        """Refuse to start anything once `restart` has accepted.
+
+        Raises:
+            RequestError: If this process is about to be replaced.
+        """
+        if self._restarting is not None:
+            raise acp.RequestError.invalid_request(
+                {"reason": "the agent is restarting; try again in a moment"}
+            )
+
+    def _check_restartable(self) -> str | None:
+        """Import what the new process will, in a child process; the error, if any.
+
+        Catches what an edit most often breaks -- a syntax error, a bad import -- but
+        not what only fails once running. Blocks the event loop while it runs, which
+        costs nothing here: `restart` only gets this far when no turn is running.
+        """
+        check = (
+            "import importlib.util, sys\n"
+            "import effectful.handlers.llm.harness.__main__\n"
+            "import library\n"
+            "if len(sys.argv) > 1:\n"
+            "    spec = importlib.util.spec_from_file_location('_restart_check', sys.argv[1])\n"
+            "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        )
+        agent_file = (
+            inspect.getsourcefile(self.make_agent)
+            if isinstance(self.make_agent, type)
+            else None
+        )
+        env = dict(os.environ)
+        env.pop(RESTART_STATE_ENV, None)
+        paths = [os.path.dirname(os.path.abspath(__file__))]
+        if agent_file is not None:
+            paths.insert(0, os.path.dirname(agent_file))
+        env["PYTHONPATH"] = os.pathsep.join(
+            [*paths, *filter(None, [env.get("PYTHONPATH")])]
+        )
+        try:
+            result = subprocess.run(
+                [sys.executable, "-c", check, *filter(None, [agent_file])],
+                cwd=self._cwd,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+        except (OSError, subprocess.TimeoutExpired) as e:
+            return f"```\n{e}\n```"
+        if result.returncode != 0:
+            return f"```\n{result.stderr.strip()[-2000:]}\n```"
+        return None
+
+    async def _restart(self, requested_by: ACPSession[A]) -> None:
+        """Wait until nothing is owed to the editor, then `exec` a replacement.
+
+        A failure anywhere short of the `exec` succeeding leaves this process serving,
+        and says so to the session that asked.
+        """
+        assert self._channel is not None and self._stdout is not None
+        assert self._stdin is not None
+        path = None
+        try:
+            # Nothing new starts once `restart` has accepted, so this waits out only
+            # the turn that asked and whatever the editor sends meanwhile.
+            while requested_by.lock.locked():
+                await asyncio.sleep(0.05)
+            for session in list(self.sessions.values()):
+                await session.updates.join()
+            while (
+                self._unanswered
+                or self._stdout.transport.get_write_buffer_size()
+                # Bytes of a message the editor is part-way through sending would
+                # be lost with this process; wait for the rest and let it be handled.
+                # (Private, and there is no public way to ask.)
+                or self._stdin._buffer  # type: ignore[attr-defined]
+            ):
+                await asyncio.sleep(0.05)
+            with self._current_stack():
+                for session in self.sessions.values():
+                    SessionIndex.record(session)
+            state = {
+                "client_capabilities": self.client_capabilities.model_dump(
+                    mode="json", by_alias=True, exclude_none=True
+                ),
+                "sessions": list(self.sessions),
+            }
+            fd, path = tempfile.mkstemp(prefix="acp-restart-", suffix=".json")
+            with os.fdopen(fd, "w") as f:
+                json.dump(state, f)
+            os.environ[RESTART_STATE_ENV] = path
+            # `serve` pointed fd 1 at stderr and gave the protocol a duplicate, which
+            # is not inherited across `exec`; the new process has to find it on fd 1.
+            self._channel.flush()
+            os.dup2(self._channel.fileno(), 1)
+            # The command line's relative paths are relative to where it was run.
+            os.chdir(self._cwd)
+            os.execv(sys.executable, sys.orig_argv)
+        except Exception:
+            os.dup2(2, 1)
+            os.environ.pop(RESTART_STATE_ENV, None)
+            if path is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+            error = traceback.format_exc()
+            print(f"restart failed:\n{error}", file=sys.stderr)
+            requested_by.notify(
+                acp.update_agent_message_text(
+                    f"\n\nRestart failed; still running as before.\n\n```\n{error}```"
+                )
+            )
+        finally:
+            self._restarting = None
+
+    def _resume_after_restart(self, path: str) -> None:
+        """Reopen the sessions a restarted predecessor listed in `path`."""
+        with open(path) as f:
+            state = json.load(f)
+        os.unlink(path)
+        self.client_capabilities = acp.schema.ClientCapabilities.model_validate(
+            state["client_capabilities"]
+        )
+        for session_id in state["sessions"]:
+            try:
+                with self._current_stack():
+                    recorded = SessionIndex.get(session_id)
+                if recorded is None:
+                    print(f"note: no record of session {session_id}", file=sys.stderr)
+                    continue
+                session = self._open_session(
+                    session_id, recorded["cwd"], recorded["additional_directories"]
+                )
+                self._announce_commands(session)
+                self._announce_config(session)
+            except Exception:
+                # The editor will find it closed, and can load it again.
+                print(
+                    f"could not reopen session {session_id}:\n{traceback.format_exc()}",
+                    file=sys.stderr,
+                )
+                dropped = self.sessions.pop(session_id, None)
+                if dropped is not None and dropped.writer is not None:
+                    dropped.writer.cancel()
 
     async def initialize(
         self,
@@ -1085,6 +1463,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         `cwd` is the directory the user opened, and the session keeps it: it is what
         the model is told it is working on, and where a terminal command runs.
         """
+        self._refuse_while_restarting()
         self._decline_mcp(mcp_servers)
         session = self._open_session(str(uuid.uuid4()), cwd, additional_directories)
         with self._current_stack():
@@ -1095,6 +1474,59 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             modes=self._modes(session),
             config_options=self._config_options(session),
         )
+
+    @staticmethod
+    def _replay(
+        history: collections.abc.Iterable[collections.abc.Mapping[str, typing.Any]],
+    ) -> collections.abc.Iterator[typing.Any]:
+        """The `session/update` notifications that reproduce a stored conversation.
+
+        ACP requires `session/load` to replay "the entire conversation", and a coding
+        agent's conversation is mostly not prose: an assistant turn that read three files
+        carries no text at all, only tool calls, and dropping those would replay a
+        conversation in which the agent sat silent and then knew things. So each stored
+        tool call comes back as a completed tool-call row, and each stored tool *result*
+        fills in that row's output.
+
+        A generator rather than a method, so it can be read against a history without a
+        session, an editor, or an event loop.
+        """
+        for message in history:
+            role, text = message.get("role"), _library().message_as_text(message)
+            if role == "user":
+                if text:
+                    yield acp.update_user_message_text(text)
+            elif role == "assistant":
+                if text:
+                    yield acp.update_agent_message_text(text)
+                for raw in message.get("tool_calls") or []:
+                    function = raw.get("function") or {}
+                    name = function.get("name") or "?"
+                    arguments = function.get("arguments")
+                    try:
+                        raw_input = (
+                            json.loads(arguments)
+                            if isinstance(arguments, str)
+                            else arguments
+                        )
+                    except ValueError:
+                        raw_input = None
+                    yield acp.start_tool_call(
+                        str(raw.get("id")),
+                        name,
+                        kind=_library().tool_kind(name),
+                        # Completed, because a stored call is one that already ran: the
+                        # turn it belonged to is over, whatever became of the call.
+                        status="completed",
+                        raw_input=raw_input,
+                    )
+            elif (
+                role == "tool" and (call_id := message.get("tool_call_id")) is not None
+            ):
+                yield acp.update_tool_call(
+                    str(call_id),
+                    content=[acp.tool_content(acp.text_block(text))],
+                )
 
     async def load_session(
         self,
@@ -1112,11 +1544,12 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         wait until it has, because the client may be a different process with no
         other record of it.
         """
+        self._refuse_while_restarting()
         self._decline_mcp(mcp_servers)
         session = self._open_session(session_id, cwd, additional_directories)
         with self._current_stack():
             SessionIndex.record(session)
-            for update in _library()._replay(session.agent.__history__):
+            for update in self._replay(session.agent.__history__):
                 session.notify(update)
         self._announce_commands(session)
         await session.flush()
@@ -1140,6 +1573,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         agent to pick it up, not to be told it again. That is the whole difference, and
         it is why both are advertised -- a client picks one.
         """
+        self._refuse_while_restarting()
         self._decline_mcp(mcp_servers)
         session = self._open_session(session_id, cwd, additional_directories)
         with self._current_stack():
@@ -1172,6 +1606,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         answers, as any session's is -- so a fork abandoned before its first turn is
         an empty conversation, not a copy.
         """
+        self._refuse_while_restarting()
         self._decline_mcp(mcp_servers)
         source = self._open_session(session_id, cwd, additional_directories)
         fork = self._open_session(str(uuid.uuid4()), cwd, additional_directories)
@@ -1216,7 +1651,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         Raises:
             RequestError: If the session is not open, or the mode is not one offered.
         """
-        self._set_mode(self._session(session_id), mode_id)
+        session = self._session(session_id)
+        self._set_mode(session, mode_id)
+        with self._current_stack():
+            SessionIndex.record(session)
         return acp.schema.SetSessionModeResponse()
 
     async def set_config_option(
@@ -1249,6 +1687,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             raise acp.RequestError.invalid_params(
                 {"reason": f"no such config option: {config_id!r}"}
             )
+        with self._current_stack():
+            SessionIndex.record(session)
         return acp.schema.SetSessionConfigOptionResponse(
             config_options=self._config_options(session)
         )
@@ -1298,6 +1738,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         loop, and `max_tokens` and `refusal` are read by `ACPSessionReporter` off the
         last reply. Only a turn with nothing else to say is `end_turn`.
         """
+        self._refuse_while_restarting()
         session = self._session(session_id)
         async with session.lock:
             session.cancel.clear()
@@ -1307,6 +1748,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 with self._current_stack():
                     self._retitle(session, text)
                     answered = self._command(session, text)
+                    if answered is not None:
+                        # A command may have changed the session's settings.
+                        SessionIndex.record(session)
                 if answered is not None:
                     session.notify(acp.update_agent_message_text(answered))
                     return acp.schema.PromptResponse(stop_reason="end_turn")
@@ -1523,6 +1967,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             reader, writer = await acp.stdio.stdio_streams()
         finally:
             sys.stdout = sys.stderr
+        self._channel, self._stdout, self._stdin = channel, writer, reader
+        # What the command line's relative paths are relative to; see `_restart`.
+        self._cwd = os.getcwd()
+        self._restored = os.environ.pop(RESTART_STATE_ENV, None)
 
         async with self._reloading() if autoreload else contextlib.nullcontext():
             # `run_agent`'s parameters are named from the client's point of view: the
@@ -1532,6 +1980,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 input_stream=writer,
                 output_stream=reader,
                 use_unstable_protocol=True,
+                observers=[self._observe],
             )
 
     @contextlib.asynccontextmanager
@@ -1543,82 +1992,102 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         is then rebuilt from the launcher's flags. Once no turn is running, `reload`
         moves every session onto the new code. That includes `library`, which this
         module only ever reaches through `_library`. `_kept_modules` are never re-run,
-        nor is anything outside those directories. A module that fails to re-run is reported
-        on stderr and its previous version kept.
+        nor is anything else hmr does not claim.
+
+        Failures follow hmr: a file that does not parse keeps its previous version, and
+        a module that raises is reported on stderr with whatever ran before the error
+        applied, until a fixed save re-runs it. `linecache` serves the source of the
+        version running, which is what a skill's code is checked against.
         """
         from reactivity.hmr.core import (
             HMR_CONTEXT,
             BaseReloader,
             ReactiveModule,
+            ReactiveModuleFinder,
             _loader,
         )
-        from reactivity.hmr.hooks import post_reload
+        from reactivity.hmr.hooks import use_pre_reload
         from watchfiles import awatch
 
+        import effectful
         import effectful.handlers.llm.harness.__main__ as launcher
 
         args = _launcher_args()
         assert isinstance(self.make_agent, type), "autoreload needs an agent class"
         path = pathlib.Path(inspect.getfile(self.make_agent)).resolve()
-        harness_spec = importlib.util.find_spec(HARNESS)
-        assert harness_spec is not None and harness_spec.origin is not None
-        harness_dir = pathlib.Path(harness_spec.origin).parent
-        watched = (path.parent, harness_dir)
-        # Everything under the watched directories was imported before hmr was set up
-        # -- the handlers by the launcher, the agent's own imports by the script -- so
-        # hmr could not track it. Dropped here, it is imported again through hmr the
-        # next time the agent's file or the stack is built. The launcher's stack is
-        # left holding the dropped classes, so nothing may run under it from now on:
-        # the effect below installs the rebuilt stack before any turn, and the server
-        # runs under it.
+        harness = importlib.import_module(HARNESS)
+        # hmr finds modules only through `sys.path`, which an editable install of
+        # effectful need not put the repository on.
+        root = str(pathlib.Path(effectful.__file__).parent.parent)
+        if root not in sys.path:
+            sys.path.append(root)
+        reloader = BaseReloader(str(path), [str(path.parent), *harness.__path__], [])
+        finder = sys.meta_path[0]
+        assert isinstance(finder, ReactiveModuleFinder)
+
+        # What hmr now claims was imported before it was set up -- the handlers by
+        # the launcher, the agent's own imports by the script -- so it could not
+        # track it. Dropped here, it is imported again through hmr the next time the
+        # agent's file or the stack is built. The launcher's stack is left holding
+        # the dropped classes, so nothing may run under it from now on: the effect
+        # below installs the rebuilt stack before any turn, and the server runs
+        # under it.
         kept = _kept_modules() | {__name__, "__main__"}
-        for name, module in list(sys.modules.items()):
-            file = getattr(module, "__file__", None)
+        for name, loaded in list(sys.modules.items()):
+            file = getattr(loaded, "__file__", None)
             if (
                 file is not None
                 and name not in kept
-                and not hasattr(module, "__path__")
-                and any(pathlib.Path(file).resolve().is_relative_to(d) for d in watched)
+                and not hasattr(loaded, "__path__")
+                and finder._accept(pathlib.Path(file).resolve())
             ):
                 del sys.modules[name]
 
-        # hmr finds modules only through `sys.path`, which an editable install of
-        # effectful need not put the repository on.
-        if str(harness_dir.parents[3]) not in sys.path:
-            sys.path.append(str(harness_dir.parents[3]))
-        reloader = BaseReloader(str(path), [str(path.parent), str(harness_dir)], [])
-        # A skill checks its code against `linecache`, which would serve stale source.
-        post_reload(linecache.checkcache)
+        # Pinned without an mtime, which `linecache.checkcache` leaves alone, so the
+        # source served is the running version's rather than whatever is on disk.
+        pinned: dict[str, tuple] = {}
+
+        def unpin_sources() -> None:
+            # So a traceback printed during the re-run shows the lines that raised.
+            for file in pinned:
+                linecache.cache.pop(file, None)
+
+        def pin_sources() -> None:
+            for loaded in list(ReactiveModule.instances.values()):
+                if (file := vars(loaded).get("__file__")) is None:
+                    continue
+                try:
+                    source = pathlib.Path(file).read_text("utf-8")
+                    compile(source, file, "exec", dont_inherit=True)
+                except (OSError, SyntaxError, ValueError):
+                    continue  # hmr kept the previous version, and so does this
+                lines = source.splitlines(keepends=True)
+                pinned[file] = (len(source), None, lines, file)
+            linecache.cache.update(pinned)
 
         # The running copy of the agent's file is `__main__`, which hmr cannot re-run.
         sys.modules[path.stem] = module = importlib.util.module_from_spec(
             importlib.machinery.ModuleSpec(path.stem, _loader, origin=str(path))
         )
         name = self.make_agent.__qualname__
-        agent_class = HMR_CONTEXT.derived(lambda: getattr(module, name))
         stack = HMR_CONTEXT.derived(lambda: launcher._build_harness(args))
-        # Any re-run of `library` defines this afresh, so reading it is how an edit
-        # there -- a new slash command -- reaches `reload`.
-        library = HMR_CONTEXT.derived(lambda: _library().session_handlers)
 
         def forget_removed_names() -> None:
             # hmr re-runs a module into the namespace it had, so a name its file no
             # longer binds -- a deleted function -- would stay defined and, reached
-            # from the agent's scope, stay a tool. Pruned for each module in the
-            # agent's directory, through hmr's mapping, which keeps its own record
-            # of names; repeated because pruning one changes what a star import of
-            # it binds.
+            # from the agent's scope, stay a tool. Pruned for each of the agent's
+            # own modules, through hmr's mapping, which keeps its own record of
+            # names; repeated because pruning one changes what a star import of it
+            # binds.
             pruned = True
             while pruned:
                 pruned = False
-                for loaded in list(sys.modules.values()):
-                    if not isinstance(loaded, ReactiveModule):
-                        continue
+                for loaded in list(ReactiveModule.instances.values()):
                     names = vars(loaded)
                     file = names.get("__file__")
                     if "__path__" in names or file is None:
                         continue
-                    if pathlib.Path(file).resolve().parent != path.parent:
+                    if names["__name__"].startswith(f"{HARNESS}."):
                         continue
                     if (bound := _bound_names(pathlib.Path(file))) is None:
                         continue
@@ -1630,24 +2099,44 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                             del proxy[key]
                             pruned = True
 
+        last: list[typing.Any] = []
+
         def install() -> None:
-            library()
             forget_removed_names()
-            self.reload(agent_class(), stack())
+            # Read off the modules rather than through deriveds, so a read after a
+            # batch sees what it left. `session_handlers` is read so that any re-run
+            # of `library` -- a new slash command -- reaches `reload`.
+            current = [getattr(module, name), stack(), _library().session_handlers]
+            if len(last) == len(current) and all(map(operator.is_, last, current)):
+                return
+            last[:] = current
+            self.reload(current[0], current[1])
 
         installed = HMR_CONTEXT.effect(install)
+        pin_sources()
 
         async def watch() -> None:
             async for events in awatch(*reloader.includes):
-                # So no turn sees two versions of the code.
-                while any(s.lock.locked() for s in self.sessions.values()):
+                # So no turn sees two versions of the code, and nothing is sent to
+                # the editor while a restart waits for quiet.
+                while self._restarting is not None or any(
+                    s.lock.locked() for s in self.sessions.values()
+                ):
                     await asyncio.sleep(0.1)
-                reloader.on_events(events)
+                # One batch per file: hmr stops a batch at the first module that
+                # raises, which would leave the rest of its files unapplied.
+                for event in events:
+                    reloader.on_events([event])
+                # hmr runs a computation at most once per batch, so an edit that
+                # reaches `install` two ways can run it before the second has landed.
+                with reloader.error_filter:
+                    installed()
+                pin_sources()
 
         watching = asyncio.ensure_future(watch())
         try:
             assert self.harness is not None
-            with interpreter(self.harness):
+            with use_pre_reload(unpin_sources), interpreter(self.harness):
                 yield
         finally:
             watching.cancel()

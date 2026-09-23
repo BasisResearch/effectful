@@ -29,6 +29,7 @@ import contextlib
 import dataclasses
 import inspect
 import io
+import json
 import os
 import pathlib
 import re
@@ -599,15 +600,15 @@ def test_a_settled_response_is_handed_back_unchanged():
 
 
 def test_an_editor_tool_gets_the_icon_its_kind_deserves():
-    """`_tool_kind` is keyed by advertised name, so a rename must be made in both.
+    """`tool_kind` is keyed by advertised name, so a rename must be made in both.
 
     A stale key is invisible in every other way: the call still runs, the editor just
     draws the wrong icon.
     """
-    assert library._tool_kind(acp_read_text_file.__name__) == "read"
-    assert library._tool_kind(acp_write_text_file.__name__) == "edit"
-    assert library._tool_kind(acp_run_terminal_command.__name__) == "execute"
-    assert library._tool_kind("something_else") is None
+    assert library.tool_kind(acp_read_text_file.__name__) == "read"
+    assert library.tool_kind(acp_write_text_file.__name__) == "edit"
+    assert library.tool_kind(acp_run_terminal_command.__name__) == "execute"
+    assert library.tool_kind("something_else") is None
 
 
 def test_a_call_of_no_known_kind_claims_none_rather_than_other():
@@ -619,7 +620,7 @@ def test_a_call_of_no_known_kind_claims_none_rather_than_other():
     own way to say nothing about a call.
     """
     assert acp_ask_user.__name__ not in library._TOOL_KINDS
-    assert library._tool_kind(acp_ask_user.__name__) is None
+    assert library.tool_kind(acp_ask_user.__name__) is None
 
     client = _FakeClient()
     with _session(client) as session:
@@ -996,7 +997,7 @@ def test_a_terminal_backed_call_does_not_repeat_its_output_as_text():
     assert [c.type for c in completed[0].content] == ["terminal"]
     # The model still gets the text: the terminal is what the *user* reads.
     replied = [m for m in mock.received_messages[-1] if m.get("role") == "tool"]
-    assert "hello" in library._as_text(replied[0])
+    assert "hello" in library.message_as_text(replied[0])
 
 
 def test_a_non_text_tool_result_is_described_rather_than_dropped():
@@ -1012,13 +1013,13 @@ def test_a_non_text_tool_result_is_described_rather_than_dropped():
         Image.new("RGB", (4, 4), "red"), mode="json", context={}
     )
     blocks = list(to_content_blocks(encoded))
-    assert library._as_text({"content": blocks}) == "[image/png]"
+    assert library.message_as_text({"content": blocks}) == "[image/png]"
     # Text around it is kept, so a result that is partly prose still reads.
-    assert library._as_text(
+    assert library.message_as_text(
         {"content": [{"type": "text", "text": "here: "}, *blocks]}
     ) == ("here: [image/png]")
     # An unknown block kind is named rather than silently skipped.
-    assert library._as_text({"content": [{"type": "audio"}]}) == "[audio]"
+    assert library.message_as_text({"content": [{"type": "audio"}]}) == "[audio]"
 
 
 def test_an_image_returning_tool_shows_something_in_the_editor():
@@ -2654,6 +2655,7 @@ def test_opening_a_session_announces_its_slash_commands():
     ]
     assert [c.name for c in announced[0].available_commands] == [
         "clear",
+        "restart",
         "status",
         "mode",
     ]
@@ -3998,3 +4000,235 @@ def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
     mode = _option(pushed[-1].config_options, "mode")
     assert mode.current_value == library.Mode.ASK
     assert [o.value for o in mode.options] == [library.Mode.ASK, "review"]
+
+
+def test_restart_refuses_without_stdio():
+    """`/restart` replaces the process under the editor's pipes, so it needs them."""
+    client = _FakeClient()
+
+    async def body(server, session_id, opened):
+        return server._command(server.sessions[session_id], "/restart")
+
+    assert "stdio" in _in_session(body, client)
+
+
+def test_a_request_counts_as_unanswered_until_its_answer_is_written():
+    """What `restart` waits on before it replaces the process."""
+    import acp.connection
+
+    server = library.EffectfulACPAgent(_Bot)
+    event = acp.connection.StreamEvent
+    incoming, outgoing = (
+        acp.connection.StreamDirection.INCOMING,
+        acp.connection.StreamDirection.OUTGOING,
+    )
+    server._observe(event(incoming, {"id": 7, "method": "session/prompt"}))
+    server._observe(event(incoming, {"method": "session/cancel"}))
+    # The server's own request, answered by the editor: not something it owes.
+    server._observe(event(outgoing, {"id": 7, "method": "session/request_permission"}))
+    assert server._unanswered == {7}
+    server._observe(event(outgoing, {"id": 7, "result": {"stopReason": "end_turn"}}))
+    assert server._unanswered == set()
+
+
+def test_restart_refuses_without_persistence():
+    """Sessions come back from the checkpoint, so without one there is nothing to do."""
+    client = _FakeClient()
+
+    async def body(server, session_id, opened):
+        server._channel = server._stdout = object()
+        return server._command(server.sessions[session_id], "/restart")
+
+    assert "--persist-db" in _in_session(body, client)
+
+
+def test_a_restarted_server_reopens_the_sessions_it_was_left(tmp_path):
+    """The restart file and the checkpoint are enough to put a session back."""
+    persisting = harness(
+        model="mock/model",
+        eval_provider="none",
+        type_checker="none",
+        tool_calling="json",
+        persist_db=str(tmp_path / "sessions.db"),
+    )
+    model = MockCompletionHandler([make_text_response("noted")])
+    path = tmp_path / "restart.json"
+
+    async def before():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        await server.prompt(
+            session_id=session_id, prompt=[acp.text_block("remember pelican")]
+        )
+        session = server.sessions[session_id]
+        session.mode_id = "auto"
+        # What `_restart` does before it execs.
+        library.SessionIndex.record(session)
+        path.write_text(
+            json.dumps(
+                {
+                    "client_capabilities": server.client_capabilities.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
+                    "sessions": [session_id],
+                }
+            )
+        )
+        await server.close_session(session_id)
+        return session_id
+
+    async def after():
+        server = library.EffectfulACPAgent(_Bot)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        session = next(iter(server.sessions.values()))
+        return session, [m["role"] for m in session.agent.__history__]
+
+    with handler(persisting), handler(model):
+        session_id = asyncio.run(before())
+        session, roles = asyncio.run(after())
+    assert not path.exists()
+    assert session.session_id == session_id
+    assert roles == ["system", "user", "assistant"]
+    assert (session.mode_id, session.title) == ("auto", "remember pelican")
+
+
+def _persisting(tmp_path):
+    return harness(
+        model="mock/model",
+        eval_provider="none",
+        type_checker="none",
+        tool_calling="json",
+        persist_db=str(tmp_path / "sessions.db"),
+    )
+
+
+def test_restart_refuses_while_another_session_has_a_turn_running(tmp_path):
+    """Deferring would say "restarting" and then not, for as long as that turn ran."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        b = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._channel = server._stdout = object()
+        async with server.sessions[b].lock:
+            reply = server._command(server.sessions[a], "/restart")
+        await server.close_session(a)
+        await server.close_session(b)
+        return reply, server._restarting
+
+    with handler(_persisting(tmp_path)):
+        reply, restarting = asyncio.run(drive())
+    assert "A turn is running" in reply
+    assert restarting is None
+
+
+def test_restart_refuses_while_the_editor_awaits_another_request(tmp_path):
+    """That request's answer would be lost with this process."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._channel = server._stdout = object()
+        server._unanswered.update({"this restart", "another request"})
+        reply = server._command(server.sessions[a], "/restart")
+        await server.close_session(a)
+        return reply, server._restarting
+
+    with handler(_persisting(tmp_path)):
+        reply, restarting = asyncio.run(drive())
+    assert "another request" in reply
+    assert restarting is None
+
+
+def test_nothing_new_starts_while_restarting():
+    """So the quiet a restart waits for cannot be broken before its `exec`."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._restarting = typing.cast(typing.Any, object())
+        requests = [
+            lambda: server.prompt(session_id=a, prompt=[acp.text_block("hi")]),
+            lambda: server.new_session(cwd=_CWD, mcp_servers=[]),
+            lambda: server.load_session(cwd=_CWD, session_id=a, mcp_servers=[]),
+            lambda: server.resume_session(session_id=a, cwd=_CWD),
+            lambda: server.fork_session(session_id=a, cwd=_CWD),
+        ]
+        refused = []
+        for request in requests:
+            try:
+                await request()
+                refused.append(False)
+            except acp.RequestError:
+                refused.append(True)
+        server._restarting = None
+        opened = len(server.sessions)
+        await server.close_session(a)
+        return refused, opened
+
+    refused, opened = asyncio.run(drive())
+    assert refused == [True] * 5
+    assert opened == 1
+
+
+def test_a_mode_chosen_in_the_editor_is_recorded(tmp_path):
+    """So a session reopened after a crash or a restart comes back in it."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        await server.set_session_mode(session_id=session_id, mode_id="plan")
+        await server.close_session(session_id)
+        return library.SessionIndex.get(session_id)
+
+    with handler(_persisting(tmp_path)):
+        recorded = asyncio.run(drive())
+    assert recorded is not None and recorded["mode"] == "plan"
+
+
+def test_a_session_that_cannot_be_reopened_does_not_take_the_others_down(tmp_path):
+    """One agent failing to construct after a restart closes that session only."""
+    path = tmp_path / "restart.json"
+
+    async def before():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        ids = [
+            (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+            for _ in range(2)
+        ]
+        path.write_text(
+            json.dumps({"client_capabilities": {}, "sessions": [*ids, "unknown"]})
+        )
+        for session_id in ids:
+            await server.close_session(session_id)
+        return ids
+
+    def make_agent(session_id):
+        if session_id == broken:
+            raise RuntimeError("this one does not construct")
+        return _Bot(session_id)
+
+    async def after():
+        server = library.EffectfulACPAgent(make_agent)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        return set(server.sessions)
+
+    with handler(_persisting(tmp_path)):
+        ids = asyncio.run(before())
+        broken = ids[0]
+        reopened = asyncio.run(after())
+    assert reopened == {ids[1]}

@@ -799,7 +799,7 @@ def _locations(
     ]
 
 
-def _tool_kind(name: str) -> acp.schema.ToolKind | None:
+def tool_kind(name: str) -> acp.schema.ToolKind | None:
     """The ACP category an editor uses to pick an icon for a tool call, if it is known.
 
     Keyed by the name a tool is *advertised* under, since that is the name that comes
@@ -869,7 +869,7 @@ class ACPSessionReporter(ObjectInterpretation):
             return
         self._open[call_id] = name
         self.session.notify(
-            acp.start_tool_call(call_id, name, kind=_tool_kind(name), **kwargs)
+            acp.start_tool_call(call_id, name, kind=tool_kind(name), **kwargs)
         )
 
     def _finish(
@@ -1174,12 +1174,12 @@ class ACPSessionReporter(ObjectInterpretation):
         self._finish(
             tool_call.id,
             "failed" if isinstance(result, ToolCallExecutionError) else "completed",
-            _as_text(message),
+            message_as_text(message),
         )
         return (message, result, is_final)
 
 
-def _as_text(message: typing.Any) -> str:
+def message_as_text(message: typing.Any) -> str:
     """A message's content as a string, however it was encoded.
 
     `~effectful.handlers.llm.harness.hooks.call_tool` encodes a result into content
@@ -1192,38 +1192,29 @@ def _as_text(message: typing.Any) -> str:
     content = message.get("content") if hasattr(message, "get") else None
     if content is None:
         return ""
-    if isinstance(content, str):
+    elif isinstance(content, str):
         return content
-    if isinstance(content, list):
-        return "".join(
-            _part_as_text(part) for part in content if isinstance(part, dict)
-        )
-    return json.dumps(content, default=str)
-
-
-def _part_as_text(part: collections.abc.Mapping[str, typing.Any]) -> str:
-    """One content block as text: its own if it has any, else a note that it exists.
-
-    A tool result is not always text. `call_tool` encodes one that returns an image as
-    an ``image_url`` block, and reading only the ``text`` key across the blocks turned
-    that into the empty string -- so the editor rendered the call as having produced
-    nothing at all, which is the same thing it renders for a tool that printed
-    nothing. The model still receives the image either way; this is what stands in for
-    it on the screen.
-
-    A placeholder rather than the block itself because the content here is bound for a
-    text block. Handing the editor a real `acp.image_block` is a change to
-    `ACPSessionReporter._content`, and worth making for a client that renders one --
-    VS Code's does not, and would show nothing where this shows ``[image/png]``.
-    """
-    if (kind := part.get("type")) == "text":
-        return part.get("text") or ""
-    if kind == "image_url":
-        url = part.get("image_url")
-        url = url.get("url", "") if isinstance(url, dict) else (url or "")
-        media = url[len("data:") :].split(";", 1)[0] if url.startswith("data:") else ""
-        return f"[{media or 'image'}]"
-    return f"[{kind or 'attachment'}]"
+    elif isinstance(content, list):
+        content_strs = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            elif (kind := part.get("type")) == "text":
+                content_strs.append(part.get("text") or "")
+            elif kind == "image_url":
+                url = part.get("image_url")
+                url = url.get("url", "") if isinstance(url, dict) else (url or "")
+                media = (
+                    url[len("data:") :].split(";", 1)[0]
+                    if url.startswith("data:")
+                    else ""
+                )
+                content_strs.append(f"[{media or 'image'}]")
+            else:
+                content_strs.append(f"[{kind or 'attachment'}]")
+        return "".join(content_strs)
+    else:
+        return json.dumps(content, default=str)
 
 
 # ---------------------------------------------------------------------------
@@ -1369,7 +1360,7 @@ class ACPPermissionGate(ObjectInterpretation):
                 acp.schema.ToolCallUpdate(
                     tool_call_id=tool_call.id,
                     title=_call_title(tool_call.name, raw_input),
-                    kind=_tool_kind(tool_call.name),
+                    kind=tool_kind(tool_call.name),
                     raw_input=raw_input,
                 ),
                 options=list(self.permission_options),
@@ -1393,62 +1384,6 @@ class ACPPermissionGate(ObjectInterpretation):
                 f"The call to `{tool_call.name}` did not run: the user declined it. Do not retry it; either continue without it, or explain what you cannot do and why."
             ),
         )
-
-
-# ---------------------------------------------------------------------------
-# Remembering that a session existed
-# ---------------------------------------------------------------------------
-
-
-def _replay(
-    history: collections.abc.Iterable[collections.abc.Mapping[str, typing.Any]],
-) -> collections.abc.Iterator[typing.Any]:
-    """The `session/update` notifications that reproduce a stored conversation.
-
-    ACP requires `session/load` to replay "the entire conversation", and a coding
-    agent's conversation is mostly not prose: an assistant turn that read three files
-    carries no text at all, only tool calls, and dropping those would replay a
-    conversation in which the agent sat silent and then knew things. So each stored
-    tool call comes back as a completed tool-call row, and each stored tool *result*
-    fills in that row's output.
-
-    A generator rather than a method, so it can be read against a history without a
-    session, an editor, or an event loop.
-    """
-    for message in history:
-        role, text = message.get("role"), _as_text(message)
-        if role == "user":
-            if text:
-                yield acp.update_user_message_text(text)
-        elif role == "assistant":
-            if text:
-                yield acp.update_agent_message_text(text)
-            for raw in message.get("tool_calls") or []:
-                function = raw.get("function") or {}
-                name = function.get("name") or "?"
-                arguments = function.get("arguments")
-                try:
-                    raw_input = (
-                        json.loads(arguments)
-                        if isinstance(arguments, str)
-                        else arguments
-                    )
-                except ValueError:
-                    raw_input = None
-                yield acp.start_tool_call(
-                    str(raw.get("id")),
-                    name,
-                    kind=_tool_kind(name),
-                    # Completed, because a stored call is one that already ran: the
-                    # turn it belonged to is over, whatever became of the call.
-                    status="completed",
-                    raw_input=raw_input,
-                )
-        elif role == "tool" and (call_id := message.get("tool_call_id")) is not None:
-            yield acp.update_tool_call(
-                str(call_id),
-                content=[acp.tool_content(acp.text_block(text))],
-            )
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1602,6 +1537,15 @@ def clear[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) ->
     """Forget the conversation so far, keeping this session open."""
     session.agent.__history__.clear()
     return "Cleared. I have forgotten the conversation up to here."
+
+
+@register_command
+def restart[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -> str:
+    """Restart the agent process, keeping every open session and its conversation.
+
+    For code that ``--autoreload`` cannot re-run, such as ``server.py`` itself.
+    """
+    return server.restart(session)
 
 
 @register_command
