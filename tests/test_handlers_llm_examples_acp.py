@@ -2241,7 +2241,7 @@ def _cancelled_mid_tool(client, name: str, arguments: str, caps, after=None):
 
     async def body(server, session_id, opened):
         session = server.sessions[session_id]
-        session.mode_id = library.AUTO  # no permission prompt in the way
+        session.mode_id = library.Mode.AUTO  # no permission prompt in the way
         turn = asyncio.create_task(
             server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
         )
@@ -2368,7 +2368,7 @@ def test_cancelling_during_terminal_creation_still_releases_it(monkeypatch):
 
     async def body(server, session_id, opened):
         session = server.sessions[session_id]
-        session.mode_id = library.AUTO
+        session.mode_id = library.Mode.AUTO
         turn = asyncio.create_task(
             server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
         )
@@ -2395,11 +2395,11 @@ def test_a_new_session_offers_its_modes():
 
     modes = _in_session(body)
     assert modes is not None
-    assert modes.current_mode_id == library.ASK
+    assert modes.current_mode_id == library.Mode.ASK
     assert [m.id for m in modes.available_modes] == [
-        library.ASK,
-        library.AUTO,
-        library.PLAN,
+        library.Mode.ASK,
+        library.Mode.AUTO,
+        library.Mode.PLAN,
     ]
     assert all(m.name and m.description for m in modes.available_modes)
 
@@ -2413,7 +2413,7 @@ def test_auto_mode_runs_tools_without_asking():
         """Call `add_numbers`."""
 
     with _session(client) as session:
-        session.mode_id = library.AUTO
+        session.mode_id = library.Mode.AUTO
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -2439,7 +2439,7 @@ def test_plan_mode_refuses_to_change_anything():
         """Write to `/tmp/x.py` with `acp_write_text_file`."""
 
     with _session(client, _FS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(
             coproduct(
                 _stack(
@@ -2466,7 +2466,7 @@ def test_plan_mode_still_allows_reading():
     """A mode that blocked everything would just be a broken agent."""
     client = _FakeClient(files={"/tmp/x.py": "print(1)\n"})
     with _session(client, _FS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(coproduct(_stack(), session.intp)):
             assert acp_read_text_file("/tmp/x.py") == "print(1)\n"
     assert client.asked == []
@@ -2476,10 +2476,10 @@ def test_an_unknown_mode_is_refused():
     async def body(server, session_id, opened):
         with pytest.raises(acp.RequestError):
             await server.set_session_mode(session_id=session_id, mode_id="wishful")
-        await server.set_session_mode(session_id=session_id, mode_id=library.PLAN)
+        await server.set_session_mode(session_id=session_id, mode_id=library.Mode.PLAN)
         return server.sessions[session_id].mode_id
 
-    assert _in_session(body) == library.PLAN
+    assert _in_session(body) == library.Mode.PLAN
 
 
 def _option(options, config_id):
@@ -2501,8 +2501,12 @@ def test_the_mode_is_offered_as_a_config_option_as_well_as_in_modes():
     assert modes is not None, "still sent, for clients that do not read the list"
     mode = _option(options, "mode")
     assert mode.category == "mode"
-    assert mode.current_value == library.ASK
-    assert [o.value for o in mode.options] == [library.ASK, library.AUTO, library.PLAN]
+    assert mode.current_value == library.Mode.ASK
+    assert [o.value for o in mode.options] == [
+        library.Mode.ASK,
+        library.Mode.AUTO,
+        library.Mode.PLAN,
+    ]
 
 
 def test_no_model_picker_when_there_is_nothing_to_pick():
@@ -2614,13 +2618,13 @@ def test_the_mode_can_be_set_through_the_config_option_too():
 
     async def body(server, session_id, opened):
         response = await server.set_config_option(
-            config_id="mode", session_id=session_id, value=library.PLAN
+            config_id="mode", session_id=session_id, value=library.Mode.PLAN
         )
         return response, server.sessions[session_id].mode_id
 
     response, mode_id = _in_session(body)
-    assert mode_id == library.PLAN
-    assert _option(response.config_options, "mode").current_value == library.PLAN
+    assert mode_id == library.Mode.PLAN
+    assert _option(response.config_options, "mode").current_value == library.Mode.PLAN
 
 
 def test_an_unknown_option_or_value_is_refused_rather_than_ignored():
@@ -2671,7 +2675,7 @@ def test_a_command_that_takes_an_argument_advertises_a_hint():
     assert commands["clear"].input is None, "takes no argument, so promises none"
     hint = commands["mode"].input
     assert hint is not None
-    assert hint.model_dump()["hint"] == "ask | auto | plan"
+    assert hint.model_dump()["hint"] == "[ask | auto | plan]"
 
 
 def test_the_mode_command_switches_and_says_so_on_both_channels():
@@ -2685,7 +2689,7 @@ def test_the_mode_command_switches_and_says_so_on_both_channels():
         return answer, session.mode_id
 
     answer, mode_id = _in_session(body, client)
-    assert mode_id == library.PLAN
+    assert mode_id == library.Mode.PLAN
     assert "Plan" in answer
     kinds = _kinds(client.updates)
     assert "current_mode_update" in kinds
@@ -2693,7 +2697,7 @@ def test_the_mode_command_switches_and_says_so_on_both_channels():
     pushed = next(
         u for u in client.updates if u.session_update == "config_option_update"
     )
-    assert _option(pushed.config_options, "mode").current_value == library.PLAN
+    assert _option(pushed.config_options, "mode").current_value == library.Mode.PLAN
 
 
 def test_the_mode_command_with_no_argument_reports_the_choices():
@@ -2716,7 +2720,7 @@ def test_an_unknown_mode_from_the_command_is_reported_not_applied():
 
     answer, mode_id = _in_session(body, client)
     assert "wishful" in answer
-    assert mode_id == library.ASK
+    assert mode_id == library.Mode.ASK
 
 
 def _prompted(client: _FakeClient, text: str, responses=None, **kwargs):
@@ -2763,7 +2767,7 @@ def test_clearing_leaves_no_note_about_clearing_in_the_history():
 
 def test_status_reports_what_the_session_is_actually_using():
     _, history, _, said = _prompted(
-        _FakeClient(), "/status", mode_id=library.PLAN, model=_MODELS[0]
+        _FakeClient(), "/status", mode_id=library.Mode.PLAN, model=_MODELS[0]
     )
     assert "Plan" in said[-1].content.text
     assert _MODELS[0] in said[-1].content.text
@@ -3073,7 +3077,7 @@ def test_asking_the_user_needs_no_permission_prompt():
 
     client = _FakeClient()
     with _session(client, _FORMS) as session:
-        assert session.mode_id == library.ASK
+        assert session.mode_id == library.Mode.ASK
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -3110,7 +3114,7 @@ def test_asking_is_allowed_in_plan_mode():
 
     client = _FakeClient()
     with _session(client, _FORMS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -3212,7 +3216,7 @@ def test_forking_copies_a_conversation_without_entangling_it(tmp_path):
         server = await _serve(_FakeClient())
         session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
         source = server.sessions[session_id]
-        source.mode_id, source.model = library.PLAN, "some/model"
+        source.mode_id, source.model = library.Mode.PLAN, "some/model"
         source.title = "the original"
         await server.prompt(session_id=session_id, prompt=[acp.text_block("hello")])
 
@@ -3245,7 +3249,7 @@ def test_forking_copies_a_conversation_without_entangling_it(tmp_path):
     assert distinct, "a fork gets its own id"
     assert copied == source_len, "it starts as a copy of the source"
     assert fork_len > source_len, "and diverges from there"
-    assert settings == (library.PLAN, "some/model", "the original (fork)")
+    assert settings == (library.Mode.PLAN, "some/model", "the original (fork)")
     assert sorted(titles) == ["the original", "the original (fork)"]
 
 
@@ -3969,3 +3973,28 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt():
     assert marker in str(stored["content"])
     assert later == after
     assert session.agent.__history__[0] is stored, "a later turn replaced it again"
+
+
+def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
+    """A mode added or removed in `library` reaches a session already open."""
+    client = _FakeClient()
+    review = schema.SessionMode(id="review", name="Review", description="Only review.")
+
+    async def body(server, session_id, opened):
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        monkeypatch.setattr(
+            library, "SESSION_MODES", (library.SESSION_MODES[0], review)
+        )
+        server.reload(_Bot, _stack())
+        await session.flush()
+        return session.mode_id
+
+    mode_id = _in_session(body, client)
+    assert mode_id == library.Mode.ASK, "a removed mode falls back to the first"
+    moved = [u for u in client.updates if u.session_update == "current_mode_update"]
+    assert [u.current_mode_id for u in moved] == [library.Mode.ASK]
+    pushed = [u for u in client.updates if u.session_update == "config_option_update"]
+    mode = _option(pushed[-1].config_options, "mode")
+    assert mode.current_value == library.Mode.ASK
+    assert [o.value for o in mode.options] == [library.Mode.ASK, "review"]

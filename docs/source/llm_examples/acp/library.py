@@ -33,10 +33,12 @@ import collections.abc
 import concurrent.futures
 import contextlib
 import dataclasses
+import enum
 import functools
 import inspect
 import json
 import sys
+import types
 import typing
 
 import acp
@@ -45,15 +47,11 @@ import litellm
 import pydantic
 import pydantic_core
 from server import (  # noqa: F401 -- re-exported, so this module is the one to import
-    ASK,
-    AUTO,
     FLUSH_TIMEOUT,
     INHERIT_MODEL,
     MODE_OPTION_ID,
     MODEL_OPTION_ID,
     OFFER_MODELS_ENV,
-    PLAN,
-    SESSION_MODES,
     ACPSession,
     Attachment,
     ConfigOption,
@@ -247,10 +245,44 @@ def acp_ask_user(message: str, fields: list[AskField]) -> str:
     raise RuntimeError("missing handler")
 
 
+class Mode(enum.StrEnum):
+    """How much a session may do without asking; see `ACPPermissionGate`."""
+
+    ASK = "ask"
+    AUTO = "auto"
+    PLAN = "plan"
+
+
+SESSION_MODES: tuple[acp.schema.SessionMode, ...] = (
+    acp.schema.SessionMode(
+        id=Mode.ASK,
+        name="Ask",
+        description="Ask before running each tool.",
+    ),
+    acp.schema.SessionMode(
+        id=Mode.AUTO,
+        name="Auto",
+        description="Run tools without asking. Undo is your editor's.",
+    ),
+    acp.schema.SessionMode(
+        id=Mode.PLAN,
+        name="Plan",
+        description="Read and discuss, but change nothing: no writes, no commands.",
+    ),
+)
+"""The modes a session offers; the first is a new session's, and the fallback for one
+whose mode an edit removed.
+
+Here rather than in `server.py` so that an edit reaches open sessions: `reload` pushes
+the list as a `config_option_update`. ACP has no update for the legacy `modes` list,
+so a client reading only that sees the change from its next session.
+"""
+
+
 MUTATING_TOOLS = frozenset(
     {acp_write_text_file.__name__, acp_run_terminal_command.__name__}
 )
-"""What `PLAN` mode refuses: the tools that change the user's editor or machine.
+"""What `Mode.PLAN` refuses: the tools that change the user's editor or machine.
 
 A denylist of the two `ACPToolRuntime` offers, and deliberately not a sandbox. The
 harness may also be running model-authored Python -- `exec_code`,
@@ -270,7 +302,7 @@ by the real one.
 Safe on its own terms rather than by exception. The tool's only effect is a form on
 the user's screen: it reads nothing, changes nothing, and dismissing it already
 cancels the turn, so the decision the gate would have offered is one the user still
-has. `PLAN` mode leaves it alone for the same reason -- asking changes nothing, and a
+has. `Mode.PLAN` leaves it alone for the same reason -- asking changes nothing, and a
 session that may not act is exactly where a clarifying question is worth most.
 """
 
@@ -1304,9 +1336,9 @@ class ACPPermissionGate(ObjectInterpretation):
         # entitled to ask as Auto is.
         if tool_call.name in UNGATED_TOOLS:
             return lambda *a, **k: fwd()
-        if self.session.mode_id == AUTO:
+        if self.session.mode_id == Mode.AUTO:
             return lambda *a, **k: fwd()
-        if self.session.mode_id == PLAN and tool_call.name in MUTATING_TOOLS:
+        if self.session.mode_id == Mode.PLAN and tool_call.name in MUTATING_TOOLS:
             return functools.partial(
                 refused,
                 PermissionError(
@@ -1465,9 +1497,10 @@ def register_command[F: _Command](
 
     The name defaults to the function's; the description is the docstring's first
     paragraph. `fn` takes ``(server, session)`` then any number of positional `str`
-    parameters, filled from the argument text split on whitespace, the last taking
-    the remainder; missing trailing ones take their defaults. The hint is the
-    parameters as ``<required> [optional]`` unless `hint` is given.
+    or `StrEnum` parameters, optionally ``| None``, filled from the argument text split
+    on whitespace, the last taking the remainder; missing trailing ones take their
+    defaults. The hint shows each as ``<required>`` or ``[optional]``, by name or, for
+    an enum, by its values, unless `hint` is given.
     """
 
     def register(fn: F) -> F:
@@ -1475,21 +1508,14 @@ def register_command[F: _Command](
         # Dispatch reads the name up to the first space after the slash.
         if command.split() != [command] or command.startswith("/"):
             raise ValueError(f"{command!r} is not a slash command name")
-        if command in _SLASH_COMMANDS:
-            raise ValueError(f"/{command} is registered twice")
         description = " ".join((inspect.getdoc(fn) or "").split("\n\n")[0].split())
         if not description:
             raise TypeError(f"/{command} needs a docstring to describe it")
         params = list(inspect.signature(fn).parameters.values())[2:]
-        for param in params:
-            if param.kind is not param.POSITIONAL_OR_KEYWORD:
-                raise TypeError(f"/{command}: `{param.name}` must be positional")
-            if param.annotation not in (str, param.empty):
-                raise TypeError(f"/{command}: `{param.name}` must be a `str`")
+        kinds = [_argument_type(command, param) for param in params]
         required = sum(param.default is param.empty for param in params)
         usage = hint or " ".join(
-            f"<{param.name}>" if param.default is param.empty else f"[{param.name}]"
-            for param in params
+            _placeholder(param, kind) for param, kind in zip(params, kinds)
         )
         input = None
         if params:
@@ -1504,7 +1530,16 @@ def register_command[F: _Command](
                 return f"`/{command}` takes no argument."
             if not required <= len(words) <= len(params):
                 return f"Usage: `/{command} {usage}`"
-            return fn(server, session, *words)
+            values = []
+            for param, kind, word in zip(params, kinds, words):
+                try:
+                    values.append(kind(word))
+                except ValueError:
+                    # Only an enum's constructor refuses a string.
+                    members = typing.cast(type[enum.StrEnum], kind)
+                    choices = ", ".join(f"`{member.value}`" for member in members)
+                    return f"`{word}` is not a valid {param.name}. Try {choices}."
+            return fn(server, session, *values)
 
         _SLASH_COMMANDS[command] = SlashCommand(
             spec=acp.schema.AvailableCommand(
@@ -1515,6 +1550,33 @@ def register_command[F: _Command](
         return fn
 
     return register if fn is None else register(fn)
+
+
+def _argument_type(command: str, param: inspect.Parameter) -> type[str]:
+    """The `str` subclass a command's `param` is parsed as, from its annotation."""
+    if param.kind is not param.POSITIONAL_OR_KEYWORD:
+        raise TypeError(f"/{command}: `{param.name}` must be positional")
+    if param.annotation is param.empty:
+        return str
+    union = isinstance(param.annotation, types.UnionType)
+    kinds = [
+        kind
+        for kind in (typing.get_args(param.annotation) if union else [param.annotation])
+        if kind is not type(None)
+    ]
+    if len(kinds) == 1 and isinstance(kinds[0], type) and issubclass(kinds[0], str):
+        return kinds[0]
+    raise TypeError(f"/{command}: `{param.name}` must be a `str` or a `StrEnum`")
+
+
+def _placeholder(param: inspect.Parameter, kind: type[str]) -> str:
+    """How `param` appears in a command's hint."""
+    label = (
+        " | ".join(member.value for member in kind)
+        if issubclass(kind, enum.StrEnum)
+        else param.name
+    )
+    return f"<{label}>" if param.default is param.empty else f"[{label}]"
 
 
 @register_command
@@ -1540,9 +1602,9 @@ def status[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -
     )
 
 
-@register_command(hint=" | ".join(mode.id for mode in SESSION_MODES))
+@register_command
 def mode[A: "Agent"](
-    server: "EffectfulACPAgent[A]", session: ACPSession[A], mode_id: str = ""
+    server: "EffectfulACPAgent[A]", session: ACPSession[A], mode: Mode | None = None
 ) -> str:
     """Switch how much this agent may do without asking.
 
@@ -1552,21 +1614,16 @@ def mode[A: "Agent"](
     client might be listening to: `current_mode_update` for one that reads `modes`,
     and the config options for one that reads those.
     """
-    offered = {mode.id: mode for mode in SESSION_MODES}
-    if not mode_id:
+    offered = {m.id: m for m in SESSION_MODES}
+    if mode is None:
         return "\n".join(
             [f"**Mode** {offered[session.mode_id].name}", ""]
-            + [f"- `/mode {mode.id}` — {mode.description}" for mode in SESSION_MODES]
+            + [f"- `/mode {m.id}` — {m.description}" for m in SESSION_MODES]
         )
-    if mode_id not in offered:
-        return (
-            f"No such mode `{mode_id}`. Try "
-            f"{', '.join(f'`{mode_id}`' for mode_id in offered)}."
-        )
-    session.mode_id = mode_id
+    session.mode_id = mode.value
     session.notify(
         acp.schema.CurrentModeUpdate(
-            session_update="current_mode_update", current_mode_id=mode_id
+            session_update="current_mode_update", current_mode_id=mode.value
         )
     )
     session.notify(
@@ -1575,7 +1632,8 @@ def mode[A: "Agent"](
             config_options=server._config_options(session),
         )
     )
-    return f"Mode is now **{offered[mode_id].name}**. {offered[mode_id].description}"
+    chosen = offered[mode.value]
+    return f"Mode is now **{chosen.name}**. {chosen.description}"
 
 
 SLASH_COMMANDS: tuple[acp.schema.AvailableCommand, ...] = tuple(

@@ -116,29 +116,9 @@ type ConfigOption = (
 # a *mode* (`session/set_mode`) and a *config option* (`session/set_config_option`).
 # Only `select` options are used, deliberately -- a boolean one is gated behind
 # the client's `session.configOptions.boolean` capability, and most clients,
-# including VS Code's, advertise no session capabilities at all.
+# including VS Code's, advertise no session capabilities at all. The modes
+# themselves are `library.SESSION_MODES`, so an edit to them reaches open sessions.
 # ---------------------------------------------------------------------------
-
-ASK, AUTO, PLAN = "ask", "auto", "plan"
-
-SESSION_MODES: tuple[acp.schema.SessionMode, ...] = (
-    acp.schema.SessionMode(
-        id=ASK,
-        name="Ask",
-        description="Ask before running each tool.",
-    ),
-    acp.schema.SessionMode(
-        id=AUTO,
-        name="Auto",
-        description="Run tools without asking. Undo is your editor's.",
-    ),
-    acp.schema.SessionMode(
-        id=PLAN,
-        name="Plan",
-        description="Read and discuss, but change nothing: no writes, no commands.",
-    ),
-)
-
 
 MODE_OPTION_ID = "mode"
 MODEL_OPTION_ID = "model"
@@ -250,8 +230,11 @@ class ACPSession[A: "Agent"]:
     additional_directories: tuple[str, ...] = ()
     """Further absolute paths the session may work in, beyond `cwd`."""
 
-    mode_id: str = ASK
-    """Which of `SESSION_MODES` the user has picked. Read by `ACPPermissionGate`."""
+    mode_id: str = dataclasses.field(
+        default_factory=lambda: _library().SESSION_MODES[0].id
+    )
+    """Which of `library.SESSION_MODES` the user has picked. Read by
+    `ACPPermissionGate`."""
 
     model: str = INHERIT_MODEL
     """The model the user picked, or `INHERIT_MODEL` for the configured one."""
@@ -844,7 +827,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     def _modes(self, session: ACPSession[A]) -> acp.schema.SessionModeState:
         """The modes on offer and the one in force, for a session response."""
         return acp.schema.SessionModeState(
-            current_mode_id=session.mode_id, available_modes=list(SESSION_MODES)
+            current_mode_id=session.mode_id,
+            available_modes=list(_library().SESSION_MODES),
         )
 
     def _config_options(self, session: ACPSession[A]) -> list[ConfigOption]:
@@ -874,7 +858,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                     acp.schema.SessionConfigSelectOption(
                         value=mode.id, name=mode.name, description=mode.description
                     )
-                    for mode in SESSION_MODES
+                    for mode in _library().SESSION_MODES
                 ],
             )
         ]
@@ -917,6 +901,27 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             acp.schema.AvailableCommandsUpdate(
                 session_update="available_commands_update",
                 available_commands=list(_library().SLASH_COMMANDS),
+            )
+        )
+
+    def _announce_config(self, session: ACPSession[A]) -> None:
+        """Push this session's config options, including the modes now on offer.
+
+        A session whose mode is no longer offered falls back to the first one.
+        """
+        modes = _library().SESSION_MODES
+        if session.mode_id not in {mode.id for mode in modes}:
+            session.mode_id = modes[0].id
+            session.notify(
+                acp.schema.CurrentModeUpdate(
+                    session_update="current_mode_update",
+                    current_mode_id=session.mode_id,
+                )
+            )
+        session.notify(
+            acp.schema.ConfigOptionUpdate(
+                session_update="config_option_update",
+                config_options=self._config_options(session),
             )
         )
 
@@ -1231,9 +1236,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         instead.
 
         Raises:
-            RequestError: If `mode_id` is not one of `SESSION_MODES`.
+            RequestError: If `mode_id` is not one of `library.SESSION_MODES`.
         """
-        if mode_id not in {mode.id for mode in SESSION_MODES}:
+        if mode_id not in {mode.id for mode in _library().SESSION_MODES}:
             raise acp.RequestError.invalid_params(
                 {"reason": f"no such mode: {mode_id!r}"}
             )
@@ -1362,7 +1367,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         agent is rebuilt by `make_agent`, keeping its history and dataclass fields.
 
         Each session's handlers are rebuilt from `library` too, and its slash commands
-        announced again, so a command added there is offered at once.
+        and config options announced again, so a command or mode added there is
+        offered at once.
 
         Call it only while no turn is running.
         """
@@ -1371,6 +1377,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             session.new_code = True
             session.install_handlers()
             self._announce_commands(session)
+            self._announce_config(session)
             old, new = session.agent, make_agent(session.session_id)
             if dataclasses.is_dataclass(old) and dataclasses.is_dataclass(new):
                 kept = {field.name for field in dataclasses.fields(new)}
