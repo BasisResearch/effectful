@@ -907,9 +907,7 @@ def test_generic_callable_skill_parametric_impl(generic_mod):
         lambda: generic_mod.make_fn(int),
         [
             make_text_response(
-                json.dumps(
-                    {"value": {"code": "def ident[U](x: U) -> U:\n    return x\n"}}
-                )
+                json.dumps({"value": "def ident[U](x: U) -> U:\n    return x\n"})
             )
         ],
     )
@@ -931,13 +929,7 @@ def test_generic_callable_skill_concrete_impl_rejected(generic_mod):
             lambda: generic_mod.make_fn(int),
             [
                 make_text_response(
-                    json.dumps(
-                        {
-                            "value": {
-                                "code": "def dbl(x: int) -> int:\n    return x + x\n"
-                            }
-                        }
-                    )
+                    json.dumps({"value": "def dbl(x: int) -> int:\n    return x + x\n"})
                 )
             ],
         )

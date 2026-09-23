@@ -9,7 +9,7 @@
       "finish_reason": "stop",
       "index": 0,
       "message": {
-        "content": "{\"value\":{\"code\":\"def add(a: int, b: int) -> int:\\n    return a + b\\n\\n# The function to add two integers together.\\n\\nadd\"}}",
+        "content": "{\"value\":\"def add(a: int, b: int) -> int:\\n    return a + b\\n\\n# The function to add two integers together.\\n\\nadd\"}",
         "role": "assistant",
         "tool_calls": null,
         "function_call": null,

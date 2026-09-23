@@ -38,7 +38,6 @@ import ast
 import collections.abc
 import functools
 import inspect
-import textwrap
 import types
 import typing
 from collections.abc import Callable
@@ -69,9 +68,10 @@ from effectful.handlers.llm.harness.serialization import (
 )
 from effectful.handlers.llm.harness.synthesis.function import (
     SplicedRegion,
-    SynthesizedFunction,
+    _checked_source,
     _def_nodes,
     _recover_skill_def,
+    _synthesized_source_schema,
 )
 from effectful.handlers.llm.types import Encodable, Skill, Tool
 from effectful.ops.semantics import fwd, handler
@@ -177,40 +177,20 @@ class SkillBody:
         return types.GenericAlias(cls, item)
 
 
-class SynthesizedSkillBody(SynthesizedFunction):
-    """Structured output for synthesizing a `Skill`'s body (`write_and_run_body`).
+# A Skill body is type-checked against the Skill's own (already-annotated) signature
+# by `_splice_body`, so the synthesized body's own annotations are optional.
+_SKILL_BODY_CONSTRAINTS: list[str] = [
+    "Write the function with the Skill's signature; parameter and return "
+    "annotations are optional.",
+    "Do not include a docstring or doctests; the Skill's are supplied automatically.",
+]
 
-    Decoded through `_pydantic_skill_body`: the function is type-checked against
-    the enclosing Skill's source and its doctests are run with self/recursive
-    calls routed to the synthesized implementation.
-
-    Unlike `SynthesizedFunction`, the parameter and return *annotations* are not
-    required: a Skill body is type-checked against the Skill's own signature
-    (see `splice_skill_body`), so the model may omit or vary them -- in
-    particular it need not annotate the ``self`` receiver of an instance-method
-    Skill.
-    """
-
-    code: str = pydantic.Field(
-        ...,
-        description=textwrap.dedent("""
-        The complete Python source implementing the Skill shown in its spec.
-        The code MUST satisfy the following constraints, or it will fail validation:
-
-        <constraints>
-        1. The code MUST be one complete syntactically valid Python module.
-        2. The code MUST NOT use star imports or ``__future__`` imports.
-        3. The function definition MUST be the LAST statement - do not add any code after it.
-        4. Write the function with the Skill's signature; parameter and return
-        annotations are optional.
-        5. Do not include a docstring or doctests; the Skill's are supplied automatically.
-        </constraints>
-        """),
-    )
-
-    # A Skill body is checked against the Skill's own (already-annotated)
-    # signature, so the synthesized body's annotations are optional.
-    _require_annotations: typing.ClassVar[bool] = False
+_METHOD_SKILL_BODY_CONSTRAINTS: list[str] = [
+    "Write the function with the Skill's signature: its FIRST parameter is the "
+    "instance receiver ``self`` (which you may leave unannotated); all other "
+    "parameter and return annotations are optional too.",
+    "Do not include a docstring or doctests; the Skill's are supplied automatically.",
+]
 
 
 @TypeToPydanticType.register(SkillBody)
@@ -223,20 +203,20 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
     implementation, so a doctest that calls the Skill (including for recursion)
     exercises the freshly synthesized code rather than re-invoking the model.
     """
-    typed_enc = SynthesizedSkillBody._create_model_from_callable_type(
+    schema = _synthesized_source_schema(
         ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
+        "the Skill shown in its spec",
+        _SKILL_BODY_CONSTRAINTS,
     )
 
     def _validate(
-        value: SynthesizedSkillBody | dict | str | Callable,
+        value: str | Callable,
         info: pydantic.ValidationInfo,
     ) -> Callable:
-        if isinstance(value, str):
-            value = typed_enc.model_validate({"code": value})
-        elif isinstance(value, dict):
-            value = typed_enc.model_validate(value)
-        elif callable(value):
+        value = _checked_source(value, require_annotations=False)
+        if not isinstance(value, str):
             return typing.cast(Callable, value)
+
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
@@ -244,9 +224,9 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.code)}>"
+        filename = f"<synthesis:{id(value)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.code, filename
+            value, filename
         )
 
         # `None` means the Skill's source can't be recovered (REPL/exec/notebook
@@ -282,7 +262,7 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
 
     return typing.Annotated[
         pydantic.InstanceOf[ty_],  # type: ignore
-        pydantic.BeforeValidator(_validate, json_schema_input_type=typed_enc),
+        pydantic.BeforeValidator(_validate, json_schema_input_type=schema),
         pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
@@ -297,58 +277,6 @@ class MethodSkillBody(SkillBody):
     The Skill's real signature (which includes the receiver) remains the
     type-check contract; see `splice_skill_body`.
     """
-
-
-class SynthesizedMethodSkillBody(SynthesizedSkillBody):
-    """Structured output for synthesizing an *instance-method* `Skill`'s body.
-
-    Decoded through `_pydantic_skill_body`: the function is type-checked against
-    the enclosing Skill's source and its doctests are run with self/recursive
-    calls routed to the synthesized implementation.
-
-    Unlike `SynthesizedFunction`, the parameter and return *annotations* are not
-    required: a Skill body is type-checked against the Skill's own signature
-    (see `splice_skill_body`), so the model may omit or vary them -- in
-    particular it need not annotate the ``self`` receiver of an instance-method
-    Skill.
-    """
-
-    code: str = pydantic.Field(
-        ...,
-        description=textwrap.dedent("""
-        The complete Python source implementing the instance-method Skill shown in
-        its spec. The code MUST satisfy the following constraints, or it will fail
-        validation:
-
-        <constraints>
-        1. The code MUST be one complete syntactically valid Python module.
-        2. The code MUST NOT use star imports or ``__future__`` imports.
-        3. The function definition MUST be the LAST statement - do not add any code after it.
-        4. Write the function with the Skill's signature: its FIRST parameter is the
-        instance receiver ``self`` (which you may leave unannotated); all other parameter
-        and return annotations are optional too.
-        5. Do not include a docstring or doctests; the Skill's are supplied automatically.
-        </constraints>
-        """),
-    )
-
-    @classmethod
-    def _param_names(cls, param_types: typing.Iterable[typing.Any]) -> list[str]:
-        # The method's callable type already carries the receiver as its first
-        # parameter (with an uninformative Agent-class type); relabel it ``self`` so
-        # the model reproduces it rather than inventing one -- do NOT prepend a receiver.
-        names = super()._param_names(param_types)
-        if names:
-            names[0] = "self"
-        return names
-
-    @classmethod
-    def _extra_instructions(cls) -> str:
-        return (
-            "\n\nThis implements an instance method: the first parameter is the "
-            "instance receiver `self`. Include it as the first parameter; you may "
-            "leave it unannotated."
-        )
 
 
 def _class_skill_of(op: typing.Any) -> typing.Any | None:
@@ -382,20 +310,21 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
     their own instances -- route ``agent.method(...)`` on *any* instance to the
     synthesized implementation.
     """
-    typed_enc = SynthesizedMethodSkillBody._create_model_from_callable_type(
+    schema = _synthesized_source_schema(
         ty if typing.get_args(ty) else Callable[..., typing.Any],  # type: ignore[arg-type]
+        "the instance-method Skill shown in its spec",
+        _METHOD_SKILL_BODY_CONSTRAINTS,
+        receiver=True,
     )
 
     def _validate(
-        value: SynthesizedMethodSkillBody | dict | str | Callable,
+        value: str | Callable,
         info: pydantic.ValidationInfo,
     ) -> Callable:
-        if isinstance(value, str):
-            value = typed_enc.model_validate({"code": value})
-        elif isinstance(value, dict):
-            value = typed_enc.model_validate(value)
-        elif callable(value):
+        value = _checked_source(value, require_annotations=False)
+        if not isinstance(value, str):
             return typing.cast(Callable, value)
+
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
         if anchor is not None:
@@ -403,9 +332,9 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.code)}>"
+        filename = f"<synthesis:{id(value)}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
-            value.code, filename
+            value, filename
         )
         anchor_asts = _recover_skill_def(anchor) if anchor is not None else None
         if anchor_asts is not None:
@@ -445,7 +374,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
 
     return typing.Annotated[
         pydantic.InstanceOf[ty_],  # type: ignore
-        pydantic.BeforeValidator(_validate, json_schema_input_type=typed_enc),
+        pydantic.BeforeValidator(_validate, json_schema_input_type=schema),
         pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
     ]
 
