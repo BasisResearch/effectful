@@ -2,17 +2,21 @@ import collections.abc
 import contextlib
 import dataclasses
 import functools
+import inspect
 import operator
 import types
 import typing
+import weakref
 
 from effectful.internals.runtime import cache
+from effectful.internals.weak import weak_memoize
 from effectful.ops.syntax import (
     ConstructorOperation,
     DataclassConstructorOperation,
     ObjectInterpretation,
     Scoped,
     _CustomSingleDispatchCallable,
+    _Renaming,
     defop,
     implements,
 )
@@ -23,6 +27,10 @@ from effectful.ops.types import (
     Operation,
     Term,
 )
+
+if typing.TYPE_CHECKING:
+    import typing_extensions
+
 
 apply = Operation.__apply__
 
@@ -179,9 +187,74 @@ def evaluate[T](
         result = cache_get(store, expr, current, _MISSING)
         if result is not _MISSING:
             return result
-        result = __dispatch(type(expr))(expr)
+
+        built = __dispatch(type(expr))(expr)
+        result = expr if _is_rebuild(built, expr) else built
+        if isinstance(expr, Term):
+            for node in (built, expr):
+                if getattr(node, "__unrenamed_term__", None) is not None:
+                    object.__delattr__(node, "__unrenamed_term__")
+
         cache_put(store, expr, current, result)
         return result
+
+
+def _same_node(a: typing.Any, b: Term) -> bool:
+    """Whether two terms apply the same operation to the very same operands.
+
+    ``a`` is whatever a rule produced, or the record of what a node was built from,
+    which may be absent -- so it is checked rather than assumed to be a term.
+
+    Operands are compared by identity, which is exact rather than approximate because
+    :func:`evaluate` hands back the object it was given wherever nothing changed: a
+    rebuilt operand is a new object precisely when it differs.
+    """
+    return (
+        isinstance(a, Term)
+        and isinstance(b, Term)
+        and a.op is b.op
+        and len(a.args) == len(b.args)
+        and a.kwargs.keys() == b.kwargs.keys()
+        and all(x is y for x, y in zip(a.args, b.args))
+        and all(v is b.kwargs[k] for k, v in a.kwargs.items())
+    )
+
+
+def _is_rebuild(result: typing.Any, expr: typing.Any) -> bool:
+    """Whether ``result`` is a copy of ``expr`` assembled from the very same parts.
+    The comparison is one level deep and by identity, which is exact rather than
+    approximate: evaluating a part already returns the object it was given when that
+    part did not change, so parts differ precisely when they are not the same object.
+    """
+    if result is expr:
+        return True
+    elif type(result) is not type(expr):
+        return False
+    elif isinstance(expr, Term):
+        return _same_node(result, expr) or _same_node(
+            getattr(result, "__unrenamed_term__", None), expr
+        )
+    elif isinstance(expr, str | bytes):
+        return False
+    elif dataclasses.is_dataclass(expr):
+        names = [f.name for f in dataclasses.fields(expr)]
+        return _is_rebuild(
+            {name: getattr(result, name) for name in names},
+            {name: getattr(expr, name) for name in names},
+        )
+    elif isinstance(expr, collections.abc.Mapping):
+        return {(id(k), id(v)) for k, v in result.items()} == {
+            (id(k), id(v)) for k, v in expr.items()
+        }
+    elif isinstance(expr, collections.abc.Set):
+        return {id(v) for v in result} == {id(v) for v in expr}
+    elif isinstance(expr, collections.abc.Sequence):
+        parts, originals = list(iter(result)), list(iter(expr))
+        return len(parts) == len(originals) and all(
+            a is b for a, b in zip(parts, originals)
+        )
+    else:
+        return False
 
 
 @evaluate.register(object)
@@ -204,11 +277,88 @@ def _evaluate_dataclass[T](expr: T, **kwargs) -> T:
     )
 
 
+@weak_memoize(cache=weakref.WeakKeyDictionary())
+def _binds_vars(op: Operation) -> bool:
+    """Whether ``op`` binds variables in any of its operands.
+
+    True when some parameter's scope is not contained in the return value's, the
+    condition :meth:`Scoped.analyze` uses to decide that a parameter contributes bound
+    variables. Memoized per operation, since it is a property of the signature and
+    :func:`_evaluate_term` asks it of every node it visits.
+    """
+    sig = op._signature_with_scopes
+    returned = Scoped._get_param_ordinal(sig.return_annotation)
+    return any(
+        not (Scoped._get_param_ordinal(p) <= returned) for p in sig.parameters.values()
+    )
+
+
+class _Shadow(dict):
+    """An interpretation in which some variables are bound, so handled as unhandled.
+
+    Remembers what it shadows and what it shadows it over, so that :func:`evaluate`
+    can drop back to ``parent`` for a term none of ``bound`` can occur in.
+    """
+
+    parent: Interpretation
+    bound: frozenset[Operation]
+
+
+def _shadowed(intp: Interpretation, bound) -> Interpretation:
+    shadow = _Shadow(
+        coproduct(intp, {b: functools.partial(b.__apply__, b) for b in bound})
+    )
+    shadow.parent, shadow.bound = intp, frozenset(bound)
+    return shadow
+
+
 @evaluate.register(Term)
 def _evaluate_term(expr: Term, **kwargs):
-    args = tuple(evaluate(arg) for arg in expr.args)
-    kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
-    return expr.op(*args, **kwargs)
+    from effectful.internals.runtime import RECONSTRUCTING, get_interpretation
+
+    intp = get_interpretation()
+
+    # Renaming is the identity on a term that mentions none of the variables being
+    # renamed, so such a term already stands for its own rebuild.
+    if isinstance(intp, _Renaming) and not (fvsof(expr) & intp.vars):
+        return expr
+
+    # Likewise a shadow is the identity on a term none of its variables can occur in.
+    # Dropping back to the parent is not just equivalent but necessary: evaluation is
+    # memoized per interpretation, so a term below a binder would otherwise be
+    # recomputed once for each distinct shadow it is reached under.
+    if isinstance(intp, _Shadow) and not (fvsof(expr) & intp.bound):
+        return evaluate(expr, intp=intp.parent)
+
+    binds_vars = _binds_vars(expr.op)
+    if binds_vars:
+        # A variable bound in an operand is re-entered there as an unhandled
+        # operation, so that a substitution for it stops at this binder instead of
+        # reaching inside it. The bound set differs per operand: ``Let`` binds its
+        # variable in the body but not in the value.
+        bindings = expr.op.__fvs_rule__(*expr.args, **expr.kwargs)
+        args = tuple(
+            evaluate(arg, intp=_shadowed(intp, bound))
+            if bound and any(b in intp for b in bound)
+            else evaluate(arg)
+            for arg, bound in zip(expr.args, bindings.args, strict=True)
+        )
+        kwargs = {
+            k: evaluate(v, intp=_shadowed(intp, bindings.kwargs[k]))
+            if bindings.kwargs[k] and any(b in intp for b in bindings.kwargs[k])
+            else evaluate(v)
+            for k, v in expr.kwargs.items()
+        }
+    else:
+        args = tuple(evaluate(arg) for arg in expr.args)
+        kwargs = {k: evaluate(v) for k, v in expr.kwargs.items()}
+
+    # set context for fast path in defdata to avoid rename-then-discard
+    token = RECONSTRUCTING.set(expr)
+    try:
+        return expr.op(*args, **kwargs)
+    finally:
+        RECONSTRUCTING.reset(token)
 
 
 @evaluate.register(Operation)
@@ -322,8 +472,23 @@ class _TypeofIntp(ObjectInterpretation):
 _TYPEOF_INTP = _TypeofIntp()
 
 
-def typeof[T](term: Expr[T]) -> type[T]:
+@typing.overload
+def typeof[T](
+    term: Expr[T], *, keep_params: typing.Literal[False] = False
+) -> type[T]: ...
+
+
+@typing.overload
+def typeof[T](
+    term: Expr[T], *, keep_params: typing.Literal[True]
+) -> "typing_extensions.TypeForm[T]": ...
+
+
+def typeof[T](term: Expr[T], *, keep_params: bool = False) -> typing.Any:
     """Return the type of an expression.
+
+    :param keep_params: Return the full inferred type rather than a class to
+        dispatch on, keeping type parameters that would otherwise be dropped.
 
     **Example usage**:
 
@@ -343,13 +508,73 @@ def typeof[T](term: Expr[T]) -> type[T]:
     >>> typeof(if_then_else(True, 0, 1))
     <class 'int'>
 
+    By default the result is simplified to a class, which is what dispatching
+    on a term's type needs. ``keep_params`` returns the parameters as well:
+
+    >>> @defop
+    ... def duplicate[T](x: T) -> list[T]:
+    ...     raise NotHandled
+    >>> typeof(duplicate("a"))
+    <class 'list'>
+    >>> typeof(duplicate("a"), keep_params=True)
+    list[str]
+
     """
-    from effectful.internals.unification import Box
+    from effectful.internals.unification import Box, nested_type
+
+    if isinstance(term, Term) and (constant := _constant_type(term.op)) is not None:
+        from effectful.internals.runtime import EVAL_CACHE, cache_put
+
+        boxed = Box(constant)
+        store = EVAL_CACHE.get()
+        if store is not None:
+            cache_put(store, term, _TYPEOF_INTP, boxed)
+        if keep_params:
+            return typing.cast(type[T], nested_type(boxed).value)
+        return typing.cast(type[T], _simple_type(constant))
 
     type_or_value = evaluate(term, intp=_TYPEOF_INTP)
-    if isinstance(type_or_value, Box):
+    if not keep_params and isinstance(type_or_value, Box):
         return _simple_type(type_or_value.value)
-    return typing.cast(type[T], type(type_or_value))
+    elif not keep_params:
+        return typing.cast(type[T], type(type_or_value))
+    else:
+        return typing.cast(type[T], nested_type(type_or_value).value)
+
+
+@weak_memoize(cache=weakref.WeakKeyDictionary())
+def _constant_type(op: Operation) -> type | None:
+    """The analysis of every node of ``op``, where the operands cannot change it.
+
+    :meth:`Operation.__type_rule__` hands back the return annotation untouched unless it
+    has free type variables, so for most operations the answer is in the signature and
+    the operands need not be analyzed at all. ``None`` where they do.
+
+    The annotation as written, not what :func:`typeof` reduces it to: a node above this
+    one unifies against the full type, so ``list[int]`` may not arrive there as ``list``.
+    """
+    from effectful.internals.unification import freetypevars
+
+    if isinstance(op, ConstructorOperation):
+        # Not analyzed through ``apply``, so the rule above is not the one that applies.
+        return None
+
+    anno = op.__signature__.return_annotation
+    if typing.get_origin(anno) is typing.Annotated:
+        anno = typing.get_args(anno)[0]
+
+    if anno is inspect.Parameter.empty:
+        return object
+    elif anno is None:
+        return type(None)
+    elif freetypevars(anno):
+        return None
+
+    try:
+        _simple_type(anno)  # a union annotation, which _simple_type rejects
+    except TypeError:
+        return None
+    return anno
 
 
 class _FvsAnalysis(typing.NamedTuple):

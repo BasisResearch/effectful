@@ -4,6 +4,7 @@ import functools
 import inspect
 import numbers
 import operator
+import types
 import typing
 from collections.abc import Callable, Iterable, Mapping
 from typing import Annotated, Any
@@ -150,6 +151,19 @@ class Scoped(Annotation):
             param = typing.cast(type, typing.get_origin(param))
         return isinstance(param, type) and issubclass(param, Operation)
 
+    @staticmethod
+    def _param_is_unpacked(param: type | inspect.Parameter) -> bool:
+        """Whether a parameter is annotated with an unpacking, as ``*args: *Ts``.
+
+        Such a parameter cannot carry a :class:`Scoped` annotation, because the
+        first argument of an ``Annotated`` must be a type expression and an
+        unpacking is not one. It is left unannotated and taken to be in the root
+        scope, so it binds nothing.
+        """
+        if isinstance(param, inspect.Parameter):
+            param = param.annotation
+        return typing.get_origin(param) is typing.Unpack
+
     @classmethod
     def _get_param_ordinal(cls, param: type | inspect.Parameter) -> collections.abc.Set:
         """
@@ -177,7 +191,13 @@ class Scoped(Annotation):
         :returns: The intersection of the `ordinal`s of all :class:`Scoped` annotations.
         """
         return set(cls._get_param_ordinal(sig.return_annotation)).intersection(
-            *(cls._get_param_ordinal(p) for p in sig.parameters.values())
+            *(
+                cls._get_param_ordinal(p)
+                for p in sig.parameters.values()
+                # An unannotated parameter is in the root scope, so it leaves
+                # the intersection alone rather than emptying it.
+                if not cls._param_is_unpacked(p)
+            )
         )
 
     @classmethod
@@ -292,7 +312,9 @@ class Scoped(Annotation):
             *(p.annotation for p in sig.parameters.values()),
         ):
             new_scope = cls(ordinal=cls._get_param_ordinal(anno) | root_ordinal)
-            if typing.get_origin(anno) is Annotated:
+            if cls._param_is_unpacked(anno):
+                new_anno = anno
+            elif typing.get_origin(anno) is Annotated:
                 new_anno = typing.get_args(anno)[0]
                 new_anno = Annotated[new_anno, new_scope]
                 for other in typing.get_args(anno)[1:]:
@@ -405,8 +427,8 @@ defop = Operation.define
 @Operation.define
 def deffn[T, A, B](
     body: Annotated[T, Scoped[A | B]],
-    *args: Annotated[Operation, Scoped[A]],
-    **kwargs: Annotated[Operation, Scoped[A]],
+    *args: Annotated[Operation[[], Any], Scoped[A]],
+    **kwargs: Annotated[Operation[[], Any], Scoped[A]],
 ) -> Annotated[Callable[..., T], Scoped[B]]:
     """An operation that represents a lambda function.
 
@@ -441,6 +463,63 @@ def deffn[T, A, B](
 
     """
     raise NotHandled
+
+
+def _deffn_type_rule(
+    self: Operation, body: Any, *args: Operation[[], Any], **kwargs: Operation[[], Any]
+) -> Any:
+    """Type rule for :func:`deffn`, which Python typing can't express.
+
+    The declared return type is ``Callable[..., T]`` because a signature cannot
+    relate the parameter types to the variadic ``args``. Here the bound
+    variables are in hand, so each parameter type is read off its variable.
+    """
+    ret = type(self).__type_rule__(self, body, *args, **kwargs)
+
+    # A ``Callable`` cannot express keyword parameters, so a ``deffn`` with
+    # keyword variables keeps the imprecise ``Callable[..., T]``.
+    if kwargs or typing.get_origin(ret) is not collections.abc.Callable:
+        return ret
+
+    argtypes: list[type] = [arg.__type_rule__() for arg in args]
+    return collections.abc.Callable[argtypes, typing.get_args(ret)[-1]]
+
+
+setattr(deffn, "__type_rule__", types.MethodType(_deffn_type_rule, deffn))
+
+
+def _reconstructs(replaced: Term, op: Operation, args, kwargs) -> bool:
+    """Whether ``replaced`` is the node being rebuilt: ``op`` over the very same operands.
+
+    Its class-operation form counts too. A bound operation builds ``op(instance, *args)``
+    and re-heads the result, so a node headed by the bound operation re-enters here
+    headed by ``op`` with the instance in front.
+    """
+    if replaced.op is not op:
+        if not (
+            args
+            and getattr(replaced.op, "__func__", None) is op
+            and getattr(replaced.op, "__self__", None) is args[0]
+        ):
+            return False
+        args = args[1:]
+
+    return (
+        len(replaced.args) == len(args)
+        and replaced.kwargs.keys() == kwargs.keys()
+        and all(x is y for x, y in zip(replaced.args, args))
+        and all(v is replaced.kwargs[k] for k, v in kwargs.items())
+    )
+
+
+class _Renaming(dict):
+    """The interpretation :func:`defdata` installs to rename binders.
+
+    Marked with the variables it renames so that :func:`evaluate` can return a term
+    untouched when the term mentions none of them.
+    """
+
+    vars: frozenset[Operation]
 
 
 def _build_term[T](
@@ -526,8 +605,18 @@ def defdata[T](
     When an Operation whose return type is `Callable` is passed to :func:`defdata`,
     it is reconstructed as a :class:`_CallableTerm`, which implements the :func:`__call__` method.
     """
-    from effectful.internals.runtime import interpreter
-    from effectful.ops.semantics import apply, evaluate
+    from effectful.internals.runtime import RECONSTRUCTING, interpreter
+    from effectful.ops.semantics import _binds_vars, apply, evaluate
+
+    replaced = RECONSTRUCTING.get()
+    if isinstance(replaced, Term) and _reconstructs(replaced, op, args, kwargs):
+        return replaced
+
+    if not _binds_vars(op):
+        # Nothing to rename, so none of the machinery below would do anything
+        plain = op.__signature__.bind(*args, **kwargs)
+        plain.apply_defaults()
+        return _build_term(__dispatch, op, *plain.args, **plain.kwargs)
 
     # If this operation binds variables, we need to rename them in the
     # appropriate parts of the child term.
@@ -556,25 +645,39 @@ def defdata[T](
         # here would recompute binders and rename each child again at every
         # level, re-traversing the subtree once per level of nesting.
         rebuild = functools.partial(_build_term, __dispatch)
-        with interpreter(
+        intp = _Renaming(
             {apply: rebuild, ConstructorOperation.__apply__: apply.__default_rule__}
             | renaming_ctx
-        ):
+        )
+        intp.vars = frozenset(renaming_ctx)
+        with interpreter(intp):
             return evaluate(expr)
 
-    renamed_args = op.__signature__.bind(*args, **kwargs)
-    renamed_args.apply_defaults()
+    bound_args = op.__signature__.bind(*args, **kwargs)
+    bound_args.apply_defaults()
 
     args_ = [
         evaluate_with_renaming(arg, bindings.args[i])
-        for (i, arg) in enumerate(renamed_args.args)
+        for (i, arg) in enumerate(bound_args.args)
     ]
     kwargs_ = {
         k: evaluate_with_renaming(v, bindings.kwargs[k])
-        for (k, v) in renamed_args.kwargs.items()
+        for (k, v) in bound_args.kwargs.items()
     }
 
-    return _build_term(__dispatch, op, *args_, **kwargs_)
+    term = _build_term(__dispatch, op, *args_, **kwargs_)
+
+    if renaming and isinstance(term, Term):
+        # Record the operands as they were before renaming, so that ``evaluate`` can
+        # tell that this node is a rebuild of one it already holds, differing from it
+        # only by its fresh binders. Read and discarded there; see ``_evaluate_term``.
+        object.__setattr__(
+            term,
+            "__unrenamed_term__",
+            _BaseTerm(op, *bound_args.args, **bound_args.kwargs),
+        )
+
+    return term
 
 
 def _construct_dataclass_term[T](
@@ -1398,7 +1501,7 @@ class _BoolTerm[T: bool](_IntegralTerm[T]):  # type: ignore
 class ConstructorOperation[**Q, V](Operation[Q, V]):
     @classmethod
     @functools.cache
-    def define[T](
+    def define[T](  # type: ignore[override]
         cls, constructor: type[T] | Callable[..., T]
     ) -> "ConstructorOperation[Any, T]":
         if not isinstance(constructor, type):

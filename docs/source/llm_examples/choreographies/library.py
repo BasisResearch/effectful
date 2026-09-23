@@ -255,7 +255,21 @@ def _fail(future: asyncio.Future, error: BaseException) -> None:
 # ── Endpoint projection ───────────────────────────────────────────
 
 
-@Operation.define
+if typing.TYPE_CHECKING:
+
+    class _StepOperation(Operation[..., Awaitable[Any]]):
+        """The type of `step`, which is generic in the skill's parameters."""
+
+        def __call__[**P, T](
+            self, skill: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+        ) -> Awaitable[T]: ...
+
+    _define_step: Callable[[Callable[..., Any]], _StepOperation]
+else:
+    _define_step = Operation.define
+
+
+@_define_step
 def step[**P, T](
     skill: Callable[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> Awaitable[T]:

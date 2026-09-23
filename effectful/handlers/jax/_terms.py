@@ -488,14 +488,16 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
         for i, o in enumerate(dims)
         if not isinstance(o, Term) or o.op not in order_set
     ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    dim_ops: list[Operation | None] = [
+        a.op if isinstance(a, Term) else None for a in dims
+    ]
     perm = (
         [dim_ops.index(o) for o in args]
         + reindex_dims
         + list(range(len(dims), len(array.shape)))
     )
     array = jnp.transpose(array, perm)
-    reindexed = jax_getitem(
+    reindexed = jax_getitem(  # type: ignore[call-arg]
         array, (slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)
     )
     return reindexed

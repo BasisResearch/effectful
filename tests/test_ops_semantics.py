@@ -1,9 +1,11 @@
+import collections.abc
 import contextlib
 import dataclasses
 import itertools
 import logging
-from collections.abc import Callable, Mapping
-from typing import Annotated, Any, Literal, Union
+import operator
+from collections.abc import Callable, Mapping, MutableSequence
+from typing import Annotated, Any, Literal, TypeVar, Union
 
 import pytest
 
@@ -887,6 +889,187 @@ def test_typeof_generic():
     assert typeof(box_value(42)) is Box
 
 
+def test_typeof_variadic_typevartuple_operation():
+    """An operation may be variadic over a ``TypeVarTuple``.
+
+    Its ``*args`` annotation is an unpacking, which cannot carry the ``Scoped``
+    annotation inferred for every other parameter, so the parameter is left
+    unannotated and sits in the root scope: it binds nothing, and the argument
+    types still reach the return type.
+    """
+
+    @defop
+    def pack[*Ts](*args: *Ts) -> tuple[*Ts]:
+        raise NotHandled
+
+    assert typeof(pack(1, "a"), keep_params=True) == tuple[int, str]
+    assert typeof(pack(1), keep_params=True) == tuple[int]
+    assert typeof(pack(), keep_params=True) == tuple[()]
+    assert typeof(pack(1, "a")) is tuple
+
+    # Nothing is bound by the variadic, so a free variable stays free.
+    x = defop(int, name="x")
+    assert x in fvsof(pack(x()))
+
+
+def test_typeof_application_of_polymorphic_callable():
+    """Applying a callable term resolves the callee's own type variables.
+
+    The arguments of the call are matched against the components of the ``P`` in
+    ``__call__``'s ``self: Callable[P, T]``, so a polymorphic callee is
+    instantiated by the call rather than left at its bound.
+    """
+    S = TypeVar("S")
+
+    mono = defop(Callable[[int], str], name="mono")
+    poly = defop(Callable[[S], S], name="poly")
+    elem = defop(Callable[[list[S]], S], name="elem")
+    curried = defop(Callable[[int], Callable[[str], bool]], name="curried")
+    gradual = defop(Callable[..., str], name="gradual")
+
+    assert typeof(mono()(3)) is str
+    assert typeof(poly()(3)) is int
+    assert typeof(poly()("a")) is str
+    assert typeof(elem()([1, 2, 3])) is int
+
+    # The parameter types of an intermediate result survive the first call.
+    assert typeof(curried()(1), keep_params=True) == Callable[[str], bool]
+    assert typeof(curried()(1)("a")) is bool
+
+    # ``...`` is consistent with any signature, so it constrains nothing.
+    assert typeof(gradual()(1, 2, k=3)) is str
+
+
+def test_typeof_application_conflicting_argument():
+    """A conflicting argument is rejected, as it is for an ordinary parameter."""
+    mono = defop(Callable[[int], str], name="mono")
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        mono()("a")
+
+
+def test_typeof_keep_params_generic():
+    """``keep_params`` returns the inferred type with its parameters intact."""
+
+    @defop
+    def digits(n: int) -> list[int]:
+        raise NotHandled
+
+    @defop
+    def counts(key: str) -> dict[str, int]:
+        raise NotHandled
+
+    assert typeof(digits(1)) is list
+    assert typeof(digits(1), keep_params=True) == list[int]
+
+    assert typeof(counts("a")) is dict
+    assert typeof(counts("a"), keep_params=True) == dict[str, int]
+
+
+def test_typeof_keep_params_polymorphic():
+    """Parameters resolved from the arguments survive into the returned type."""
+
+    @defop
+    def wrap[T](value: T) -> list[T]:
+        raise NotHandled
+
+    @defop
+    def pair[T, U](key: T, value: U) -> dict[T, U]:
+        raise NotHandled
+
+    assert typeof(wrap(1), keep_params=True) == list[int]
+    assert typeof(wrap("a"), keep_params=True) == list[str]
+    assert typeof(pair(1, "a"), keep_params=True) == dict[int, str]
+
+
+def test_typeof_keep_params_unresolved_typevar():
+    """A parameter the arguments don't determine comes back as the variable itself.
+
+    So ``keep_params=True`` can return something that is not a runtime class,
+    where the simplified form always collapses to one.
+    """
+    S = TypeVar("S")
+
+    @defop
+    def unknown(n: int) -> list[S]:
+        raise NotHandled
+
+    assert typeof(unknown(1)) is list
+    assert typeof(unknown(1), keep_params=True) == list[S]
+
+
+def test_typeof_type_argument_binds_typevar():
+    """An operation taking ``type[T]`` is instantiated by the class it is given.
+
+    The class arrives as a value, so it is ``nested_type`` that has to report it
+    as ``type[C]`` for ``T`` to have anything to bind to.
+    """
+
+    @defop
+    def make[T](cls: type[T]) -> T:
+        raise NotHandled
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert typeof(make(int)) is int
+    assert typeof(make(int), keep_params=True) is int
+    assert typeof(make(Foo), keep_params=True) is Foo
+
+
+def test_typeof_class_argument_to_callable_parameter_is_unconstrained():
+    """A class object satisfies a ``Callable`` pattern but constrains nothing.
+
+    Synthesizing the constructor's signature is out of scope, so ``T`` stays
+    free rather than picking up ``__init__``'s ``-> None``.
+    """
+    S = TypeVar("S")
+
+    @defop
+    def build(f: Callable[..., S]) -> S:
+        raise NotHandled
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert typeof(build(Foo), keep_params=True) == S
+    assert typeof(build(int), keep_params=True) == S
+
+
+def test_typeof_keep_params_literal():
+    """``keep_params`` skips the collapse of a ``Literal`` to its value type."""
+
+    @defop
+    def get_mode() -> Literal["read", "write"]:
+        raise NotHandled
+
+    assert typeof(get_mode()) is str
+    assert typeof(get_mode(), keep_params=True) == Literal["read", "write"]
+
+
+def test_typeof_keep_params_values():
+    """For a value rather than a term, the parameters come from its contents.
+
+    Note the asymmetry with the term cases above: a value's type is read off the
+    value, so it is canonicalized to an abstract base (``MutableSequence``),
+    where a term's is read off the annotations that produced it (``list``).
+    """
+    x = defop(int, name="x")
+
+    assert typeof(1, keep_params=True) is int
+
+    assert typeof([1, 2]) is list
+    assert typeof([1, 2], keep_params=True) == MutableSequence[int]
+
+    # A collection of terms is described by the types of its elements.
+    assert typeof([x()], keep_params=True) == MutableSequence[int]
+
+    assert typeof(x) is Operation
+    assert typeof(x, keep_params=True) == Operation[[], int]
+
+
 def test_typeof_dataclass_does_not_run_constructor_with_inferred_types():
     @dataclasses.dataclass
     class AbsoluteValue:
@@ -1278,3 +1461,465 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+# ---------------------------------------------------------------------------
+# Identity-preserving evaluation.
+#
+# Evaluating a term hands back the objects it already held wherever nothing
+# changed, rather than a structurally equal copy. Everything keyed on node
+# identity depends on it: the evaluation cache, and any memo table a client
+# builds on top of one.
+
+
+@defop
+def _add(x: int, y: int) -> int:
+    raise NotHandled
+
+
+@defop
+def _mul(x: int, y: int) -> int:
+    raise NotHandled
+
+
+_ARITH: Interpretation = {_add: operator.add, _mul: operator.mul}
+
+
+def _reachable(expr) -> list[Term]:
+    """Every distinct :class:`Term` reachable from ``expr``, compared by identity."""
+    seen: dict[int, Term] = {}
+    stack = [expr]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, Term) and id(node) not in seen:
+            seen[id(node)] = node
+            stack.extend(node.args)
+            stack.extend(node.kwargs.values())
+        elif isinstance(node, tuple | list):
+            stack.extend(node)
+    return list(seen.values())
+
+
+def test_evaluate_of_an_unchanged_term_is_the_term():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    term = _add(x(), _mul(2, 3))
+
+    with cache():
+        assert evaluate(term) is term
+
+
+def test_evaluate_compares_containers_without_their_protocols():
+    """Recognizing an unchanged container must not depend on ``len`` or on key equality.
+
+    A value need only support what the rule that rebuilt it used. ``jax``'s
+    ``Rotation`` is a tuple subclass whose ``__len__`` raises, and a term used as a
+    mapping key has ``__eq__`` and ``__hash__`` that are themselves operations, so
+    asking either of them a question builds a term rather than answering it.
+    """
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+
+    class NoLen(tuple):
+        def __len__(self):
+            raise TypeError("no len")
+
+    key = _add(x(), 1)
+
+    for value in (NoLen((_mul(2, 3),)), {key: _mul(2, 3)}):
+        with cache():
+            assert evaluate(value) is value
+
+
+def test_discarded_rebuilds_do_not_accumulate_in_the_cache():
+    """Re-evaluating a term in one cache scope leaves nothing behind.
+
+    Evaluating a lambda builds a renamed copy, compares it, and throws it away. The
+    copy is typed on the way out, so it briefly holds cache entries of its own. They
+    have to go with it: the cache keys terms weakly, so nothing is left once the copy
+    is collected. A term that could not be weakly referenced, or a rebuild cached
+    against something that outlives it, would turn every re-evaluation into a leak
+    for as long as the scope is open.
+    """
+    import gc
+
+    from effectful.internals.runtime import cache
+
+    def entries(store):
+        """Every ``(expression, interpretation)`` pair the store holds.
+
+        Counted rather than just the expressions: a discarded rebuild is reached as
+        the *value* of an entry recorded under the throwaway interpretation that built
+        it, so counting expressions alone stays flat while the store grows.
+        """
+        gc.collect()
+        return sum(len(inner.data) for inner in store.data.values())
+
+    x, y, z = defop(int, name="x"), defop(int, name="y"), defop(int, name="z")
+    # Nested, so that rebuilding the outer lambda renames it while the inner ones
+    # keep binders of their own.
+    f = deffn(deffn(deffn(_add(_add(x(), y()), z()), z), y), x)
+
+    with cache() as store:
+        for _ in range(10):
+            assert evaluate(f) is f
+        warm = entries(store)
+
+        for _ in range(100):
+            assert evaluate(f) is f
+        assert entries(store) == warm
+
+        # Nothing in the store is a lambda the result does not contain.
+        reachable, stack = set(), [f]
+        while stack:
+            node = stack.pop()
+            if isinstance(node, Term) and id(node) not in reachable:
+                reachable.add(id(node))
+                stack.extend(node.args)
+                stack.extend(node.kwargs.values())
+        assert not [
+            k
+            for k in store
+            if isinstance(k, Term) and k.op is deffn and id(k) not in reachable
+        ]
+
+
+def test_evaluate_compares_unordered_containers_without_regard_to_order():
+    """Mappings and sets are unordered, so recognizing a rebuild must not read order.
+
+    A rebuilt mapping happens to be built in the original's iteration order today, so
+    comparing pairwise would pass while depending on that. Sequences are ordered and
+    do compare pairwise.
+    """
+    from effectful.ops.semantics import _is_rebuild
+
+    x = defop(int, name="x")
+    a, b = _add(x(), 1), _add(x(), 2)
+
+    assert _is_rebuild({"p": a, "q": b}, {"q": b, "p": a})
+    assert not _is_rebuild({"p": a}, {"p": b})
+    assert not _is_rebuild({"p": a}, {"q": a})
+    assert not _is_rebuild({"p": a, "q": b}, {"p": a})
+
+    assert _is_rebuild({a, b}, {b, a})
+    assert not _is_rebuild({a}, {b})
+
+    assert not _is_rebuild([a, b], [b, a])
+
+
+def test_evaluate_of_an_unchanged_dataclass_is_the_dataclass():
+    from effectful.internals.runtime import cache
+
+    @dataclasses.dataclass(frozen=True)
+    class Box:
+        inner: object
+        tag: str = "t"
+
+    x = defop(int, name="x")
+    box = Box(_add(x(), 1))
+
+    with cache():
+        assert evaluate(box) is box
+
+
+def test_beta_reduction_shares_subterms_that_do_not_mention_the_binder():
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    closed = _mul(y(), 3)  # mentions y, not x
+    f = deffn(_add(x(), closed), x)
+
+    with cache():
+        result = f(1)
+
+    assert isinstance(result, Term) and result.op is _add
+    assert result.args[0] == 1
+    assert result.args[1] is closed
+
+
+def test_beta_reduction_still_substitutes_and_computes_under_handlers():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    f = deffn(_add(x(), _mul(2, 3)), x)
+
+    with handler(_ARITH), cache():
+        assert f(1) == 7
+
+
+def test_an_unchanged_lambda_is_handed_back_not_renamed():
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    # Construction renamed x once; evaluating the result must not rename it again.
+    f = deffn(_add(x(), 1), x)
+
+    with cache():
+        assert evaluate(f) is f
+
+
+def test_a_changed_lambda_gets_a_fresh_binder():
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    g = deffn(deffn(_add(x(), y()), x), y)  # substituting y changes the inner body
+
+    with cache():
+        result = g(5)
+
+    assert isinstance(result, Term) and result.op is deffn
+    assert result.args[1] is not x and x not in fvsof(result)
+
+
+def test_substitution_stops_at_a_binder_for_the_substituted_variable():
+    """A variable may be free in one part of a term and bound in another.
+
+    Constructing a binder renames it, so reaching this needs the fresh binder taken
+    back out of the node that introduced it. Substituting that variable must replace
+    the free occurrence and leave the bound one alone.
+    """
+    from effectful.internals.runtime import cache
+
+    x = defop(int, name="x")
+    f = deffn(_mul(x(), 2), x)
+    var = f.args[1]  # f's own binder, made fresh when f was built
+    term = _add(var(), f)
+    assert var in fvsof(term)
+
+    with cache():
+        result = evaluate(term, intp={var: lambda: 5})
+
+    assert result.args[0] == 5  # the free occurrence is substituted
+    assert result.args[1] is f  # the binder and its body are untouched
+
+
+def test_substitution_does_not_capture_a_shared_lambdas_binder():
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import defdata
+
+    call = defdata.dispatch(collections.abc.Callable).__call__
+
+    x = defop(int, name="x")
+    f = deffn(_mul(x(), 2), x)
+    body = _add(x(), call(f, 1))
+
+    with handler(_ARITH), cache():
+        assert deffn(body, x)(5) == 7  # 5 + 2; capturing substitution would give 12
+
+
+def test_analyses_see_past_shadowed_binders():
+    x, y = defop(int, name="x"), defop(int, name="y")
+    f = deffn(_add(x(), y()), x)
+
+    assert x not in fvsof(f) and y in fvsof(f)
+    assert typeof(f) is collections.abc.Callable
+    assert typeof(_add(x(), 1)) is int
+
+
+def test_beta_reduction_under_an_apply_handler_reaches_every_node():
+    """Sharing must not hide nodes from an ``apply`` handler.
+
+    An ``apply`` handler is not a term constructor, so none of the shortcuts may fire
+    on its behalf: it has to be offered every node, as ``fvsof`` and ``typeof`` are.
+    """
+    from effectful.internals.runtime import cache
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    f = deffn(_add(x(), _mul(y(), 3)), x)
+
+    class Recording(ObjectInterpretation):
+        def __init__(self):
+            self.ops: list[Operation] = []
+
+        @implements(apply)
+        def _(self, op, *args, **kwargs):
+            self.ops.append(op)
+            return op.__default_rule__(*args, **kwargs)
+
+    recording = Recording()
+    with handler(recording), cache():
+        result = f(1)
+
+    assert isinstance(result, Term)
+    assert {_add, _mul, y} <= set(recording.ops)
+
+
+@pytest.mark.timeout(20)
+def test_evaluate_dag_under_binders_no_exponential_blowup():
+    """A DAG shared beneath binders is evaluated once per node, not once per path.
+
+    Evaluating an operand of a binder adds handlers for the variables bound in it,
+    which makes another interpretation. Evaluation is memoized on the identity of the
+    interpretation it runs under, so every node below a binder is a miss against what
+    was cached for it outside, and a child reached along both operands of ``depth``
+    nested binders would be evaluated ``2 ** depth`` times. Two things prevent that:
+    the added interpretation is shared between operands that bind the same variables,
+    and a term none of those variables can occur in is evaluated under the enclosing
+    interpretation instead, where it is already cached.
+
+    ``test_evaluate_dag_no_exponential_blowup`` shares nodes through tuples, which
+    bind nothing, so it does not reach this path.
+    """
+    from effectful.internals.runtime import cache
+
+    call_count = 0
+
+    @defop
+    def counted() -> int:
+        raise NotHandled
+
+    def counted_handler():
+        nonlocal call_count
+        call_count += 1
+        return 42
+
+    @defop
+    def Bind[S, T, A, B](
+        var: Annotated[Operation[[], S], Scoped[A]],
+        left: Annotated[T, Scoped[A | B]],
+        right: Annotated[T, Scoped[A | B]],
+    ) -> Annotated[T, Scoped[B]]:
+        raise NotHandled
+
+    depth = 20
+    node = counted()
+    for _ in range(depth):
+        node = Bind(defop(int), node, node)  # both operands are the same object
+
+    with cache(), handler({counted: counted_handler}):
+        evaluate(node)
+
+    assert call_count == 1
+
+
+@pytest.mark.timeout(20)
+def test_deep_sharing_stays_linear():
+    """A chain of lambdas over a shared closed term never copies that term.
+
+    Bounded by a timeout rather than asserted on time: the regression this guards
+    against is quadratic growth in both nodes and work, which shows up as the chain
+    getting longer.
+    """
+    from effectful.internals.runtime import cache
+
+    y = defop(int, name="y")
+    closed = _mul(y(), 3)
+
+    term = closed
+    with cache():
+        for _ in range(50):
+            x = defop(int, name="x")
+            term = deffn(_add(x(), term), x)(1)
+
+    found = [node for node in _reachable(term) if node.op is _mul]
+    assert len(found) == 1 and found[0] is closed
+
+
+# A binding operation defined as a method reaches terms through
+# `Operation.__get__`, which binds it to the instance. Such a node is built in two
+# steps -- once under the class operation, then re-headed under the bound one -- and
+# the sharing above has to survive both.
+
+
+@dataclasses.dataclass(frozen=True)
+class _Folder:
+    """A binding operation defined as a method, in the shape of a fold."""
+
+    name: str
+
+    @Operation.define
+    def reduce[A, B, U](
+        self,
+        body: Annotated[U, Scoped[A | B]],
+        streams: Annotated[Mapping[Operation[[], int], list[int]], Scoped[A]],
+    ) -> Annotated[U, Scoped[B]]:
+        raise NotHandled
+
+
+_TOTAL = _Folder("total")
+
+
+def _reduction(z: Operation[[], int], body=None):
+    return _TOTAL.reduce(_add(z(), 1) if body is None else body, {z: [0, 1, 2]})
+
+
+def test_a_bound_operation_binds_the_variables_of_its_streams():
+    z = defop(int, name="z")
+    node = _reduction(z)
+
+    assert node.op is _TOTAL.reduce
+    assert z not in fvsof(node)
+    assert next(iter(node.args[1])) is not z
+
+
+def test_evaluate_of_an_unchanged_bound_operation_node_is_the_node():
+    from effectful.internals.runtime import cache
+
+    z = defop(int, name="z")
+    node = _reduction(z)
+
+    with cache():
+        assert [evaluate(node) is node for _ in range(3)] == [True, True, True]
+
+
+def test_substitution_keeps_a_bound_operation_node_it_does_not_mention():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z)
+
+    with cache():
+        row = deffn((node, s()), s)(7)
+
+    assert row[0] is node and row[1] == 7
+
+
+def test_a_bound_operation_node_mentioned_twice_stays_one_object():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z)
+
+    with cache():
+        row = deffn((node, node, s()), s)(7)
+
+    assert row[0] is node and row[1] is node
+
+
+def test_a_bound_operation_node_survives_a_surrounding_binder():
+    from effectful.internals.runtime import cache
+
+    z, w = defop(int, name="z"), defop(int, name="w")
+    node = _reduction(z)
+    f = deffn((node, w()), w)
+
+    with cache():
+        assert evaluate(f) is f
+        assert f(9)[0] is node
+
+
+def test_substitution_reaching_inside_a_bound_operation_node_rewrites_it():
+    from effectful.internals.runtime import cache
+
+    z, s = defop(int, name="z"), defop(int, name="s")
+    node = _reduction(z, body=_add(z(), s()))
+
+    with cache():
+        result = deffn(node, s)(5)
+
+    assert result is not node
+    assert result.op is _TOTAL.reduce
+    assert s not in fvsof(result)
+
+
+def test_handlers_on_the_class_and_the_bound_operation_both_fire():
+    z = defop(int, name="z")
+    body, streams = _add(z(), 1), {z: [0, 1, 2]}
+
+    with handler({_Folder.reduce: lambda *a, **k: "class"}):
+        assert _TOTAL.reduce(body, streams) == "class"
+
+    with handler({_TOTAL.reduce: lambda *a, **k: "bound"}):
+        assert _TOTAL.reduce(body, streams) == "bound"

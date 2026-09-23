@@ -231,6 +231,98 @@ def test_deffn_keyword_args():
     assert isinstance(result2, Term)
 
 
+def test_deffn_type_rule_parameter_types():
+    """``deffn`` fills in the parameter types its declared signature cannot.
+
+    The declared return type is ``Callable[..., T]``, since a signature cannot
+    relate the parameter types to the variadic binders. The type rule reads each
+    parameter type off its binder instead.
+    """
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    assert typeof(deffn(y(), x), keep_params=True) == Callable[[int], str]
+    assert typeof(deffn(y(), x, y), keep_params=True) == Callable[[int, str], str]
+    assert typeof(deffn(y()), keep_params=True) == Callable[[], str]
+
+    # The body type is the return type, not a second ``Callable`` wrapped
+    # around it: a function returning a function has exactly two arrows.
+    assert (
+        typeof(deffn(deffn(y(), x), x), keep_params=True)
+        == Callable[[int], Callable[[int], str]]
+    )
+
+
+def test_deffn_type_rule_keyword_binders():
+    """A ``Callable`` cannot express keyword parameters, so those stay imprecise."""
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    assert typeof(deffn(y(), x, k=y), keep_params=True) == Callable[..., str]
+    assert typeof(deffn(y(), k=y), keep_params=True) == Callable[..., str]
+
+
+def test_deffn_type_rule_requires_nullary_binders():
+    """Reading a parameter type off a binder assumes the binder takes none itself.
+
+    ``deffn`` declares its binders as ``Operation[[], Any]``, and a binder that
+    takes arguments of its own fails to unify with that.
+    """
+    x = defop(int, name="x")
+
+    @defop
+    def h[T](a: T) -> T:
+        raise NotHandled
+
+    binder: typing.Any = h  # the annotation forbids this binder; check the runtime
+    with pytest.raises(TypeError, match="Cannot unify"):
+        deffn(x(), binder)
+
+
+def test_deffn_type_rule_resolves_argument_types():
+    """The refined type lets a consumer's signature recover the parameter types."""
+
+    @defop
+    def domain[S, T](f: Callable[[S], T]) -> S:
+        raise NotHandled
+
+    @defop
+    def codomain[S, T](f: Callable[[S], T]) -> T:
+        raise NotHandled
+
+    @defop
+    def second[S, U, T](f: Callable[[S, U], T]) -> U:
+        raise NotHandled
+
+    x, y = defop(int, name="x"), defop(str, name="y")
+
+    f = deffn(y(), x)
+    assert typeof(domain(f)) is int
+    assert typeof(codomain(f)) is str
+
+    g = deffn(x(), x, y)
+    assert typeof(second(g)) is str
+
+    # Dispatch is unaffected: the refined type still simplifies to ``Callable``.
+    assert typeof(f) is collections.abc.Callable
+
+    # With keyword binders there is no parameter type to recover.
+    assert typeof(domain(deffn(y(), x=x))) is object
+
+
+def test_trace_type_rule_resolves_argument_types():
+    """A traced function carries its parameter types through ``deffn``."""
+
+    @defop
+    def domain[S, T](f: Callable[[S], T]) -> S:
+        raise NotHandled
+
+    def to_str(x: int) -> str:
+        return str(x)
+
+    traced = trace(to_str)
+    assert typeof(traced, keep_params=True) == Callable[[int], str]
+    assert typeof(domain(traced)) is int
+
+
 def test_defdata_renaming():
     @defop
     def Let[S, T, A, B](
@@ -250,6 +342,59 @@ def test_defdata_renaming():
     assert let2.args[1].args[1].op == x
     assert let2.args[2].args[0].op == let2.args[0]
     assert let2.args[2].args[1].op == y
+
+
+def test_renaming_leaves_untouched_subterms_by_identity():
+    """Renaming rebuilds only the spine that mentions the bound variable."""
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    x, y = defop(int, name="x"), defop(int, name="y")
+    closed = mul(y(), 3)  # mentions y, not x
+    f = deffn(add(x(), closed), x)
+
+    assert f.args[1] is not x  # the binder was renamed
+    assert f.args[0].args[1] is closed  # the subterm that avoids it was not rebuilt
+
+
+def test_the_unrenamed_term_is_dropped_once_read():
+    """``defdata`` records a renamed node's original operands; ``evaluate`` drops them.
+
+    The record holds those operands strongly, so its lifetime is what keeps a node
+    from pinning the tree it was built from. Only a node fresh from the constructor
+    is ever consulted, so reading it in ``evaluate`` is also the last use of it.
+    """
+    import gc
+    import weakref
+
+    from effectful.internals.runtime import cache
+
+    @defop
+    def mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    x = defop(int, name="x")
+    body = mul(x(), 3)
+    f = deffn(body, x)  # renamed, so f.args[0] is a rebuilt copy of body
+
+    # A node that has not been evaluated still holds what it was built from.
+    assert getattr(f, "__unrenamed_term__", None) is not None
+
+    with cache():
+        assert evaluate(f) is f
+
+    assert getattr(f, "__unrenamed_term__", None) is None
+
+    reference = weakref.ref(body)
+    del body
+    gc.collect()
+    assert reference() is None  # nothing in f keeps the pre-renaming body alive
 
 
 def test_defop_singledispatch():
@@ -380,13 +525,13 @@ def test_defop_setattr_class() -> None:
 
     MyClass.my_op = my_op
 
-    tm = MyClass.my_op(5)
+    tm = MyClass.my_op(5)  # type: ignore[arg-type]
     assert isinstance(tm, Term)
     assert isinstance(tm.op, Operation)
     assert tm.op is MyClass.my_op
     assert tm.args == (5,)
 
-    MyClass().my_op(5)
+    MyClass().my_op(5)  # type: ignore[arg-type]
 
 
 def test_defop_classmethod():
@@ -1509,6 +1654,218 @@ def test_bench_nested_binder_construction(benchmark):
     def run():
         with cache():
             return _make_nested_term(10)
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_beta_reduction_chain_over_a_shared_term(benchmark):
+    """Benchmark a chain of ``n`` lambdas applied to one shared closed term of size ``m``.
+
+    Expected to be O(n + m): each application walks only the spine that mentions the
+    binder, and the closed term is handed through untouched. Without that it is
+    O(n * m), because every level copies the whole term below it.
+    """
+    from effectful.internals.runtime import cache
+
+    @defop
+    def _benchmark_chain_add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def _benchmark_chain_mul(x: int, y: int) -> int:
+        raise NotHandled
+
+    n, m = 30, 30
+
+    def run():
+        with cache():
+            y = defop(int, name="y")
+            closed: Expr[int] = 0
+            for _ in range(m):
+                closed = _benchmark_chain_mul(y(), closed)
+
+            term = closed
+            for _ in range(n):
+                x = defop(int, name="x")
+                term = deffn(_benchmark_chain_add(x(), term), x)(1)
+            return term
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+@defop
+def _analysis_add(x: int, y: int) -> int:
+    raise NotHandled
+
+
+def _analysis_body(var: Operation, size: int) -> Expr[int]:
+    """A balanced tree of ``size`` additions, every node of which mentions ``var``."""
+    if size <= 1:
+        return _analysis_add(var(), size)
+    return _analysis_add(
+        _analysis_body(var, size // 2),  # type: ignore[arg-type]
+        _analysis_body(var, size - size // 2),  # type: ignore[arg-type]
+    )
+
+
+def _count_term_visits(thunk) -> int:
+    """How many terms ``evaluate`` visits while ``thunk`` runs."""
+    visited = 0
+    registered = evaluate.dispatch(Term)
+
+    def counting(expr, **kwargs):
+        nonlocal visited
+        visited += 1
+        return registered(expr, **kwargs)
+
+    evaluate.register(Term)(counting)
+    try:
+        thunk()
+    finally:
+        evaluate.register(Term)(registered)
+    return visited
+
+
+@pytest.mark.parametrize("analyse", [typeof, fvsof], ids=["typeof", "fvsof"])
+def test_analysing_a_binder_does_not_walk_the_body(analyse):
+    """Analyzing a binder must not re-analyze a body that is already analyzed.
+
+    The operands of a binder are evaluated under a shadow that re-enters the bound
+    variables as unhandled. Building one where the interpretation handles none of them
+    yields an interpretation equal to the one passed in but new, and no cache entry is
+    keyed by it, so every analysis of a lambda used to walk its whole body again --
+    ``typeof`` and ``fvsof`` handle no variables at all, so both did.
+    """
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    visits = {}
+    for size in (100, 400, 1600):
+        var = defop(int, name="x")
+        with cache():
+            body = _analysis_body(var, size)
+            analyse(body)  # everything below the binder is now analyzed
+
+            # The node ``_build_term`` types, built directly so that no renaming
+            # rebuilds the body and the analysis is the only work left to do.
+            raw = _BaseTerm(deffn, body, var)
+            visits[size] = _count_term_visits(lambda: analyse(raw))
+
+    assert visits[100] == visits[400] == visits[1600], (
+        f"analyzing a binder scales with its body: {visits}"
+    )
+
+
+def test_typeof_answers_from_the_signature_where_it_can():
+    """Most operations fix the type of their nodes, so the operands need not be read."""
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    @defop
+    def _concrete(x: int) -> int:
+        raise NotHandled
+
+    @defop
+    def _generic[S](x: S) -> S:
+        raise NotHandled
+
+    with cache():
+        body = _analysis_body(defop(int, name="x"), 400)
+
+        # A concrete return annotation is the answer, whatever the operands are.
+        assert _count_term_visits(lambda: typeof(_BaseTerm(_concrete, body))) == 0
+        assert typeof(_BaseTerm(_concrete, body)) is int
+
+        # One that depends on the operands has to read them.
+        assert _count_term_visits(lambda: typeof(_BaseTerm(_generic, body))) > 0
+        assert typeof(_BaseTerm(_generic, body)) is int
+
+    # The answer is left where a node whose type does depend on its operands will find
+    # it, as the full annotation: reduced to what dispatch needs, ``list[int]`` would
+    # reach the node above as ``list`` and take its type parameter with it.
+    @defop
+    def _mklist(x: int) -> list[int]:
+        raise NotHandled
+
+    @defop
+    def _first[S](xs: list[S]) -> S:
+        raise NotHandled
+
+    assert typeof(_mklist(1)) is list
+    assert typeof(_first(_mklist(1))) is int
+
+
+@defop
+def _churn_let[S, T, A](
+    var: Annotated[Operation[[], S], Scoped[A]],
+    val: S,
+    body: Annotated[T, Scoped[A]],
+) -> T:
+    raise NotHandled
+
+
+def _churn_nested(free: Operation, depth: int, width: int) -> Expr[int]:
+    """``depth`` nested binders, each over a body of ``width`` nodes mentioning ``free``."""
+    body: Expr[int] = free()
+    for _ in range(depth):
+        var = defop(int, name="v")
+        for _ in range(width):
+            body = _analysis_add(var(), body)  # type: ignore[arg-type]
+        body = _churn_let(var, 1, body)
+    return body
+
+
+def test_bench_rebuilding_through_binders(benchmark):
+    """Benchmark substituting one variable through nested binders."""
+    from effectful.internals.runtime import cache
+
+    def run():
+        free = defop(int, name="free")
+        with cache():
+            term = _churn_nested(free, 16, 8)
+            return evaluate(term, intp={free: functools.partial(lambda u: u, 99)})
+
+    result = benchmark(run)
+    assert isinstance(result, Term)
+
+
+def test_bench_analysing_a_binder(benchmark):
+    """Benchmark analyzing a binder whose body is already analyzed.
+
+    Should be O(1): the operands carry their own analyses, and the binder adds one node.
+    """
+    from effectful.internals.runtime import cache
+    from effectful.ops.syntax import _BaseTerm
+
+    with cache():
+        var = defop(int, name="x")
+        body = _analysis_body(var, 400)
+        fvsof(body)
+
+        result = benchmark(lambda: fvsof(_BaseTerm(deffn, body, var)))
+
+    assert var not in result
+
+
+def test_bench_apply_then_wrap_layering(benchmark):
+    """Benchmark building a lambda in layers: apply an existing lambda, wrap, repeat.
+
+    Each layer beta-copies the body and then renames the copy's binder, so the number of
+    nodes built is ~2 * depth per node of the result. What this guards is the cost of
+    each of those constructions, not their number.
+    """
+    from effectful.internals.runtime import cache
+
+    def run():
+        with cache():
+            var = defop(int, name="x")
+            term = deffn(_analysis_body(var, 400), var)
+            for index in range(5):
+                arg = defop(int, name=f"q{index}")
+                term = deffn(_analysis_add(term(arg()), 1), arg)
+            return term
 
     result = benchmark(run)
     assert isinstance(result, Term)

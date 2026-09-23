@@ -25,6 +25,12 @@ INTERPRETATION: contextvars.ContextVar[Interpretation] = contextvars.ContextVar(
 )
 
 
+RECONSTRUCTING: contextvars.ContextVar[typing.Any] = contextvars.ContextVar(
+    "RECONSTRUCTING", default=None
+)
+"""The term :func:`effectful.ops.semantics.evaluate` is currently rebuilding, if any."""
+
+
 get_interpretation = INTERPRETATION.get
 
 
@@ -113,7 +119,7 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
+        a, k = (a, k) if a or k else _get_args()  # type: ignore[assignment]
         return fn(*a, **k)
 
     return _cont_wrapper
@@ -146,7 +152,7 @@ def _save_then_restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
+        a, k = (a, k) if a or k else _get_args()  # type: ignore[assignment]
         with handler({_get_args: lambda: (a, k)}):
             return fn(*a, **k)
 
