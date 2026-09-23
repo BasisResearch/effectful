@@ -60,6 +60,7 @@ import linecache
 import os
 import pathlib
 import sqlite3
+import symtable
 import sys
 import threading
 import types
@@ -76,7 +77,7 @@ from PIL import Image
 
 from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, handler
-from effectful.ops.types import Interpretation
+from effectful.ops.types import INSTANCE_OP_PREFIX, Interpretation
 
 if typing.TYPE_CHECKING:
     from effectful.handlers.llm import Agent
@@ -724,6 +725,28 @@ def _kept_modules() -> set[str]:
     return kept
 
 
+def _bound_names(file: pathlib.Path) -> set[str] | None:
+    """The names `file` binds at module level, or `None` if they cannot be known.
+
+    A star import binds its module's ``__all__``, or else its public names, as that
+    module now stands; one that cannot be looked up makes the answer unknowable.
+    """
+    source = file.read_text()
+    table = symtable.symtable(source, str(file), "exec")
+    bound = {
+        s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()
+    }
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.ImportFrom) and node.names[0].name == "*":
+            if node.level or node.module not in sys.modules:
+                return None
+            names = vars(sys.modules[node.module])
+            bound |= set(
+                names.get("__all__") or [n for n in names if not n.startswith("_")]
+            )
+    return bound
+
+
 def _launcher_args() -> argparse.Namespace:
     """The harness launcher's flags, read back from the command line it was run with.
 
@@ -900,7 +923,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         session.notify(
             acp.schema.AvailableCommandsUpdate(
                 session_update="available_commands_update",
-                available_commands=list(_library().SLASH_COMMANDS),
+                available_commands=[
+                    command.spec for command in _library().slash_commands().values()
+                ],
             )
         )
 
@@ -1338,7 +1363,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
 
         A command is an ordinary prompt whose text begins with the name -- ACP has no
         separate method for one -- so recognising the prefix and looking the name up
-        in `_SLASH_COMMANDS` is the whole mechanism; the same table is what
+        in `library.slash_commands` is the whole mechanism; the same table is what
         `_announce_commands` advertises, so a command offered is a command answered.
         All of them run without a model: they are about the session rather than about
         anything the model would know, and paying for a round trip to be told the
@@ -1353,10 +1378,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return None
         name, _, argument = text[1:].partition(" ")
         name, argument = name.strip(), argument.strip()
-        library = _library()
-        command = library._SLASH_COMMANDS.get(name)
+        commands = _library().slash_commands()
+        command = commands.get(name)
         if command is None:
-            offered = ", ".join(f"`/{c.name}`" for c in library.SLASH_COMMANDS)
+            offered = ", ".join(f"`/{c}`" for c in commands)
             return f"Unknown command `/{name}`. Try {offered}."
         return command.run(self, session, argument)
 
@@ -1364,7 +1389,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self, make_agent: collections.abc.Callable[[str], A], harness: Interpretation
     ) -> None:
         """Serve new code: later turns run under `harness`, and each open session's
-        agent is rebuilt by `make_agent`, keeping its history and dataclass fields.
+        agent is rebuilt by `make_agent`, keeping everything set on the old one.
 
         Each session's handlers are rebuilt from `library` too, and its slash commands
         and config options announced again, so a command or mode added there is
@@ -1379,12 +1404,14 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             self._announce_commands(session)
             self._announce_config(session)
             old, new = session.agent, make_agent(session.session_id)
-            if dataclasses.is_dataclass(old) and dataclasses.is_dataclass(new):
-                kept = {field.name for field in dataclasses.fields(new)}
-                for field in dataclasses.fields(old):
-                    if field.name in kept:
-                        setattr(new, field.name, getattr(old, field.name))
             new.__history__ = old.__history__
+            # Its fields and whatever the model set on `self`, but not the skills
+            # bound to it, which belong to the old class.
+            new.__dict__.update(
+                (key, value)
+                for key, value in vars(old).items()
+                if not key.startswith(INSTANCE_OP_PREFIX)
+            )
             session.agent = new
 
     def _current_stack(self) -> contextlib.AbstractContextManager:
@@ -1519,7 +1546,12 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         nor is anything outside those directories. A module that fails to re-run is reported
         on stderr and its previous version kept.
         """
-        from reactivity.hmr.core import HMR_CONTEXT, BaseReloader, _loader
+        from reactivity.hmr.core import (
+            HMR_CONTEXT,
+            BaseReloader,
+            ReactiveModule,
+            _loader,
+        )
         from reactivity.hmr.hooks import post_reload
         from watchfiles import awatch
 
@@ -1569,8 +1601,38 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         # there -- a new slash command -- reaches `reload`.
         library = HMR_CONTEXT.derived(lambda: _library().session_handlers)
 
+        def forget_removed_names() -> None:
+            # hmr re-runs a module into the namespace it had, so a name its file no
+            # longer binds -- a deleted function -- would stay defined and, reached
+            # from the agent's scope, stay a tool. Pruned for each module in the
+            # agent's directory, through hmr's mapping, which keeps its own record
+            # of names; repeated because pruning one changes what a star import of
+            # it binds.
+            pruned = True
+            while pruned:
+                pruned = False
+                for loaded in list(sys.modules.values()):
+                    if not isinstance(loaded, ReactiveModule):
+                        continue
+                    names = vars(loaded)
+                    file = names.get("__file__")
+                    if "__path__" in names or file is None:
+                        continue
+                    if pathlib.Path(file).resolve().parent != path.parent:
+                        continue
+                    if (bound := _bound_names(pathlib.Path(file))) is None:
+                        continue
+                    proxy = loaded._ReactiveModule__namespace_proxy
+                    for key in list(proxy.raw):
+                        if key.startswith(("__", "_ReactiveModule__")):
+                            continue
+                        if key not in bound:
+                            del proxy[key]
+                            pruned = True
+
         def install() -> None:
             library()
+            forget_removed_names()
             self.reload(agent_class(), stack())
 
         installed = HMR_CONTEXT.effect(install)

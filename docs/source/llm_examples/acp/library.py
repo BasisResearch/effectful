@@ -1470,6 +1470,23 @@ class SlashCommand:
     run: collections.abc.Callable[[EffectfulACPAgent, ACPSession, str], str]
     """The behaviour: handed the server, the session and the argument text."""
 
+    fn: collections.abc.Callable[..., str]
+    """The registered function, whose still being defined keeps the command on offer."""
+
+    @property
+    def current(self) -> bool:
+        """Whether `fn` is still what its module defines under its name.
+
+        ``--autoreload`` re-runs a module, which registers its commands again but
+        unregisters none: not one it no longer defines, and not the old name of one it
+        renamed. This is what drops those. A command defined inside a function cannot
+        be checked this way, and counts as current.
+        """
+        if self.fn.__qualname__ != self.fn.__name__:
+            return True
+        module = sys.modules.get(self.fn.__module__)
+        return module is None or vars(module).get(self.fn.__name__) is self.fn
+
 
 _SLASH_COMMANDS: dict[str, SlashCommand] = {}
 """Every command, dispatch and advertisement together, filled by `register_command`."""
@@ -1546,6 +1563,7 @@ def register_command[F: _Command](
                 name=command, description=description, input=input
             ),
             run=run,
+            fn=fn,
         )
         return fn
 
@@ -1636,7 +1654,11 @@ def mode[A: "Agent"](
     return f"Mode is now **{chosen.name}**. {chosen.description}"
 
 
-SLASH_COMMANDS: tuple[acp.schema.AvailableCommand, ...] = tuple(
-    command.spec for command in _SLASH_COMMANDS.values()
-)
-"""The advertised half of `_SLASH_COMMANDS`, in the shape the notification takes."""
+def slash_commands() -> dict[str, SlashCommand]:
+    """The commands on offer now, by name: those registered and still current.
+
+    Read when the commands are announced and when one is dispatched, rather than
+    fixed when this module is imported, so a command registered later -- from the
+    agent's own file -- is offered too.
+    """
+    return {name: c for name, c in _SLASH_COMMANDS.items() if c.current}
