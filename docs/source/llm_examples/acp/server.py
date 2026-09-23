@@ -210,6 +210,7 @@ type ConfigOption = (
 
 MODE_OPTION_ID = "mode"
 MODEL_OPTION_ID = "model"
+THOUGHT_LEVEL_OPTION_ID = "thought_level"
 INHERIT_MODEL = ""
 """The `model` option's value meaning "whatever the process was configured with".
 
@@ -218,6 +219,39 @@ name: the model is bound into `LiteLLMConfigurer` by whoever assembled the stack
 nothing in the protocol layer can see it. Saying "as configured" is honest; naming a
 model here would be a guess printed in the user's editor.
 """
+
+INHERIT_THOUGHT_LEVEL = ""
+"""The `thought_level` option's value meaning "whatever was configured".
+
+Sentinel rather than a level name because every explicit `reasoning_effort` value
+is one some provider rejects -- OpenAI answers `"default"` with a 400 -- so "let
+the model decide" is spelled by omitting the parameter, which is what an empty
+value does in `ACPSessionConfig.completion`. This matches the launcher, whose
+unset `--reasoning-effort` is likewise left out of the request entirely.
+"""
+
+
+def _thought_levels() -> tuple[str, ...] | None:
+    """The `reasoning_effort` values litellm says providers accept.
+
+    Read from litellm's canonical ``REASONING_EFFORT`` alias -- not the looser
+    `Literal` on `litellm.completion`'s signature, which also admits `"default"`,
+    a value OpenAI rejects -- so the option's choices track litellm across
+    upgrades, the same way the launcher's `--reasoning-effort` does.
+
+    Returns `None` when the alias cannot be read, which takes the option off
+    offer entirely: a control whose every choice errors is worse than no control.
+    """
+    try:
+        from litellm.types.llms.openai import REASONING_EFFORT
+
+        levels = tuple(
+            v for v in typing.get_args(REASONING_EFFORT) if isinstance(v, str)
+        )
+        return levels or None
+    except Exception:
+        return None
+
 
 OFFER_MODELS_ENV = "ACP_OFFER_MODELS"
 """Environment variable naming the models the editor's picker should offer.
@@ -329,6 +363,14 @@ class ACPSession[A: "Agent"]:
 
     model: str = INHERIT_MODEL
     """The model the user picked, or `INHERIT_MODEL` for the configured one."""
+
+    thought_level: str | None = None
+    """The reasoning effort the user picked, sent as litellm `reasoning_effort`.
+
+    `None` inherits: the launcher's `--reasoning-effort` when it set one, else the
+    provider's own default. Distinguished from `INHERIT_THOUGHT_LEVEL` (the empty
+    option value), which normalizes to `None` wherever the option is read.
+    """
 
     new_code: bool = False
     """Whether `EffectfulACPAgent.reload` has run since this session's last turn."""
@@ -566,7 +608,8 @@ class SessionIndex:
             title                  TEXT,
             updated_at             TEXT NOT NULL,
             mode                   TEXT,
-            model                  TEXT
+            model                  TEXT,
+            thought_level          TEXT
         )
     """
 
@@ -590,7 +633,7 @@ class SessionIndex:
                 columns = {
                     row[1] for row in conn.execute("PRAGMA table_info(acp_sessions)")
                 }
-                for column in ("mode", "model"):
+                for column in ("mode", "model", "thought_level"):
                     if column not in columns:
                         try:
                             conn.execute(
@@ -623,15 +666,16 @@ class SessionIndex:
                 """
                 INSERT INTO acp_sessions
                     (session_id, cwd, additional_directories, title, updated_at,
-                     mode, model)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                     mode, model, thought_level)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     cwd = excluded.cwd,
                     additional_directories = excluded.additional_directories,
                     title = COALESCE(excluded.title, acp_sessions.title),
                     updated_at = excluded.updated_at,
                     mode = excluded.mode,
-                    model = excluded.model
+                    model = excluded.model,
+                    thought_level = excluded.thought_level
                 """,
                 (
                     session.session_id,
@@ -641,6 +685,7 @@ class SessionIndex:
                     datetime.datetime.now(datetime.UTC).isoformat(),
                     session.mode_id,
                     session.model,
+                    session.thought_level,
                 ),
             )
 
@@ -651,19 +696,20 @@ class SessionIndex:
         if conn is None:
             return None
         row = conn.execute(
-            "SELECT cwd, additional_directories, title, mode, model "
+            "SELECT cwd, additional_directories, title, mode, model, thought_level "
             "FROM acp_sessions WHERE session_id = ?",
             (session_id,),
         ).fetchone()
         if row is None:
             return None
-        cwd, directories, title, mode, model = row
+        cwd, directories, title, mode, model, thought_level = row
         return {
             "cwd": cwd,
             "additional_directories": json.loads(directories),
             "title": title,
             "mode": mode,
             "model": model,
+            "thought_level": thought_level,
         }
 
     @classmethod
@@ -1056,6 +1102,30 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                     ],
                 )
             )
+        if (levels := _thought_levels()) is not None:
+            options.append(
+                acp.schema.SessionConfigOptionSelect(
+                    type="select",
+                    id=THOUGHT_LEVEL_OPTION_ID,
+                    name="Thought level",
+                    description="How much the model reasons before answering.",
+                    category="thought_level",
+                    current_value=session.thought_level or INHERIT_THOUGHT_LEVEL,
+                    options=[
+                        acp.schema.SessionConfigSelectOption(
+                            value=INHERIT_THOUGHT_LEVEL,
+                            name="Default",
+                            description="Whatever this model does by default.",
+                        ),
+                        *(
+                            acp.schema.SessionConfigSelectOption(
+                                value=level, name=level
+                            )
+                            for level in levels
+                        ),
+                    ],
+                )
+            )
         return options
 
     def _announce_commands(self, session: ACPSession[A]) -> None:
@@ -1136,6 +1206,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 session.title = recorded["title"] or ""
                 if recorded["model"] is not None:
                     session.model = recorded["model"]
+                if recorded.get("thought_level") is not None:
+                    session.thought_level = recorded["thought_level"]
                 if recorded["mode"] in {m.id for m in _library().SESSION_MODES}:
                     session.mode_id = recorded["mode"]
         else:
@@ -1613,6 +1685,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         with self._current_stack():
             fork.agent.__history__.extend(source.agent.__history__)
             fork.mode_id, fork.model = source.mode_id, source.model
+            fork.thought_level = source.thought_level
             fork.title = f"{source.title} (fork)" if source.title else ""
             SessionIndex.record(fork)
         self._announce_commands(fork)
@@ -1683,6 +1756,13 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                     {"reason": f"{value!r} is not one of the models on offer"}
                 )
             session.model = value
+        elif config_id == THOUGHT_LEVEL_OPTION_ID:
+            levels = _thought_levels() or ()
+            if value != INHERIT_THOUGHT_LEVEL and value not in levels:
+                raise acp.RequestError.invalid_params(
+                    {"reason": f"{value!r} is not one of the thought levels on offer"}
+                )
+            session.thought_level = value or None
         else:
             raise acp.RequestError.invalid_params(
                 {"reason": f"no such config option: {config_id!r}"}
