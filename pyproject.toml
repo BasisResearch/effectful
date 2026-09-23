@@ -68,6 +68,9 @@ docs = [
     # For the ACP example under docs/source/llm_examples/acp, which serves an Agent
     # to an editor over the Agent Client Protocol. Imported as `acp`.
     "agent-client-protocol>=0.12,<0.13",
+    # For that example's `--autoreload`, which re-runs edited code while it serves.
+    # Pinned to a minor version because it uses hmr's module loader, which is private.
+    "hmr>=0.7,<0.8",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
