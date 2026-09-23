@@ -96,7 +96,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Skill, Tool
-from effectful.ops.types import NotHandled, Operation
+from effectful.ops.types import Interpretation, NotHandled, Operation
 
 calls = []
 
@@ -124,6 +124,12 @@ def handled_tool(x: int) -> int:
 def op_tool(op: Operation) -> str:
     """A tool whose parameter type has no JSON advertisement at all."""
     return op.__name__
+
+
+@Tool.define
+def interp_tool(i: Interpretation) -> str:
+    """A tool whose parameter type advertises but cannot be decoded."""
+    return str(len(i))
 
 
 @Tool.define
@@ -600,7 +606,8 @@ def test_505_generic_tool_in_scope_does_not_break_unrelated_skill(poly_mod):
     assert result == "just text"
 
 
-def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
+@pytest.mark.parametrize("skipped", ["op_tool", "interp_tool"])
+def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog, skipped):
     # Under the JSON pathway a tool whose advertisement cannot be encoded is
     # skipped (with a warning) instead of breaking every request it is merely
     # in scope for. The skip happens at encoding time, in `call_assistant`'s
@@ -610,6 +617,10 @@ def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
     # *generic* tool still advertises there, but degraded to untyped `{}`
     # parameter schemas -- the #489 decode ambiguity the expression pathway
     # exists to fix.)
+    #
+    # Two ways a parameter can fail to describe a value the model could send:
+    # `op_tool`'s has no schema at all, and `interp_tool`'s has one that no
+    # reply satisfies. Both make the tool uncallable, so both are skipped.
     advertised: list[list] = []
 
     class _SpecCapture(ObjectInterpretation):
@@ -630,9 +641,9 @@ def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
         assert poly_mod.grow([1, 2, 3]) == "just text"
     names = {spec["function"]["name"] for specs in advertised for spec in specs}
     assert "other_tool" in names and "extend_sequence" in names
-    assert "op_tool" not in names
+    assert skipped not in names
     assert any(
-        "op_tool" in record.message and record.levelname == "WARNING"
+        skipped in record.message and record.levelname == "WARNING"
         for record in caplog.records
     )
 
@@ -1161,6 +1172,65 @@ def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
         TenacityRetryer(),
     )
     assert result == [generic_mod.Item(text="be kind")]
+
+
+# ============================================================================
+# Return types with no `Encodable` decoding at all
+# ============================================================================
+
+_UNENCODABLE_SKILL_SRC = '''
+from effectful.handlers.llm import Skill
+
+
+class Widget:
+    """A type the encoding registry knows nothing about."""
+
+    def __init__(self, n: int) -> None:
+        self.n = n
+
+    def __repr__(self) -> str:
+        return f"Widget({self.n})"
+
+
+@Skill.define
+def make_widget(n: int) -> Widget:
+    """Build a widget holding {n}."""
+'''
+
+
+@pytest.fixture
+def widget_mod(tmp_path, request):
+    modname = f"_widget_fixture_{request.node.name}".replace("[", "_").replace("]", "")
+    mod = _import_fixture(tmp_path, _UNENCODABLE_SKILL_SRC, modname)
+    yield mod
+    sys.modules.pop(modname, None)
+
+
+def test_unencodable_return_redirects_to_code_mode(widget_mod):
+    # A return type with no decoding is answerable by the route an uninstantiated
+    # one takes: the response format asks for a string nothing satisfies, so the
+    # plausible-looking reply below is refused and the feedback steers the model
+    # to `write_and_run_body`, whose result is the answer.
+    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+
+    result = _run_generic(
+        widget_mod,
+        lambda: widget_mod.make_widget(3),
+        [
+            make_text_response(json.dumps({"value": "Widget(3)"})),
+            make_tool_call_response(
+                "write_and_run_body",
+                json.dumps(
+                    {"implementation": "def make_widget(n):\n    return Widget(n)\n"}
+                ),
+            ),
+        ],
+        FinalBodySynthesizer(),
+        TenacityRetryer(),
+    )
+    assert isinstance(result, widget_mod.Widget)
+    assert result.n == 3
 
 
 # ============================================================================
