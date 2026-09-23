@@ -8,8 +8,9 @@ Demonstrates:
   than one flattened string, so an attached file costs a line of context and a
   screenshot arrives as an image the model actually sees
 
-All the protocol machinery lives in ``library.py``; what is left here is an agent,
-four imported tools, and a command line -- which is the point of the example.
+All the protocol machinery lives in ``library.py`` and ``server.py``; what is left
+here is an agent, four imported tools, and a command line -- which is the point of
+the example.
 
 The ``prompt`` skill's signature is the server's contract (see
 `EffectfulACPAgent`): the name matches the protocol method it answers
@@ -42,8 +43,8 @@ and replayed when the editor reopens the session.
 Set ``ACP_OFFER_MODELS`` to a comma-separated list to put a picker in the editor's
 UI, so the session can be switched without editing the editor's configuration.
 
-Add ``--autoreload`` to edit this file, the modules it imports, or the harness while
-the server runs; ``library.py`` itself still needs a restart.
+Add ``--autoreload`` to edit this file, the modules it imports, ``library.py`` or the
+harness while the server runs; ``server.py`` still needs a restart.
 """
 
 import argparse

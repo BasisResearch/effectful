@@ -618,7 +618,7 @@ def test_a_call_of_no_known_kind_claims_none_rather_than_other():
     ``kind`` is optional in every message carrying it, so omitting it is the protocol's
     own way to say nothing about a call.
     """
-    assert acp_ask_user.__name__ not in library._tool_kinds()
+    assert acp_ask_user.__name__ not in library._TOOL_KINDS
     assert library._tool_kind(acp_ask_user.__name__) is None
 
     client = _FakeClient()
@@ -3727,7 +3727,7 @@ def test_resuming_restores_a_session_without_replaying_it(tmp_path):
 # ============================================================================
 
 
-@pytest.mark.parametrize("name", ["library.py", "assistant.py"])
+@pytest.mark.parametrize("name", ["server.py", "library.py", "assistant.py"])
 def test_the_example_brings_no_handler_stack(name):
     """Restated locally because it is the reason this example is shaped as it is.
 
@@ -3745,13 +3745,14 @@ def test_the_example_brings_no_handler_stack(name):
     assert "harness" not in bound
 
 
-def test_the_library_is_not_mistaken_for_a_script():
+@pytest.mark.parametrize("name", ["server.py", "library.py"])
+def test_the_library_is_not_mistaken_for_a_script(name):
     """`example_scripts` identifies a script by a top-level `main`.
 
     One here would enrol the library in the live example run, which would try to
     launch a module that is not runnable on its own.
     """
-    tree = ast.parse((EXAMPLE_DIR / "library.py").read_text())
+    tree = ast.parse((EXAMPLE_DIR / name).read_text())
     assert not any(
         isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body
     )
@@ -3896,7 +3897,7 @@ def test_serving_takes_the_protocol_channel_away_from_everything_else():
     code under `BuiltinExecutor` would corrupt the stream, and the defence is that
     `serve` hands the real descriptor to the transport and points fd 1 at stderr.
     """
-    source = (EXAMPLE_DIR / "library.py").read_text()
+    source = (EXAMPLE_DIR / "server.py").read_text()
     assert "os.dup2(2, 1)" in source
     assert "sys.stdout = sys.stderr" in source
 
@@ -3910,7 +3911,7 @@ def test_an_idle_editor_is_not_disconnected():
     Checked against the source for the same reason as the test above: `serve` dups
     and rebinds fd 1, which is not something to do inside a test runner.
     """
-    tree = ast.parse((EXAMPLE_DIR / "library.py").read_text())
+    tree = ast.parse((EXAMPLE_DIR / "server.py").read_text())
     served = [
         node
         for node in ast.walk(tree)
