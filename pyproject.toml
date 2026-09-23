@@ -42,7 +42,6 @@ pyro = ["pyro-ppl>=1.9.1"]
 jax = ["jax"]
 numpyro = [
   "numpyro>=0.19",
-  "jax<0.10"
 ]
 llm = [
   # 1.92.0 ships no wheel, so it builds from sdist; on Python 3.14 that build pulls
@@ -78,6 +77,9 @@ docs = [
 ]
 test = [
     "effectful[torch,pyro,jax,numpyro,docs,prettyprinter]",
+    # litellm 1.102.0 incorrectly reaches into its own proxy package from
+    # the cache-hit path of `completion`. This requirement is a workaround.
+    "litellm[proxy]>1.92",
     "pytest",
     "pytest-cov",
     "pytest-xdist",

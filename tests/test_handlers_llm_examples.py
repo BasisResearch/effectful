@@ -105,6 +105,14 @@ OVERRIDES: dict[str, Override] = {
         args=("--budget", "20"),
         why="the default 400-press budget is a research run, not a smoke test",
     ),
+    "reasoning/taboo": Override(
+        args=("--secret-word", "ocean", "--taboo-words", "water", "sea", "blue"),
+        why=(
+            "it deliberately has no default word: the Guesser's system prompt "
+            "carries the whole defining module, so one written there would be the "
+            "answer key"
+        ),
+    ),
     "autoformalization/informalization": Override(
         args=("--domain", "counter"),
         why=(
