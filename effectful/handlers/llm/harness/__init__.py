@@ -13,38 +13,6 @@ import typing
 
 import tenacity
 
-from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
-from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
-from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
-from effectful.handlers.llm.harness.execution.restricted import (
-    RestrictedPythonExecutor,
-)
-from effectful.handlers.llm.harness.hooks import AgentLoop
-from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
-from effectful.handlers.llm.harness.legibility.lexical import (
-    ImplicitToolExtractor,
-    LexicalToolExtractor,
-)
-from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
-from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
-from effectful.handlers.llm.harness.observability.rich import (
-    RichTerminalRenderer,
-)
-from effectful.handlers.llm.harness.provision.litellm import (
-    LiteLLMConfigurer,
-)
-from effectful.handlers.llm.harness.synthesis.body import (
-    FinalBodySynthesizer,
-)
-from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
-from effectful.handlers.llm.harness.synthesis.toolcall import (
-    ExpressionToolCaller,
-    MixedToolCaller,
-)
-from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
-from effectful.handlers.llm.harness.validation.pydantic import PydanticSkillArgValidator
-from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import Interpretation, coproduct
 
 
@@ -175,6 +143,43 @@ def harness(
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
             ``eval_provider`` is ``"none"``.
     """
+    # Imported here rather than at the top, so that importing this package loads no
+    # handler, and a stack rebuilt after a handler module is re-imported uses it.
+    from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
+    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+    from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+    from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
+    from effectful.handlers.llm.harness.execution.restricted import (
+        RestrictedPythonExecutor,
+    )
+    from effectful.handlers.llm.harness.hooks import AgentLoop
+    from effectful.handlers.llm.harness.legibility.framework import FrameworkDocumenter
+    from effectful.handlers.llm.harness.legibility.lexical import (
+        ImplicitToolExtractor,
+        LexicalToolExtractor,
+    )
+    from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
+    from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
+    from effectful.handlers.llm.harness.observability.rich import (
+        RichTerminalRenderer,
+    )
+    from effectful.handlers.llm.harness.provision.litellm import (
+        LiteLLMConfigurer,
+    )
+    from effectful.handlers.llm.harness.synthesis.body import (
+        FinalBodySynthesizer,
+    )
+    from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
+    from effectful.handlers.llm.harness.synthesis.toolcall import (
+        ExpressionToolCaller,
+        MixedToolCaller,
+    )
+    from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
+    from effectful.handlers.llm.harness.validation.pydantic import (
+        PydanticSkillArgValidator,
+    )
+    from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
+
     h: Interpretation = AgentLoop()
 
     if tool_calling != "json" and eval_provider == "none":

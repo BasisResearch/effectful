@@ -618,7 +618,7 @@ def test_a_call_of_no_known_kind_claims_none_rather_than_other():
     ``kind`` is optional in every message carrying it, so omitting it is the protocol's
     own way to say nothing about a call.
     """
-    assert acp_ask_user.__name__ not in library._TOOL_KINDS
+    assert acp_ask_user.__name__ not in library._tool_kinds()
     assert library._tool_kind(acp_ask_user.__name__) is None
 
     client = _FakeClient()
@@ -3803,7 +3803,9 @@ def _example_parser() -> argparse.ArgumentParser:
     ``add_help=False`` so that ``_actions`` holds only what the example declares,
     which is what the test below compares against.
     """
-    return argparse.ArgumentParser(allow_abbrev=False, add_help=False)
+    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=False)
+    parser.add_argument("--autoreload", action="store_true")
+    return parser
 
 
 def test_the_example_declares_the_flags_this_file_claims_it_does():
@@ -3868,7 +3870,7 @@ def test_the_example_leaves_the_models_to_the_server(monkeypatch):
     served: list[tuple[str, ...]] = []
 
     class _Recorded(library.EffectfulACPAgent):
-        async def serve(self):
+        async def serve(self, *, autoreload=False):
             served.append(self.models)
 
     monkeypatch.setattr(library, "EffectfulACPAgent", _Recorded)

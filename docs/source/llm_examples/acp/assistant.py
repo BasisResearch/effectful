@@ -41,6 +41,9 @@ and replayed when the editor reopens the session.
 
 Set ``ACP_OFFER_MODELS`` to a comma-separated list to put a picker in the editor's
 UI, so the session can be switched without editing the editor's configuration.
+
+Add ``--autoreload`` to edit this file, the modules it imports, or the harness while
+the server runs; ``library.py`` itself still needs a restart.
 """
 
 import argparse
@@ -85,8 +88,14 @@ class Assistant:
 def main() -> None:
     from library import EffectfulACPAgent
 
-    argparse.ArgumentParser(description=__doc__).parse_args()
-    asyncio.run(EffectfulACPAgent(Assistant).serve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--autoreload",
+        action="store_true",
+        help="re-run code as it is edited, while serving",
+    )
+    args = parser.parse_args()
+    asyncio.run(EffectfulACPAgent(Assistant).serve(autoreload=args.autoreload))
 
 
 if __name__ == "__main__":

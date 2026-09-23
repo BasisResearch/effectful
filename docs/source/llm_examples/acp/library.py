@@ -54,6 +54,8 @@ each of which has a test:
   the answer, since a conversation the agent cannot name is one it cannot reopen.
 """
 
+import argparse
+import ast
 import asyncio
 import base64
 import collections.abc
@@ -62,9 +64,14 @@ import contextlib
 import dataclasses
 import datetime
 import functools
+import importlib.machinery
+import importlib.util
+import inspect
 import io
 import json
+import linecache
 import os
+import pathlib
 import sqlite3
 import sys
 import threading
@@ -95,8 +102,7 @@ from effectful.handlers.llm.harness.serialization import (
     PromptSection,
     to_content_blocks,
 )
-from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
-from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Interpretation
@@ -1054,17 +1060,28 @@ class _PartialCall(typing.TypedDict):
     args: str
 
 
-_TOOL_KINDS: dict[str, acp.schema.ToolKind] = {
-    # The harness's own tools for running model-authored Python.
-    StatefulReplSynthesizer.exec_code.__name__: "execute",
-    FinalBodySynthesizer._SubmitSolutionTool.__toolname__: "execute",
-    acp_read_text_file.__name__: "read",
-    acp_write_text_file.__name__: "edit",
-    acp_run_terminal_command.__name__: "execute",
-    # `acp_ask_user` is deliberately absent: ACP's `ToolKind` vocabulary has no entry
-    # for asking the user something, and `think` -- the agent reasoning -- is a
-    # different thing rather than a near fit. It gets no kind at all; see `_tool_kind`.
-}
+@functools.cache
+def _tool_kinds() -> dict[str, acp.schema.ToolKind]:
+    # Imported here so that importing this module loads no synthesis handler, which
+    # `EffectfulACPAgent.serve`'s ``autoreload`` would then have to keep as first
+    # loaded.
+    from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
+    from effectful.handlers.llm.harness.synthesis.snippet import (
+        StatefulReplSynthesizer,
+    )
+
+    return {
+        # The harness's own tools for running model-authored Python.
+        StatefulReplSynthesizer.exec_code.__name__: "execute",
+        FinalBodySynthesizer._SubmitSolutionTool.__toolname__: "execute",
+        acp_read_text_file.__name__: "read",
+        acp_write_text_file.__name__: "edit",
+        acp_run_terminal_command.__name__: "execute",
+        # `acp_ask_user` is deliberately absent: ACP's `ToolKind` vocabulary has no
+        # entry for asking the user something, and `think` -- the agent reasoning --
+        # is a different thing rather than a near fit. It gets no kind at all; see
+        # `_tool_kind`.
+    }
 
 
 ASSUMED_CONTEXT_SIZE = 128_000
@@ -1143,7 +1160,7 @@ def _tool_kind(name: str) -> acp.schema.ToolKind | None:
     as a shell command. That is how `acp_ask_user`, which runs no commands at all, came
     to look like one.
     """
-    return _TOOL_KINDS.get(name)
+    return _tool_kinds().get(name)
 
 
 @dataclasses.dataclass
@@ -2118,6 +2135,70 @@ def _prompt_parts(
     return text, attachments, images
 
 
+# ---------------------------------------------------------------------------
+# Re-running edited code while serving (``serve(autoreload=True)``)
+# ---------------------------------------------------------------------------
+
+HARNESS = "effectful.handlers.llm.harness"
+
+
+def _harness_imports(file: str | os.PathLike[str]) -> set[str]:
+    """The harness modules `file` imports at its top level, with their packages."""
+    names: set[str] = set()
+    nodes = list(ast.parse(pathlib.Path(file).read_text()).body)
+    while nodes:
+        node = nodes.pop()
+        if isinstance(node, ast.If | ast.Try):
+            nodes += node.body + node.orelse + getattr(node, "finalbody", [])
+            nodes += [s for h in getattr(node, "handlers", []) for s in h.body]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            names |= {node.module, *(f"{node.module}.{a.name}" for a in node.names)}
+        elif isinstance(node, ast.Import):
+            names |= {a.name for a in node.names}
+    modules = {
+        ".".join(n.split(".")[:i]) for n in names for i in range(1, n.count(".") + 2)
+    }
+    return {m for m in modules if m.startswith(f"{HARNESS}.") and _is_module(m)}
+
+
+def _is_module(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, AttributeError):  # ``from module import Name``
+        return False
+
+
+def _kept_modules() -> set[str]:
+    """The harness modules this module holds onto, which must never be re-run.
+
+    Everything imported at the top of this file, and at the top of those modules in
+    turn: this module's handlers implement their operations, and a re-run would
+    define new ones that nothing here handles.
+    """
+    kept: set[str] = set()
+    todo = list(_harness_imports(__file__))
+    while todo:
+        if (name := todo.pop()) not in kept:
+            kept.add(name)
+            spec = importlib.util.find_spec(name)
+            if spec is not None and spec.origin is not None:
+                todo += _harness_imports(spec.origin)
+    return kept
+
+
+def _launcher_args() -> argparse.Namespace:
+    """The harness launcher's flags, read back from the command line it was run with.
+
+    Not from `sys.argv`, from which the launcher removes them before the script runs.
+    """
+    from effectful.handlers.llm.harness.__main__ import _parse_args
+
+    if HARNESS not in sys.orig_argv:
+        raise RuntimeError(f"autoreload needs the launcher: python -m {HARNESS}")
+    ns, _ = _parse_args(sys.orig_argv[sys.orig_argv.index(HARNESS) + 1 :])
+    return ns
+
+
 class EffectfulACPAgent[A: Agent](acp.Agent):
     """An ACP server backed by one `Agent` instance per session.
 
@@ -2150,6 +2231,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     make_agent: collections.abc.Callable[[str], A]
     models: tuple[str, ...]
     page_size: int
+
+    harness: Interpretation | None = None
+    """The handler stack turns run under in place of the ambient one, once `reload` sets it."""
 
     client: acp.interfaces.Client
     client_capabilities: acp.schema.ClientCapabilities
@@ -2705,6 +2789,25 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return f"Unknown command `/{name}`. Try {', '.join(f'`/{c.name}`' for c in SLASH_COMMANDS)}."
         return command.run(self, session, argument)
 
+    def reload(
+        self, make_agent: collections.abc.Callable[[str], A], harness: Interpretation
+    ) -> None:
+        """Serve new code: later turns run under `harness`, and each open session's
+        agent is rebuilt by `make_agent`, keeping its history and dataclass fields.
+
+        Call it only while no turn is running.
+        """
+        self.make_agent, self.harness = make_agent, harness
+        for session in self.sessions.values():
+            old, new = session.agent, make_agent(session.session_id)
+            if dataclasses.is_dataclass(old) and dataclasses.is_dataclass(new):
+                kept = {field.name for field in dataclasses.fields(new)}
+                for field in dataclasses.fields(old):
+                    if field.name in kept:
+                        setattr(new, field.name, getattr(old, field.name))
+            new.__history__ = old.__history__
+            session.agent = new
+
     def _answer(
         self,
         session: ACPSession[A],
@@ -2721,9 +2824,16 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
 
         Installing on top of the ambient stack, rather than assembling one, is what
         lets the launcher decide the model, the retry budget and the persistence: the
-        session contributes only its three translations to the editor.
+        session contributes only its three translations to the editor. Once `reload`
+        has set `harness`, the turn runs under that stack *instead of* the ambient
+        one: installing it with `handler` would stack it on the launcher's, and
+        every forwarding handler would run twice.
         """
-        with handler(session.intp):
+        with (
+            handler(session.intp)
+            if self.harness is None
+            else interpreter(coproduct(self.harness, session.intp))
+        ):
             # `Agent` the bound says nothing about a `prompt` skill; the contract
             # is this server's own (class docstring), so the checker is waved off
             # here rather than widened everywhere the type parameter travels.
@@ -2767,8 +2877,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 await session.writer
         return acp.schema.CloseSessionResponse()
 
-    async def serve(self) -> None:
+    async def serve(self, *, autoreload: bool = False) -> None:
         """Serve one agent over stdio until the editor disconnects.
+
+        With `autoreload`, code is re-run as it is edited; see `_reloading`.
 
         stdout is the protocol, and the harness runs model-authored Python that may print
         to it. So fd 1 is pointed at stderr for the process's lifetime, after handing a
@@ -2795,11 +2907,87 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         finally:
             sys.stdout = sys.stderr
 
-        # `run_agent`'s parameters are named from the client's point of view: the stream
-        # the client reads is the one this agent writes.
-        await acp.run_agent(
-            self,
-            input_stream=writer,
-            output_stream=reader,
-            use_unstable_protocol=True,
+        async with self._reloading() if autoreload else contextlib.nullcontext():
+            # `run_agent`'s parameters are named from the client's point of view: the
+            # stream the client reads is the one this agent writes.
+            await acp.run_agent(
+                self,
+                input_stream=writer,
+                output_stream=reader,
+                use_unstable_protocol=True,
+            )
+
+    @contextlib.asynccontextmanager
+    async def _reloading(self) -> collections.abc.AsyncIterator[None]:
+        """Re-run edited code for as long as this is entered, via hmr.
+
+        hmr re-runs an edited module and whatever depends on it: the agent class's
+        file, the modules it imports from its directory, and the harness, whose stack
+        is then rebuilt from the launcher's flags. Once no turn is running, `reload`
+        moves every session onto the new code. `_kept_modules` are never re-run, nor is
+        anything outside those directories. A module that fails to re-run is reported
+        on stderr and its previous version kept.
+        """
+        from reactivity.hmr.core import HMR_CONTEXT, BaseReloader, _loader
+        from reactivity.hmr.hooks import post_reload
+        from watchfiles import awatch
+
+        import effectful.handlers.llm.harness.__main__ as launcher
+
+        args = _launcher_args()
+        assert isinstance(self.make_agent, type), "autoreload needs an agent class"
+        path = pathlib.Path(inspect.getfile(self.make_agent)).resolve()
+        harness_spec = importlib.util.find_spec(HARNESS)
+        assert harness_spec is not None and harness_spec.origin is not None
+        harness_dir = pathlib.Path(harness_spec.origin).parent
+        watched = (path.parent, harness_dir)
+        # Everything under the watched directories was imported before hmr was set up
+        # -- the handlers by the launcher, the agent's own imports by the script -- so
+        # hmr could not track it. Dropped here, it is imported again through hmr the
+        # next time the agent's file or the stack is built. The launcher's stack is
+        # left holding the dropped classes, so nothing may run under it from now on:
+        # the effect below installs the rebuilt stack before any turn, and the server
+        # runs under it.
+        kept = _kept_modules() | {__name__, "__main__"}
+        for name, module in list(sys.modules.items()):
+            file = getattr(module, "__file__", None)
+            if (
+                file is not None
+                and name not in kept
+                and not hasattr(module, "__path__")
+                and any(pathlib.Path(file).resolve().is_relative_to(d) for d in watched)
+            ):
+                del sys.modules[name]
+
+        # hmr finds modules only through `sys.path`, which an editable install of
+        # effectful need not put the repository on.
+        if str(harness_dir.parents[3]) not in sys.path:
+            sys.path.append(str(harness_dir.parents[3]))
+        reloader = BaseReloader(str(path), [str(path.parent), str(harness_dir)], [])
+        # A skill checks its code against `linecache`, which would serve stale source.
+        post_reload(linecache.checkcache)
+
+        # The running copy of the agent's file is `__main__`, which hmr cannot re-run.
+        sys.modules[path.stem] = module = importlib.util.module_from_spec(
+            importlib.machinery.ModuleSpec(path.stem, _loader, origin=str(path))
         )
+        name = self.make_agent.__qualname__
+        agent_class = HMR_CONTEXT.derived(lambda: getattr(module, name))
+        stack = HMR_CONTEXT.derived(lambda: launcher._build_harness(args))
+        installed = HMR_CONTEXT.effect(lambda: self.reload(agent_class(), stack()))
+
+        async def watch() -> None:
+            async for events in awatch(*reloader.includes):
+                # So no turn sees two versions of the code.
+                while any(s.lock.locked() for s in self.sessions.values()):
+                    await asyncio.sleep(0.1)
+                reloader.on_events(events)
+
+        watching = asyncio.ensure_future(watch())
+        try:
+            assert self.harness is not None
+            with interpreter(self.harness):
+                yield
+        finally:
+            watching.cancel()
+            installed.dispose()
