@@ -3920,3 +3920,51 @@ def test_an_idle_editor_is_not_disconnected():
     ]
     assert len(served) == 1, "expected exactly one acp.run_agent call to check"
     assert "receive_timeout" not in {kw.arg for kw in served[0].keywords}
+
+
+def test_a_reload_gives_open_sessions_the_new_system_prompt():
+    """An edit that changes the system prompt reaches a session already open.
+
+    `HistoryBuilder` keeps a history's first system message, so without
+    `ACPSessionConfig.call_system` the edit would reach new sessions only.
+    """
+
+    # Made up at run time: the system prompt also carries this file's source, so a
+    # marker written out here would be found in every version of it.
+    marker = f"edited-{os.urandom(8).hex()}"
+
+    class _Rebuilt(_Bot):
+        pass
+
+    _Rebuilt.__doc__ = f"A minimal agent, {marker}."
+    model = MockCompletionHandler([make_text_response("ok")])
+
+    def systems(messages) -> list[str]:
+        return [str(m["content"]) for m in messages if m["role"] == "system"]
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        session = server.sessions[session_id]
+
+        async def turn(text: str) -> list[str]:
+            await server.prompt(session_id=session_id, prompt=[acp.text_block(text)])
+            return systems(model.received_messages[-1])
+
+        before = await turn("one")
+        server.reload(_Rebuilt, _stack(model))
+        after = await turn("two")
+        stored = session.agent.__history__[0]
+        later = await turn("three")
+        await server.close_session(session_id)
+        return before, after, stored, later, session
+
+    with handler(_stack(model)):
+        before, after, stored, later, session = asyncio.run(drive())
+
+    assert len(before) == len(after) == len(later) == 1
+    assert marker not in before[0]
+    assert marker in after[0]
+    assert marker in str(stored["content"])
+    assert later == after
+    assert session.agent.__history__[0] is stored, "a later turn replaced it again"

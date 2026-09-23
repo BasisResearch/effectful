@@ -452,6 +452,9 @@ class ACPSession[A: Agent]:
     model: str = INHERIT_MODEL
     """The model the user picked, or `INHERIT_MODEL` for the configured one."""
 
+    new_code: bool = False
+    """Whether `EffectfulACPAgent.reload` has run since this session's last turn."""
+
     title: str = ""
     """A human-readable name for the conversation, taken from its first prompt."""
 
@@ -1045,6 +1048,30 @@ class ACPSessionConfig(ObjectInterpretation):
         if self.session.model:
             kwargs = {**kwargs, "model": self.session.model}
         return fwd(*args, **kwargs)
+
+    @implements(call_system)
+    def call_system(self, *args, **kwargs) -> typing.Any:
+        """After a reload, replace the conversation's system message with this one.
+
+        `HistoryBuilder` keeps the system message of a history's first call, so
+        without this an edit to a docstring would reach new sessions only. The
+        history is the transaction's buffer here, which adopts the replacement when
+        the call commits. Only the turn's first call does it: a nested call on the
+        same agent shares the history.
+        """
+        # Looked up per call: a reload replaces the module, and with it the
+        # operation the rebuilt stack answers.
+        from effectful.handlers.llm.harness.durability.transaction import (
+            HistoryBuilder,
+        )
+
+        message = fwd(*args, **kwargs)
+        if self.session.new_code:
+            self.session.new_code = False
+            history = HistoryBuilder.get_history()
+            if history and history[0]["role"] == "system":
+                history[0] = message
+        return message
 
 
 # ---------------------------------------------------------------------------
@@ -2799,6 +2826,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         self.make_agent, self.harness = make_agent, harness
         for session in self.sessions.values():
+            session.new_code = True
             old, new = session.agent, make_agent(session.session_id)
             if dataclasses.is_dataclass(old) and dataclasses.is_dataclass(new):
                 kept = {field.name for field in dataclasses.fields(new)}
