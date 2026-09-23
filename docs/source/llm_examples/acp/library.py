@@ -675,6 +675,15 @@ class ACPSessionConfig(ObjectInterpretation):
     def completion(self, *args, **kwargs) -> typing.Any:
         if self.session.model:
             kwargs = {**kwargs, "model": self.session.model}
+        # Sent unconditionally when set: `litellm.drop_params` (set by the
+        # launcher) drops it for models that take no reasoning effort, and the
+        # session's picker can change the model mid-session, so gating on the
+        # model name here would guess wrong. `None` inherits -- the launcher's
+        # `--reasoning-effort` when it set one, else the provider's default --
+        # which is why the merge is over the request, where the launcher's value
+        # already sits.
+        if self.session.thought_level:
+            kwargs = {**kwargs, "reasoning_effort": self.session.thought_level}
         return fwd(*args, **kwargs)
 
     @implements(call_system)
