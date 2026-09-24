@@ -84,6 +84,9 @@ venv/
 docs/source/lightning_logs
 docs/preconvert
 docs/build
+docs/_build
+# Written into the source tree by sphinx-autodoc2 at build time.
+docs/source/apidocs/
 site/
 out
 *.matrix.gz

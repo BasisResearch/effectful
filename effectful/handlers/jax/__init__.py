@@ -12,3 +12,5 @@ from ._handlers import jax_getitem as jax_getitem
 from ._handlers import jit as jit
 from ._handlers import sizesof as sizesof
 from ._handlers import unbind_dims as unbind_dims
+
+__all__ = ["bind_dims", "jax_getitem", "jit", "sizesof", "unbind_dims"]
