@@ -1297,11 +1297,11 @@ def test_callable_full_pipeline_behavioral(
 
 @pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
 @pytest.mark.parametrize(
-    "ty", [Callable[[int], int], SkillBody[[int], int], MethodSkillBody[[int], int]]
+    "origin", [Callable, SkillBody, MethodSkillBody], ids=["fn", "free", "bound"]
 )
-def test_multiple_live_callables_replay_their_own_behavior(eval_provider, ty):
+def test_multiple_live_callables_replay_their_own_behavior(eval_provider, origin):
     """Decoding another function must preserve earlier functions' saved behavior."""
-    adapter = pydantic.TypeAdapter(Encodable[ty])
+    adapter = pydantic.TypeAdapter(Encodable[origin[[int], int]])
     with handler(eval_provider):
         functions = [
             adapter.validate_python(f"def offset(n: int) -> int:\n    return n + {i}\n")
