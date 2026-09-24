@@ -41,6 +41,7 @@ from effectful.handlers.llm.harness.serialization import (
     _NameAndTool,
     to_content_blocks,
 )
+from effectful.handlers.llm.harness.synthesis.body import MethodSkillBody, SkillBody
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Encodable, Skill, Tool
 from effectful.internals.unification import nested_type
@@ -1292,6 +1293,25 @@ def test_callable_full_pipeline_behavioral(
     with handler(TyTypeChecker()), handler(eval_provider):
         decoded = enc.validate_python(json.loads(text), context=ctx)
     assert decoded(*args) == expected
+
+
+@pytest.mark.parametrize("eval_provider", EVAL_PROVIDERS)
+@pytest.mark.parametrize(
+    "ty", [Callable[[int], int], SkillBody[[int], int], MethodSkillBody[[int], int]]
+)
+def test_multiple_live_callables_replay_their_own_behavior(eval_provider, ty):
+    """Decoding another function must preserve earlier functions' saved behavior."""
+    adapter = pydantic.TypeAdapter(Encodable[ty])
+    with handler(eval_provider):
+        functions = [
+            adapter.validate_python(f"def offset(n: int) -> int:\n    return n + {i}\n")
+            for i in range(32)
+        ]
+        expected = [fn(5) for fn in functions]
+        saved = [adapter.dump_json(fn) for fn in functions]
+        restored = [adapter.validate_json(encoded) for encoded in saved]
+    assert expected == list(range(5, 37))
+    assert [fn(5) for fn in restored] == expected
 
 
 # A Skill-style anchor whose return type is the Callable being decoded.
