@@ -1179,7 +1179,6 @@ def test_live_polymorphic_tool_call(poly_mod, caller):
     from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 
     stack = [
-        handler({poly_mod.handled_tool: lambda x: x * 10}),
         handler(AgentLoop()),
         handler(caller()),
         handler(LexicalToolExtractor(json_only=False)),
