@@ -18,6 +18,7 @@ import pydantic
 import pytest
 
 from effectful.handlers.llm import Tool
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
@@ -1172,12 +1173,30 @@ def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
 @pytest.mark.parametrize(
     "caller", [ExpressionToolCaller, MixedToolCaller], ids=["code", "mixed"]
 )
-def test_live_polymorphic_tool_call(poly_mod, caller):
-    # A real model calls a polymorphic tool through the expression pathway
-    # (issue #489's motivating case) -- under the uniform code mode and under
-    # the mixed default, where that tool is one of the wrapped ones.
-    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+def test_live_polymorphic_tool_call(tmp_path, caller):
+    mod = _import_fixture(
+        tmp_path,
+        '''
+from collections.abc import Sequence
 
+from effectful.handlers.llm import Skill, Tool
+
+calls = []
+
+
+@Tool.define
+def extend_sequence[T](examples: Sequence[T], new_example: T) -> Sequence[T]:
+    """Extend the sequence with a new example."""
+    calls.append((list(examples), new_example))
+    return [*examples, new_example]
+
+
+@Skill.define
+def grow(examples: Sequence[int]) -> str:
+    """Call extend_sequence to append 4 to {examples}, then summarize the result."""
+''',
+        "_live_polymorphic_fixture",
+    )
     stack = [
         handler(AgentLoop()),
         handler(caller()),
@@ -1188,14 +1207,15 @@ def test_live_polymorphic_tool_call(poly_mod, caller):
         handler(BuiltinExecutor()),
         handler(TenacityRetryer()),
     ]
-    with contextlib.ExitStack() as es:
-        for h in stack:
-            es.enter_context(h)
-        result = poly_mod.grow([1, 2, 3])
+    try:
+        with contextlib.ExitStack() as es:
+            for h in stack:
+                es.enter_context(h)
+            result = mod.grow([1, 2, 3])
+    finally:
+        sys.modules.pop(mod.__name__, None)
     assert isinstance(result, str)
-    # The prompt directs the model to use the tools; at least one call went
-    # through the expression pathway with correctly typed arguments.
-    assert poly_mod.calls
+    assert ([1, 2, 3], 4) in mod.calls
 
 
 # ============================================================================
