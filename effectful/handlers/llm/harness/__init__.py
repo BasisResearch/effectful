@@ -5,6 +5,8 @@ documented in the submodules below and may be recombined or replaced
 individually.
 """
 
+import collections.abc
+import json
 import os
 import pathlib
 import typing
@@ -58,6 +60,10 @@ def harness(
     tool_calling: typing.Literal["auto", "code", "json"] = "auto",
     tool_collection: typing.Literal["none", "explicit", "auto"] = "explicit",
     check_contracts: bool = True,
+    mcp_config: str
+    | os.PathLike[str]
+    | collections.abc.Mapping[str, typing.Any]
+    | None = None,
     **provider_config,
 ) -> Interpretation:
     """
@@ -94,9 +100,13 @@ def harness(
        wrote into a `Skill`'s parameter annotations (if ``check_contracts``).
     9. `TenacityRetryer` -- retry malformed/failing model output (if
        ``num_retries``).
-    10. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
+    10. `MCPTools` -- offer the tools of MCP servers (if ``mcp_config``).
+        Above the tool callers, which pass them through as JSON tools, and the
+        retryer, so a request's retries see one catalog; the connection spans
+        each outermost `Skill` call.
+    11. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
         SQLite after each successful call (if ``persist_db``).
-    11. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+    12. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
 
     Args:
         num_retries: Attempts for malformed/failing model output (via
@@ -154,6 +164,12 @@ def harness(
             model-supplied argument is still validated as the tool call is
             decoded, and metadata on a *return* annotation is enforced by the
             decoder either way.
+        mcp_config: MCP servers whose tools are offered to every `Skill`, as a
+            standard ``{"mcpServers": {name: server}}`` configuration mapping or
+            a path to a JSON file holding one. One FastMCP client serves them
+            all, connected for each outermost `Skill` call on a background
+            event loop; with several servers, tool names are prefixed with the
+            server's, and a server that fails to connect is skipped.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -210,6 +226,23 @@ def harness(
 
     if num_retries > 0:
         h = coproduct(h, TenacityRetryer(stop=tenacity.stop_after_attempt(num_retries)))
+
+    if mcp_config is not None:
+        import fastmcp
+
+        from effectful.handlers.llm.harness.legibility.mcp import (
+            MCPTools,
+            background_loop,
+        )
+
+        servers = (
+            mcp_config
+            if isinstance(mcp_config, collections.abc.Mapping)
+            else json.loads(pathlib.Path(mcp_config).read_text())
+        )
+        h = coproduct(
+            h, MCPTools(fastmcp.Client(dict(servers)), loop=background_loop())
+        )
 
     if persist_db is not None:
         h = coproduct(h, SQLitePersister(pathlib.Path(persist_db)))

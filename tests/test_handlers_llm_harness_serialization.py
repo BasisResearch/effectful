@@ -23,6 +23,7 @@ from typing import (
     Union,
 )
 
+import jsonschema
 import litellm
 import pydantic
 import pytest
@@ -41,6 +42,9 @@ from effectful.handlers.llm.harness.serialization import (
     _NameAndTool,
     to_content_blocks,
 )
+
+# Register the Callable and CodeType codecs exercised below.
+from effectful.handlers.llm.harness.synthesis import function, snippet  # noqa: F401
 from effectful.handlers.llm.harness.synthesis.body import MethodSkillBody, SkillBody
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Encodable, Skill, Tool
@@ -224,6 +228,43 @@ def _tool_distance(p: _PointModel) -> float:
 def _tool_style(style: Literal["moral", "funny"]) -> str:
     """Return the requested style."""
     return style
+
+
+@Tool.define
+def _tool_label(
+    _id: Annotated[int, pydantic.Field(gt=0)],
+    arg_0: str,
+    model_config: str = "default",
+    model_dump: str | None = None,
+) -> str:
+    """Describe an identified value."""
+    return f"{model_config}: {_id} {arg_0} {model_dump}"
+
+
+@Tool.define
+def _tool_connect(default: _Config) -> str:
+    """Connect using the configuration's default timeout."""
+    return f"{default.host}:{default.port} ({default.timeout})"
+
+
+@Tool.define
+def _tool_total(values: dict[str, int]) -> int:
+    """Add arbitrary named values."""
+    return sum(values.values())
+
+
+@Tool.define
+def _tool_total_keywords(*, initial: int = 0, **values: int) -> int:
+    """Add arbitrary named values to the initial total."""
+    return initial + sum(values.values())
+
+
+@Tool.define
+def _tool_contacts(
+    primary: _PersonWithAddress, **others: _PersonWithAddress
+) -> list[str]:
+    """Return the cities of the primary contact and other named contacts."""
+    return [person.address.city for person in (primary, *others.values())]
 
 
 # ---------------------------------------------------------------------------
@@ -490,6 +531,36 @@ ROUNDTRIP_CASES = [
         {_NAME2TOOL_KEY: {"_tool_add_2": _tool_add}},
         id="tool-renamed",
     ),
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_label", _tool_label),
+        {_NAME2TOOL_KEY: {"_tool_label": _tool_label}},
+        id="tool-parameter-names-and-defaults",
+    ),
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_connect", _tool_connect),
+        {_NAME2TOOL_KEY: {"_tool_connect": _tool_connect}},
+        id="tool-nested-optional-fields",
+    ),
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_total", _tool_total),
+        {_NAME2TOOL_KEY: {"_tool_total": _tool_total}},
+        id="tool-open-parameter-object",
+    ),
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_total_keywords", _tool_total_keywords),
+        {_NAME2TOOL_KEY: {"_tool_total_keywords": _tool_total_keywords}},
+        id="tool-keyword-arguments",
+    ),
+    pytest.param(
+        _NameAndTool,
+        _NameAndTool("_tool_contacts", _tool_contacts),
+        {_NAME2TOOL_KEY: {"_tool_contacts": _tool_contacts}},
+        id="tool-keyword-schema-definitions",
+    ),
     # --- DecodedToolCall ---
     pytest.param(
         DecodedToolCall,
@@ -520,6 +591,49 @@ ROUNDTRIP_CASES = [
         _make_dtc(_tool_distance, {"p": _PointModel(x=3, y=4)}, "call_5"),
         {_NAME2TOOL_KEY: {"_tool_distance": _tool_distance}},
         id="dtc-pydantic-param",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_label, {"_id": 7, "arg_0": "seven"}, "call_label"),
+        {_NAME2TOOL_KEY: {"_tool_label": _tool_label}},
+        id="dtc-parameter-names-and-defaults",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(
+            _tool_connect, {"default": _Config("localhost", 8000)}, "call_connect"
+        ),
+        {_NAME2TOOL_KEY: {"_tool_connect": _tool_connect}},
+        id="dtc-nested-optional-fields",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(_tool_total, {"values": {"user-id": 3, "class": 5}}, "call_total"),
+        {_NAME2TOOL_KEY: {"_tool_total": _tool_total}},
+        id="dtc-open-parameter-object",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(
+            _tool_total_keywords,
+            {"user-id": 3, "class": 5, "values": 7},
+            "call_keywords",
+        ),
+        {_NAME2TOOL_KEY: {"_tool_total_keywords": _tool_total_keywords}},
+        id="dtc-keyword-arguments",
+    ),
+    pytest.param(
+        DecodedToolCall,
+        _make_dtc(
+            _tool_contacts,
+            {
+                "primary": _PersonWithAddress("Pat", _Address("Main St", "Boston")),
+                "another": _PersonWithAddress("Sam", _Address("Elm St", "Cambridge")),
+            },
+            "call_contacts",
+        ),
+        {_NAME2TOOL_KEY: {"_tool_contacts": _tool_contacts}},
+        id="dtc-keyword-schema-definitions",
     ),
 ]
 
@@ -1210,6 +1324,13 @@ TOOL_CALL_ERROR_CASES = [
         pydantic.ValidationError,
         id="wrong-list-element-type",
     ),
+    pytest.param(
+        "_tool_total_keywords",
+        '{"user-id": "invalid"}',
+        {_NAME2TOOL_KEY: {"_tool_total_keywords": _tool_total_keywords}},
+        pydantic.ValidationError,
+        id="wrong-keyword-argument-type",
+    ),
 ]
 
 
@@ -1226,6 +1347,23 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
         pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
             tool_call, context=ctx
         )
+
+
+@pytest.mark.parametrize(
+    "ty,call,ctx",
+    [case for case in ROUNDTRIP_CASES if case.values[0] is DecodedToolCall],
+)
+def test_toolcall_arguments_satisfy_advertised_schema(ty, call, ctx):
+    tool_spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool(call.name, call.tool), mode="json", context=ctx or {}
+    )
+    encoded_call = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        call, mode="json", context=ctx or {}
+    )
+    jsonschema.validate(
+        json.loads(encoded_call["function"]["arguments"]),
+        tool_spec["function"]["parameters"],
+    )
 
 
 # ============================================================================
@@ -1452,6 +1590,25 @@ TOOL_PARAM_CASES = _apply_xfails(
         cid == "tuple-bare" or cid.startswith("tool-") or cid.startswith("dtc-")
     ),
 )
+
+
+@requires_llm
+@pytest.mark.parametrize(
+    "ty,value,ctx",
+    [case for case in ROUNDTRIP_CASES if case.values[0] is _NameAndTool],
+)
+def test_litellm_completion_accepts_advertised_tool(ty, value, ctx):
+    tool_spec = pydantic.TypeAdapter(Encodable[ty]).dump_python(
+        value, mode="json", context=ctx or {}
+    )
+    response = litellm.completion(
+        model=EFFECTFUL_LLM_MODEL,
+        messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
+        tools=[tool_spec],
+        tool_choice="none",
+        max_tokens=400,
+    )
+    assert isinstance(response, litellm.ModelResponse)
 
 
 @requires_llm

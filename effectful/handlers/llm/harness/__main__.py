@@ -178,6 +178,16 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
             "(installs SQLitePersister)"
         ),
     )
+    parser.add_argument(
+        "--mcp-config",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help=(
+            "Offer the tools of the MCP servers in this JSON file, a standard "
+            '{"mcpServers": {...}} configuration, to every Skill (installs MCPTools)'
+        ),
+    )
     return parser.parse_known_args(argv)
 
 
@@ -253,6 +263,7 @@ def main(argv: list[str] | None = None) -> None:
         tool_calling=ns.tool_calling,
         tool_collection=ns.tool_collection,
         check_contracts=ns.check_contracts,
+        mcp_config=ns.mcp_config,
         **_provider_config(ns),
     )
     with handler(h):
