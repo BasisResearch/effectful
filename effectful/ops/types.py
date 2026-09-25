@@ -38,7 +38,7 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     def register(self):
         return self._registry.register
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    def __call__(self, /, *args: P.args, **kwargs: P.kwargs) -> T:
         return self.func(self.dispatch, *args, **kwargs)
 
 
@@ -358,7 +358,7 @@ class Operation[**Q, V]:
         return op
 
     @typing.final
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+    def __default_rule__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         """The default rule is used when the operation is not handled.
 
         If no default rule is supplied, the free rule is used instead.
@@ -373,7 +373,7 @@ class Operation[**Q, V]:
             )(self, *args, **kwargs)
 
     @typing.final
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+    def __type_rule__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments.
 
         .. note::
@@ -417,7 +417,9 @@ class Operation[**Q, V]:
         return Scoped.infer_annotations(self.__signature__)
 
     @typing.final
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
+    def __fvs_rule__(
+        self, /, *args: Q.args, **kwargs: Q.kwargs
+    ) -> inspect.BoundArguments:
         """Returns the sets of variables that appear free in each argument and
         keyword argument but not in the result of the operation, i.e. the
         variables bound by the operation.
@@ -479,7 +481,7 @@ class Operation[**Q, V]:
             else:
 
                 @functools.wraps(self)
-                def _instance_op(instance, *args, **kwargs):
+                def _instance_op(instance, /, *args, **kwargs):
                     from effectful.ops.syntax import defdata
 
                     default_result = self(instance, *args, **kwargs)
@@ -520,7 +522,7 @@ class Operation[**Q, V]:
         )
         return _restore_args(rule)
 
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+    def __call__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import fwd, handler
 
@@ -550,7 +552,7 @@ class Operation[**Q, V]:
             staticmethod(
                 functools.wraps(cls.__apply__)(
                     functools.partial(
-                        lambda app, op, *args, **kwargs: app(op, *args, **kwargs),
+                        lambda app, op, /, *args, **kwargs: app(op, *args, **kwargs),
                         cls.__apply__,
                     )
                 )
@@ -562,7 +564,7 @@ class ApplyOperation[**Q, V](Operation[Q, V], _generate_apply=False):
     """An operation that implements application for an Operation subclass."""
 
 
-def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+def __apply__[**A, B](op: Operation[A, B], /, *args: A.args, **kwargs: A.kwargs) -> B:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`Operation.__apply__` changes the evaluation strategy of terms.
@@ -681,10 +683,10 @@ class Term[T](abc.ABC):
                 ret += f"{', ' if args else ''}"
             return _Rendered(f"{ret}{kwargs_str})")
 
-        def _apply(op, *args, **kwargs) -> str:
+        def _apply(op, /, *args, **kwargs) -> str:
             return _format_call(op_str(op), args, kwargs)
 
-        def _constructor_apply(op, *args, **kwargs):
+        def _constructor_apply(op, /, *args, **kwargs):
             # Dataclass constructors are introduced by evaluate() while traversing
             # an operation's arguments. They are traversal machinery, not nodes in
             # the expression being displayed.

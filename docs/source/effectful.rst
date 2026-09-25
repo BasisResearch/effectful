@@ -108,6 +108,10 @@ Legibility
    :members:
    :undoc-members:
 
+.. automodule:: effectful.handlers.llm.harness.legibility.mcp
+   :members:
+   :undoc-members:
+
 Execution
 ~~~~~~~~~
 

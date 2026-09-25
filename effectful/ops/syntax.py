@@ -446,6 +446,7 @@ def deffn[T, A, B](
 def _build_term[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
     op: Operation[..., T],
+    /,
     *args,
     **kwargs,
 ) -> Expr[T]:
@@ -472,6 +473,7 @@ def _build_term[T](
 def defdata[T](
     __dispatch: Callable[[type], Callable[..., Expr[T]]],
     op: Operation[..., T],
+    /,
     *args,
     **kwargs,
 ) -> Expr[T]:
@@ -578,7 +580,7 @@ def defdata[T](
 
 
 def _construct_dataclass_term[T](
-    cls: type[T], op: Operation[..., T], *args: Expr, **kwargs: Expr
+    cls: type[T], op: Operation[..., T], /, *args: Expr, **kwargs: Expr
 ) -> Term[T]:
     """
     Constructs a term wrapping an operation that returns a dataclass.
@@ -597,7 +599,7 @@ def _construct_dataclass_term[T](
 
 @defdata.register(object)
 def __dispatch_defdata_object[T](
-    ty: type[T], op: Operation[..., T], *args: Expr, **kwargs: Expr
+    ty: type[T], op: Operation[..., T], /, *args: Expr, **kwargs: Expr
 ):
     ty = typing.get_origin(ty) or ty
     if dataclasses.is_dataclass(ty):
@@ -614,6 +616,7 @@ class _BaseTerm[T](Term[T]):
     def __init__(
         self,
         op: Operation[..., T],
+        /,
         *args: Expr,
         **kwargs: Expr,
     ):
@@ -669,7 +672,7 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
             g.__name__ = attr
             ns[attr] = property(defop(g, name=f"{name}.{attr}"))
 
-        def __init__(self, ty, op, *args, **kwargs):
+        def __init__(self, ty, op, /, *args, **kwargs):
             self._op = op
             self._args = args
             self._kwargs = kwargs
@@ -689,12 +692,12 @@ class _DataclassTermMeta(type(_BaseTerm)):  # type: ignore
 
 @defdata.register(collections.abc.Callable)
 class _CallableTerm[**P, T](_BaseTerm[collections.abc.Callable[P, T]]):
-    def __init__(self, ty, op, *args, **kwargs):
+    def __init__(self, ty, op, /, *args, **kwargs):
         super().__init__(op, *args, **kwargs)
 
     @defop
     def __call__(
-        self: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
+        self: collections.abc.Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
     ) -> T:
         from effectful.ops.semantics import evaluate, fvsof, handler
 
@@ -780,7 +783,7 @@ def defstream[S, T, A, B](
 
 @defdata.register(collections.abc.Iterable)
 class _IterableTerm[T](_BaseTerm[collections.abc.Iterable[T]]):
-    def __init__(self, ty, op, *args, **kwargs):
+    def __init__(self, ty, op, /, *args, **kwargs):
         super().__init__(op, *args, **kwargs)
 
     @defop
@@ -1033,7 +1036,7 @@ def implements[**P, V](op: Operation[P, V]):
 
 @defdata.register(numbers.Number)
 class _NumberTerm[T: numbers.Number](_BaseTerm[T], numbers.Number):
-    def __init__(self, ty, op, *args, **kwargs):
+    def __init__(self, ty, op, /, *args, **kwargs):
         super().__init__(op, *args, **kwargs)
 
     def __hash__(self):

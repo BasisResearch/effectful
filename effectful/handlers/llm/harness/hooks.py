@@ -322,7 +322,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         Encodable[nested_type(result).value]  # type: ignore[misc]
     )
     encoded_result = to_content_blocks(
-        return_type.dump_python(result, mode="json", context={})
+        return_type.dump_python(result, mode="json", by_alias=True, context={})
     )
     message = litellm.ChatCompletionToolMessage(
         role="tool",

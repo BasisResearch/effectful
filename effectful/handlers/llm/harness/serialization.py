@@ -779,19 +779,47 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     return description
 
 
+def _requires_non_strict(schema: typing.Any) -> bool:
+    """Strict generation must not require optional fields or forbid extra keys."""
+    if isinstance(schema, list):
+        return any(_requires_non_strict(item) for item in schema)
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("type") == "object" and (
+        schema.get("additionalProperties") is not False
+        or set(schema.get("required", ())) != set(schema.get("properties", ()))
+    ):
+        return True
+    return any(_requires_non_strict(value) for value in schema.values())
+
+
 def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
     name, tool = value
-    fields: dict[str, typing.Any] = {
-        param_name: TypeToPydanticType().evaluate(param.annotation)
-        for param_name, param in inspect.signature(tool).parameters.items()
-    }
+    fields: dict[str, typing.Any] = {}
+    extra: typing.Literal["allow", "forbid"] = "forbid"
+    for i, param in enumerate(inspect.signature(tool).parameters.values()):
+        annotation = TypeToPydanticType().evaluate(param.annotation)
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            extra = "allow"
+            fields["__pydantic_extra__"] = (
+                dict[str, annotation],  # type: ignore[valid-type]
+                pydantic.Field(init=False),
+            )
+        else:
+            default = ... if param.default is inspect.Parameter.empty else param.default
+            # Model attributes cannot start with '_' or shadow BaseModel methods.
+            fields[f"arg_{i}"] = (annotation, pydantic.Field(default, alias=param.name))
     sig_model = pydantic.create_model(
         "Params",
-        __config__={"extra": "forbid"},
+        __config__={"extra": extra},
         **fields,
     )
-    response_format = litellm.utils.type_to_response_format_param(sig_model)
-    assert response_format is not None
+    parameters = sig_model.model_json_schema()
+    strict = not _requires_non_strict(parameters)
+    if strict:
+        response_format = litellm.utils.type_to_response_format_param(sig_model)
+        assert response_format is not None
+        parameters = response_format["json_schema"]["schema"]
     description = _tool_description(tool)
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
@@ -801,8 +829,8 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": response_format["json_schema"]["schema"],
-                "strict": True,
+                "parameters": parameters,
+                "strict": strict,
             },
         }
     )
@@ -844,12 +872,17 @@ def _validate_tool_call(
     tool = ctx[_NAME2TOOL_KEY][call.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
+    extra_param = next(
+        (p for p in sig.parameters.values() if p.kind == inspect.Parameter.VAR_KEYWORD),
+        None,
+    )
+    arguments = json.loads(call.function.arguments)
+    if not isinstance(arguments, dict):
+        raise TypeError("Tool arguments must be a JSON object")
     decoded_args = {}
-    for name, raw_arg in json.loads(call.function.arguments).items():
-        assert name in sig.parameters, (
-            f"Unexpected argument {name} for tool {tool.__name__}"
-        )
-        param = sig.parameters[name]
+    for name, raw_arg in arguments.items():
+        param = sig.parameters.get(name, extra_param)
+        assert param is not None, f"Unexpected argument {name} for tool {tool.__name__}"
         arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[param.annotation]  # type: ignore[name-defined]
         )
@@ -878,7 +911,14 @@ def _serialize_tool_call(
             v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
                 Encodable[nested_type(v).value]  # type: ignore[misc]
             )
-            encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
+            encoded = v_enc.dump_python(v, mode="json", by_alias=True, context=ctx)
+            if (
+                value.bound_args.signature.parameters[k].kind
+                == inspect.Parameter.VAR_KEYWORD
+            ):
+                encoded_args.update(encoded)
+            else:
+                encoded_args[k] = encoded
     return OpenAIChatCompletionMessageToolCall.model_validate(
         {
             "type": "function",

@@ -29,6 +29,7 @@ import contextlib
 import dataclasses
 import inspect
 import io
+import json
 import os
 import pathlib
 import re
@@ -83,6 +84,7 @@ pytest.importorskip("acp", reason="the ACP example needs agent-client-protocol")
 import acp  # noqa: E402
 import assistant  # noqa: E402
 import library  # noqa: E402
+import server as acp_server  # noqa: E402
 from acp import schema  # noqa: E402
 
 # Bound here for the same reason `assistant.py` binds them: a `Skill` finds its tools
@@ -599,15 +601,15 @@ def test_a_settled_response_is_handed_back_unchanged():
 
 
 def test_an_editor_tool_gets_the_icon_its_kind_deserves():
-    """`_tool_kind` is keyed by advertised name, so a rename must be made in both.
+    """`tool_kind` is keyed by advertised name, so a rename must be made in both.
 
     A stale key is invisible in every other way: the call still runs, the editor just
     draws the wrong icon.
     """
-    assert library._tool_kind(acp_read_text_file.__name__) == "read"
-    assert library._tool_kind(acp_write_text_file.__name__) == "edit"
-    assert library._tool_kind(acp_run_terminal_command.__name__) == "execute"
-    assert library._tool_kind("something_else") is None
+    assert library.tool_kind(acp_read_text_file.__name__) == "read"
+    assert library.tool_kind(acp_write_text_file.__name__) == "edit"
+    assert library.tool_kind(acp_run_terminal_command.__name__) == "execute"
+    assert library.tool_kind("something_else") is None
 
 
 def test_a_call_of_no_known_kind_claims_none_rather_than_other():
@@ -619,7 +621,7 @@ def test_a_call_of_no_known_kind_claims_none_rather_than_other():
     own way to say nothing about a call.
     """
     assert acp_ask_user.__name__ not in library._TOOL_KINDS
-    assert library._tool_kind(acp_ask_user.__name__) is None
+    assert library.tool_kind(acp_ask_user.__name__) is None
 
     client = _FakeClient()
     with _session(client) as session:
@@ -996,7 +998,7 @@ def test_a_terminal_backed_call_does_not_repeat_its_output_as_text():
     assert [c.type for c in completed[0].content] == ["terminal"]
     # The model still gets the text: the terminal is what the *user* reads.
     replied = [m for m in mock.received_messages[-1] if m.get("role") == "tool"]
-    assert "hello" in library._as_text(replied[0])
+    assert "hello" in library.message_as_text(replied[0])
 
 
 def test_a_non_text_tool_result_is_described_rather_than_dropped():
@@ -1012,13 +1014,13 @@ def test_a_non_text_tool_result_is_described_rather_than_dropped():
         Image.new("RGB", (4, 4), "red"), mode="json", context={}
     )
     blocks = list(to_content_blocks(encoded))
-    assert library._as_text({"content": blocks}) == "[image/png]"
+    assert library.message_as_text({"content": blocks}) == "[image/png]"
     # Text around it is kept, so a result that is partly prose still reads.
-    assert library._as_text(
+    assert library.message_as_text(
         {"content": [{"type": "text", "text": "here: "}, *blocks]}
     ) == ("here: [image/png]")
     # An unknown block kind is named rather than silently skipped.
-    assert library._as_text({"content": [{"type": "audio"}]}) == "[audio]"
+    assert library.message_as_text({"content": [{"type": "audio"}]}) == "[audio]"
 
 
 def test_an_image_returning_tool_shows_something_in_the_editor():
@@ -2128,9 +2130,190 @@ def test_every_capability_gated_method_it_implements_is_advertised():
         )
 
 
-def test_it_claims_no_mcp_transport_since_it_connects_to_none():
+def test_it_claims_the_mcp_transports_it_connects_to():
     caps = _advertised().mcp_capabilities or schema.McpCapabilities()
-    assert not (caps.http or caps.sse or caps.acp)
+    assert caps.http and caps.sse
+    assert not caps.acp
+
+
+# ============================================================================
+# The editor's MCP servers
+# ============================================================================
+
+_MCP_SERVER = pathlib.Path(__file__).parent / "fixtures" / "mcp_server.py"
+
+
+def _fixture_server(name: str = "fixture") -> schema.McpServerStdio:
+    return schema.McpServerStdio(
+        name=name, command=sys.executable, args=[str(_MCP_SERVER)], env=[]
+    )
+
+
+def test_the_editors_mcp_tools_are_offered_called_and_closed(tmp_path):
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("describe", '{"label": "probe"}'),
+            make_text_response("described"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        client = session.mcp_client
+        assert client is not None and client.is_connected()
+        response = await server.prompt(
+            session_id=session_id, prompt=[acp.text_block("go")]
+        )
+        status = library.status(server, session)
+        await server.close_session(session_id)
+        assert not client.is_connected()
+        return response, status
+
+    with handler(_stack(mock)):
+        response, status = asyncio.run(drive())
+
+    assert response.stop_reason == "end_turn"
+    (result,) = [m for m in mock.received_messages[-1] if m["role"] == "tool"]
+    assert json.loads(result["content"][0]["text"])["structuredContent"] == {
+        "label": "probe",
+        "prefix": "default",
+    }
+    assert "`fixture` (connected)" in status
+
+
+def test_an_unreachable_mcp_server_still_opens_the_session(tmp_path):
+    broken = schema.McpServerStdio(
+        name="broken", command=str(tmp_path / "missing"), args=[], env=[]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[broken])
+        ).session_id
+        session = server.sessions[session_id]
+        status = library.status(server, session)
+        client = session.mcp_client
+        await server.close_session(session_id)
+        return client, status
+
+    client, status = asyncio.run(drive())
+    assert client is None
+    assert "`broken` (not connected)" in status
+
+
+def test_resume_keeps_and_fork_inherits_the_mcp_servers(tmp_path):
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        client = session.mcp_client
+        await server.resume_session(session_id=session_id, cwd=str(tmp_path))
+        kept = session.mcp_client is client and client.is_connected()
+        forked = await server.fork_session(session_id=session_id, cwd=str(tmp_path))
+        fork = server.sessions[forked.session_id]
+        inherited = [s.name for s in fork.mcp_servers]
+        separate = fork.mcp_client is not client and fork.mcp_client.is_connected()
+        await server.close_session(forked.session_id)
+        await server.close_session(session_id)
+        return kept, inherited, separate
+
+    kept, inherited, separate = asyncio.run(drive())
+    assert kept
+    assert inherited == ["fixture"]
+    assert separate
+
+
+_released = threading.Event()
+
+
+@Tool.define
+def wait_for_release() -> str:
+    """Wait until the test releases it."""
+    assert _released.wait(10)
+    return "released"
+
+
+def test_changing_mcp_servers_mid_turn_leaves_that_turns_client_open(tmp_path):
+    _released.clear()
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("wait_for_release", "{}"),
+            make_text_response("done"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        old = session.mcp_client
+        turn = asyncio.create_task(
+            server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
+        )
+        assert await _until(lambda: session.reporter.running is not None)
+        await server.resume_session(
+            session_id=session_id,
+            cwd=str(tmp_path),
+            mcp_servers=[_fixture_server("other")],
+        )
+        new = session.mcp_client
+        held = old.is_connected()
+        _released.set()
+        # The turn's next request lists tools on the client it started with.
+        response = await asyncio.wait_for(turn, timeout=10)
+        released = not old.is_connected()
+        await server.close_session(session_id)
+        return response, held, released, new is not old and new is not None
+
+    with handler(_stack(mock)):
+        response, held, released, replaced = asyncio.run(drive())
+    assert response.stop_reason == "end_turn"
+    assert held, "the running turn's connection was closed underneath it"
+    assert released, "the old client outlived the turn that held it"
+    assert replaced
+
+
+def test_cancelling_abandons_an_inflight_mcp_call(tmp_path):
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("slow", "{}"),
+            make_text_response("the cancelled turn should never reach this"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        turn = asyncio.create_task(
+            server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
+        )
+        assert await _until(lambda: session.reporter.running is not None)
+        start = time.monotonic()
+        await server.cancel(session_id=session_id)
+        # The fixture's `slow` tool sleeps for thirty seconds.
+        response = await asyncio.wait_for(turn, timeout=10)
+        elapsed = time.monotonic() - start
+        await server.close_session(session_id)
+        return response, elapsed
+
+    with handler(_stack(mock)):
+        response, elapsed = asyncio.run(drive())
+    assert response.stop_reason == "cancelled"
+    assert elapsed < 5
 
 
 # ============================================================================
@@ -2241,7 +2424,7 @@ def _cancelled_mid_tool(client, name: str, arguments: str, caps, after=None):
 
     async def body(server, session_id, opened):
         session = server.sessions[session_id]
-        session.mode_id = library.AUTO  # no permission prompt in the way
+        session.mode_id = library.Mode.AUTO  # no permission prompt in the way
         turn = asyncio.create_task(
             server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
         )
@@ -2368,7 +2551,7 @@ def test_cancelling_during_terminal_creation_still_releases_it(monkeypatch):
 
     async def body(server, session_id, opened):
         session = server.sessions[session_id]
-        session.mode_id = library.AUTO
+        session.mode_id = library.Mode.AUTO
         turn = asyncio.create_task(
             server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
         )
@@ -2395,11 +2578,11 @@ def test_a_new_session_offers_its_modes():
 
     modes = _in_session(body)
     assert modes is not None
-    assert modes.current_mode_id == library.ASK
+    assert modes.current_mode_id == library.Mode.ASK
     assert [m.id for m in modes.available_modes] == [
-        library.ASK,
-        library.AUTO,
-        library.PLAN,
+        library.Mode.ASK,
+        library.Mode.AUTO,
+        library.Mode.PLAN,
     ]
     assert all(m.name and m.description for m in modes.available_modes)
 
@@ -2413,7 +2596,7 @@ def test_auto_mode_runs_tools_without_asking():
         """Call `add_numbers`."""
 
     with _session(client) as session:
-        session.mode_id = library.AUTO
+        session.mode_id = library.Mode.AUTO
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -2439,7 +2622,7 @@ def test_plan_mode_refuses_to_change_anything():
         """Write to `/tmp/x.py` with `acp_write_text_file`."""
 
     with _session(client, _FS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(
             coproduct(
                 _stack(
@@ -2466,7 +2649,7 @@ def test_plan_mode_still_allows_reading():
     """A mode that blocked everything would just be a broken agent."""
     client = _FakeClient(files={"/tmp/x.py": "print(1)\n"})
     with _session(client, _FS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(coproduct(_stack(), session.intp)):
             assert acp_read_text_file("/tmp/x.py") == "print(1)\n"
     assert client.asked == []
@@ -2476,10 +2659,10 @@ def test_an_unknown_mode_is_refused():
     async def body(server, session_id, opened):
         with pytest.raises(acp.RequestError):
             await server.set_session_mode(session_id=session_id, mode_id="wishful")
-        await server.set_session_mode(session_id=session_id, mode_id=library.PLAN)
+        await server.set_session_mode(session_id=session_id, mode_id=library.Mode.PLAN)
         return server.sessions[session_id].mode_id
 
-    assert _in_session(body) == library.PLAN
+    assert _in_session(body) == library.Mode.PLAN
 
 
 def _option(options, config_id):
@@ -2501,8 +2684,16 @@ def test_the_mode_is_offered_as_a_config_option_as_well_as_in_modes():
     assert modes is not None, "still sent, for clients that do not read the list"
     mode = _option(options, "mode")
     assert mode.category == "mode"
-    assert mode.current_value == library.ASK
-    assert [o.value for o in mode.options] == [library.ASK, library.AUTO, library.PLAN]
+    assert mode.current_value == library.Mode.ASK
+    assert [o.value for o in mode.options] == [
+        library.Mode.ASK,
+        library.Mode.AUTO,
+        library.Mode.PLAN,
+    ]
+
+
+# Offered whenever litellm names the reasoning efforts providers accept.
+_THOUGHT_LEVEL_OPTION = ["thought_level"] if acp_server._thought_levels() else []
 
 
 def test_no_model_picker_when_there_is_nothing_to_pick():
@@ -2511,7 +2702,7 @@ def test_no_model_picker_when_there_is_nothing_to_pick():
     async def body(server, session_id, opened):
         return opened.config_options
 
-    assert [o.id for o in _in_session(body)] == ["mode"]
+    assert [o.id for o in _in_session(body)] == ["mode", *_THOUGHT_LEVEL_OPTION]
 
 
 def test_the_model_picker_leads_with_the_configured_default():
@@ -2519,7 +2710,7 @@ def test_the_model_picker_leads_with_the_configured_default():
         return opened.config_options
 
     options = _in_session(body, models=_MODELS)
-    assert [o.id for o in options] == ["mode", "model"]
+    assert [o.id for o in options] == ["mode", "model", *_THOUGHT_LEVEL_OPTION]
     option = _option(options, "model")
     assert (option.id, option.type, option.category) == ("model", "select", "model")
     assert option.current_value == library.INHERIT_MODEL
@@ -2614,13 +2805,13 @@ def test_the_mode_can_be_set_through_the_config_option_too():
 
     async def body(server, session_id, opened):
         response = await server.set_config_option(
-            config_id="mode", session_id=session_id, value=library.PLAN
+            config_id="mode", session_id=session_id, value=library.Mode.PLAN
         )
         return response, server.sessions[session_id].mode_id
 
     response, mode_id = _in_session(body)
-    assert mode_id == library.PLAN
-    assert _option(response.config_options, "mode").current_value == library.PLAN
+    assert mode_id == library.Mode.PLAN
+    assert _option(response.config_options, "mode").current_value == library.Mode.PLAN
 
 
 def test_an_unknown_option_or_value_is_refused_rather_than_ignored():
@@ -2650,8 +2841,11 @@ def test_opening_a_session_announces_its_slash_commands():
     ]
     assert [c.name for c in announced[0].available_commands] == [
         "clear",
+        "restart",
         "status",
+        "usage",
         "mode",
+        "set_model",
     ]
     assert all(c.description for c in announced[0].available_commands)
 
@@ -2671,7 +2865,7 @@ def test_a_command_that_takes_an_argument_advertises_a_hint():
     assert commands["clear"].input is None, "takes no argument, so promises none"
     hint = commands["mode"].input
     assert hint is not None
-    assert hint.model_dump()["hint"] == "ask | auto | plan"
+    assert hint.model_dump()["hint"] == "[ask | auto | plan]"
 
 
 def test_the_mode_command_switches_and_says_so_on_both_channels():
@@ -2685,7 +2879,7 @@ def test_the_mode_command_switches_and_says_so_on_both_channels():
         return answer, session.mode_id
 
     answer, mode_id = _in_session(body, client)
-    assert mode_id == library.PLAN
+    assert mode_id == library.Mode.PLAN
     assert "Plan" in answer
     kinds = _kinds(client.updates)
     assert "current_mode_update" in kinds
@@ -2693,7 +2887,7 @@ def test_the_mode_command_switches_and_says_so_on_both_channels():
     pushed = next(
         u for u in client.updates if u.session_update == "config_option_update"
     )
-    assert _option(pushed.config_options, "mode").current_value == library.PLAN
+    assert _option(pushed.config_options, "mode").current_value == library.Mode.PLAN
 
 
 def test_the_mode_command_with_no_argument_reports_the_choices():
@@ -2716,7 +2910,7 @@ def test_an_unknown_mode_from_the_command_is_reported_not_applied():
 
     answer, mode_id = _in_session(body, client)
     assert "wishful" in answer
-    assert mode_id == library.ASK
+    assert mode_id == library.Mode.ASK
 
 
 def _prompted(client: _FakeClient, text: str, responses=None, **kwargs):
@@ -2763,7 +2957,7 @@ def test_clearing_leaves_no_note_about_clearing_in_the_history():
 
 def test_status_reports_what_the_session_is_actually_using():
     _, history, _, said = _prompted(
-        _FakeClient(), "/status", mode_id=library.PLAN, model=_MODELS[0]
+        _FakeClient(), "/status", mode_id=library.Mode.PLAN, model=_MODELS[0]
     )
     assert "Plan" in said[-1].content.text
     assert _MODELS[0] in said[-1].content.text
@@ -2834,18 +3028,16 @@ def test_a_plan_step_speaks_the_protocols_own_vocabulary():
 def test_the_plan_the_model_is_shown_has_no_protocol_metadata_in_it():
     """Which is the reason `PlanStep` exists rather than `acp.schema.PlanEntry`.
 
-    Every ACP type carries `_meta`, a free-form object reserved for implementations to
-    attach things to. Tool parameters become a *strict* JSON Schema, and strict schemas
-    list every property as required -- so using the wire type would oblige the model to
-    invent a value for a field documented as one nobody may assume anything about.
+    Every ACP type carries `_meta`, a free-form object reserved for implementations,
+    which the model has no business filling in.
     """
     parameters = _tool_schema(acp_update_plan)
     step = parameters["$defs"]["PlanStep"]
     assert "_meta" not in step["properties"]
-    assert set(step["required"]) == {"content", "priority", "status"}
+    assert set(step["required"]) == {"content"}
 
     wire = _tool_schema(_plan_tool_taking(schema.PlanEntry))["$defs"]["PlanEntry"]
-    assert "_meta" in wire["required"], "the wire type would demand it of the model"
+    assert "_meta" in wire["properties"], "the wire type would offer it to the model"
 
 
 def test_the_plan_is_replaced_whole_rather_than_appended_to():
@@ -3073,7 +3265,7 @@ def test_asking_the_user_needs_no_permission_prompt():
 
     client = _FakeClient()
     with _session(client, _FORMS) as session:
-        assert session.mode_id == library.ASK
+        assert session.mode_id == library.Mode.ASK
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -3110,7 +3302,7 @@ def test_asking_is_allowed_in_plan_mode():
 
     client = _FakeClient()
     with _session(client, _FORMS) as session:
-        session.mode_id = library.PLAN
+        session.mode_id = library.Mode.PLAN
         with handler(
             _stack(
                 MockCompletionHandler(
@@ -3212,7 +3404,7 @@ def test_forking_copies_a_conversation_without_entangling_it(tmp_path):
         server = await _serve(_FakeClient())
         session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
         source = server.sessions[session_id]
-        source.mode_id, source.model = library.PLAN, "some/model"
+        source.mode_id, source.model = library.Mode.PLAN, "some/model"
         source.title = "the original"
         await server.prompt(session_id=session_id, prompt=[acp.text_block("hello")])
 
@@ -3245,7 +3437,7 @@ def test_forking_copies_a_conversation_without_entangling_it(tmp_path):
     assert distinct, "a fork gets its own id"
     assert copied == source_len, "it starts as a copy of the source"
     assert fork_len > source_len, "and diverges from there"
-    assert settings == (library.PLAN, "some/model", "the original (fork)")
+    assert settings == (library.Mode.PLAN, "some/model", "the original (fork)")
     assert sorted(titles) == ["the original", "the original (fork)"]
 
 
@@ -3413,13 +3605,9 @@ def test_the_editors_working_directory_is_kept_for_the_session():
     assert reopened == ("/work/moved",)
 
 
-def test_mcp_servers_are_ignored_rather_than_refused(capsys):
-    """Refusing them made the agent unusable in any editor with MCP configured.
-
-    stdio transport is baseline and has no capability to decline, so a conforming
-    client sends its configured servers on every `session/new`. Failing the request
-    over that helps nobody; ignoring it silently hides it, so it goes to stderr --
-    which is free, since `serve` gives the protocol its own descriptor.
+def test_a_malformed_mcp_server_is_skipped_rather_than_refused(capsys):
+    """Refusing it would make the agent unusable in that editor; the note goes to
+    stderr, which is free, since `serve` gives the protocol its own descriptor.
     """
 
     async def drive():
@@ -3727,7 +3915,7 @@ def test_resuming_restores_a_session_without_replaying_it(tmp_path):
 # ============================================================================
 
 
-@pytest.mark.parametrize("name", ["library.py", "assistant.py"])
+@pytest.mark.parametrize("name", ["server.py", "library.py", "assistant.py"])
 def test_the_example_brings_no_handler_stack(name):
     """Restated locally because it is the reason this example is shaped as it is.
 
@@ -3745,13 +3933,14 @@ def test_the_example_brings_no_handler_stack(name):
     assert "harness" not in bound
 
 
-def test_the_library_is_not_mistaken_for_a_script():
+@pytest.mark.parametrize("name", ["server.py", "library.py"])
+def test_the_library_is_not_mistaken_for_a_script(name):
     """`example_scripts` identifies a script by a top-level `main`.
 
     One here would enrol the library in the live example run, which would try to
     launch a module that is not runnable on its own.
     """
-    tree = ast.parse((EXAMPLE_DIR / "library.py").read_text())
+    tree = ast.parse((EXAMPLE_DIR / name).read_text())
     assert not any(
         isinstance(node, ast.FunctionDef) and node.name == "main" for node in tree.body
     )
@@ -3803,7 +3992,9 @@ def _example_parser() -> argparse.ArgumentParser:
     ``add_help=False`` so that ``_actions`` holds only what the example declares,
     which is what the test below compares against.
     """
-    return argparse.ArgumentParser(allow_abbrev=False, add_help=False)
+    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=False)
+    parser.add_argument("--autoreload", action="store_true")
+    return parser
 
 
 def test_the_example_declares_the_flags_this_file_claims_it_does():
@@ -3868,7 +4059,7 @@ def test_the_example_leaves_the_models_to_the_server(monkeypatch):
     served: list[tuple[str, ...]] = []
 
     class _Recorded(library.EffectfulACPAgent):
-        async def serve(self):
+        async def serve(self, *, autoreload=False):
             served.append(self.models)
 
     monkeypatch.setattr(library, "EffectfulACPAgent", _Recorded)
@@ -3894,7 +4085,7 @@ def test_serving_takes_the_protocol_channel_away_from_everything_else():
     code under `BuiltinExecutor` would corrupt the stream, and the defence is that
     `serve` hands the real descriptor to the transport and points fd 1 at stderr.
     """
-    source = (EXAMPLE_DIR / "library.py").read_text()
+    source = (EXAMPLE_DIR / "server.py").read_text()
     assert "os.dup2(2, 1)" in source
     assert "sys.stdout = sys.stderr" in source
 
@@ -3908,7 +4099,7 @@ def test_an_idle_editor_is_not_disconnected():
     Checked against the source for the same reason as the test above: `serve` dups
     and rebinds fd 1, which is not something to do inside a test runner.
     """
-    tree = ast.parse((EXAMPLE_DIR / "library.py").read_text())
+    tree = ast.parse((EXAMPLE_DIR / "server.py").read_text())
     served = [
         node
         for node in ast.walk(tree)
@@ -3918,3 +4109,359 @@ def test_an_idle_editor_is_not_disconnected():
     ]
     assert len(served) == 1, "expected exactly one acp.run_agent call to check"
     assert "receive_timeout" not in {kw.arg for kw in served[0].keywords}
+
+
+def test_a_reload_gives_open_sessions_the_new_system_prompt():
+    """An edit that changes the system prompt reaches a session already open.
+
+    `HistoryBuilder` keeps a history's first system message, so without
+    `ACPSessionConfig.call_system` the edit would reach new sessions only.
+    """
+
+    # Made up at run time: the system prompt also carries this file's source, so a
+    # marker written out here would be found in every version of it.
+    marker = f"edited-{os.urandom(8).hex()}"
+
+    class _Rebuilt(_Bot):
+        pass
+
+    _Rebuilt.__doc__ = f"A minimal agent, {marker}."
+    model = MockCompletionHandler([make_text_response("ok")])
+
+    def systems(messages) -> list[str]:
+        return [str(m["content"]) for m in messages if m["role"] == "system"]
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        session = server.sessions[session_id]
+
+        async def turn(text: str) -> list[str]:
+            await server.prompt(session_id=session_id, prompt=[acp.text_block(text)])
+            return systems(model.received_messages[-1])
+
+        before = await turn("one")
+        server.reload(_Rebuilt, _stack(model))
+        after = await turn("two")
+        stored = session.agent.__history__[0]
+        later = await turn("three")
+        await server.close_session(session_id)
+        return before, after, stored, later, session
+
+    with handler(_stack(model)):
+        before, after, stored, later, session = asyncio.run(drive())
+
+    assert len(before) == len(after) == len(later) == 1
+    assert marker not in before[0]
+    assert marker in after[0]
+    assert marker in str(stored["content"])
+    assert later == after
+    assert session.agent.__history__[0] is stored, "a later turn replaced it again"
+
+
+def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
+    """A mode added or removed in `library` reaches a session already open."""
+    client = _FakeClient()
+    review = schema.SessionMode(id="review", name="Review", description="Only review.")
+
+    async def body(server, session_id, opened):
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        monkeypatch.setattr(
+            library, "SESSION_MODES", (library.SESSION_MODES[0], review)
+        )
+        server.reload(_Bot, _stack())
+        await session.flush()
+        return session.mode_id
+
+    mode_id = _in_session(body, client)
+    assert mode_id == library.Mode.ASK, "a removed mode falls back to the first"
+    moved = [u for u in client.updates if u.session_update == "current_mode_update"]
+    assert [u.current_mode_id for u in moved] == [library.Mode.ASK]
+    pushed = [u for u in client.updates if u.session_update == "config_option_update"]
+    mode = _option(pushed[-1].config_options, "mode")
+    assert mode.current_value == library.Mode.ASK
+    assert [o.value for o in mode.options] == [library.Mode.ASK, "review"]
+
+
+def test_restart_refuses_without_stdio():
+    """`/restart` replaces the process under the editor's pipes, so it needs them."""
+    client = _FakeClient()
+
+    async def body(server, session_id, opened):
+        return server._command(server.sessions[session_id], "/restart")
+
+    assert "stdio" in _in_session(body, client)
+
+
+def test_a_request_counts_as_unanswered_until_its_answer_is_written():
+    """What `restart` waits on before it replaces the process."""
+    import acp.connection
+
+    server = library.EffectfulACPAgent(_Bot)
+    event = acp.connection.StreamEvent
+    incoming, outgoing = (
+        acp.connection.StreamDirection.INCOMING,
+        acp.connection.StreamDirection.OUTGOING,
+    )
+    server._observe(event(incoming, {"id": 7, "method": "session/prompt"}))
+    server._observe(event(incoming, {"method": "session/cancel"}))
+    # The server's own request, answered by the editor: not something it owes.
+    server._observe(event(outgoing, {"id": 7, "method": "session/request_permission"}))
+    assert server._unanswered == {7}
+    server._observe(event(outgoing, {"id": 7, "result": {"stopReason": "end_turn"}}))
+    assert server._unanswered == set()
+
+
+def test_restart_refuses_without_persistence():
+    """Sessions come back from the checkpoint, so without one there is nothing to do."""
+    client = _FakeClient()
+
+    async def body(server, session_id, opened):
+        server._channel = server._stdout = object()
+        return server._command(server.sessions[session_id], "/restart")
+
+    assert "--persist-db" in _in_session(body, client)
+
+
+def test_a_restarted_server_reopens_the_sessions_it_was_left(tmp_path):
+    """The restart file and the checkpoint are enough to put a session back."""
+    persisting = harness(
+        model="mock/model",
+        eval_provider="none",
+        type_checker="none",
+        tool_calling="json",
+        persist_db=str(tmp_path / "sessions.db"),
+    )
+    model = MockCompletionHandler([make_text_response("noted")])
+    path = tmp_path / "restart.json"
+
+    async def before():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        await server.prompt(
+            session_id=session_id, prompt=[acp.text_block("remember pelican")]
+        )
+        session = server.sessions[session_id]
+        session.mode_id = "auto"
+        # What `_restart` does before it execs.
+        library.SessionIndex.record(session)
+        path.write_text(
+            json.dumps(
+                {
+                    "client_capabilities": server.client_capabilities.model_dump(
+                        mode="json", by_alias=True, exclude_none=True
+                    ),
+                    "sessions": [session_id],
+                }
+            )
+        )
+        await server.close_session(session_id)
+        return session_id
+
+    async def after():
+        server = library.EffectfulACPAgent(_Bot)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        session = next(iter(server.sessions.values()))
+        return session, [m["role"] for m in session.agent.__history__]
+
+    with handler(persisting), handler(model):
+        session_id = asyncio.run(before())
+        session, roles = asyncio.run(after())
+    assert not path.exists()
+    assert session.session_id == session_id
+    assert roles == ["system", "user", "assistant"]
+    assert (session.mode_id, session.title) == ("auto", "remember pelican")
+
+
+def test_a_restarted_server_reconnects_each_sessions_mcp_servers(tmp_path):
+    """The editor will not send them again, so the restart file carries them."""
+    path = tmp_path / "restart.json"
+    cwd = str(tmp_path)
+
+    async def before():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=cwd, mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        library.SessionIndex.record(session)
+        path.write_text(
+            json.dumps(
+                {
+                    "client_capabilities": {},
+                    "sessions": [session_id],
+                    "mcp_servers": {
+                        session_id: [
+                            server.model_dump(mode="json", by_alias=True)
+                            for server in session.mcp_servers
+                        ]
+                    },
+                }
+            )
+        )
+        await server.close_session(session_id)
+
+    async def after():
+        server = library.EffectfulACPAgent(_Bot)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        (session,) = server.sessions.values()
+        await server.prompt(
+            session_id=session.session_id, prompt=[acp.text_block("go")]
+        )
+        connected = session.mcp_client is not None and session.mcp_client.is_connected()
+        names = [s.name for s in session.mcp_servers]
+        await server.close_session(session.session_id)
+        return connected, names
+
+    with (
+        handler(_persisting(tmp_path)),
+        handler(MockCompletionHandler([make_text_response("ok")])),
+    ):
+        asyncio.run(before())
+        connected, names = asyncio.run(after())
+    assert connected
+    assert names == ["fixture"]
+
+
+def _persisting(tmp_path):
+    return harness(
+        model="mock/model",
+        eval_provider="none",
+        type_checker="none",
+        tool_calling="json",
+        persist_db=str(tmp_path / "sessions.db"),
+    )
+
+
+def test_restart_refuses_while_another_session_has_a_turn_running(tmp_path):
+    """Deferring would say "restarting" and then not, for as long as that turn ran."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        b = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._channel = server._stdout = object()
+        async with server.sessions[b].lock:
+            reply = server._command(server.sessions[a], "/restart")
+        await server.close_session(a)
+        await server.close_session(b)
+        return reply, server._restarting
+
+    with handler(_persisting(tmp_path)):
+        reply, restarting = asyncio.run(drive())
+    assert "A turn is running" in reply
+    assert restarting is None
+
+
+def test_restart_refuses_while_the_editor_awaits_another_request(tmp_path):
+    """That request's answer would be lost with this process."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._channel = server._stdout = object()
+        server._unanswered.update({"this restart", "another request"})
+        reply = server._command(server.sessions[a], "/restart")
+        await server.close_session(a)
+        return reply, server._restarting
+
+    with handler(_persisting(tmp_path)):
+        reply, restarting = asyncio.run(drive())
+    assert "another request" in reply
+    assert restarting is None
+
+
+def test_nothing_new_starts_while_restarting():
+    """So the quiet a restart waits for cannot be broken before its `exec`."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        a = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        server._restarting = typing.cast(typing.Any, object())
+        requests = [
+            lambda: server.prompt(session_id=a, prompt=[acp.text_block("hi")]),
+            lambda: server.new_session(cwd=_CWD, mcp_servers=[]),
+            lambda: server.load_session(cwd=_CWD, session_id=a, mcp_servers=[]),
+            lambda: server.resume_session(session_id=a, cwd=_CWD),
+            lambda: server.fork_session(session_id=a, cwd=_CWD),
+        ]
+        refused = []
+        for request in requests:
+            try:
+                await request()
+                refused.append(False)
+            except acp.RequestError:
+                refused.append(True)
+        server._restarting = None
+        opened = len(server.sessions)
+        await server.close_session(a)
+        return refused, opened
+
+    refused, opened = asyncio.run(drive())
+    assert refused == [True] * 5
+    assert opened == 1
+
+
+def test_a_mode_chosen_in_the_editor_is_recorded(tmp_path):
+    """So a session reopened after a crash or a restart comes back in it."""
+
+    async def drive():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        session_id = (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+        await server.set_session_mode(session_id=session_id, mode_id="plan")
+        await server.close_session(session_id)
+        return library.SessionIndex.get(session_id)
+
+    with handler(_persisting(tmp_path)):
+        recorded = asyncio.run(drive())
+    assert recorded is not None and recorded["mode"] == "plan"
+
+
+def test_a_session_that_cannot_be_reopened_does_not_take_the_others_down(tmp_path):
+    """One agent failing to construct after a restart closes that session only."""
+    path = tmp_path / "restart.json"
+
+    async def before():
+        server = library.EffectfulACPAgent(_Bot)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        await server.initialize(protocol_version=acp.PROTOCOL_VERSION)
+        ids = [
+            (await server.new_session(cwd=_CWD, mcp_servers=[])).session_id
+            for _ in range(2)
+        ]
+        path.write_text(
+            json.dumps({"client_capabilities": {}, "sessions": [*ids, "unknown"]})
+        )
+        for session_id in ids:
+            await server.close_session(session_id)
+        return ids
+
+    def make_agent(session_id):
+        if session_id == broken:
+            raise RuntimeError("this one does not construct")
+        return _Bot(session_id)
+
+    async def after():
+        server = library.EffectfulACPAgent(make_agent)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        return set(server.sessions)
+
+    with handler(_persisting(tmp_path)):
+        ids = asyncio.run(before())
+        broken = ids[0]
+        reopened = asyncio.run(after())
+    assert reopened == {ids[1]}

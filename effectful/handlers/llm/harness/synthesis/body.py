@@ -437,7 +437,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
         # implementation.
         result = functools.wraps(class_skill)(result)
 
-        def _doctest_apply(op, *args, **kwargs):
+        def _doctest_apply(op, /, *args, **kwargs):
             instance = _method_instance(op, class_skill)
             if instance is None:
                 return fwd()

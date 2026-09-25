@@ -123,7 +123,7 @@ class _BaseSizesofIntp[T](ObjectInterpretation):
         return s3
 
     @implements(apply)
-    def _apply(self, op, *args, **kwargs):
+    def _apply(self, op, /, *args, **kwargs):
         analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
         return _SizeAnalysis(
             functools.reduce(self._merge, (a.sizes for a in analyses), {}),
@@ -133,7 +133,7 @@ class _BaseSizesofIntp[T](ObjectInterpretation):
         )
 
     @implements(ConstructorOperation.__apply__)
-    def _apply_constructor(self, op, *args, **kwargs):
+    def _apply_constructor(self, op, /, *args, **kwargs):
         arg_analyses = tuple(self._analysis(x) for x in args)
         kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
         analyses = (*arg_analyses, *kwarg_analyses.values())

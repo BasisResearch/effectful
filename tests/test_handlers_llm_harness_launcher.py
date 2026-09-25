@@ -18,6 +18,7 @@ import sys
 import pytest
 
 from effectful.handlers.llm.harness.__main__ import (
+    _build_harness,
     _parse_args,
     _provider_config,
     _reasoning_effort_choices,
@@ -51,6 +52,7 @@ def test_parse_args_splits_harness_and_script_flags():
         "--num",  # a prefix of --num-retries
         "--type",  # a prefix of --type-checker
         "--persist",  # a prefix of --persist-db
+        "--mcp",  # a prefix of --mcp-config
     ],
 )
 def test_parse_args_does_not_claim_abbreviated_script_flags(script_flag):
@@ -63,6 +65,17 @@ def test_parse_args_does_not_claim_abbreviated_script_flags(script_flag):
     ns, rest = _parse_args(["s.py", "--model", "gpt-4o-mini", script_flag, "v"])
     assert ns.model == "gpt-4o-mini"
     assert rest == [script_flag, "v"]
+
+
+def test_mcp_config_reaches_the_harness(monkeypatch):
+    import effectful.handlers.llm.harness.__main__ as launcher
+
+    captured = {}
+    monkeypatch.setattr(launcher, "harness", lambda **kwargs: captured.update(kwargs))
+    ns, rest = _parse_args(["s.py", "--mcp-config", "servers.json"])
+    assert rest == []
+    _build_harness(ns)
+    assert captured["mcp_config"] == "servers.json"
 
 
 def test_parse_args_still_rejects_a_bad_harness_flag_value():

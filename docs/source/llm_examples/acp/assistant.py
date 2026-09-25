@@ -3,13 +3,15 @@
 Demonstrates:
 - An ``Agent`` exposed to any ACP editor (Zed, VS Code, Obsidian, Emacs)
 - Editor capabilities offered to the model as ordinary ``Tool``\\ s
+- The editor's MCP servers, whose tools are offered alongside them
 - Streaming model output and live tool-call status as ``session/update``
 - A prompt as typed parts -- prose, ``Attachment`` references, images -- rather
   than one flattened string, so an attached file costs a line of context and a
   screenshot arrives as an image the model actually sees
 
-All the protocol machinery lives in ``library.py``; what is left here is an agent,
-four imported tools, and a command line -- which is the point of the example.
+All the protocol machinery lives in ``library.py`` and ``server.py``; what is left
+here is an agent, four imported tools, and a command line -- which is the point of
+the example.
 
 The ``prompt`` skill's signature is the server's contract (see
 `EffectfulACPAgent`): the name matches the protocol method it answers
@@ -41,6 +43,9 @@ and replayed when the editor reopens the session.
 
 Set ``ACP_OFFER_MODELS`` to a comma-separated list to put a picker in the editor's
 UI, so the session can be switched without editing the editor's configuration.
+
+Add ``--autoreload`` to edit this file, the modules it imports, ``library.py`` or the
+harness while the server runs; ``server.py`` still needs a restart.
 """
 
 import argparse
@@ -85,8 +90,14 @@ class Assistant:
 def main() -> None:
     from library import EffectfulACPAgent
 
-    argparse.ArgumentParser(description=__doc__).parse_args()
-    asyncio.run(EffectfulACPAgent(Assistant).serve())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--autoreload",
+        action="store_true",
+        help="re-run code as it is edited, while serving",
+    )
+    args = parser.parse_args()
+    asyncio.run(EffectfulACPAgent(Assistant).serve(autoreload=args.autoreload))
 
 
 if __name__ == "__main__":
