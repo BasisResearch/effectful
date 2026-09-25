@@ -76,6 +76,7 @@ import acp
 import acp.connection
 import acp.interfaces
 import acp.schema
+import fastmcp
 import pydantic
 from PIL import Image
 
@@ -381,6 +382,18 @@ class ACPSession[A: "Agent"]:
     poll_interval: float = 0.1
     """How often a worker thread waiting on the editor re-reads `cancel`."""
 
+    mcp_servers: list[typing.Any] = dataclasses.field(default_factory=list)
+    """The MCP servers the editor gave this session, as ACP specs."""
+
+    mcp_client: fastmcp.Client | None = None
+    """One client for all of `mcp_servers`, connected while the session is open."""
+
+    mcp_client_config: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
+    """The FastMCP configuration `mcp_client` was built from."""
+
+    mcp_connecting: asyncio.Task | None = None
+    """A connection started outside a request, which the next turn waits for."""
+
     loop: asyncio.AbstractEventLoop = dataclasses.field(
         default_factory=asyncio.get_running_loop
     )
@@ -520,7 +533,22 @@ class ACPSession[A: "Agent"]:
         Raises:
             SessionCancelled: If the turn was cancelled while waiting.
         """
-        future = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        return self.wait(
+            asyncio.run_coroutine_threadsafe(coro, self.loop), orphan=orphan
+        )
+
+    def wait[T](
+        self,
+        future: concurrent.futures.Future[T],
+        *,
+        orphan: collections.abc.Callable[[concurrent.futures.Future], None]
+        | None = None,
+    ) -> T:
+        """Wait for `future` as `call` does, abandoning it if the turn is cancelled.
+
+        Raises:
+            SessionCancelled: If the turn was cancelled while waiting.
+        """
         while True:
             if self.cancel.is_set():
                 if orphan is None:
@@ -544,6 +572,50 @@ class ACPSession[A: "Agent"]:
         """
         with contextlib.suppress(RuntimeError):  # a loop already shut down
             asyncio.run_coroutine_threadsafe(coro, self.loop)
+
+    async def connect_mcp(self, servers: collections.abc.Sequence[typing.Any]) -> None:
+        """Connect to `servers`, replacing any this session had.
+
+        One FastMCP client serves them all, and skips a server that fails to
+        connect. Failures are reported on stderr, not to the editor.
+        """
+        servers = _valid_mcp(servers)
+        config = _mcp_config(servers, self.cwd)
+        if self.mcp_client is not None and config == self.mcp_client_config:
+            self.mcp_servers = servers
+            return
+        await self.close_mcp()
+        self.mcp_servers, self.mcp_client_config = servers, config
+        if config["mcpServers"]:
+            client = fastmcp.Client(config)
+            try:
+                await client.__aenter__()
+            except Exception:
+                print(
+                    f"could not connect to MCP servers {list(config['mcpServers'])}:"
+                    f"\n{traceback.format_exc()}",
+                    file=sys.stderr,
+                )
+                # Closing re-raises the connection's error.
+                with contextlib.suppress(Exception):
+                    await client.close()
+            else:
+                self.mcp_client = client
+        self.install_handlers()
+
+    async def close_mcp(self, *, force: bool = False) -> None:
+        """Release this session's MCP client, if it has one.
+
+        A running turn keeps the connection until it ends, unless `force`.
+        """
+        client, self.mcp_client = self.mcp_client, None
+        if client is None:
+            return
+        with contextlib.suppress(Exception):
+            await client.__aexit__(None, None, None)
+        if force or not client.is_connected():
+            with contextlib.suppress(Exception):
+                await client.close()
 
     async def flush(self) -> None:
         """Wait until every notification produced so far has reached the editor.
@@ -579,6 +651,64 @@ class ACPSession[A: "Agent"]:
                 pass
             finally:
                 self.updates.task_done()
+
+
+_MCP_SERVER: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+    acp.schema.HttpMcpServer
+    | acp.schema.SseMcpServer
+    | acp.schema.AcpMcpServer
+    | acp.schema.McpServerStdio
+)
+
+
+def _valid_mcp(servers: collections.abc.Sequence[typing.Any]) -> list[typing.Any]:
+    """ACP MCP server specs, validated, with malformed ones skipped with a note."""
+    valid = []
+    for server in servers:
+        try:
+            valid.append(_MCP_SERVER.validate_python(server))
+        except pydantic.ValidationError as error:
+            print(f"note: skipping malformed MCP server:\n{error}", file=sys.stderr)
+    return valid
+
+
+def _dump_mcp(servers: collections.abc.Sequence[typing.Any]) -> list[typing.Any]:
+    """ACP MCP server specs as JSON, for comparing and saving them."""
+    return [
+        server.model_dump(mode="json", by_alias=True, exclude_none=True)
+        for server in servers
+    ]
+
+
+def _mcp_config(
+    servers: collections.abc.Sequence[typing.Any], cwd: str
+) -> dict[str, typing.Any]:
+    """A FastMCP ``mcpServers`` configuration for ACP MCP server specs.
+
+    Stdio servers run in the session's `cwd`. MCP-over-ACP servers are skipped.
+    """
+    config: dict[str, typing.Any] = {}
+    for server in servers:
+        if isinstance(server, acp.schema.McpServerStdio):
+            config[server.name] = {
+                "command": server.command,
+                "args": list(server.args),
+                "env": {variable.name: variable.value for variable in server.env},
+                "cwd": cwd or None,
+            }
+        elif isinstance(server, acp.schema.HttpMcpServer | acp.schema.SseMcpServer):
+            config[server.name] = {
+                "url": server.url,
+                "headers": {header.name: header.value for header in server.headers},
+                "transport": server.type,
+            }
+        else:
+            print(
+                f"note: skipping MCP server {server.name!r}: its transport is not "
+                f"supported",
+                file=sys.stderr,
+            )
+    return {"mcpServers": config}
 
 
 class SessionIndex:
@@ -1020,12 +1150,12 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         left every session and its writer task alive for the life of the process.
 
         `prompt_capabilities` claims exactly what the ``prompt`` skill contract
-        accepts -- see `initialize` for the argument. `mcp_*` is left claiming
-        nothing, which is the honest answer for an agent that connects to no MCP
-        servers.
+        accepts -- see `initialize` for the argument. `mcp_capabilities` claims
+        the transports `ACPSession.connect_mcp` can reach beyond the baseline stdio.
         """
         return acp.schema.AgentCapabilities(
             load_session=True,
+            mcp_capabilities=acp.schema.McpCapabilities(http=True, sse=True),
             prompt_capabilities=acp.schema.PromptCapabilities(image=True),
             session_capabilities=acp.schema.SessionCapabilities(
                 close=acp.schema.SessionCloseCapabilities(),
@@ -1235,24 +1365,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             raise acp.RequestError.resource_not_found(session_id)
         return session
 
-    def _decline_mcp(self, mcp_servers: list[typing.Any] | None) -> None:
-        """Note, without refusing, that this agent will not use the editor's MCP servers.
-
-        Agents "SHOULD connect to all MCP servers specified by the Client", and stdio
-        transport is baseline -- there is no capability with which to say "none at
-        all", so a client with servers configured will send them on every
-        ``session/new`` and is behaving correctly in doing so. Failing the request
-        over that would make this agent unusable in any editor that has an MCP server
-        set up, to no one's benefit; ignoring them silently would hide it. stderr is
-        free (`serve` gives the protocol its own descriptor), so it goes there.
-        """
-        if mcp_servers:
-            print(
-                f"note: ignoring {len(mcp_servers)} MCP server(s) offered by the "
-                f"editor; this agent has no MCP client",
-                file=sys.stderr,
-            )
-
     def on_connect(self, conn: acp.interfaces.Client) -> None:
         self.client = conn
         if self._restored is not None:
@@ -1414,11 +1526,19 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             with self._current_stack():
                 for session in self.sessions.values():
                     SessionIndex.record(session)
+            # The editor will not send its MCP servers again, and their processes
+            # would outlive the `exec`.
+            for session in self.sessions.values():
+                await session.close_mcp(force=True)
             state = {
                 "client_capabilities": self.client_capabilities.model_dump(
                     mode="json", by_alias=True, exclude_none=True
                 ),
                 "sessions": list(self.sessions),
+                "mcp_servers": {
+                    session_id: _dump_mcp(session.mcp_servers)
+                    for session_id, session in self.sessions.items()
+                },
             }
             fd, path = tempfile.mkstemp(prefix="acp-restart-", suffix=".json")
             with os.fdopen(fd, "w") as f:
@@ -1434,6 +1554,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         except Exception:
             os.dup2(2, 1)
             os.environ.pop(RESTART_STATE_ENV, None)
+            for session in self.sessions.values():
+                if session.mcp_client is None and session.mcp_servers:
+                    await session.connect_mcp(session.mcp_servers)
             if path is not None:
                 with contextlib.suppress(OSError):
                     os.unlink(path)
@@ -1465,6 +1588,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 session = self._open_session(
                     session_id, recorded["cwd"], recorded["additional_directories"]
                 )
+                servers = state.get("mcp_servers", {}).get(session_id)
+                if servers:
+                    session.mcp_connecting = session.loop.create_task(
+                        session.connect_mcp(servers)
+                    )
                 self._announce_commands(session)
                 self._announce_config(session)
             except Exception:
@@ -1536,8 +1664,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         the model is told it is working on, and where a terminal command runs.
         """
         self._refuse_while_restarting()
-        self._decline_mcp(mcp_servers)
         session = self._open_session(str(uuid.uuid4()), cwd, additional_directories)
+        await session.connect_mcp(mcp_servers or [])
         with self._current_stack():
             SessionIndex.record(session)
         self._announce_commands(session)
@@ -1617,8 +1745,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         other record of it.
         """
         self._refuse_while_restarting()
-        self._decline_mcp(mcp_servers)
         session = self._open_session(session_id, cwd, additional_directories)
+        await session.connect_mcp(mcp_servers or [])
         with self._current_stack():
             SessionIndex.record(session)
             for update in self._replay(session.agent.__history__):
@@ -1646,8 +1774,10 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         it is why both are advertised -- a client picks one.
         """
         self._refuse_while_restarting()
-        self._decline_mcp(mcp_servers)
         session = self._open_session(session_id, cwd, additional_directories)
+        # Optional here; without it the session keeps the servers it has.
+        if mcp_servers is not None:
+            await session.connect_mcp(mcp_servers)
         with self._current_stack():
             SessionIndex.record(session)
         self._announce_commands(session)
@@ -1679,9 +1809,12 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         an empty conversation, not a copy.
         """
         self._refuse_while_restarting()
-        self._decline_mcp(mcp_servers)
         source = self._open_session(session_id, cwd, additional_directories)
         fork = self._open_session(str(uuid.uuid4()), cwd, additional_directories)
+        # Optional here; without it the fork uses the source's servers.
+        await fork.connect_mcp(
+            source.mcp_servers if mcp_servers is None else mcp_servers
+        )
         with self._current_stack():
             fork.agent.__history__.extend(source.agent.__history__)
             fork.mode_id, fork.model = source.mode_id, source.model
@@ -1821,6 +1954,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._refuse_while_restarting()
         session = self._session(session_id)
         async with session.lock:
+            if session.mcp_connecting is not None:
+                await session.mcp_connecting
+                session.mcp_connecting = None
             session.cancel.clear()
             session.reporter.begin_turn()
             try:
@@ -2016,6 +2152,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             session.writer.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await session.writer
+        await session.close_mcp()
         return acp.schema.CloseSessionResponse()
 
     async def serve(self, *, autoreload: bool = False) -> None:
@@ -2053,15 +2190,19 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._restored = os.environ.pop(RESTART_STATE_ENV, None)
 
         async with self._reloading() if autoreload else contextlib.nullcontext():
-            # `run_agent`'s parameters are named from the client's point of view: the
-            # stream the client reads is the one this agent writes.
-            await acp.run_agent(
-                self,
-                input_stream=writer,
-                output_stream=reader,
-                use_unstable_protocol=True,
-                observers=[self._observe],
-            )
+            try:
+                # `run_agent`'s parameters are named from the client's point of view:
+                # the stream the client reads is the one this agent writes.
+                await acp.run_agent(
+                    self,
+                    input_stream=writer,
+                    output_stream=reader,
+                    use_unstable_protocol=True,
+                    observers=[self._observe],
+                )
+            finally:
+                for session in list(self.sessions.values()):
+                    await session.close_mcp(force=True)
 
     @contextlib.asynccontextmanager
     async def _reloading(self) -> collections.abc.AsyncIterator[None]:

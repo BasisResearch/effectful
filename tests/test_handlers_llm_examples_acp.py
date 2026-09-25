@@ -84,6 +84,7 @@ pytest.importorskip("acp", reason="the ACP example needs agent-client-protocol")
 import acp  # noqa: E402
 import assistant  # noqa: E402
 import library  # noqa: E402
+import server as acp_server  # noqa: E402
 from acp import schema  # noqa: E402
 
 # Bound here for the same reason `assistant.py` binds them: a `Skill` finds its tools
@@ -2129,9 +2130,190 @@ def test_every_capability_gated_method_it_implements_is_advertised():
         )
 
 
-def test_it_claims_no_mcp_transport_since_it_connects_to_none():
+def test_it_claims_the_mcp_transports_it_connects_to():
     caps = _advertised().mcp_capabilities or schema.McpCapabilities()
-    assert not (caps.http or caps.sse or caps.acp)
+    assert caps.http and caps.sse
+    assert not caps.acp
+
+
+# ============================================================================
+# The editor's MCP servers
+# ============================================================================
+
+_MCP_SERVER = pathlib.Path(__file__).parent / "fixtures" / "mcp_server.py"
+
+
+def _fixture_server(name: str = "fixture") -> schema.McpServerStdio:
+    return schema.McpServerStdio(
+        name=name, command=sys.executable, args=[str(_MCP_SERVER)], env=[]
+    )
+
+
+def test_the_editors_mcp_tools_are_offered_called_and_closed(tmp_path):
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("describe", '{"label": "probe"}'),
+            make_text_response("described"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        client = session.mcp_client
+        assert client is not None and client.is_connected()
+        response = await server.prompt(
+            session_id=session_id, prompt=[acp.text_block("go")]
+        )
+        status = library.status(server, session)
+        await server.close_session(session_id)
+        assert not client.is_connected()
+        return response, status
+
+    with handler(_stack(mock)):
+        response, status = asyncio.run(drive())
+
+    assert response.stop_reason == "end_turn"
+    (result,) = [m for m in mock.received_messages[-1] if m["role"] == "tool"]
+    assert json.loads(result["content"][0]["text"])["structuredContent"] == {
+        "label": "probe",
+        "prefix": "default",
+    }
+    assert "`fixture` (connected)" in status
+
+
+def test_an_unreachable_mcp_server_still_opens_the_session(tmp_path):
+    broken = schema.McpServerStdio(
+        name="broken", command=str(tmp_path / "missing"), args=[], env=[]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[broken])
+        ).session_id
+        session = server.sessions[session_id]
+        status = library.status(server, session)
+        client = session.mcp_client
+        await server.close_session(session_id)
+        return client, status
+
+    client, status = asyncio.run(drive())
+    assert client is None
+    assert "`broken` (not connected)" in status
+
+
+def test_resume_keeps_and_fork_inherits_the_mcp_servers(tmp_path):
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        client = session.mcp_client
+        await server.resume_session(session_id=session_id, cwd=str(tmp_path))
+        kept = session.mcp_client is client and client.is_connected()
+        forked = await server.fork_session(session_id=session_id, cwd=str(tmp_path))
+        fork = server.sessions[forked.session_id]
+        inherited = [s.name for s in fork.mcp_servers]
+        separate = fork.mcp_client is not client and fork.mcp_client.is_connected()
+        await server.close_session(forked.session_id)
+        await server.close_session(session_id)
+        return kept, inherited, separate
+
+    kept, inherited, separate = asyncio.run(drive())
+    assert kept
+    assert inherited == ["fixture"]
+    assert separate
+
+
+_released = threading.Event()
+
+
+@Tool.define
+def wait_for_release() -> str:
+    """Wait until the test releases it."""
+    assert _released.wait(10)
+    return "released"
+
+
+def test_changing_mcp_servers_mid_turn_leaves_that_turns_client_open(tmp_path):
+    _released.clear()
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("wait_for_release", "{}"),
+            make_text_response("done"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        old = session.mcp_client
+        turn = asyncio.create_task(
+            server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
+        )
+        assert await _until(lambda: session.reporter.running is not None)
+        await server.resume_session(
+            session_id=session_id,
+            cwd=str(tmp_path),
+            mcp_servers=[_fixture_server("other")],
+        )
+        new = session.mcp_client
+        held = old.is_connected()
+        _released.set()
+        # The turn's next request lists tools on the client it started with.
+        response = await asyncio.wait_for(turn, timeout=10)
+        released = not old.is_connected()
+        await server.close_session(session_id)
+        return response, held, released, new is not old and new is not None
+
+    with handler(_stack(mock)):
+        response, held, released, replaced = asyncio.run(drive())
+    assert response.stop_reason == "end_turn"
+    assert held, "the running turn's connection was closed underneath it"
+    assert released, "the old client outlived the turn that held it"
+    assert replaced
+
+
+def test_cancelling_abandons_an_inflight_mcp_call(tmp_path):
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response("slow", "{}"),
+            make_text_response("the cancelled turn should never reach this"),
+        ]
+    )
+
+    async def drive():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=str(tmp_path), mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        session.mode_id = library.Mode.AUTO
+        turn = asyncio.create_task(
+            server.prompt(session_id=session_id, prompt=[acp.text_block("go")])
+        )
+        assert await _until(lambda: session.reporter.running is not None)
+        start = time.monotonic()
+        await server.cancel(session_id=session_id)
+        # The fixture's `slow` tool sleeps for thirty seconds.
+        response = await asyncio.wait_for(turn, timeout=10)
+        elapsed = time.monotonic() - start
+        await server.close_session(session_id)
+        return response, elapsed
+
+    with handler(_stack(mock)):
+        response, elapsed = asyncio.run(drive())
+    assert response.stop_reason == "cancelled"
+    assert elapsed < 5
 
 
 # ============================================================================
@@ -2510,13 +2692,17 @@ def test_the_mode_is_offered_as_a_config_option_as_well_as_in_modes():
     ]
 
 
+# Offered whenever litellm names the reasoning efforts providers accept.
+_THOUGHT_LEVEL_OPTION = ["thought_level"] if acp_server._thought_levels() else []
+
+
 def test_no_model_picker_when_there_is_nothing_to_pick():
     """A select listing one choice is a control that does nothing."""
 
     async def body(server, session_id, opened):
         return opened.config_options
 
-    assert [o.id for o in _in_session(body)] == ["mode"]
+    assert [o.id for o in _in_session(body)] == ["mode", *_THOUGHT_LEVEL_OPTION]
 
 
 def test_the_model_picker_leads_with_the_configured_default():
@@ -2524,7 +2710,7 @@ def test_the_model_picker_leads_with_the_configured_default():
         return opened.config_options
 
     options = _in_session(body, models=_MODELS)
-    assert [o.id for o in options] == ["mode", "model"]
+    assert [o.id for o in options] == ["mode", "model", *_THOUGHT_LEVEL_OPTION]
     option = _option(options, "model")
     assert (option.id, option.type, option.category) == ("model", "select", "model")
     assert option.current_value == library.INHERIT_MODEL
@@ -2657,7 +2843,9 @@ def test_opening_a_session_announces_its_slash_commands():
         "clear",
         "restart",
         "status",
+        "usage",
         "mode",
+        "set_model",
     ]
     assert all(c.description for c in announced[0].available_commands)
 
@@ -2840,18 +3028,16 @@ def test_a_plan_step_speaks_the_protocols_own_vocabulary():
 def test_the_plan_the_model_is_shown_has_no_protocol_metadata_in_it():
     """Which is the reason `PlanStep` exists rather than `acp.schema.PlanEntry`.
 
-    Every ACP type carries `_meta`, a free-form object reserved for implementations to
-    attach things to. Tool parameters become a *strict* JSON Schema, and strict schemas
-    list every property as required -- so using the wire type would oblige the model to
-    invent a value for a field documented as one nobody may assume anything about.
+    Every ACP type carries `_meta`, a free-form object reserved for implementations,
+    which the model has no business filling in.
     """
     parameters = _tool_schema(acp_update_plan)
     step = parameters["$defs"]["PlanStep"]
     assert "_meta" not in step["properties"]
-    assert set(step["required"]) == {"content", "priority", "status"}
+    assert set(step["required"]) == {"content"}
 
     wire = _tool_schema(_plan_tool_taking(schema.PlanEntry))["$defs"]["PlanEntry"]
-    assert "_meta" in wire["required"], "the wire type would demand it of the model"
+    assert "_meta" in wire["properties"], "the wire type would offer it to the model"
 
 
 def test_the_plan_is_replaced_whole_rather_than_appended_to():
@@ -3419,13 +3605,9 @@ def test_the_editors_working_directory_is_kept_for_the_session():
     assert reopened == ("/work/moved",)
 
 
-def test_mcp_servers_are_ignored_rather_than_refused(capsys):
-    """Refusing them made the agent unusable in any editor with MCP configured.
-
-    stdio transport is baseline and has no capability to decline, so a conforming
-    client sends its configured servers on every `session/new`. Failing the request
-    over that helps nobody; ignoring it silently hides it, so it goes to stderr --
-    which is free, since `serve` gives the protocol its own descriptor.
+def test_a_malformed_mcp_server_is_skipped_rather_than_refused(capsys):
+    """Refusing it would make the agent unusable in that editor; the note goes to
+    stderr, which is free, since `serve` gives the protocol its own descriptor.
     """
 
     async def drive():
@@ -4093,6 +4275,57 @@ def test_a_restarted_server_reopens_the_sessions_it_was_left(tmp_path):
     assert session.session_id == session_id
     assert roles == ["system", "user", "assistant"]
     assert (session.mode_id, session.title) == ("auto", "remember pelican")
+
+
+def test_a_restarted_server_reconnects_each_sessions_mcp_servers(tmp_path):
+    """The editor will not send them again, so the restart file carries them."""
+    path = tmp_path / "restart.json"
+    cwd = str(tmp_path)
+
+    async def before():
+        server = await _serve(_FakeClient())
+        session_id = (
+            await server.new_session(cwd=cwd, mcp_servers=[_fixture_server()])
+        ).session_id
+        session = server.sessions[session_id]
+        library.SessionIndex.record(session)
+        path.write_text(
+            json.dumps(
+                {
+                    "client_capabilities": {},
+                    "sessions": [session_id],
+                    "mcp_servers": {
+                        session_id: [
+                            server.model_dump(mode="json", by_alias=True)
+                            for server in session.mcp_servers
+                        ]
+                    },
+                }
+            )
+        )
+        await server.close_session(session_id)
+
+    async def after():
+        server = library.EffectfulACPAgent(_Bot)
+        server._restored = str(path)
+        server.on_connect(typing.cast(typing.Any, _FakeClient()))
+        (session,) = server.sessions.values()
+        await server.prompt(
+            session_id=session.session_id, prompt=[acp.text_block("go")]
+        )
+        connected = session.mcp_client is not None and session.mcp_client.is_connected()
+        names = [s.name for s in session.mcp_servers]
+        await server.close_session(session.session_id)
+        return connected, names
+
+    with (
+        handler(_persisting(tmp_path)),
+        handler(MockCompletionHandler([make_text_response("ok")])),
+    ):
+        asyncio.run(before())
+        connected, names = asyncio.run(after())
+    assert connected
+    assert names == ["fixture"]
 
 
 def _persisting(tmp_path):

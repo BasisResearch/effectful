@@ -74,6 +74,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     completion,
 )
+from effectful.handlers.llm.harness.legibility.mcp import MCPTools
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     PromptSection,
@@ -164,12 +165,10 @@ def acp_run_terminal_command(command: str, args: list[str]) -> str:
 class PlanStep:
     """One step of the plan you are showing the user.
 
-    Deliberately not `acp.schema.PlanEntry`, which is the same three fields plus the
-    ``_meta`` every ACP type carries. A tool's parameters are turned into a strict JSON
-    Schema, and strict schemas require every property, so the model would be obliged to
-    supply a value for a field whose own documentation says implementations must not
-    assume anything about it. The two vocabularies below are borrowed from the protocol
-    rather than restated, so the part that could drift cannot.
+    Deliberately not `acp.schema.PlanEntry`, which adds the ``_meta`` every ACP type
+    carries, a field reserved for implementations. The two vocabularies below are
+    borrowed from the protocol rather than restated, so the part that could drift
+    cannot.
     """
 
     content: str
@@ -717,11 +716,16 @@ def session_handlers(
     this when the session opens, and again after a reload.
 
     `ACPPermissionGate` goes on last, so it is outermost: it must decide about a call
-    before `ACPSessionReporter` announces it as running.
+    before `ACPSessionReporter` announces it as running. The editor's MCP tools come
+    through the same gate, and a cancelled turn abandons their calls.
     """
     reporter = ACPSessionReporter(session)
     h = coproduct(reporter, ACPToolRuntime(session))
     h = coproduct(h, ACPSessionConfig(session))
+    if session.mcp_client is not None:
+        h = coproduct(
+            h, MCPTools(session.mcp_client, loop=session.loop, wait=session.wait)
+        )
     h = coproduct(h, ACPPermissionGate(session))
     return reporter, h
 
@@ -1239,10 +1243,11 @@ def _raw_input(tool_call: DecodedToolCall) -> dict[str, typing.Any]:
     `bound_args`, so what the editor is shown is what the model actually said -- a
     code object comes back as its source, an image as its reference.
     """
+    adapter: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        Encodable[DecodedToolCall]
+    )
     return json.loads(
-        pydantic.TypeAdapter(Encodable[DecodedToolCall]).dump_python(
-            tool_call, mode="json", context={}
-        )["function"]["arguments"]
+        adapter.dump_python(tool_call, mode="json", context={})["function"]["arguments"]
     )
 
 
@@ -1560,8 +1565,13 @@ def restart[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) 
 
 @register_command
 def status[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -> str:
-    """Show the mode, model and directories this session is using."""
+    """Show the mode, model, directories and MCP servers this session is using."""
     roots = "\n".join(f"- `{root}`" for root in session.roots) or "- (none)"
+    connected = "connected" if session.mcp_client is not None else "not connected"
+    servers = (
+        "\n".join(f"- `{server.name}` ({connected})" for server in session.mcp_servers)
+        or "- (none)"
+    )
     mode = next(
         (m.name for m in SESSION_MODES if m.id == session.mode_id),
         session.mode_id,
@@ -1570,6 +1580,7 @@ def status[A: "Agent"](server: "EffectfulACPAgent[A]", session: ACPSession[A]) -
     return (
         f"**Mode** {mode}\n\n**Model** {model}\n\n"
         f"**Directories**\n{roots}\n\n"
+        f"**MCP servers**\n{servers}\n\n"
         f"**Messages so far** {len(session.agent.__history__)}"
     )
 
