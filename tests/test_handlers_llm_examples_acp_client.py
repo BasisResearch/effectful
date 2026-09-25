@@ -17,6 +17,7 @@ import sys
 import typing
 
 import httpx
+import httpx2
 import pytest
 from PIL import Image
 
@@ -45,6 +46,7 @@ import acp  # noqa: E402
 import acp.schema  # noqa: E402
 import client  # noqa: E402
 import library  # noqa: E402
+import mcp  # noqa: E402
 from acp._transport import memory_transport_pair  # noqa: E402
 from ag_ui.core import (  # noqa: E402
     BaseEvent,
@@ -54,12 +56,15 @@ from ag_ui.core import (  # noqa: E402
     ResumeEntry,
     RunAgentInput,
     TextPart,
+    Tool,
+    ToolMessage,
     UserMessage,
 )
 from ag_ui.encoder import EventEncoder  # noqa: E402
 
 # In scope for `_Writer`'s skill, which finds its tools lexically.
 from library import acp_write_text_file  # noqa: E402, F401
+from mcp.client.streamable_http import streamable_http_client  # noqa: E402
 
 pytestmark = pytest.mark.timeout(60)
 
@@ -96,9 +101,11 @@ def asynchronous(test):
 class FakeAgent:
     """An ACP agent whose turns are scripts, and which logs what it is told."""
 
-    def __init__(self, *turns, image=False, on_new_session=None):
+    def __init__(self, *turns, image=False, mcp=False, on_new_session=None):
         self.turns = list(turns)
         self.image = image
+        self.mcp = mcp
+        self.mcp_servers: list[typing.Any] = []
         self.on_new_session = on_new_session
         self.log: list[str] = []
         self.prompts: list[list[typing.Any]] = []
@@ -114,12 +121,14 @@ class FakeAgent:
         return acp.schema.InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=acp.schema.AgentCapabilities(
-                prompt_capabilities=acp.schema.PromptCapabilities(image=self.image)
+                prompt_capabilities=acp.schema.PromptCapabilities(image=self.image),
+                mcp_capabilities=acp.schema.McpCapabilities(http=self.mcp),
             ),
         )
 
     async def new_session(self, cwd, mcp_servers=None, **kwargs):
         self.sessions += 1
+        self.mcp_servers.append(mcp_servers)
         session_id = f"s{self.sessions}"
         if self.on_new_session is not None:
             await self.on_new_session(self, session_id)
@@ -191,13 +200,14 @@ def user(text, id="u1"):
     return UserMessage(id=id, content=text)
 
 
-def request(*messages, run="r1", resume=None, version=None, thread="t1"):
+def request(*messages, run="r1", resume=None, version=None, thread="t1", tools=None):
     return RunAgentInput(
         thread_id=thread,
         run_id=run,
         messages=list(messages),
         resume=resume,
         protocol_version=version,
+        tools=tools,
     )
 
 
@@ -807,6 +817,148 @@ async def test_browser_pages_cannot_drive_the_agent():
     assert reached == (0, [])
     assert from_server.status_code == 200
     assert agent.log == ["prompt", "end:end_turn"]
+
+
+# ============================================================================
+# The frontend's tools, over MCP
+# ============================================================================
+
+
+WEATHER = Tool(
+    name="show_weather",
+    description="Show the weather as a card.",
+    parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+)
+
+
+@contextlib.asynccontextmanager
+async def mcp_session(app, thread):
+    """An MCP client of `app`'s ``/mcp``, as the agent on `thread` connects."""
+    http = httpx2.AsyncClient(
+        transport=httpx2.ASGITransport(app=app),
+        base_url="http://127.0.0.1",
+        headers={client.FrontendTools.HEADER: thread},
+    )
+    async with streamable_http_client("http://127.0.0.1/mcp", http_client=http) as (
+        read,
+        write,
+        *_,
+    ):
+        async with mcp.ClientSession(read, write) as session:
+            await session.initialize()
+            yield session
+
+
+@asynchronous
+async def test_the_frontends_tools_are_listed_over_mcp():
+    bridge = client.Bridge("/tmp")
+    bridge.threads["t1"] = client.Session("s1", tools=[WEATHER])
+    bridge.server = client.FrontendTools("http://127.0.0.1/mcp", bridge.threads)
+    app = client.make_app(bridge)
+
+    async with app.router.lifespan_context(app):
+        async with mcp_session(app, "t1") as session:
+            tools = (await session.list_tools()).tools
+            called = await session.call_tool("show_weather", {})
+        async with mcp_session(app, "t2") as session:
+            others = (await session.list_tools()).tools
+
+    assert [(t.name, t.input_schema) for t in tools] == [
+        ("show_weather", WEATHER.parameters)
+    ]
+    assert others == []
+    assert called.is_error and "no turn is running" in called.content[0].text
+
+
+@pytest.mark.parametrize("offered", [True, False])
+@asynchronous
+async def test_a_new_session_names_the_bridges_mcp_server(offered):
+    agent = FakeAgent(say_ok, mcp=offered)
+    async with connected(agent) as bridge:
+        bridge.server = client.FrontendTools(
+            "http://127.0.0.1:8000/mcp", bridge.threads
+        )
+        await collect(bridge, request(user("hi"), tools=[WEATHER]))
+
+    (servers,) = agent.mcp_servers
+    if offered:
+        (server,) = servers
+        assert (server.type, server.url) == ("http", "http://127.0.0.1:8000/mcp")
+        assert [(h.name, h.value) for h in server.headers] == [
+            (client.FrontendTools.HEADER, "t1")
+        ]
+    else:
+        assert servers == []
+
+
+@asynchronous
+async def test_a_frontend_tool_call_waits_for_the_frontends_result():
+    async def turn(agent, session_id):
+        await agent.send(
+            session_id,
+            acp.start_tool_call(
+                "c1",
+                "show_weather(city=Paris)",
+                status="in_progress",
+                raw_input={"city": "Paris"},
+            ),
+        )
+        async with mcp_session(app, "t1") as tools:
+            result = await tools.call_tool("show_weather", {"city": "Paris"})
+        text = result.content[0].text
+        agent.log.append(f"result:{text}")
+        await agent.send(
+            session_id,
+            acp.update_tool_call(
+                "c1",
+                status="completed",
+                content=[acp.tool_content(acp.text_block(text))],
+            ),
+        )
+        await agent.say(session_id, "Shown.")
+        return "end_turn"
+
+    agent = FakeAgent(turn)
+    async with connected(agent) as bridge:
+        bridge.server = client.FrontendTools("http://127.0.0.1/mcp", bridge.threads)
+        app = client.make_app(bridge)
+        async with app.router.lifespan_context(app):
+            first = await collect(bridge, request(user("go"), tools=[WEATHER]))
+            (call,) = of(first, "TOOL_CALL_START")
+            answer = ToolMessage(
+                id="m2", tool_call_id=call.tool_call_id, content="rendered"
+            )
+            second = await collect(
+                bridge, request(user("go"), answer, run="r2", tools=[WEATHER])
+            )
+
+    (arguments,) = of(first, "TOOL_CALL_ARGS")
+    assert call.tool_call_name == "show_weather"
+    assert json.loads(arguments.delta) == {"city": "Paris"}
+    assert of(first, "TOOL_CALL_RESULT") == []
+    assert first[-1].outcome is None and first[-1].result is None
+    assert of(second, "TOOL_CALL_START") == of(second, "TOOL_CALL_RESULT") == []
+    assert texts(second) == ["Shown."]
+    assert agent.log == ["prompt", "result:rendered", "end:end_turn"]
+
+
+@asynchronous
+async def test_the_agents_report_of_a_frontend_tool_call_is_not_shown():
+    async def turn(agent, session_id):
+        await agent.send(
+            session_id,
+            acp.start_tool_call("c1", "show_weather(city=Paris)", status="in_progress"),
+        )
+        await agent.ask(session_id, "c1", title="show_weather(city=Paris)")
+        return "end_turn"
+
+    agent = FakeAgent(turn)
+    async with connected(agent) as bridge:
+        events = await collect(bridge, request(user("go"), tools=[WEATHER]))
+
+    assert of(events, "TOOL_CALL_START") == []
+    (interrupt,) = events[-1].outcome.interrupts
+    assert interrupt.tool_call_id == "c1"
 
 
 # ============================================================================
