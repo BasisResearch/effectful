@@ -6,6 +6,7 @@ import logging
 import textwrap
 import types
 import typing
+import uuid
 
 import pydantic
 
@@ -362,7 +363,7 @@ def _pydantic_callable(ty: typing.Any) -> typing.Any:
         ctx = info.context or {}
         anchor = ctx.get(_TYPE_CHECK_ANCHOR_KEY)
 
-        filename = f"<synthesis:{id(value)}>"
+        filename = f"<synthesis:{uuid.uuid4()}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
             value.code, filename
         )
