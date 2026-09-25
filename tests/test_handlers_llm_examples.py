@@ -63,6 +63,7 @@ class Skip(enum.StrEnum):
 
     LEAN = "needs a Lean 4 + Mathlib toolchain (see the module docstring)"
     NO_COMMAND_LINE = "is not run from a command line (see its own docstring)"
+    SERVER = "is a server that runs until stopped (see its own docstring)"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -95,6 +96,13 @@ OVERRIDES: dict[str, Override] = {
             "model -- a pass that tests nothing, which is worse than a failure. Its "
             "coverage is tests/test_handlers_llm_examples_acp.py, which drives the "
             "same server through a fake editor with no model at all"
+        ),
+    ),
+    "acp/client": Override(
+        skip=Skip.SERVER,
+        why=(
+            "it serves AG-UI over HTTP until stopped, so launched here it never exits. "
+            "Its coverage is tests/test_handlers_llm_examples_acp_client.py"
         ),
     ),
     "reasoning/aime2024": Override(

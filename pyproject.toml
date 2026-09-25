@@ -71,6 +71,10 @@ docs = [
     # For that example's `--autoreload`, which re-runs edited code while it serves.
     # Pinned to a minor version because it uses hmr's module loader, which is private.
     "hmr>=0.7,<0.8",
+    # For that example's client.py, which serves an ACP agent to AG-UI frontends.
+    "ag-ui-protocol>=1,<2",
+    "fastapi",
+    "uvicorn",
     "sphinx",
     "sphinxcontrib-bibtex",
     "sphinx_rtd_theme",
