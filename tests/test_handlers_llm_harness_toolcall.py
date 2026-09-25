@@ -18,6 +18,7 @@ import pydantic
 import pytest
 
 from effectful.handlers.llm import Tool
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
@@ -183,6 +184,27 @@ def grow(examples: Sequence[int]) -> str:
 '''
 
 
+_LIVE_POLY_SRC = '''
+from collections.abc import Sequence
+
+from effectful.handlers.llm import Skill, Tool
+
+calls = []
+
+
+@Tool.define
+def extend_sequence[T](examples: Sequence[T], new_example: T) -> Sequence[T]:
+    """Extend the sequence with a new example."""
+    calls.append((list(examples), new_example))
+    return [*examples, new_example]
+
+
+@Skill.define
+def grow(examples: Sequence[int]) -> str:
+    """Call extend_sequence to append 4 to {examples}, then summarize the result."""
+'''
+
+
 def _import_fixture(tmp_path, source: str, modname: str):
     p = tmp_path / f"{modname}.py"
     p.write_text(source)
@@ -202,6 +224,13 @@ def poly_mod(tmp_path, request):
     mod = _import_fixture(tmp_path, _POLY_SRC, modname)
     yield mod
     sys.modules.pop(modname, None)
+
+
+@pytest.fixture
+def live_poly_mod(tmp_path):
+    mod = _import_fixture(tmp_path, _LIVE_POLY_SRC, "_live_polymorphic_fixture")
+    yield mod
+    sys.modules.pop(mod.__name__, None)
 
 
 def _run_scripted(
@@ -1172,12 +1201,7 @@ def test_generic_skill_without_binding_redirects_to_code_mode(generic_mod):
 @pytest.mark.parametrize(
     "caller", [ExpressionToolCaller, MixedToolCaller], ids=["code", "mixed"]
 )
-def test_live_polymorphic_tool_call(poly_mod, caller):
-    # A real model calls a polymorphic tool through the expression pathway
-    # (issue #489's motivating case) -- under the uniform code mode and under
-    # the mixed default, where that tool is one of the wrapped ones.
-    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-
+def test_live_polymorphic_tool_call(live_poly_mod, caller):
     stack = [
         handler(AgentLoop()),
         handler(caller()),
@@ -1191,11 +1215,9 @@ def test_live_polymorphic_tool_call(poly_mod, caller):
     with contextlib.ExitStack() as es:
         for h in stack:
             es.enter_context(h)
-        result = poly_mod.grow([1, 2, 3])
+        result = live_poly_mod.grow([1, 2, 3])
     assert isinstance(result, str)
-    # The prompt directs the model to use the tools; at least one call went
-    # through the expression pathway with correctly typed arguments.
-    assert poly_mod.calls
+    assert ([1, 2, 3], 4) in live_poly_mod.calls
 
 
 # ============================================================================

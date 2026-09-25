@@ -15,7 +15,9 @@ from enum import StrEnum
 from pathlib import Path
 from types import CodeType
 
+import jax.numpy as jnp
 import litellm
+import numpy as np
 import pydantic
 import pytest
 import tenacity
@@ -3358,6 +3360,39 @@ class TestPromptCaching:
 # ============================================================================
 # Scoping a call to a different model
 # ============================================================================
+
+
+@pytest.mark.parametrize(
+    "values", [np.array([1, 2]), jnp.array([1, 2])], ids=["numpy", "jax"]
+)
+def test_skill_repl_can_read_captured_array(values):
+    @Skill.define
+    def summarize() -> str:
+        """Read the sum of values through the REPL."""
+        raise NotHandled
+
+    mock = MockCompletionHandler(
+        [
+            make_tool_call_response(
+                "exec_code", json.dumps({"code": "print(int(values.sum()))"})
+            ),
+            make_text_response("done"),
+        ]
+    )
+    with (
+        handler(AgentLoop()),
+        handler(HistoryBuilder()),
+        handler(BuiltinExecutor()),
+        handler(StatefulReplSynthesizer()),
+        handler(mock),
+    ):
+        assert summarize() == "done"
+    output = next(
+        message["content"][0]["text"]
+        for message in mock.received_messages[-1]
+        if message["role"] == "tool"
+    )
+    assert int(output) == 3
 
 
 class TestScopedModelOverride:
