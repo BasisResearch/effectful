@@ -22,10 +22,13 @@ A client that declares ``protocolVersion`` gets AG-UI 1.0. One that does not, su
 as the one CopilotKit 1.73 bundles, rejects the cancelled outcome, so a cancelled
 turn ends for it with no outcome and ``result.stopReason`` set to ``cancelled``.
 
+The frontend's tools reach the agent as an MCP server at ``/mcp``, named in each
+``session/new``. When the agent calls one, the run ends with the call for the
+frontend to execute or render, and the next run's tool message is its result.
+
 Only the newest user message is sent, since the ACP session keeps the history.
-Sessions live in memory, frontend tools and context are not forwarded, terminals
-are not offered, a second run on a busy thread is refused, and only localhost is
-served.
+Sessions live in memory, context is not forwarded, terminals are not offered, a
+second run on a busy thread is refused, and only localhost is served.
 """
 
 import argparse
@@ -49,13 +52,33 @@ import ag_ui.core
 import ag_ui.encoder
 import fastapi
 import fastapi.responses
+import fastmcp
+import fastmcp.exceptions
+import fastmcp.server.dependencies
+import fastmcp.server.providers
+import fastmcp.tools
+import mcp_types
 import pydantic
+import pydantic.json_schema
 import starlette.middleware.trustedhost
 import uvicorn
 
 
 class ThreadBusy(Exception):
     """A run arrived for a thread that another run is streaming."""
+
+
+@dataclasses.dataclass(eq=False)
+class Session:
+    """One ACP session, serving one AG-UI thread."""
+
+    id: str
+    state: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
+    turn: "Turn | None" = None
+    prompted: str | None = None
+    busy: bool = False
+    tools: list[ag_ui.core.Tool] = dataclasses.field(default_factory=list)
+    """The tools the frontend offered in its latest run."""
 
 
 @dataclasses.dataclass(eq=False)
@@ -66,7 +89,7 @@ class Turn:
     one run at a time reads it, translating as it goes.
     """
 
-    session_id: str
+    session: Session
     events: asyncio.Queue = dataclasses.field(default_factory=asyncio.Queue)
     task: asyncio.Task = dataclasses.field(init=False)
     cancelled: asyncio.Task | None = None
@@ -88,6 +111,18 @@ class Turn:
             for interrupt, answer in self.interrupts.values()
             if interrupt.id in self.exposed and not answer.done()
         ]
+
+    def reports_frontend_call(self, call_id: str) -> bool:
+        """Whether an ACP tool call is the agent's report of a frontend tool call.
+
+        The agent reports its MCP calls over ACP too; the frontend sees the MCP
+        call itself, so showing the report would show the call twice.
+        """
+        title = self.calls.get(call_id, {}).get("title") or ""
+        return any(
+            title == tool.name or title.startswith(f"{tool.name}(")
+            for tool in self.session.tools
+        )
 
     def attach(self) -> None:
         """Begin streaming this turn into a new run."""
@@ -136,6 +171,8 @@ class Turn:
                         exclude_none=True, exclude={"session_update", "field_meta"}
                     )
                 )
+                if self.reports_frontend_call(call_id):
+                    return
                 if call.get("status") in ("in_progress", "completed", "failed"):
                     yield from self.announce(call_id)
                 if call.get("status") in ("completed", "failed"):
@@ -144,23 +181,28 @@ class Turn:
                 yield item
 
     def announce(self, call_id: str) -> collections.abc.Iterator[ag_ui.core.BaseEvent]:
-        """Show a tool call once, with its arguments as they now stand."""
-        if call_id in self.announced:
+        """Show an ACP tool call once, with its arguments as they now stand."""
+        if call_id in self.announced or self.reports_frontend_call(call_id):
             return
         self.announced.add(call_id)
-        yield from self.close()
         call = self.calls.get(call_id, {})
+        yield from self.show(
+            call_id,
+            call.get("title") or "tool",
+            json.dumps(call.get("raw_input") or {}, default=str),
+        )
+
+    def show(
+        self, call_id: str, name: str, arguments: str
+    ) -> collections.abc.Iterator[ag_ui.core.BaseEvent]:
+        """A tool call, after closing the open messages."""
+        yield from self.close()
         if self.parent is None:
             self.parent = str(uuid.uuid4())
         yield ag_ui.core.ToolCallStartEvent(
-            tool_call_id=call_id,
-            tool_call_name=call.get("title") or "tool",
-            parent_message_id=self.parent,
+            tool_call_id=call_id, tool_call_name=name, parent_message_id=self.parent
         )
-        yield ag_ui.core.ToolCallArgsEvent(
-            tool_call_id=call_id,
-            delta=json.dumps(call.get("raw_input") or {}, default=str),
-        )
+        yield ag_ui.core.ToolCallArgsEvent(tool_call_id=call_id, delta=arguments)
         yield ag_ui.core.ToolCallEndEvent(tool_call_id=call_id)
 
     def close(self) -> collections.abc.Iterator[ag_ui.core.BaseEvent]:
@@ -197,15 +239,103 @@ class Turn:
             yield ag_ui.core.ReasoningEndEvent(message_id=message_id)
 
 
-@dataclasses.dataclass(eq=False)
-class Session:
-    """One ACP session, serving one AG-UI thread."""
+class FrontendTool(fastmcp.tools.Tool):
+    """One of a thread's frontend tools, as the agent sees it over MCP."""
 
-    id: str
-    state: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
-    turn: Turn | None = None
-    prompted: str | None = None
-    busy: bool = False
+    turn: typing.Annotated[
+        pydantic.json_schema.SkipJsonSchema[pydantic.InstanceOf[Turn] | None],
+        pydantic.Field(exclude=True),
+    ]
+    pending: typing.Annotated[
+        pydantic.json_schema.SkipJsonSchema[pydantic.InstanceOf[dict]],
+        pydantic.Field(exclude=True),
+    ]
+
+    async def run(self, arguments: dict[str, typing.Any]) -> fastmcp.tools.ToolResult:
+        """Show the call in the thread's run, and return what the next run answers."""
+        turn = self.turn
+        if turn is None or turn.task.done() or turn.cancelled is not None:
+            raise fastmcp.exceptions.ToolError("no turn is running to show this call")
+        call = ag_ui.core.ToolCall(
+            id=str(uuid.uuid4()),
+            type="function",
+            function=ag_ui.core.FunctionCall(
+                name=self.name, arguments=json.dumps(arguments)
+            ),
+        )
+        answer = self.pending[call.id] = asyncio.get_running_loop().create_future()
+        try:
+            turn.events.put_nowait(call)
+            await asyncio.wait({answer, turn.task}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            del self.pending[call.id]
+        if not answer.done():
+            raise fastmcp.exceptions.ToolError(
+                "the turn ended before the frontend answered"
+            )
+        message: ag_ui.core.ToolMessage = answer.result()
+        text = message.content
+        if not isinstance(text, str):
+            text = "".join(p.text for p in text if isinstance(p, ag_ui.core.TextPart))
+        return fastmcp.tools.ToolResult(
+            content=[mcp_types.TextContent(type="text", text=text)],
+            is_error=bool(message.error),
+        )
+
+
+class ThreadTools(fastmcp.server.providers.Provider):
+    """The frontend tools of the thread an agent's MCP request names."""
+
+    def __init__(
+        self, threads: dict[str, Session], pending: dict[str, asyncio.Future]
+    ) -> None:
+        super().__init__()
+        self.threads = threads
+        self.pending = pending
+
+    async def _list_tools(self) -> list[fastmcp.tools.Tool]:
+        # Built again for each request, a call's included, so `turn` is current.
+        headers = fastmcp.server.dependencies.get_http_headers()
+        session = self.threads.get(headers.get(FrontendTools.HEADER.lower(), ""))
+        if session is None:
+            return []
+        return [
+            FrontendTool(
+                name=tool.name,
+                description=tool.description,
+                parameters=tool.parameters or {"type": "object"},
+                turn=session.turn,
+                pending=self.pending,
+            )
+            for tool in session.tools
+        ]
+
+
+class FrontendTools(fastmcp.FastMCP):
+    """Each AG-UI thread's frontend tools, as an MCP server at `url`."""
+
+    HEADER: typing.ClassVar[str] = "X-AG-UI-Thread"
+    """Names the AG-UI thread on the agent's requests."""
+
+    def __init__(self, url: str, threads: dict[str, Session]) -> None:
+        self.url = url
+        self.pending: dict[str, asyncio.Future] = {}
+        super().__init__("ag-ui", providers=[ThreadTools(threads, self.pending)])
+
+    def config(self, thread_id: str) -> acp.schema.HttpMcpServer:
+        """This server, as named in `thread_id`'s ``session/new``."""
+        header = acp.schema.HttpHeader(name=self.HEADER, value=thread_id)
+        return acp.schema.HttpMcpServer(
+            type="http", name="ag-ui", url=self.url, headers=[header]
+        )
+
+    def reply(self, messages: list[ag_ui.core.Message]) -> None:
+        """Return the frontend's tool messages to the calls awaiting them."""
+        for message in messages:
+            if isinstance(message, ag_ui.core.ToolMessage):
+                answer = self.pending.get(message.tool_call_id)
+                if answer is not None and not answer.done():
+                    answer.set_result(message)
 
 
 @dataclasses.dataclass(eq=False)
@@ -225,7 +355,12 @@ class Bridge:
     """What this client does for the agent: files and forms."""
 
     cwd: str
-    images: bool = False
+    server: FrontendTools | None = None
+    """The frontend's tools, named to the agent in each ``session/new``."""
+
+    agent: acp.schema.AgentCapabilities = dataclasses.field(
+        default_factory=acp.schema.AgentCapabilities
+    )
     threads: dict[str, Session] = dataclasses.field(default_factory=dict)
     sessions: dict[str, Session] = dataclasses.field(default_factory=dict)
     locks: collections.defaultdict[str, asyncio.Lock] = dataclasses.field(
@@ -249,9 +384,8 @@ class Bridge:
         )
         if response.protocol_version != acp.PROTOCOL_VERSION:
             raise RuntimeError(f"the agent speaks ACP {response.protocol_version}")
-        capabilities = response.agent_capabilities
-        prompts = capabilities.prompt_capabilities if capabilities else None
-        self.images = bool(prompts and prompts.image)
+        if response.agent_capabilities is not None:
+            self.agent = response.agent_capabilities
 
     async def session_update(
         self, session_id: str, update: typing.Any, **kwargs: typing.Any
@@ -434,6 +568,16 @@ class Bridge:
                     done = True
                     yield self._finished(input, interrupts=turn.unanswered())
                     return
+                if isinstance(item, ag_ui.core.ToolCall):
+                    # A frontend tool call: the frontend runs it, and its next
+                    # run carries the result.
+                    for event in turn.show(
+                        item.id, item.function.name, item.function.arguments
+                    ):
+                        yield event
+                    done = True
+                    yield self._finished(input)
+                    return
                 if isinstance(item, acp.schema.PromptResponse | Exception):
                     for event in turn.finish():
                         yield event
@@ -463,6 +607,7 @@ class Bridge:
         the questions the frontend has not answered yet.
         """
         session = await self._open(input.thread_id)
+        session.tools = list(input.tools or [])
         if session.busy:
             raise ThreadBusy(f"thread {input.thread_id!r} is streaming another run")
         session.busy = True
@@ -482,6 +627,8 @@ class Bridge:
                     )
                 elif not pending[1].done():
                     pending[1].set_result(entry)
+            if self.server is not None:
+                self.server.reply(input.messages)
             if turn is not None and turn.unanswered():
                 return session, turn, True
             message = input.messages[-1] if input.messages else None
@@ -496,8 +643,9 @@ class Bridge:
                     # Waiting on the task via `asyncio.wait` keeps a cancelled
                     # request from cancelling the prompt it shares.
                     await asyncio.wait({self._cancel(turn), turn.task})
-                blocks = _blocks(message, self.images)
-                turn = Turn(session.id) if blocks else None
+                prompts = self.agent.prompt_capabilities
+                blocks = _blocks(message, bool(prompts and prompts.image))
+                turn = Turn(session) if blocks else None
                 session.turn = turn
                 if turn is not None:
                     turn.task = asyncio.create_task(self._prompt(turn, blocks))
@@ -509,7 +657,11 @@ class Bridge:
     async def _open(self, thread_id: str) -> Session:
         """The session serving `thread_id`, created on first use."""
         if (session := self.threads.get(thread_id)) is None:
-            response = await self.conn.new_session(cwd=self.cwd, mcp_servers=[])
+            servers: list[typing.Any] = []
+            transports = self.agent.mcp_capabilities
+            if self.server is not None and transports and transports.http:
+                servers.append(self.server.config(thread_id))
+            response = await self.conn.new_session(cwd=self.cwd, mcp_servers=servers)
             # `setdefault`, because updates sent while the session was being made
             # have already created it.
             session = self.sessions.setdefault(
@@ -544,7 +696,7 @@ class Bridge:
         """Send the turn's prompt, and queue how it ended."""
         outcome: acp.schema.PromptResponse | Exception
         try:
-            outcome = await self.conn.prompt(session_id=turn.session_id, prompt=blocks)
+            outcome = await self.conn.prompt(session_id=turn.session.id, prompt=blocks)
         except Exception as error:
             outcome = error
         for _, answer in turn.interrupts.values():
@@ -560,7 +712,7 @@ class Bridge:
         async def cancel() -> None:
             if not turn.task.done():
                 with contextlib.suppress(Exception):
-                    await self.conn.cancel(session_id=turn.session_id)
+                    await self.conn.cancel(session_id=turn.session.id)
             for _, answer in turn.interrupts.values():
                 if not answer.done():
                     answer.set_result(None)
@@ -662,8 +814,13 @@ def _describe(error: BaseException) -> str:
 
 
 def make_app(bridge: Bridge) -> fastapi.FastAPI:
-    """AG-UI at ``/``, for callers on this machine."""
-    app = fastapi.FastAPI()
+    """AG-UI at ``/`` and the frontend's tools at ``/mcp``, for callers on this machine."""
+    tools = (
+        bridge.server.http_app(path="/mcp", stateless_http=True)
+        if bridge.server
+        else None
+    )
+    app = fastapi.FastAPI(lifespan=tools.lifespan if tools else None)
     # A page whose domain was rebound to this machine is same-origin, so the browser
     # lets it call; its Host header gives it away.
     app.add_middleware(
@@ -681,6 +838,8 @@ def make_app(bridge: Bridge) -> fastapi.FastAPI:
             media_type=encoder.get_content_type(),
         )
 
+    if tools is not None:
+        app.mount("/", tools)
     return app
 
 
@@ -693,6 +852,7 @@ async def serve(bridge: Bridge, command: list[str], port: int) -> None:
         transport_kwargs={"stderr": None},
         use_unstable_protocol=True,
     ) as (_, process):
+        bridge.server = FrontendTools(f"http://127.0.0.1:{port}/mcp", bridge.threads)
         await bridge.start()
         config = uvicorn.Config(
             make_app(bridge), host="127.0.0.1", port=port, timeout_graceful_shutdown=1

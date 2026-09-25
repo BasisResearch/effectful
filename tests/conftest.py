@@ -52,7 +52,8 @@ def example_modules() -> list[pathlib.Path]:
     return sorted(
         p
         for p in EXAMPLES_DIR.rglob("*.py")
-        if "__pycache__" not in p.parts and p.name != "__init__.py"
+        if not {"__pycache__", "node_modules"} & set(p.parts)
+        and p.name != "__init__.py"
     )
 
 
