@@ -3,6 +3,7 @@
 Demonstrates:
 - An ``Agent`` exposed to any ACP editor (Zed, VS Code, Obsidian, Emacs)
 - Editor capabilities offered to the model as ordinary ``Tool``\\ s
+- The editor's MCP servers, whose tools are offered alongside them
 - Streaming model output and live tool-call status as ``session/update``
 - A prompt as typed parts -- prose, ``Attachment`` references, images -- rather
   than one flattened string, so an attached file costs a line of context and a
