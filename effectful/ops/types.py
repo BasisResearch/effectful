@@ -1,5 +1,6 @@
 import abc
 import collections.abc
+import contextvars
 import functools
 import inspect
 import types
@@ -50,6 +51,10 @@ class _ClassMethodOpDescriptor(classmethod):
     def __set_name__(self, owner, name):
         assert not hasattr(self, "_name_on_owner"), "should only be called once"
         self._name_on_owner = f"_descriptorop_{name}"
+        if REDEFINING.get():
+            # Now, while the owner's previous definition is still bound, so the
+            # operation it had is the one this owner gets; see `Operation._existing`.
+            self.__get__(None, owner)
 
     def __get__(self, instance, owner: type | None = None):
         owner = owner if owner is not None else type(instance)
@@ -62,6 +67,12 @@ class _ClassMethodOpDescriptor(classmethod):
 
 
 INSTANCE_OP_PREFIX = "__instanceop"
+
+REDEFINING: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "REDEFINING", default=False
+)
+"""Set while a module is re-executed in place, so `Operation.define` reuses the
+operation a name already binds instead of making a fresh one."""
 
 
 class Operation[**Q, V]:
@@ -132,7 +143,8 @@ class Operation[**Q, V]:
         return id(self) >= id(other)
 
     def __hash__(self):
-        return hash(self.__default__)
+        # By identity, as `__eq__` is; a hash of the default would change with it.
+        return object.__hash__(self)
 
     @functools.singledispatchmethod
     @classmethod
@@ -285,9 +297,43 @@ class Operation[**Q, V]:
 
             op = cls.define(func, name=name)
         else:
-            op = cls(t, name=name)  # type: ignore[arg-type]
+            existing = cls._existing(t, name)
+            op = existing if existing is not None else cls(t, name=name)  # type: ignore[arg-type]
 
         return op  # type: ignore[return-value]
+
+    @classmethod
+    def _existing(cls, t: Callable, name: str | None) -> "Operation | None":
+        """The operation `t` redefines, re-initialised, while a module is re-executed.
+
+        Found by `t`'s qualified name in its own globals, which still bind the
+        previous definition; `None` when not redefining or nothing is bound there.
+        """
+        if not REDEFINING.get():
+            return None
+        fn = t.__func__ if isinstance(t, types.MethodType) else t
+        if not isinstance(fn, types.FunctionType) or "<locals>" in fn.__qualname__:
+            return None
+        *owners, attr = fn.__qualname__.split(".")
+        scope: typing.Any = fn.__globals__
+        for part in owners:
+            scope = (
+                scope.get(part) if isinstance(scope, dict) else vars(scope).get(part)
+            )
+            if not isinstance(scope, type):
+                return None
+        if isinstance(scope, dict):
+            existing = scope.get(attr)
+        elif isinstance(t, types.MethodType) and isinstance(t.__self__, type):
+            existing = vars(scope).get(f"_descriptorop_{attr}")
+        else:
+            existing = vars(scope).get(attr)
+        if isinstance(existing, staticmethod):
+            existing = existing.__func__
+        if type(existing) is not cls:
+            return None
+        cls.__init__(existing, t, name=name)
+        return existing
 
     @define.register(type)
     @define.register(typing.cast(type, types.GenericAlias))
@@ -465,17 +511,25 @@ class Operation[**Q, V]:
 
     def __set_name__[T](self, owner: type[T], name: str) -> None:
         if not issubclass(owner, Term):
-            assert not hasattr(self, "_name_on_instance"), "should only be called once"
-            self._name_on_instance: str = (
-                f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
+            expected = f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
+            assert getattr(self, "_name_on_instance", expected) == expected, (
+                "should only be called once"
             )
+            self._name_on_instance: str = expected
 
     def __get__[T](self, instance: T | None, owner: type[T] | None = None):
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
             from effectful.ops.semantics import fvsof
 
-            if self._name_on_instance in instance.__dict__:
-                return instance.__dict__[self._name_on_instance]
+            cached = instance.__dict__.get(self._name_on_instance)
+            # Rebuilt when the class op it was made from is no longer this one,
+            # or was redefined since.
+            if (
+                cached is not None
+                and getattr(cached, "__classop__", None) is self
+                and getattr(cached, "__classdefault__", None) is self.__default__
+            ):
+                return cached
             elif isinstance(instance, Term) or fvsof(instance):
                 return types.MethodType(self, instance)
             else:
@@ -504,6 +558,8 @@ class Operation[**Q, V]:
                         return default_result
 
                 instance_op = self.define(types.MethodType(_instance_op, instance))
+                instance_op.__classop__ = self  # type: ignore[attr-defined]
+                instance_op.__classdefault__ = self.__default__  # type: ignore[attr-defined]
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:

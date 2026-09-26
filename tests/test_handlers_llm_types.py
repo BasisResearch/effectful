@@ -2584,3 +2584,26 @@ class TestAutoAgentify:
         # Both exchanges landed in the shared history (plus the system message).
         roles = [m["role"] for m in bot.__history__]
         assert roles.count("user") == 2 and roles.count("assistant") == 2
+
+
+def test_a_rebound_instance_gets_the_new_class_skill():
+    """A cached instance skill is rebuilt once its class op is no longer the class's."""
+
+    class Before:
+        @Skill.define
+        def greet(self) -> str:
+            """Say hello."""
+
+    class After:
+        @Skill.define
+        def greet(self) -> str:
+            """Say hello, differently."""
+
+    agent = Before()
+    old = agent.greet
+    assert agent.greet is old, "cached on the instance"
+    agent.__class__ = After
+    new = agent.greet
+    assert new is not old
+    assert new.__classop__ is vars(After)["greet"]
+    assert agent.greet is new, "cached again"

@@ -44,7 +44,7 @@ import pytest
 from PIL import Image
 
 from effectful.handlers.llm import Agent, Encodable, Skill, Tool
-from effectful.handlers.llm.harness import harness
+from effectful.handlers.llm.harness import autoreload, harness
 from effectful.handlers.llm.harness.hooks import call_tool, completion
 from effectful.handlers.llm.harness.legibility.lexical import (
     _tool_paths,
@@ -3992,9 +3992,7 @@ def _example_parser() -> argparse.ArgumentParser:
     ``add_help=False`` so that ``_actions`` holds only what the example declares,
     which is what the test below compares against.
     """
-    parser = argparse.ArgumentParser(allow_abbrev=False, add_help=False)
-    parser.add_argument("--autoreload", action="store_true")
-    return parser
+    return argparse.ArgumentParser(allow_abbrev=False, add_help=False)
 
 
 def test_the_example_declares_the_flags_this_file_claims_it_does():
@@ -4059,7 +4057,7 @@ def test_the_example_leaves_the_models_to_the_server(monkeypatch):
     served: list[tuple[str, ...]] = []
 
     class _Recorded(library.EffectfulACPAgent):
-        async def serve(self, *, autoreload=False):
+        async def serve(self):
             served.append(self.models)
 
     monkeypatch.setattr(library, "EffectfulACPAgent", _Recorded)
@@ -4111,11 +4109,24 @@ def test_an_idle_editor_is_not_disconnected():
     assert "receive_timeout" not in {kw.arg for kw in served[0].keywords}
 
 
+class _FakeReloader:
+    """A reloader whose new code is one class, for `EffectfulACPAgent._on_reload`."""
+
+    def __init__(self, cls: type):
+        self.cls = cls
+
+    def current_class(self, cls: type) -> type:
+        return self.cls
+
+    def refresh(self, agent: object) -> None:
+        autoreload.rebind(agent, self.cls)
+
+
 def test_a_reload_gives_open_sessions_the_new_system_prompt():
     """An edit that changes the system prompt reaches a session already open.
 
-    `HistoryBuilder` keeps a history's first system message, so without
-    `ACPSessionConfig.call_system` the edit would reach new sessions only.
+    `HistoryBuilder` keeps a history's first system message, so without the
+    reloader's `gate_interpretation` the edit would reach new sessions only.
     """
 
     # Made up at run time: the system prompt also carries this file's source, so a
@@ -4141,17 +4152,18 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt():
             return systems(model.received_messages[-1])
 
         before = await turn("one")
-        server.reload(_Rebuilt, _stack(model))
+        server._on_reload(_FakeReloader(_Rebuilt))
         after = await turn("two")
         stored = session.agent.__history__[0]
         later = await turn("three")
         await server.close_session(session_id)
         return before, after, stored, later, session
 
-    with handler(_stack(model)):
+    with handler(_stack(autoreload.gate_interpretation(), model)):
         before, after, stored, later, session = asyncio.run(drive())
 
     assert len(before) == len(after) == len(later) == 1
+    assert isinstance(session.agent, _Rebuilt)
     assert marker not in before[0]
     assert marker in after[0]
     assert marker in str(stored["content"])
@@ -4170,7 +4182,7 @@ def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
         monkeypatch.setattr(
             library, "SESSION_MODES", (library.SESSION_MODES[0], review)
         )
-        server.reload(_Bot, _stack())
+        server._on_reload(_FakeReloader(_Bot))
         await session.flush()
         return session.mode_id
 

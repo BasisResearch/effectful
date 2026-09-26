@@ -1300,3 +1300,39 @@ def test_keyword_arguments_named_like_internal_receivers(name):
     assert typeof(term) is int
     assert fvsof(term) == {f}
     assert evaluate(term) == 2
+
+
+def test_a_coproduct_with_a_live_interpretation_follows_it():
+    """Handlers composed onto a live interpretation see it change underneath them."""
+    from effectful.ops.semantics import LiveInterpretation
+
+    @defop
+    def answer() -> str:
+        return "default"
+
+    @defop
+    def wrapped() -> str:
+        return "unwrapped"
+
+    class Live(LiveInterpretation):
+        def __init__(self):
+            self._version, self._handlers = 0, {answer: lambda: "one"}
+
+        @property
+        def version(self):
+            return self._version
+
+        def snapshot(self):
+            return self._handlers
+
+        def become(self, handlers):
+            self._version, self._handlers = self._version + 1, handlers
+
+    live = Live()
+    with handler(coproduct(live, {wrapped: lambda: f"[{answer()}]"})):
+        assert wrapped() == "[one]"
+        live.become({answer: lambda: "two"})
+        assert wrapped() == "[two]"
+        live.become({})
+        assert wrapped() == "[default]"
+    assert isinstance(coproduct({}, {}), dict), "plain interpretations stay plain"
