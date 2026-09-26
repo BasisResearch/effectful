@@ -49,15 +49,22 @@ import library  # noqa: E402
 import mcp  # noqa: E402
 from acp._transport import memory_transport_pair  # noqa: E402
 from ag_ui.core import (  # noqa: E402
+    AssistantMessage,
+    AudioPart,
     BaseEvent,
+    Context,
     DataSource,
+    DocumentPart,
     EventType,
+    FunctionCall,
     ImagePart,
     ResumeEntry,
     RunAgentInput,
     TextPart,
     Tool,
+    ToolCall,
     ToolMessage,
+    UrlSource,
     UserMessage,
 )
 from ag_ui.encoder import EventEncoder  # noqa: E402
@@ -101,9 +108,21 @@ def asynchronous(test):
 class FakeAgent:
     """An ACP agent whose turns are scripts, and which logs what it is told."""
 
-    def __init__(self, *turns, image=False, mcp=False, on_new_session=None):
+    def __init__(
+        self,
+        *turns,
+        image=False,
+        audio=False,
+        embedded=False,
+        mcp=False,
+        usage=None,
+        on_new_session=None,
+    ):
         self.turns = list(turns)
         self.image = image
+        self.audio = audio
+        self.embedded = embedded
+        self.usage = usage
         self.mcp = mcp
         self.mcp_servers: list[typing.Any] = []
         self.on_new_session = on_new_session
@@ -121,7 +140,9 @@ class FakeAgent:
         return acp.schema.InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=acp.schema.AgentCapabilities(
-                prompt_capabilities=acp.schema.PromptCapabilities(image=self.image),
+                prompt_capabilities=acp.schema.PromptCapabilities(
+                    image=self.image, audio=self.audio, embedded_context=self.embedded
+                ),
                 mcp_capabilities=acp.schema.McpCapabilities(http=self.mcp),
             ),
         )
@@ -140,7 +161,7 @@ class FakeAgent:
         self.cancelled.clear()
         stop_reason = await self.turns.pop(0)(self, session_id)
         self.log.append(f"end:{stop_reason}")
-        return acp.schema.PromptResponse(stop_reason=stop_reason)
+        return acp.schema.PromptResponse(stop_reason=stop_reason, usage=self.usage)
 
     async def cancel(self, session_id, **kwargs):
         self.log.append("cancel")
@@ -200,7 +221,16 @@ def user(text, id="u1"):
     return UserMessage(id=id, content=text)
 
 
-def request(*messages, run="r1", resume=None, version=None, thread="t1", tools=None):
+def request(
+    *messages,
+    run="r1",
+    resume=None,
+    version=None,
+    thread="t1",
+    tools=None,
+    context=None,
+    state=None,
+):
     return RunAgentInput(
         thread_id=thread,
         run_id=run,
@@ -208,6 +238,8 @@ def request(*messages, run="r1", resume=None, version=None, thread="t1", tools=N
         resume=resume,
         protocol_version=version,
         tools=tools,
+        context=context,
+        state=state,
     )
 
 
@@ -645,6 +677,59 @@ async def test_a_cancelled_turn_is_reported_in_the_clients_protocol_version(
         assert not warned
 
 
+@pytest.mark.parametrize("version", [None, "1.0"])
+@asynchronous
+async def test_a_turn_stopped_by_a_limit_is_cancelled(version, capsys):
+    async def limited(agent, session_id):
+        await agent.say(session_id, "and then")
+        return "max_tokens"
+
+    async with connected(FakeAgent(limited)) as bridge:
+        events = await collect(bridge, request(user("go"), version=version))
+
+    if version is None:
+        assert events[-1].result == {"stopReason": "max_tokens"}
+        assert "predates the cancelled outcome" in capsys.readouterr().err
+    else:
+        assert wire(events[-1])["outcome"] == {"type": "cancelled"}
+
+
+@asynchronous
+async def test_token_usage_is_reported_by_the_run_that_saw_the_whole_turn():
+    usage = acp.schema.Usage(
+        input_tokens=10, output_tokens=5, total_tokens=15, cached_read_tokens=4
+    )
+    async with connected(FakeAgent(say_ok, usage=usage)) as bridge:
+        events = await collect(bridge, request(user("go")))
+
+    assert wire(events[-1])["usage"] == [
+        {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "totalTokens": 15,
+            "cachedInputTokens": 4,
+        }
+    ]
+    assert events[-1].result == {"stopReason": "end_turn"}
+
+
+@asynchronous
+async def test_a_resumed_turn_reports_no_usage():
+    async def turn(agent, session_id):
+        await agent.send(session_id, acp.start_tool_call("c1", "write"))
+        await agent.ask(session_id, "c1")
+        return "end_turn"
+
+    usage = acp.schema.Usage(input_tokens=10, output_tokens=5, total_tokens=15)
+    async with connected(FakeAgent(turn, usage=usage)) as bridge:
+        first = await collect(bridge, request(user("go")))
+        (interrupt,) = first[-1].outcome.interrupts
+        resume = answer(interrupt, payload=ALLOW)
+        last = await collect(bridge, request(user("go"), resume=resume))
+
+    assert last[-1].usage is None
+
+
 # ============================================================================
 # The prompt, and session state
 # ============================================================================
@@ -667,14 +752,113 @@ async def test_parts_the_agent_cannot_take_are_skipped(image, capsys):
 
 
 @asynchronous
-async def test_a_message_with_nothing_the_agent_can_take_is_not_sent():
+async def test_a_message_with_nothing_the_agent_can_take_is_an_error():
     agent = FakeAgent(say_ok)
     picture = ImagePart(source=DataSource(value=IMAGE, mime_type="image/png"))
     async with connected(agent) as bridge:
         events = await collect(bridge, request(UserMessage(id="u1", content=[picture])))
 
-    assert kinds(events) == ["RUN_STARTED", "RUN_FINISHED"]
+    assert kinds(events) == ["RUN_STARTED", "RUN_ERROR"]
+    assert events[-1].code == "NOTHING_TO_SEND"
     assert agent.log == []
+
+
+@asynchronous
+async def test_media_parts_go_in_the_forms_the_agent_takes():
+    agent = FakeAgent(say_ok, audio=True, embedded=True)
+    url = "https://example.com/cat.png"
+    parts = [
+        TextPart(text="look"),
+        ImagePart(source=UrlSource(value=url, mime_type="image/png")),
+        AudioPart(source=DataSource(value="QUFB", mime_type="audio/wav")),
+        DocumentPart(
+            id="d1", source=DataSource(value="JVBE", mime_type="application/pdf")
+        ),
+    ]
+    async with connected(agent) as bridge:
+        await collect(bridge, request(UserMessage(id="u1", content=parts)))
+
+    assert agent.prompts == [
+        [
+            acp.text_block("look"),
+            acp.resource_link_block(url, url, mime_type="image/png"),
+            acp.audio_block("QUFB", "audio/wav"),
+            acp.resource_block(
+                acp.embedded_blob_resource(
+                    "ag-ui:document/d1", "JVBE", mime_type="application/pdf"
+                )
+            ),
+        ]
+    ]
+
+
+@asynchronous
+async def test_messages_the_agent_has_not_seen_are_prompted_as_labelled_text():
+    agent = FakeAgent(say_ok, say_ok)
+    async with connected(agent) as bridge:
+        first = await collect(bridge, request(user("go")))
+        (reply,) = of(first, "TEXT_MESSAGE_START")
+        click = ToolCall(
+            id="k1",
+            type="function",
+            function=FunctionCall(name="log_a2ui_event", arguments='{"name":"ok"}'),
+        )
+        history = [
+            user("go"),
+            AssistantMessage(id=reply.message_id, content="ok"),
+            AssistantMessage(id="a2", tool_calls=[click]),
+            ToolMessage(id="m3", tool_call_id="k1", content="clicked ok"),
+        ]
+        await collect(bridge, request(*history, run="r2"))
+        again = await collect(bridge, request(*history, run="r3"))
+
+    assert agent.prompts == [
+        [acp.text_block("go")],
+        [
+            acp.text_block('[assistant called log_a2ui_event({"name":"ok"})]'),
+            acp.text_block("[result of log_a2ui_event] clicked ok"),
+        ],
+    ]
+    assert kinds(again) == ["RUN_STARTED", "RUN_FINISHED"]
+
+
+@asynchronous
+async def test_context_is_sent_when_it_changes():
+    agent = FakeAgent(say_ok, say_ok, say_ok, say_ok)
+    first = [Context(description="Page", value="home")]
+    later = [Context(description="Page", value="settings")]
+    async with connected(agent) as bridge:
+        for n, context in enumerate([first, first, later, []], start=1):
+            messages = [user(str(i), id=f"u{i}") for i in range(1, n + 1)]
+            await collect(bridge, request(*messages, run=f"r{n}", context=context))
+
+    heads = [prompt[0].text for prompt in agent.prompts]
+    assert heads[0] == "[context] This replaces any earlier context.\n\n## Page\nhome"
+    assert heads[1] == "2"
+    assert heads[2].endswith("## Page\nsettings")
+    assert heads[3] == "[context] The earlier context no longer applies."
+
+
+@asynchronous
+async def test_context_is_embedded_for_an_agent_that_takes_resources():
+    agent = FakeAgent(say_ok, embedded=True)
+    context = [
+        Context(description="Page", value="home"),
+        Context(description="User", value="Ada"),
+    ]
+    async with connected(agent) as bridge:
+        await collect(bridge, request(user("go"), context=context))
+
+    (prompt,) = agent.prompts
+    assert prompt == [
+        acp.text_block(
+            "[context] This replaces any earlier context.\n\n"
+            "- ag-ui:context/0: Page\n- ag-ui:context/1: User"
+        ),
+        acp.resource_block(acp.embedded_text_resource("ag-ui:context/0", "home")),
+        acp.resource_block(acp.embedded_text_resource("ag-ui:context/1", "Ada")),
+        acp.text_block("go"),
+    ]
 
 
 @asynchronous
@@ -700,11 +884,65 @@ async def test_session_updates_become_state_snapshots():
     async with connected(FakeAgent(turn, on_new_session=announce)) as bridge:
         events = await collect(bridge, request(user("go")))
 
-    first, last = of(events, "STATE_SNAPSHOT")
-    commands = first.snapshot["available_commands_update"]["availableCommands"]
-    assert commands[0]["name"] == "clear"
-    assert last.snapshot["plan"]["entries"][0]["content"] == "Read it"
-    assert "available_commands_update" in last.snapshot
+    (snapshot,) = of(events, "STATE_SNAPSHOT")
+    commands = snapshot.snapshot["acp"]["available_commands_update"]
+    assert commands["availableCommands"][0]["name"] == "clear"
+    (plan,) = of(events, "ACTIVITY_SNAPSHOT")
+    assert plan.activity_type == "plan"
+    assert plan.content["entries"][0]["content"] == "Read it"
+
+
+@asynchronous
+async def test_the_frontends_state_is_kept_and_sent_to_the_agent_when_it_changes():
+    async def announce(agent, session_id):
+        await agent.send(
+            session_id,
+            acp.schema.CurrentModeUpdate(
+                session_update="current_mode_update", current_mode_id="ask"
+            ),
+        )
+
+    agent = FakeAgent(say_ok, say_ok, say_ok, on_new_session=announce)
+    async with connected(agent) as bridge:
+        first = await collect(bridge, request(user("1"), state={"theme": "dark"}))
+        echoed = of(first, "STATE_SNAPSHOT")[0].snapshot
+        messages = [user("1"), user("2", id="u2")]
+        await collect(bridge, request(*messages, run="r2", state=echoed))
+        messages.append(user("3", id="u3"))
+        await collect(bridge, request(*messages, run="r3", state={"theme": "light"}))
+
+    assert echoed == {
+        "theme": "dark",
+        "acp": {
+            "current_mode_update": {
+                "sessionUpdate": "current_mode_update",
+                "currentModeId": "ask",
+            }
+        },
+    }
+    heads = [prompt[0].text for prompt in agent.prompts]
+    assert heads[0].startswith("[state]") and '"theme": "dark"' in heads[0]
+    assert heads[1] == "2"
+    assert '"theme": "light"' in heads[2]
+
+
+@asynchronous
+async def test_a_rewritten_history_is_warned_about(capsys):
+    agent = FakeAgent(say_ok, say_ok)
+    async with connected(agent) as bridge:
+        first = await collect(bridge, request(user("go")))
+        (reply,) = of(first, "TEXT_MESSAGE_START")
+        said = AssistantMessage(id=reply.message_id, content="ok")
+        await collect(
+            bridge, request(user("go"), said, user("more", id="u2"), run="r2")
+        )
+        extended = capsys.readouterr().err
+        # A regenerate: the history cut back to the last user message.
+        again = await collect(bridge, request(user("go"), run="r3"))
+
+    assert "drops or edits" not in extended
+    assert "drops or edits" in capsys.readouterr().err
+    assert kinds(again) == ["RUN_STARTED", "RUN_FINISHED"]
 
 
 @asynchronous
@@ -940,6 +1178,89 @@ async def test_a_frontend_tool_call_waits_for_the_frontends_result():
     assert of(second, "TOOL_CALL_START") == of(second, "TOOL_CALL_RESULT") == []
     assert texts(second) == ["Shown."]
     assert agent.log == ["prompt", "result:rendered", "end:end_turn"]
+
+
+@asynchronous
+async def test_a_message_sent_with_a_frontend_result_waits_for_the_turn():
+    async def shown(agent, session_id):
+        async with mcp_session(app, "t1") as tools:
+            result = await tools.call_tool("show_weather", {"city": "Paris"})
+        agent.log.append(f"result:{result.content[0].text}")
+        await agent.say(session_id, "Shown.")
+        return "end_turn"
+
+    async def fresh(agent, session_id):
+        await agent.say(session_id, "fresh")
+        return "end_turn"
+
+    agent = FakeAgent(shown, fresh)
+    async with connected(agent) as bridge:
+        bridge.server = client.FrontendTools("http://127.0.0.1/mcp", bridge.threads)
+        app = client.make_app(bridge)
+        async with app.router.lifespan_context(app):
+            first = await collect(
+                bridge, request(user("go"), tools=[WEATHER], version="1.0")
+            )
+            (call,) = of(first, "TOOL_CALL_START")
+            history = [
+                user("go"),
+                AssistantMessage(
+                    id=call.parent_message_id,
+                    tool_calls=[
+                        ToolCall(
+                            id=call.tool_call_id,
+                            type="function",
+                            function=FunctionCall(name="show_weather", arguments="{}"),
+                        )
+                    ],
+                ),
+                ToolMessage(id="m2", tool_call_id=call.tool_call_id, content="ok"),
+                user("and London?", id="u2"),
+            ]
+            second = await collect(
+                bridge, request(*history, run="r2", tools=[WEATHER], version="1.0")
+            )
+
+    assert wire(first[-1])["outcome"] == {
+        "type": "success",
+        "pendingToolCallIds": [call.tool_call_id],
+    }
+    assert texts(second) == ["Shown.", "fresh"]
+    assert agent.prompts[1] == [acp.text_block("and London?")]
+    assert agent.log == [
+        "prompt",
+        "result:ok",
+        "end:end_turn",
+        "prompt",
+        "end:end_turn",
+    ]
+
+
+@asynchronous
+async def test_a_frontend_tools_image_result_reaches_the_agent():
+    async def turn(agent, session_id):
+        async with mcp_session(app, "t1") as tools:
+            result = await tools.call_tool("show_weather", {"city": "Paris"})
+        agent.log.extend(block.type for block in result.content)
+        return "end_turn"
+
+    agent = FakeAgent(turn)
+    async with connected(agent) as bridge:
+        bridge.server = client.FrontendTools("http://127.0.0.1/mcp", bridge.threads)
+        app = client.make_app(bridge)
+        async with app.router.lifespan_context(app):
+            first = await collect(bridge, request(user("go"), tools=[WEATHER]))
+            (call,) = of(first, "TOOL_CALL_START")
+            picture = ImagePart(source=DataSource(value=IMAGE, mime_type="image/png"))
+            content = [TextPart(text="here"), picture]
+            answer = ToolMessage(
+                id="m2", tool_call_id=call.tool_call_id, content=content
+            )
+            await collect(
+                bridge, request(user("go"), answer, run="r2", tools=[WEATHER])
+            )
+
+    assert agent.log == ["prompt", "text", "image", "end:end_turn"]
 
 
 @asynchronous

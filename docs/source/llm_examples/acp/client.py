@@ -23,12 +23,19 @@ as the one CopilotKit 1.73 bundles, rejects the cancelled outcome, so a cancelle
 turn ends for it with no outcome and ``result.stopReason`` set to ``cancelled``.
 
 The frontend's tools reach the agent as an MCP server at ``/mcp``, named in each
-``session/new``. When the agent calls one, the run ends with the call for the
-frontend to execute or render, and the next run's tool message is its result.
+``session/new``. When the agent calls one, the run ends with the call pending for
+the frontend to execute or render, and a later run's tool message is its result.
 
-Only the newest user message is sent, since the ACP session keeps the history.
-Sessions live in memory, context is not forwarded, terminals are not offered, a
-second run on a busy thread is refused, and only localhost is served.
+Each prompt carries the run's messages the agent has not seen, and the run's
+context and state when they have changed since they were last sent; the agent
+reads the state but cannot change it. Messages that arrive while a turn is still
+going are prompted once it ends, in the same run. The agent's plans are activity
+messages, and its other session updates are state under ``acp``.
+
+An ACP session cannot be rewound, so a history that edits or drops messages the
+agent has seen (a regenerate, say) is warned about, and the agent keeps its own.
+Sessions live in memory and are never closed, terminals are not offered, a second
+run on a busy thread is refused, and only localhost is served.
 """
 
 import argparse
@@ -68,6 +75,10 @@ class ThreadBusy(Exception):
     """A run arrived for a thread that another run is streaming."""
 
 
+class NothingToSend(Exception):
+    """A user message had nothing in it the agent can take."""
+
+
 @dataclasses.dataclass(eq=False)
 class Session:
     """One ACP session, serving one AG-UI thread."""
@@ -75,10 +86,32 @@ class Session:
     id: str
     state: dict[str, typing.Any] = dataclasses.field(default_factory=dict)
     turn: "Turn | None" = None
-    prompted: str | None = None
     busy: bool = False
     tools: list[ag_ui.core.Tool] = dataclasses.field(default_factory=list)
     """The tools the frontend offered in its latest run."""
+    seen: set[str] = dataclasses.field(default_factory=set)
+    """Ids of the messages and tool calls the agent sent or was sent."""
+    waiting: list[ag_ui.core.Message] = dataclasses.field(default_factory=list)
+    """The latest run's messages the agent has not seen yet."""
+    context: list[ag_ui.core.Context] = dataclasses.field(default_factory=list)
+    """The latest run's context."""
+    sent: list[ag_ui.core.Context] = dataclasses.field(default_factory=list)
+    """The context the agent was last sent."""
+    page: typing.Any = None
+    """The frontend's state, from its latest run."""
+    shown: typing.Any = None
+    """The frontend state the agent was last sent."""
+    forwarded: dict[str, str] = dataclasses.field(default_factory=dict)
+    """The user messages sent to the agent, by id, with their content as JSON."""
+    replies: set[str] = dataclasses.field(default_factory=set)
+    """Ids of the text messages streamed from the agent."""
+
+    def snapshot(self) -> dict[str, typing.Any] | None:
+        """The frontend's state with the session's updates under ``acp``; `None`
+        if the frontend's state is not an object to add them to."""
+        if self.page is not None and not isinstance(self.page, dict):
+            return None
+        return {**(self.page or {}), "acp": dict(self.state)}
 
 
 @dataclasses.dataclass(eq=False)
@@ -90,6 +123,8 @@ class Turn:
     """
 
     session: Session
+    streams: int = 0
+    """How many requests have streamed it."""
     events: asyncio.Queue = dataclasses.field(default_factory=asyncio.Queue)
     task: asyncio.Task = dataclasses.field(init=False)
     cancelled: asyncio.Task | None = None
@@ -125,7 +160,8 @@ class Turn:
         )
 
     def attach(self) -> None:
-        """Begin streaming this turn into a new run."""
+        """Begin streaming this turn into a new request's run."""
+        self.streams += 1
         self.text = self.reasoning = self.parent = None
 
     def translate(
@@ -177,8 +213,25 @@ class Turn:
                     yield from self.announce(call_id)
                 if call.get("status") in ("completed", "failed"):
                     yield from self._result(call_id, _render(call))
+            case acp.schema.AgentPlanUpdate(entries=entries):
+                yield from self._plan("", {"entries": [_json(e) for e in entries]})
+            case acp.schema.AgentPlanContentUpdate(plan=plan):
+                yield from self._plan(plan.plan_id, _json(plan))
+            case acp.schema.AgentPlanRemovedUpdate(plan_id=plan_id):
+                yield from self._plan(plan_id, {"planId": plan_id, "removed": True})
             case ag_ui.core.BaseEvent():
                 yield item
+
+    def _plan(
+        self, plan_id: str, content: dict[str, typing.Any]
+    ) -> collections.abc.Iterator[ag_ui.core.BaseEvent]:
+        """A plan, as an activity message that each update replaces."""
+        yield from self.close()
+        yield ag_ui.core.ActivitySnapshotEvent(
+            message_id=f"{self.session.id}:plan:{plan_id}",
+            activity_type="plan",
+            content=content,
+        )
 
     def announce(self, call_id: str) -> collections.abc.Iterator[ag_ui.core.BaseEvent]:
         """Show an ACP tool call once, with its arguments as they now stand."""
@@ -274,13 +327,29 @@ class FrontendTool(fastmcp.tools.Tool):
                 "the turn ended before the frontend answered"
             )
         message: ag_ui.core.ToolMessage = answer.result()
-        text = message.content
-        if not isinstance(text, str):
-            text = "".join(p.text for p in text if isinstance(p, ag_ui.core.TextPart))
-        return fastmcp.tools.ToolResult(
-            content=[mcp_types.TextContent(type="text", text=text)],
-            is_error=bool(message.error),
-        )
+        if message.error:
+            raise fastmcp.exceptions.ToolError(message.error)
+        parts = message.content
+        if isinstance(parts, str):
+            parts = [ag_ui.core.TextPart(text=parts)]
+        content: list[mcp_types.ContentBlock] = []
+        for part in parts:
+            match part:
+                case ag_ui.core.TextPart(text=text):
+                    content.append(mcp_types.TextContent(type="text", text=text))
+                case ag_ui.core.ImagePart(
+                    source=ag_ui.core.DataSource(value=data, mime_type=mime)
+                ):
+                    content.append(
+                        mcp_types.ImageContent(type="image", data=data, mime_type=mime)
+                    )
+                case _:
+                    print(
+                        f"warning: skipping a {part.type} part of the result of "
+                        f"{self.name}, which MCP cannot carry",
+                        file=sys.stderr,
+                    )
+        return fastmcp.tools.ToolResult(content=content)
 
 
 class ThreadTools(fastmcp.server.providers.Provider):
@@ -401,6 +470,9 @@ class Bridge:
                 | acp.schema.AgentThoughtChunk()
                 | acp.schema.ToolCallStart()
                 | acp.schema.ToolCallProgress()
+                | acp.schema.AgentPlanUpdate()
+                | acp.schema.AgentPlanContentUpdate()
+                | acp.schema.AgentPlanRemovedUpdate()
             ):
                 if session.turn is not None:
                     session.turn.events.put_nowait(update)
@@ -408,9 +480,10 @@ class Bridge:
                 session.state[update.session_update] = update.model_dump(
                     mode="json", by_alias=True, exclude_none=True
                 )
-                if session.turn is not None:
+                snapshot = session.snapshot()
+                if session.turn is not None and snapshot is not None:
                     session.turn.events.put_nowait(
-                        ag_ui.core.StateSnapshotEvent(snapshot=dict(session.state))
+                        ag_ui.core.StateSnapshotEvent(snapshot=snapshot)
                     )
 
     async def request_permission(
@@ -527,7 +600,18 @@ class Bridge:
     async def run(
         self, input: ag_ui.core.RunAgentInput
     ) -> collections.abc.AsyncIterator[ag_ui.core.BaseEvent]:
-        """Serve one AG-UI run: the thread's turn up to its next stopping point."""
+        """Serve one AG-UI run: the thread's turns up to their next stopping point."""
+        async with contextlib.aclosing(self._run(input)) as events:
+            async for event in events:
+                if (session := self.threads.get(input.thread_id)) is not None:
+                    session.seen.update(_ids(event))
+                    if isinstance(event, ag_ui.core.TextMessageStartEvent):
+                        session.replies.add(event.message_id)
+                yield event
+
+    async def _run(
+        self, input: ag_ui.core.RunAgentInput
+    ) -> collections.abc.AsyncGenerator[ag_ui.core.BaseEvent]:
         yield ag_ui.core.RunStartedEvent(
             thread_id=input.thread_id,
             run_id=input.run_id,
@@ -537,13 +621,16 @@ class Bridge:
             async with self.locks[input.thread_id]:
                 session, turn, resend = await self._begin(input)
         except Exception as error:
-            code = "THREAD_BUSY" if isinstance(error, ThreadBusy) else None
+            code = {ThreadBusy: "THREAD_BUSY", NothingToSend: "NOTHING_TO_SEND"}.get(
+                type(error)
+            )
             yield ag_ui.core.RunErrorEvent(message=_describe(error), code=code)
             return
         streaming = done = False
+        usage: list[ag_ui.core.TokenUsage] = []
         try:
-            if session.state:
-                yield ag_ui.core.StateSnapshotEvent(snapshot=dict(session.state))
+            if session.state and (snapshot := session.snapshot()) is not None:
+                yield ag_ui.core.StateSnapshotEvent(snapshot=snapshot)
             if turn is None or resend:
                 done = True
                 yield self._finished(
@@ -576,18 +663,34 @@ class Bridge:
                     ):
                         yield event
                     done = True
-                    yield self._finished(input)
+                    yield self._finished(input, pending=[item.id])
                     return
                 if isinstance(item, acp.schema.PromptResponse | Exception):
                     for event in turn.finish():
                         yield event
                     if session.turn is turn:
                         session.turn = None
-                    done = True
                     if isinstance(item, Exception):
+                        done = True
                         yield ag_ui.core.RunErrorEvent(message=_describe(item))
-                    else:
-                        yield self._finished(input, response=item)
+                        return
+                    # A turn's usage is its total, which only a turn streamed by one
+                    # request can report without counting another run's calls.
+                    if turn.streams == 1 and item.usage is not None:
+                        usage.append(_usage(item.usage))
+                    if item.stop_reason != "cancelled":
+                        try:
+                            following = self._next(session)
+                        except NothingToSend as error:
+                            done = True
+                            yield ag_ui.core.RunErrorEvent(message=str(error))
+                            return
+                        if following is not None:
+                            turn = following
+                            turn.attach()
+                            continue
+                    done = True
+                    yield self._finished(input, response=item, usage=usage)
                     return
                 for event in turn.translate(item):
                     yield event
@@ -603,8 +706,9 @@ class Bridge:
     ) -> tuple[Session, Turn | None, bool]:
         """Claim the thread for this run, and decide what the run streams.
 
-        Returns the session, its turn (if any), and whether the run only re-sends
-        the questions the frontend has not answered yet.
+        A turn still going is streamed, and the messages the agent has not seen
+        wait for it to end. Returns the session, its turn (if any), and whether
+        the run only re-sends the questions the frontend has not answered yet.
         """
         session = await self._open(input.thread_id)
         session.tools = list(input.tools or [])
@@ -631,28 +735,55 @@ class Bridge:
                 self.server.reply(input.messages)
             if turn is not None and turn.unanswered():
                 return session, turn, True
-            message = input.messages[-1] if input.messages else None
-            if (
-                not input.resume
-                and isinstance(message, ag_ui.core.UserMessage)
-                and message.id != session.prompted
-            ):
-                session.prompted = message.id
-                if turn is not None:
-                    # A turn with no run streaming it was abandoned or has ended.
-                    # Waiting on the task via `asyncio.wait` keeps a cancelled
-                    # request from cancelling the prompt it shares.
-                    await asyncio.wait({self._cancel(turn), turn.task})
-                prompts = self.agent.prompt_capabilities
-                blocks = _blocks(message, bool(prompts and prompts.image))
-                turn = Turn(session) if blocks else None
-                session.turn = turn
-                if turn is not None:
-                    turn.task = asyncio.create_task(self._prompt(turn, blocks))
+            _warn_if_rewritten(session, input.messages)
+            session.waiting = [m for m in input.messages if _unseen(m, session.seen)]
+            session.context = list(input.context or [])
+            session.page = input.state
+            if turn is not None and turn.cancelled is not None:
+                # What a cancelled turn has left is not worth showing. Waiting via
+                # `asyncio.wait` keeps a cancelled request from cancelling the task.
+                await asyncio.wait({turn.cancelled, turn.task})
+                session.turn = turn = None
+            if turn is None:
+                turn = self._next(session)
             return session, turn, False
         except BaseException:
             session.busy = False
             raise
+
+    def _next(self, session: Session) -> Turn | None:
+        """Prompt the messages the agent has not seen, if there are any to send.
+
+        Raises `NothingToSend` if a user message had nothing the agent can take.
+        """
+        messages, session.waiting = session.waiting, []
+        session.seen.update(message.id for message in messages)
+        prompts = self.agent.prompt_capabilities
+        blocks = _blocks(messages, prompts)
+        users = [m for m in messages if isinstance(m, ag_ui.core.UserMessage)]
+        session.forwarded.update(
+            (m.id, m.model_dump_json(include={"content"})) for m in users
+        )
+        if not blocks:
+            if users:
+                raise NothingToSend(
+                    "nothing in the message is something the agent takes"
+                )
+            return None
+        embedded = bool(prompts and prompts.embedded_context)
+        page = session.page
+        if isinstance(page, dict):
+            page = {key: value for key, value in page.items() if key != "acp"}
+        page = page or None
+        if page != session.shown:
+            blocks[:0] = _state(page, embedded)
+            session.shown = page
+        if session.context != session.sent:
+            blocks[:0] = _context(session.context, embedded)
+            session.sent = session.context
+        turn = session.turn = Turn(session)
+        turn.task = asyncio.create_task(self._prompt(turn, blocks))
+        return turn
 
     async def _open(self, thread_id: str) -> Session:
         """The session serving `thread_id`, created on first use."""
@@ -726,63 +857,238 @@ class Bridge:
         input: ag_ui.core.RunAgentInput,
         *,
         interrupts: collections.abc.Sequence[ag_ui.core.Interrupt] = (),
+        pending: collections.abc.Sequence[str] = (),
         response: acp.schema.PromptResponse | None = None,
+        usage: collections.abc.Sequence[ag_ui.core.TokenUsage] = (),
     ) -> ag_ui.core.RunFinishedEvent:
         """The event ending a run, in the protocol version the client speaks."""
         outcome: (
-            ag_ui.core.RunFinishedInterruptOutcome
+            ag_ui.core.RunFinishedSuccessOutcome
+            | ag_ui.core.RunFinishedInterruptOutcome
             | ag_ui.core.RunFinishedCancelledOutcome
             | None
         ) = None
         result: typing.Any = None
-        if interrupts:
+        if pending and input.protocol_version is not None:
+            # A client from before AG-UI versioning rejects any field on success.
+            outcome = ag_ui.core.RunFinishedSuccessOutcome(
+                pending_tool_call_ids=list(pending)
+            )
+        elif interrupts:
             outcome = ag_ui.core.RunFinishedInterruptOutcome(
                 interrupts=list(interrupts)
             )
-        elif response is not None and response.stop_reason != "cancelled":
-            result = response.model_dump(mode="json", by_alias=True, exclude_none=True)
-        elif response is not None and input.protocol_version is not None:
+        elif response is None:
+            pass
+        # A turn stopped by a limit did not complete, and AG-UI calls that cancelled.
+        elif response.stop_reason not in (
+            "cancelled",
+            "max_tokens",
+            "max_turn_requests",
+        ):
+            result = response.model_dump(
+                mode="json", by_alias=True, exclude_none=True, exclude={"usage"}
+            )
+        elif input.protocol_version is not None:
             outcome = ag_ui.core.RunFinishedCancelledOutcome()
-        elif response is not None:
+        else:
             # A client from before AG-UI versioning rejects the cancelled outcome,
             # and CopilotKit drops a run's stream at the first event it rejects.
             print(
                 "warning: this client predates the cancelled outcome, so the stopped "
-                "run is reported as finished with result.stopReason 'cancelled'",
+                f"run is reported as finished with result.stopReason "
+                f"{response.stop_reason!r}",
                 file=sys.stderr,
             )
-            result = {"stopReason": "cancelled"}
+            result = {"stopReason": response.stop_reason}
         return ag_ui.core.RunFinishedEvent(
             thread_id=input.thread_id,
             run_id=input.run_id,
             outcome=outcome,
             result=result,
+            usage=list(usage) or None,
         )
 
 
-def _blocks(message: ag_ui.core.UserMessage, images: bool) -> list[typing.Any]:
-    """A user message as prompt blocks, skipping the parts the agent cannot take."""
-    parts = (
-        [ag_ui.core.TextPart(text=message.content)]
-        if isinstance(message.content, str)
-        else message.content
-    )
+def _unseen(message: ag_ui.core.Message, seen: set[str]) -> bool:
+    """Whether the agent has yet to see `message`, if it is for the agent at all."""
+    match message:
+        case ag_ui.core.ActivityMessage() | ag_ui.core.ReasoningMessage():
+            return False
+        case ag_ui.core.ToolMessage() if message.tool_call_id in seen:
+            return False
+    return message.id not in seen
+
+
+def _blocks(
+    messages: list[ag_ui.core.Message], prompts: acp.schema.PromptCapabilities | None
+) -> list[typing.Any]:
+    """Messages as prompt blocks: a user's as they are, and the others as labelled
+    text, skipping the parts the agent cannot take."""
+    names = {
+        call.id: call.function.name
+        for message in messages
+        if isinstance(message, ag_ui.core.AssistantMessage)
+        for call in message.tool_calls or []
+    }
     blocks: list[typing.Any] = []
-    for part in parts:
-        match part:
-            case ag_ui.core.TextPart(text=text):
+    for message in messages:
+        match message:
+            case ag_ui.core.UserMessage(content=str(text)):
                 if text:
                     blocks.append(acp.text_block(text))
-            case ag_ui.core.ImagePart(
-                source=ag_ui.core.DataSource(value=data, mime_type=mime)
-            ) if images:
-                blocks.append(acp.image_block(data, mime))
-            case _:
-                print(
-                    f"warning: skipping a {part.type} part the agent cannot take",
-                    file=sys.stderr,
+            case ag_ui.core.UserMessage(content=list(parts)):
+                for part in parts:
+                    match part:
+                        case ag_ui.core.TextPart(text=text):
+                            if text:
+                                blocks.append(acp.text_block(text))
+                        case _ if (block := _media(part, prompts)) is not None:
+                            blocks.append(block)
+                        case _:
+                            print(
+                                f"warning: skipping a {part.type} part the agent "
+                                "cannot take",
+                                file=sys.stderr,
+                            )
+            case ag_ui.core.AssistantMessage():
+                if message.content:
+                    blocks.append(acp.text_block(f"[assistant] {message.content}"))
+                blocks.extend(
+                    acp.text_block(
+                        f"[assistant called {call.function.name}"
+                        f"({call.function.arguments})]"
+                    )
+                    for call in message.tool_calls or []
                 )
+            case ag_ui.core.ToolMessage():
+                name = names.get(message.tool_call_id, message.tool_call_id)
+                result = message.error or _text(message.content)
+                blocks.append(acp.text_block(f"[result of {name}] {result}"))
+            case ag_ui.core.SystemMessage() | ag_ui.core.DeveloperMessage():
+                blocks.append(acp.text_block(f"[{message.role}] {message.content}"))
     return blocks
+
+
+def _media(
+    part: typing.Any, prompts: acp.schema.PromptCapabilities | None
+) -> typing.Any:
+    """A media part as a prompt block the agent takes: a link to where it is, or its
+    data in a form the agent's prompt capabilities admit; `None` if neither."""
+    match part.source:
+        case ag_ui.core.UrlSource(value=url, mime_type=mime):
+            return acp.resource_link_block(url, url, mime_type=mime)
+        case ag_ui.core.DataSource(value=data, mime_type=mime) if prompts:
+            if part.type == "image" and prompts.image:
+                return acp.image_block(data, mime)
+            if part.type == "audio" and prompts.audio:
+                return acp.audio_block(data, mime)
+            if prompts.embedded_context:
+                uri = f"ag-ui:{part.type}/{part.id or uuid.uuid4()}"
+                return acp.resource_block(
+                    acp.embedded_blob_resource(uri, data, mime_type=mime)
+                )
+    return None
+
+
+def _state(value: typing.Any, embedded: bool) -> list[typing.Any]:
+    """The frontend's state, standing in for what it sent before: as an embedded
+    resource if the agent takes them, else as text."""
+    if value is None:
+        return [
+            acp.text_block("[state] The earlier application state no longer applies.")
+        ]
+    head = "[state] The application's state, which replaces any earlier state."
+    text = json.dumps(value, indent=2, default=str)
+    if not embedded:
+        return [acp.text_block(f"{head}\n\n{text}")]
+    return [
+        acp.text_block(f"{head} It is ag-ui:state."),
+        acp.resource_block(
+            acp.embedded_text_resource(
+                "ag-ui:state", text, mime_type="application/json"
+            )
+        ),
+    ]
+
+
+def _warn_if_rewritten(session: Session, messages: list[ag_ui.core.Message]) -> None:
+    """Warn when a run's history drops or edits messages the agent has seen, as a
+    regenerate does: an ACP session cannot be rewound to match it."""
+    given = {message.id: message for message in messages}
+    known = set(session.forwarded) | session.replies
+    if not known & given.keys():
+        # Nothing the agent has seen: a new thread, or a client sending only news.
+        return
+    edited = [
+        id
+        for id, content in session.forwarded.items()
+        if id in given and given[id].model_dump_json(include={"content"}) != content
+    ]
+    if known - given.keys() or edited:
+        print(
+            "warning: this run's history drops or edits messages the agent has "
+            "seen; an ACP session cannot be rewound, so the agent keeps its own",
+            file=sys.stderr,
+        )
+
+
+def _usage(usage: acp.schema.Usage) -> ag_ui.core.TokenUsage:
+    return ag_ui.core.TokenUsage(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        total_tokens=usage.total_tokens,
+        reasoning_tokens=usage.thought_tokens,
+        cached_input_tokens=usage.cached_read_tokens,
+        cache_write_input_tokens=usage.cached_write_tokens,
+    )
+
+
+def _json(model: pydantic.BaseModel) -> dict[str, typing.Any]:
+    """ACP data as JSON, the way the ACP wire spells it."""
+    return model.model_dump(mode="json", by_alias=True, exclude_none=True)
+
+
+def _context(entries: list[ag_ui.core.Context], embedded: bool) -> list[typing.Any]:
+    """The frontend's context, standing in for what it sent before: as embedded
+    resources if the agent takes them, else as text."""
+    if not entries:
+        return [acp.text_block("[context] The earlier context no longer applies.")]
+    head = "[context] This replaces any earlier context."
+    if not embedded:
+        sections = "\n\n".join(f"## {e.description}\n{e.value}" for e in entries)
+        return [acp.text_block(f"{head}\n\n{sections}")]
+    uris = [f"ag-ui:context/{n}" for n in range(len(entries))]
+    listing = "\n".join(f"- {uri}: {e.description}" for uri, e in zip(uris, entries))
+    return [acp.text_block(f"{head}\n\n{listing}")] + [
+        acp.resource_block(acp.embedded_text_resource(uri, e.value))
+        for uri, e in zip(uris, entries)
+    ]
+
+
+def _text(content: str | list[typing.Any]) -> str:
+    """Content as text, keeping only its text parts."""
+    if isinstance(content, str):
+        return content
+    return "".join(
+        part.text for part in content if isinstance(part, ag_ui.core.TextPart)
+    )
+
+
+def _ids(event: ag_ui.core.BaseEvent) -> set[str]:
+    """The message and tool call ids an event gives the frontend."""
+    match event:
+        case (
+            ag_ui.core.TextMessageStartEvent()
+            | ag_ui.core.ReasoningMessageStartEvent()
+            | ag_ui.core.ToolCallResultEvent()
+        ):
+            return {event.message_id}
+        case ag_ui.core.ToolCallStartEvent():
+            return {event.tool_call_id} | (
+                {event.parent_message_id} if event.parent_message_id else set()
+            )
+    return set()
 
 
 def _render(call: dict[str, typing.Any]) -> str:
