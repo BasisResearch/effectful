@@ -72,6 +72,13 @@ that holds the evaluator as a tool. `evolve_lineage` below is the small amount o
 framework that survives that change, and:
 
   * `avo.py`       -- agentic variation on a kernel, against this engine as the control
+
+A fifth script leaves this paper's family and keeps only `evolve_lineage`.
+"GRAFT-ATHENA" (arXiv 2605.11117) closes the same loop over numerical *methods*, with
+a memory that carries across problems; there the artifact is a program over a typed
+toolkit, the evaluator measures a convergence class, and the seed comes from memory:
+
+  * `athena.py`    -- methods as programs, with type-directed memory across problems
 """
 
 import collections.abc
