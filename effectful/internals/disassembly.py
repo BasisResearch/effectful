@@ -280,13 +280,41 @@ class BranchIdentifier(ast.NodeVisitor):
         return self.generic_visit(node)
 
 
+# Opcodes whose argument names a jump target rather than an ordinary value.
+_HAS_JUMP_TARGET = set(dis.hasjrel) | set(dis.hasjabs)
+
+
 @functools.cache
 def _instructions(
     code: types.CodeType,
 ) -> collections.abc.Mapping[int, dis.Instruction]:
-    """Decode a code object once; every state derived from it shares the result."""
+    """Decode a code object once; every state derived from it shares the result.
+
+    ``EXTENDED_ARG`` prefixes are dropped, since ``dis`` has already folded each
+    one into the argument of the instruction it prefixes. A jump to a prefixed
+    instruction targets the prefix, so such a target is moved forward onto the
+    instruction the jump actually names.
+    """
+    decoded = list(dis.get_instructions(code))
+
+    # The offset of the instruction each offset is part of.
+    resolved: dict[int, int] = {}
+    prefix: list[int] = []
+    for instr in decoded:
+        prefix.append(instr.offset)
+        if instr.opname != "EXTENDED_ARG":
+            resolved.update(dict.fromkeys(prefix, instr.offset))
+            prefix.clear()
+
     return collections.OrderedDict(
-        (instr.offset, instr) for instr in dis.get_instructions(code)
+        (
+            instr.offset,
+            instr._replace(argval=resolved[instr.argval])
+            if instr.opcode in _HAS_JUMP_TARGET and instr.argval in resolved
+            else instr,
+        )
+        for instr in decoded
+        if instr.opname != "EXTENDED_ARG"
     )
 
 
@@ -612,9 +640,7 @@ def _stack_depths(code: types.CodeType) -> collections.abc.Mapping[int, int]:
     Depths are relative to the start of the code object, which is all that is
     needed to tell a value-producing branch from a control-flow one.
     """
-    instructions = collections.OrderedDict(
-        (i.offset, i) for i in dis.get_instructions(code)
-    )
+    instructions = _instructions(code)
     ordered = list(instructions.values())
     following = {a.offset: b.offset for a, b in zip(ordered[:-1], ordered[1:])}
 
@@ -804,7 +830,10 @@ def _disjoin(left: ast.expr, right: ast.expr) -> ast.expr:
 
 
 def _merge_filters_into(
-    node: typing.Any, other: typing.Any, mutate: bool = True
+    node: typing.Any,
+    other: typing.Any,
+    mutate: bool = True,
+    wildcard: bool = False,
 ) -> bool:
     """Walk two results in parallel, OR-ing the filters where they disagree.
 
@@ -816,15 +845,19 @@ def _merge_filters_into(
     Returns False if the two results differ somewhere they may not. With
     ``mutate=False`` nothing is written, which allows compatibility to be tested
     before paying for a deep copy -- most candidate pairs do not merge, and the
-    copy dominates otherwise.
+    copy dominates otherwise. With ``wildcard`` a marker in ``other`` matches
+    whatever ``node`` has there; see `_merge_filters`.
     """
+    if wildcard and isinstance(other, Skipped):
+        return True
+
     if type(node) is not type(other):
         return False
 
     if isinstance(node, ast.comprehension):
         if ast.dump(node.target) != ast.dump(other.target):
             return False
-        if not _merge_filters_into(node.iter, other.iter, mutate):
+        if not _merge_filters_into(node.iter, other.iter, mutate, wildcard):
             return False
         if not mutate:
             return True
@@ -848,12 +881,15 @@ def _merge_filters_into(
                 return False
             if len(mine) != len(theirs):
                 return False
-            if not all(_merge_filters_into(a, b, mutate) for a, b in zip(mine, theirs)):
+            if not all(
+                _merge_filters_into(a, b, mutate, wildcard)
+                for a, b in zip(mine, theirs)
+            ):
                 return False
         elif isinstance(mine, ast.AST) or isinstance(theirs, ast.AST):
             if not isinstance(mine, ast.AST) or not isinstance(theirs, ast.AST):
                 return False
-            if not _merge_filters_into(mine, theirs, mutate):
+            if not _merge_filters_into(mine, theirs, mutate, wildcard):
                 return False
         elif mine != theirs:
             return False
@@ -861,25 +897,32 @@ def _merge_filters_into(
     return True
 
 
-def _merge_filters(left: ast.expr, right: ast.expr) -> ast.expr | None:
+def _merge_filters(
+    left: ast.expr, right: ast.expr, wildcard: bool = False
+) -> ast.expr | None:
     """Combine two paths that differ only in which filter conditions they met.
 
     Each path through a filter records the conjunction that got it to the
     element; the filter as a whole is the disjunction over all such paths.
     Returns ``None`` when the results differ by more than their filters.
+
+    With ``wildcard``, a marker in ``right`` matches whatever ``left`` has in
+    its place: ``right`` never evaluated that arm, so it has nothing to say
+    about it and ``left``'s value stands. ``left`` must itself be free of
+    markers for that to hold, which is checked below either way.
     """
     # A marker anywhere means some conditional expression is still unresolved,
     # and unresolved arms must be spliced before anything can be OR-ed.
     if any(isinstance(n, Skipped) for n in ast.walk(left)):
         return None
-    if any(isinstance(n, Skipped) for n in ast.walk(right)):
+    if not wildcard and any(isinstance(n, Skipped) for n in ast.walk(right)):
         return None
 
-    if not _merge_filters_into(left, right, mutate=False):
+    if not _merge_filters_into(left, right, mutate=False, wildcard=wildcard):
         return None
 
     merged = copy.deepcopy(left)
-    return merged if _merge_filters_into(merged, right) else None
+    return merged if _merge_filters_into(merged, right, wildcard=wildcard) else None
 
 
 def _skipped_offset(key: str) -> int:
@@ -928,6 +971,15 @@ def _merge_at_ifexp(left: ast.expr, right: ast.expr) -> ast.expr:
         return combined
     if spliced:
         return merged
+
+    # Independent conditional expressions multiply out into more paths than
+    # there are arms to fill, so a path can arrive with every arm it took
+    # already spliced in by others. It then has nothing of its own left to
+    # contribute, and is absorbed into the result that does have both arms.
+    for complete, partial in ((merged, right), (right, merged)):
+        absorbed = _merge_filters(complete, partial, wildcard=True)
+        if absorbed is not None:
+            return absorbed
 
     if ast.dump(left) == ast.dump(right):
         return copy.deepcopy(left)
@@ -997,7 +1049,7 @@ def _symbolic_exec(code: types.CodeType, freevars: dict[str, ast.expr]) -> ast.e
     continuations: list[ReconstructionState] = [
         ReconstructionState(
             code=code,
-            instruction=next(iter(dis.get_instructions(code))),
+            instruction=next(iter(_instructions(code).values())),
             stack=[Placeholder(), Placeholder()]
             if current_version() == PythonVersion.PY_312
             and code.co_flags & inspect.CO_GENERATOR
@@ -1123,10 +1175,22 @@ def handle_build_list(
 def handle_list_append(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(state.stack[-instr.argval - 1], ast.ListComp)
+    target = state.stack[-instr.argval - 1]
+    if isinstance(target, ast.List):
+        # Not a comprehension after all: a list display whose earlier elements
+        # included a spread, which LIST_EXTEND has already turned into a
+        # display. The items after the spread are appended one at a time.
+        merged = ast.List(
+            elts=list(target.elts) + [ensure_ast(state.stack[-1])], ctx=ast.Load()
+        )
+        new_stack = state.stack[:-1]
+        new_stack[-instr.argval] = merged
+        return replace(state, stack=new_stack)
+
+    assert isinstance(target, ast.ListComp)
 
     # add the body to the comprehension
-    comp: ast.ListComp = copy.deepcopy(state.stack[-instr.argval - 1])
+    comp: ast.ListComp = copy.deepcopy(target)
     assert any(isinstance(x, Placeholder) for x in ast.walk(comp.elt))
     comp.elt = ReplacePlaceholder(state.stack[-1]).visit(comp.elt)
 
@@ -1169,10 +1233,19 @@ def handle_build_set(
 def handle_set_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(state.stack[-instr.argval - 1], ast.SetComp)
+    target = state.stack[-instr.argval - 1]
+    if isinstance(target, ast.Set):
+        # A set display that SET_UPDATE has already recognised as such; the
+        # items written after the spread are added one at a time.
+        merged = ast.Set(elts=list(target.elts) + [ensure_ast(state.stack[-1])])
+        new_stack = state.stack[:-1]
+        new_stack[-instr.argval] = merged
+        return replace(state, stack=new_stack)
+
+    assert isinstance(target, ast.SetComp)
 
     # add the body to the comprehension
-    comp: ast.SetComp = copy.deepcopy(state.stack[-instr.argval - 1])
+    comp: ast.SetComp = copy.deepcopy(target)
     assert any(isinstance(x, Placeholder) for x in ast.walk(comp.elt))
     comp.elt = ReplacePlaceholder(state.stack[-1]).visit(comp.elt)
 
@@ -1223,10 +1296,14 @@ def handle_build_map(
 def handle_map_add(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    assert isinstance(state.stack[-instr.argval - 2], ast.DictComp)
+    # Unlike a list or a set display, a dict display never accumulates this way:
+    # the pairs written after a `**` are built into a dict of their own and
+    # folded in with DICT_UPDATE, so MAP_ADD only ever fills a comprehension.
+    target = state.stack[-instr.argval - 2]
+    assert isinstance(target, ast.DictComp)
 
     # add the body to the comprehension
-    comp: ast.DictComp = copy.deepcopy(state.stack[-instr.argval - 2])
+    comp: ast.DictComp = copy.deepcopy(target)
     assert any(isinstance(x, Placeholder) for x in ast.walk(comp.key))
     assert any(isinstance(x, Placeholder) for x in ast.walk(comp.value))
     comp.key = ReplacePlaceholder(state.stack[-2]).visit(comp.key)
@@ -2621,6 +2698,32 @@ def handle_build_const_key_map(
     return replace(state, stack=new_stack)
 
 
+def _spread_elements(update: ast.expr, into_a_set: bool = False) -> list[ast.expr]:
+    """What an iterable spread into a display contributes to it.
+
+    A literal sequence contributes its elements directly; anything else has to
+    stay unpacked, as in `[*whatever]`. A set literal contributes its elements
+    only where the display is itself a set: spread into a list or a tuple, the
+    deduplication and the ordering its iteration imposes are both visible.
+    """
+    if isinstance(update, ast.Tuple | ast.List) or (
+        into_a_set and isinstance(update, ast.Set)
+    ):
+        return [ensure_ast(e) for e in update.elts]
+    return [ast.Starred(value=ensure_ast(update), ctx=ast.Load())]
+
+
+def _dict_entries(node: ast.expr) -> tuple[list[ast.expr | None], list[ast.expr]]:
+    """The key/value pairs a mapping contributes to a dict display or a call.
+
+    An `ast.Dict` entry with a key of None is `**value`, which is how a mapping
+    that is not a literal has to be spliced in.
+    """
+    if isinstance(node, ast.Dict):
+        return list(node.keys), list(node.values)
+    return [None], [ensure_ast(node)]
+
+
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_312)
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_313)
 @register_handler("LIST_EXTEND", version=PythonVersion.PY_314)
@@ -2635,13 +2738,7 @@ def handle_list_extend(
     update = state.stack[-1]
     target = state.stack[-instr.argval - 1]
 
-    # A literal iterable contributes its elements directly; anything else has to
-    # stay unpacked, as in `[*whatever]`.
-    elements: list[ast.expr]
-    if isinstance(update, ast.Tuple | ast.List):
-        elements = [ensure_ast(e) for e in update.elts]
-    else:
-        elements = [ast.Starred(value=ensure_ast(update), ctx=ast.Load())]
+    elements = _spread_elements(update)
 
     if isinstance(target, ast.ListComp) and not target.generators:
         merged = ast.List(elts=elements, ctx=ast.Load())
@@ -2665,20 +2762,13 @@ def handle_dict_merge(
     update = state.stack[-1]
     target = state.stack[-instr.argval - 1]
 
-    # An `ast.Dict` entry with a key of None is `**value`, which is how a
-    # mapping that is not a literal has to be spliced in.
-    def entries(node: ast.expr) -> tuple[list[ast.expr | None], list[ast.expr]]:
-        if isinstance(node, ast.Dict):
-            return list(node.keys), list(node.values)
-        return [None], [ensure_ast(node)]
-
     if isinstance(target, ast.DictComp) and not target.generators:
         # BUILD_MAP(0) guessed at a dict comprehension; it was a `**` argument.
-        keys, values = entries(update)
+        keys, values = _dict_entries(update)
     else:
         assert isinstance(target, ast.Dict), "DICT_MERGE expects a dict to merge into"
-        target_keys, target_values = entries(target)
-        update_keys, update_values = entries(update)
+        target_keys, target_values = _dict_entries(target)
+        update_keys, update_values = _dict_entries(update)
         keys, values = target_keys + update_keys, target_values + update_values
 
     new_stack = state.stack[:-1]
@@ -2692,16 +2782,22 @@ def handle_dict_merge(
 def handle_set_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # The set being extended is actually in state.result instead of the stack
-    # because it was initially recognized as a list comprehension in BUILD_SET,
-    # while the actual result expression is in the stack where the set "should be"
-    # and needs to be put back into the state result slot
-    assert isinstance(state.stack[-instr.argval - 1], ast.SetComp)
-    assert isinstance(state.stack[-1], ast.Tuple | ast.List | ast.Set)
+    # SET_UPDATE folds the iterable at TOS into the set further down the stack.
+    # That set is either the empty SetComp that BUILD_SET(0) optimistically
+    # created -- a set display, not a comprehension after all -- or a display
+    # already holding the elements written before the spread.
+    update = state.stack[-1]
+    target = state.stack[-instr.argval - 1]
 
-    new_val = ast.Set(elts=[ensure_ast(e) for e in state.stack[-1].elts])
-    new_stack = state.stack[:-2] + [new_val]
+    elements = _spread_elements(update, into_a_set=True)
+    if isinstance(target, ast.SetComp) and not target.generators:
+        merged = ast.Set(elts=elements)
+    else:
+        assert isinstance(target, ast.Set), "SET_UPDATE expects a set to update"
+        merged = ast.Set(elts=list(target.elts) + elements)
 
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = merged
     return replace(state, stack=new_stack)
 
 
@@ -2711,19 +2807,23 @@ def handle_set_update(
 def handle_dict_update(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # The dict being extended is actually in state.result instead of the stack
-    # because it was initially recognized as a list comprehension in BUILD_MAP,
-    # while the actual result expression is in the stack where the dict "should be"
-    # and needs to be put back into the state result slot
-    assert isinstance(state.stack[-instr.argval - 1], ast.DictComp)
-    assert isinstance(state.stack[-1], ast.Dict)
+    # DICT_UPDATE folds the mapping at TOS into the one below it, keeping the
+    # later of two equal keys. It assembles a dict display containing `**`,
+    # whose accumulator is either the empty DictComp that BUILD_MAP(0)
+    # optimistically created or a display built from the pairs before the spread.
+    update = state.stack[-1]
+    target = state.stack[-instr.argval - 1]
 
-    new_val = ast.Dict(
-        keys=[ensure_ast(e) for e in state.stack[-1].keys],
-        values=[ensure_ast(e) for e in state.stack[-1].values],
-    )
-    new_stack = state.stack[:-2] + [new_val]
+    if isinstance(target, ast.DictComp) and not target.generators:
+        keys, values = _dict_entries(update)
+    else:
+        assert isinstance(target, ast.Dict), "DICT_UPDATE expects a dict to update"
+        target_keys, target_values = _dict_entries(target)
+        update_keys, update_values = _dict_entries(update)
+        keys, values = target_keys + update_keys, target_values + update_values
 
+    new_stack = state.stack[:-1]
+    new_stack[-instr.argval] = ast.Dict(keys=keys, values=values)
     return replace(state, stack=new_stack)
 
 
@@ -3100,15 +3200,15 @@ def handle_jump(
     raise TypeError("JUMP instruction should not appear in generator comprehensions")
 
 
-@register_handler("EXTENDED_ARG", version=PythonVersion.PY_312)
-@register_handler("EXTENDED_ARG", version=PythonVersion.PY_313)
-@register_handler("EXTENDED_ARG", version=PythonVersion.PY_314)
-def handle_extended_arg(
+@register_handler("NOP", version=PythonVersion.PY_312)
+@register_handler("NOP", version=PythonVersion.PY_313)
+@register_handler("NOP", version=PythonVersion.PY_314)
+def handle_nop(
     state: ReconstructionState, instr: dis.Instruction
 ) -> ReconstructionState:
-    # EXTENDED_ARG prefixes an instruction whose argument does not fit in a
-    # byte. `dis` has already folded it into the following instruction's `arg`,
-    # so there is nothing left to do here.
+    # NOP does nothing. The compiler leaves one where it removed an instruction
+    # a jump still targets, or to hang a line number on, so it can be the target
+    # of a branch and cannot simply be skipped over.
     return state
 
 

@@ -1,11 +1,13 @@
 import ast
 import collections.abc
 import copy
+import dis
 import typing
 
 import pytest
 
 from effectful.internals.disassembly import (
+    OP_HANDLERS,
     CompLambda,
     DummyIterName,
     disassemble,
@@ -1105,17 +1107,11 @@ def test_outermost_iterable_adaptors(genexpr):
         ((x, y) for x in range(3) for y in ([0] if x % 2 else [1, 2])),
         # ... with a filter on the inner loop, and nested two deep
         (y for x in range(4) for y in (range(x) if x % 2 == 0 else [9]) if y > 0),
-        pytest.param(
-            (
-                z
-                for x in range(3)
-                for y in (range(x) if x else [0])
-                for z in ([y] if y else [7])
-            ),
-            marks=pytest.mark.xfail(
-                strict=True,
-                reason="two conditional iterables in one comprehension leave paths that do not pairwise merge",
-            ),
+        (
+            z
+            for x in range(3)
+            for y in (range(x) if x else [0])
+            for z in ([y] if y else [7])
         ),
         # ... and one whose arms are comprehensions of different kinds
         (y for x in range(3) for y in ([i for i in range(x)] if x else {8})),
@@ -2107,3 +2103,149 @@ def test_comp_lambda_copy():
 # ============================================================================
 # AST TRANSFORMER TESTS
 # ============================================================================
+
+
+# ============================================================================
+# BYTECODE SHAPES A COMPREHENSION'S SYNTAX DOES NOT SHOW
+#
+# Ordinary comprehensions whose bytecode takes a form the reconstruction has to
+# recognise on its own: a jump too far to encode in one byte, an accumulator
+# that is a display rather than a comprehension, and more paths through the
+# body than there are conditional-expression arms to fill.
+# ============================================================================
+
+
+def _filter_chain(clauses: int) -> str:
+    """Source for a comprehension with ``clauses`` filters.
+
+    Built as source because what decides the outcome is the size of the
+    bytecode, and the number of clauses is the only thing that varies it.
+    """
+    return (
+        "(x for x in range(40)"
+        + "".join(f" if abs(x - {k}) > 1" for k in range(clauses))
+        + ")"
+    )
+
+
+def _extended_args(genexpr) -> list[int]:
+    return [
+        instruction.offset
+        for instruction in dis.get_instructions(genexpr.gi_code)
+        if instruction.opname == "EXTENDED_ARG"
+    ]
+
+
+def test_a_long_filter_chain_needs_an_extended_arg():
+    """The chains below reach the size at which a jump no longer fits in a byte.
+
+    Every filter is a forward jump to the end of the loop body, so the first one
+    jumps over all the others. Past 255 code units that jump is emitted with an
+    ``EXTENDED_ARG`` prefix, at a clause count that varies with the version.
+    """
+    assert _extended_args(eval(_filter_chain(1))) == []
+    assert _extended_args(eval(_filter_chain(20))) != []
+
+
+@pytest.mark.parametrize("clauses", [1, 6, 12, 13, 20])
+def test_a_long_chain_of_filters(clauses):
+    """Filter chains either side of the size at which that jump needs one."""
+    genexpr = eval(_filter_chain(clauses))
+    assert_ast_equivalent(genexpr, disassemble(genexpr))
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # A display with a spread accumulates like a comprehension does --
+        # `BUILD_LIST(0)`, then `LIST_EXTEND` and `LIST_APPEND` -- so what is
+        # being accumulated into has to be told apart from a comprehension's
+        # element, wherever the spread sits among the other items.
+        ([*a] for a in [[1, 2], [3]]),
+        ([1, *a] for a in [[1, 2], [3]]),
+        ([*a, 1] for a in [[1, 2], [3]]),
+        ([1, *a, 2] for a in [[1, 2], [3]]),
+        # A set spread into a list or a tuple keeps its braces: the elements
+        # that reach the display are the deduplicated ones, in iteration order.
+        ([*{x, x}] for x in [7, 8]),
+        ((*{x, x + 0, x + 1},) for x in [7, 8]),
+        ([*{x, y}, 9] for x, y in [(3, 1), (2, 2)]),
+        # Spread into a set, where neither duplicates nor order can be seen.
+        ({*{x, x}, 1} for x in [7, 8]),
+        # `SET_UPDATE` and `DICT_UPDATE` accumulate the same way.
+        ({*a, 1} for a in [[1, 2], [3]]),
+        ({1, *a} for a in [[1, 2], [3]]),
+        ({**d} for d in [{"a": 0}, {"b": 1}]),
+        ({**d, "c": 2} for d in [{"a": 0}]),
+        ({"c": 2, **d} for d in [{"a": 0}]),
+        # A spread into a *call* is not a display and takes the call path.
+        (max(*a) for a in [[1, 2], [3, 4]]),
+        (max(*{a, a + 1}) for a in [1, 2]),
+    ],
+)
+def test_a_spread_into_a_display(genexpr):
+    """A starred or double-starred item in a list, set or dict display."""
+    assert_ast_equivalent(genexpr, disassemble(genexpr))
+
+
+@pytest.mark.parametrize(
+    "genexpr",
+    [
+        # Either conditional on its own leaves two paths, one per arm. Together
+        # they multiply out into four, more than there are arms to fill, so the
+        # last path merged has nothing left of its own to contribute.
+        ((y if y else 0) for x in range(3) for y in [x]),
+        (y for x in range(3) for y in ([x] if x else [0])),
+        (y for x in range(3) for y in ([x] if x else [0]) if (y if y else 0)),
+        ((y if y else 0) for x in range(3) for y in ([x] if x else [0])),
+        (
+            (y * 2 if y % 2 else y)
+            for x in range(4)
+            for y in (range(x) if x % 2 else range(1))
+        ),
+    ],
+)
+def test_a_conditional_element_beside_a_conditional_iterable(genexpr):
+    """A conditional expression in the element and in a later iterable."""
+    assert_ast_equivalent(genexpr, disassemble(genexpr))
+
+
+# A conditional expression in a filter can leave a `NOP` behind. Whether the
+# peephole pass leaves one turns on the line each instruction is pinned to, so
+# the layout is what is under test and the comprehension is written as source
+# rather than spelled out, which a formatter would put back on one line.
+
+_CONDITIONAL_FILTER = "(x for x in range(3) if (x if x else 1))"
+
+_CONDITIONAL_FILTER_OVER_LINES = (
+    "(\n    x\n    for x in range(3)\n    if (x if x else 1)\n)"
+)
+
+
+def _opcodes(genexpr) -> set[str]:
+    return {instruction.opname for instruction in dis.get_instructions(genexpr.gi_code)}
+
+
+def test_a_conditional_filter_leaves_a_nop_when_it_is_spread_over_lines():
+    """What the layout below changes, stated in terms of the bytecode.
+
+    ``NOP`` is what the peephole pass leaves in place of an instruction it
+    removes, so that jump offsets and the line table stay as they were. It does
+    nothing, and like every other opcode either spelling reaches, it is handled.
+    """
+    assert "NOP" in _opcodes(eval(_CONDITIONAL_FILTER_OVER_LINES))
+    assert "NOP" not in _opcodes(eval(_CONDITIONAL_FILTER))
+
+    assert dis.stack_effect(dis.opmap["NOP"]) == 0
+    for source in (_CONDITIONAL_FILTER, _CONDITIONAL_FILTER_OVER_LINES):
+        assert not _opcodes(eval(source)) - set(OP_HANDLERS)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [_CONDITIONAL_FILTER, _CONDITIONAL_FILTER_OVER_LINES],
+)
+def test_a_conditional_expression_in_a_filter(source):
+    """A conditional expression as a filter, on one line and over several."""
+    genexpr = eval(source)
+    assert_ast_equivalent(genexpr, disassemble(genexpr))
