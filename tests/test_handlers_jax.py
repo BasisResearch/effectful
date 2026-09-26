@@ -2,7 +2,7 @@ import jax
 import pytest
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof
+from effectful.handlers.jax import bind_dims, jax_getitem, jit, sizesof, unbind_dims
 from effectful.ops.semantics import evaluate, fvsof, handler
 from effectful.ops.syntax import defdata, defop, syntactic_eq
 from effectful.ops.types import Term
@@ -79,6 +79,9 @@ def test_bind_dims():
     with handler({w: lambda: jnp.array(1.0)}):
         t9 = evaluate(t8)
     assert not (fvsof(t9) & {i, j, k, w})
+
+    t10 = bind_dims(jax_getitem(jnp.ones((5, 6)), [unbind_dims(w(), i), i()]), i)
+    assert isinstance(t10, Term) and t10.op == bind_dims
 
 
 def test_tpe_1():
