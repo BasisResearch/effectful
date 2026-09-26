@@ -26,6 +26,7 @@ import typing
 import litellm
 
 from effectful.handlers.llm.harness import harness
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import handler
 from effectful.ops.types import Interpretation
 
@@ -170,6 +171,14 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
     )
     parser.add_argument(
+        "--autoreload",
+        action="store_true",
+        help=(
+            "Re-run edited code -- the script's directory and the harness -- while "
+            "the script runs (needs hmr)"
+        ),
+    )
+    parser.add_argument(
         "--persist-db",
         type=str,
         default=None,
@@ -271,8 +280,16 @@ def main(argv: list[str] | None = None) -> None:
     # `runpy.run_path` runs the file as `__main__` with no package, so relative
     # imports can't work and this dir would otherwise be off the path.
     sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
-    h = _build_harness(ns)
-    with handler(h):
+    if ns.autoreload:
+        # Before the first build, so the handler modules load through hmr.
+        from effectful.handlers.llm.harness import autoreload
+
+        reloader = autoreload.install(ns.script, lambda: _build_harness(ns))
+        reloader.start()
+        installed = interpreter(reloader.live())
+    else:
+        installed = handler(_build_harness(ns))
+    with installed:
         if ns.pdb:
             try:
                 runpy.run_path(ns.script, run_name="__main__")

@@ -1,3 +1,4 @@
+import abc
 import collections.abc
 import contextlib
 import dataclasses
@@ -41,6 +42,60 @@ def fwd(*args, **kwargs) -> typing.Any:
 
     """
     raise RuntimeError("fwd should only be called in the context of a handler")
+
+
+class LiveInterpretation(
+    collections.abc.Mapping[Operation, collections.abc.Callable[..., typing.Any]],
+    abc.ABC,
+):
+    """An interpretation whose handlers may change; a coproduct with one follows it."""
+
+    @property
+    @abc.abstractmethod
+    def version(self) -> typing.Any:
+        """A value that changes whenever the handlers do."""
+
+    @abc.abstractmethod
+    def snapshot(self) -> Interpretation:
+        """The handlers as they are now."""
+
+    def __getitem__(self, op: Operation) -> collections.abc.Callable[..., typing.Any]:
+        return self.snapshot()[op]
+
+    def __iter__(self) -> collections.abc.Iterator[Operation]:
+        return iter(self.snapshot())
+
+    def __len__(self) -> int:
+        return len(self.snapshot())
+
+
+def _version(intp: Interpretation) -> typing.Any:
+    return intp.version if isinstance(intp, LiveInterpretation) else None
+
+
+def _snapshot(intp: Interpretation) -> Interpretation:
+    return intp.snapshot() if isinstance(intp, LiveInterpretation) else intp
+
+
+class _LiveCoproduct(LiveInterpretation):
+    """`coproduct` of interpretations at least one of which is live, recomputed as they change."""
+
+    def __init__(self, intp: Interpretation, intp2: Interpretation) -> None:
+        self._intp, self._intp2 = intp, intp2
+        self._cached: tuple[typing.Any, Interpretation] | None = None
+
+    @property
+    def version(self) -> typing.Any:
+        return (_version(self._intp), _version(self._intp2))
+
+    def snapshot(self) -> Interpretation:
+        version = self.version
+        if self._cached is None or self._cached[0] != version:
+            self._cached = (
+                version,
+                coproduct(_snapshot(self._intp), _snapshot(self._intp2)),
+            )
+        return self._cached[1]
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
@@ -93,6 +148,9 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         _save_then_restore_args,
         _set_prompt,
     )
+
+    if isinstance(intp, LiveInterpretation) or isinstance(intp2, LiveInterpretation):
+        return _LiveCoproduct(intp, intp2)
 
     res = dict(intp)
     for op, i2 in intp2.items():

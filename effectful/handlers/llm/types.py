@@ -396,10 +396,14 @@ class Skill[**P, T](Tool[P, T]):
     def __get__[S](
         self, instance: "S | None", owner: "type[S] | None" = None
     ) -> "Skill[..., T] | typing.Self":
-        if hasattr(self, "_name_on_instance") and hasattr(
-            instance, self._name_on_instance
-        ):
-            return getattr(instance, self._name_on_instance)
+        if hasattr(self, "_name_on_instance"):
+            cached = getattr(instance, "__dict__", {}).get(self._name_on_instance)
+            if (
+                cached is not None
+                and getattr(cached, "__classop__", None) is self
+                and getattr(cached, "__classdefault__", None) is self.__default__
+            ):
+                return cached
 
         result: Skill[..., T] = super().__get__(instance, owner)  # type: ignore[assignment]
         self_param_name = list(self.__signature__.parameters.keys())[0]
