@@ -6,7 +6,8 @@ holds what has to outlive an edit to any of that: the connection, `EffectfulACPA
 and each `ACPSession`, and reading a prompt, which has to agree with the capabilities
 advertised once per connection. It imports nothing from the harness or from `library`
 at its top, and reaches `library` through `_library` on every use, which is what lets
-``--autoreload`` re-run all of that code while the editor stays connected.
+the launcher's ``--autoreload`` re-run all of that code while the editor stays
+connected; this module itself is kept, and an edit to it needs ``/restart``.
 
 ## Threads
 
@@ -41,8 +42,6 @@ each of which has a test:
   the answer, since a conversation the agent cannot name is one it cannot reopen.
 """
 
-import argparse
-import ast
 import asyncio
 import base64
 import collections.abc
@@ -51,18 +50,12 @@ import contextlib
 import dataclasses
 import datetime
 import importlib
-import importlib.machinery
-import importlib.util
 import inspect
 import io
 import json
-import linecache
-import operator
 import os
-import pathlib
 import sqlite3
 import subprocess
-import symtable
 import sys
 import tempfile
 import threading
@@ -80,12 +73,15 @@ import fastmcp
 import pydantic
 from PIL import Image
 
-from effectful.internals.runtime import interpreter
-from effectful.ops.semantics import coproduct, handler
-from effectful.ops.types import INSTANCE_OP_PREFIX, Interpretation
+from effectful.handlers.llm.harness import autoreload
+from effectful.ops.semantics import handler
+from effectful.ops.types import Interpretation
 
 if typing.TYPE_CHECKING:
     from effectful.handlers.llm import Agent
+
+# This module holds the running server, so an edit to it needs `/restart`.
+autoreload.keep(__name__)
 
 LIBRARY = "library"
 """The module holding the reloadable half of the server; see `_library`."""
@@ -110,6 +106,14 @@ class _Command(typing.Protocol):
     def run(
         self,
     ) -> collections.abc.Callable[["EffectfulACPAgent", "ACPSession", str], str]: ...
+
+
+class _Reloader(typing.Protocol):
+    """What `EffectfulACPAgent._on_reload` asks of the launcher's reloader."""
+
+    def current_class(self, cls: type, /) -> type: ...
+
+    def refresh(self, agent: object, /) -> None: ...
 
 
 class _Library(typing.Protocol):
@@ -373,9 +377,6 @@ class ACPSession[A: "Agent"]:
     option value), which normalizes to `None` wherever the option is read.
     """
 
-    new_code: bool = False
-    """Whether `EffectfulACPAgent.reload` has run since this session's last turn."""
-
     title: str = ""
     """A human-readable name for the conversation, taken from its first prompt."""
 
@@ -465,7 +466,7 @@ class ACPSession[A: "Agent"]:
         `intp` is the stack a prompt on this session runs under, added on top of the
         harness (see `EffectfulACPAgent._answer`); `reporter` is the one handler in it
         that outlives a call, which `EffectfulACPAgent.prompt` reads once the worker is
-        done. Called when the session opens and again by `EffectfulACPAgent.reload`.
+        done. Called when the session opens and again by `EffectfulACPAgent._on_reload`.
         """
         self.reporter, self.intp = _library().session_handlers(self)
 
@@ -984,96 +985,6 @@ def _prompt_parts(
     return text, attachments, images
 
 
-# ---------------------------------------------------------------------------
-# Re-running edited code while serving (``serve(autoreload=True)``)
-# ---------------------------------------------------------------------------
-
-HARNESS = "effectful.handlers.llm.harness"
-
-
-def _harness_imports(file: str | os.PathLike[str]) -> set[str]:
-    """The harness modules `file` imports at its top level, with their packages."""
-    names: set[str] = set()
-    nodes = list(ast.parse(pathlib.Path(file).read_text()).body)
-    while nodes:
-        node = nodes.pop()
-        if isinstance(node, ast.If | ast.Try):
-            nodes += node.body + node.orelse + getattr(node, "finalbody", [])
-            nodes += [s for h in getattr(node, "handlers", []) for s in h.body]
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            names |= {node.module, *(f"{node.module}.{a.name}" for a in node.names)}
-        elif isinstance(node, ast.Import):
-            names |= {a.name for a in node.names}
-    modules = {
-        ".".join(n.split(".")[:i]) for n in names for i in range(1, n.count(".") + 2)
-    }
-    return {m for m in modules if m.startswith(f"{HARNESS}.") and _is_module(m)}
-
-
-def _is_module(name: str) -> bool:
-    try:
-        return importlib.util.find_spec(name) is not None
-    except (ImportError, AttributeError):  # ``from module import Name``
-        return False
-
-
-def _kept_modules() -> set[str]:
-    """The harness modules this module holds onto, which must never be re-run.
-
-    Everything imported at the top of this file, and at the top of those modules in
-    turn: this module's handlers implement their operations, and a re-run would
-    define new ones that nothing here handles.
-    """
-    kept: set[str] = set()
-    todo = list(_harness_imports(__file__))
-    while todo:
-        if (name := todo.pop()) not in kept:
-            kept.add(name)
-            spec = importlib.util.find_spec(name)
-            if spec is not None and spec.origin is not None:
-                todo += _harness_imports(spec.origin)
-    return kept
-
-
-def _bound_names(file: pathlib.Path) -> set[str] | None:
-    """The names `file` binds at module level, or `None` if they cannot be known.
-
-    A star import binds its module's ``__all__``, or else its public names, as that
-    module now stands; one that cannot be looked up makes the answer unknowable, as
-    does a file that does not parse, whose module hmr leaves as it was.
-    """
-    source = file.read_text()
-    try:
-        table = symtable.symtable(source, str(file), "exec")
-    except SyntaxError:
-        return None
-    bound = {
-        s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()
-    }
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.ImportFrom) and node.names[0].name == "*":
-            if node.level or node.module not in sys.modules:
-                return None
-            names = vars(sys.modules[node.module])
-            bound |= set(
-                names.get("__all__") or [n for n in names if not n.startswith("_")]
-            )
-    return bound
-
-
-def _launcher_args() -> argparse.Namespace:
-    """The harness launcher's flags, read back from the command line it was run with.
-
-    Not from `sys.argv`, from which the launcher removes them before the script runs.
-    """
-    from effectful.handlers.llm.harness.__main__ import _parse_args
-
-    if HARNESS not in sys.orig_argv:
-        raise RuntimeError(f"autoreload needs the launcher: python -m {HARNESS}")
-    ns, _ = _parse_args(sys.orig_argv[sys.orig_argv.index(HARNESS) + 1 :])
-    return ns
-
-
 class EffectfulACPAgent[A: Agent](acp.Agent):
     """An ACP server backed by one `Agent` instance per session.
 
@@ -1106,9 +1017,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     make_agent: collections.abc.Callable[[str], A]
     models: tuple[str, ...]
     page_size: int
-
-    harness: Interpretation | None = None
-    """The handler stack turns run under in place of the ambient one, once `reload` sets it."""
 
     client: acp.interfaces.Client
     client_capabilities: acp.schema.ClientCapabilities
@@ -1330,8 +1238,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             )
             # A session this process has not seen may be one it recorded before a
             # restart or a crash; its settings come back with it.
-            with self._current_stack():
-                recorded = SessionIndex.get(session_id)
+            recorded = SessionIndex.get(session_id)
             if recorded is not None:
                 session.title = recorded["title"] or ""
                 if recorded["model"] is not None:
@@ -1418,8 +1325,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         if self._channel is None or self._stdout is None:
             return "Restarting needs the server to be serving over stdio."
-        with self._current_stack():
-            persisting = SessionIndex.available()
+        persisting = SessionIndex.available()
         if not persisting:
             return "Restarting needs `--persist-db`, to bring the sessions back."
         if self._restarting is not None:
@@ -1504,6 +1410,15 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         A failure anywhere short of the `exec` succeeding leaves this process serving,
         and says so to the session that asked.
         """
+        reloader = autoreload.current()
+        suspended = (
+            reloader.suspended() if reloader is not None else contextlib.nullcontext()
+        )
+        with suspended:
+            await self._exec_replacement(requested_by)
+
+    async def _exec_replacement(self, requested_by: ACPSession[A]) -> None:
+        """The body of `_restart`, with reloads held off around it."""
         assert self._channel is not None and self._stdout is not None
         assert self._stdin is not None
         path = None
@@ -1523,9 +1438,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 or self._stdin._buffer  # type: ignore[attr-defined]
             ):
                 await asyncio.sleep(0.05)
-            with self._current_stack():
-                for session in self.sessions.values():
-                    SessionIndex.record(session)
+            for session in self.sessions.values():
+                SessionIndex.record(session)
             # The editor will not send its MCP servers again, and their processes
             # would outlive the `exec`.
             for session in self.sessions.values():
@@ -1580,8 +1494,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         )
         for session_id in state["sessions"]:
             try:
-                with self._current_stack():
-                    recorded = SessionIndex.get(session_id)
+                recorded = SessionIndex.get(session_id)
                 if recorded is None:
                     print(f"note: no record of session {session_id}", file=sys.stderr)
                     continue
@@ -1638,8 +1551,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self.client_capabilities = (
             client_capabilities or acp.schema.ClientCapabilities()
         )
-        with self._current_stack():
-            capabilities = self.agent_capabilities
+        capabilities = self.agent_capabilities
         return acp.schema.InitializeResponse(
             protocol_version=acp.PROTOCOL_VERSION,
             agent_capabilities=capabilities,
@@ -1666,8 +1578,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._refuse_while_restarting()
         session = self._open_session(str(uuid.uuid4()), cwd, additional_directories)
         await session.connect_mcp(mcp_servers or [])
-        with self._current_stack():
-            SessionIndex.record(session)
+        SessionIndex.record(session)
         self._announce_commands(session)
         return acp.schema.NewSessionResponse(
             session_id=session.session_id,
@@ -1747,10 +1658,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._refuse_while_restarting()
         session = self._open_session(session_id, cwd, additional_directories)
         await session.connect_mcp(mcp_servers or [])
-        with self._current_stack():
-            SessionIndex.record(session)
-            for update in self._replay(session.agent.__history__):
-                session.notify(update)
+        SessionIndex.record(session)
+        for update in self._replay(session.agent.__history__):
+            session.notify(update)
         self._announce_commands(session)
         await session.flush()
         return acp.schema.LoadSessionResponse(
@@ -1778,8 +1688,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         # Optional here; without it the session keeps the servers it has.
         if mcp_servers is not None:
             await session.connect_mcp(mcp_servers)
-        with self._current_stack():
-            SessionIndex.record(session)
+        SessionIndex.record(session)
         self._announce_commands(session)
         return acp.schema.ResumeSessionResponse(
             modes=self._modes(session),
@@ -1815,12 +1724,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         await fork.connect_mcp(
             source.mcp_servers if mcp_servers is None else mcp_servers
         )
-        with self._current_stack():
-            fork.agent.__history__.extend(source.agent.__history__)
-            fork.mode_id, fork.model = source.mode_id, source.model
-            fork.thought_level = source.thought_level
-            fork.title = f"{source.title} (fork)" if source.title else ""
-            SessionIndex.record(fork)
+        fork.agent.__history__.extend(source.agent.__history__)
+        fork.mode_id, fork.model = source.mode_id, source.model
+        fork.thought_level = source.thought_level
+        fork.title = f"{source.title} (fork)" if source.title else ""
+        SessionIndex.record(fork)
         self._announce_commands(fork)
         return acp.schema.ForkSessionResponse(
             session_id=fork.session_id,
@@ -1843,8 +1751,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         Raises:
             RequestError: If this agent keeps no session index (see `SessionIndex`).
         """
-        with self._current_stack():
-            sessions, next_cursor = SessionIndex.page(cwd, cursor, self.page_size)
+        sessions, next_cursor = SessionIndex.page(cwd, cursor, self.page_size)
         return acp.schema.ListSessionsResponse(
             sessions=sessions, next_cursor=next_cursor
         )
@@ -1859,8 +1766,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         session = self._session(session_id)
         self._set_mode(session, mode_id)
-        with self._current_stack():
-            SessionIndex.record(session)
+        SessionIndex.record(session)
         return acp.schema.SetSessionModeResponse()
 
     async def set_config_option(
@@ -1900,8 +1806,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             raise acp.RequestError.invalid_params(
                 {"reason": f"no such config option: {config_id!r}"}
             )
-        with self._current_stack():
-            SessionIndex.record(session)
+        SessionIndex.record(session)
         return acp.schema.SetSessionConfigOptionResponse(
             config_options=self._config_options(session)
         )
@@ -1953,6 +1858,14 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         self._refuse_while_restarting()
         session = self._session(session_id)
+        reloader = autoreload.current()
+        with reloader.turn() if reloader is not None else contextlib.nullcontext():
+            return await self._turn(session, prompt)
+
+    async def _turn(
+        self, session: ACPSession[A], prompt: list[ContentBlock]
+    ) -> acp.schema.PromptResponse:
+        """The body of `prompt`, with reloads held off around it."""
         async with session.lock:
             if session.mcp_connecting is not None:
                 await session.mcp_connecting
@@ -1961,12 +1874,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             session.reporter.begin_turn()
             try:
                 text, attachments, images = _prompt_parts(prompt)
-                with self._current_stack():
-                    self._retitle(session, text)
-                    answered = self._command(session, text)
-                    if answered is not None:
-                        # A command may have changed the session's settings.
-                        SessionIndex.record(session)
+                self._retitle(session, text)
+                answered = self._command(session, text)
+                if answered is not None:
+                    # A command may have changed the session's settings.
+                    SessionIndex.record(session)
                 if answered is not None:
                     session.notify(acp.update_agent_message_text(answered))
                     return acp.schema.PromptResponse(stop_reason="end_turn")
@@ -2045,45 +1957,18 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return f"Unknown command `/{name}`. Try {offered}."
         return command.run(self, session, argument)
 
-    def reload(
-        self, make_agent: collections.abc.Callable[[str], A], harness: Interpretation
-    ) -> None:
-        """Serve new code: later turns run under `harness`, and each open session's
-        agent is rebuilt by `make_agent`, keeping everything set on the old one.
-
-        Each session's handlers are rebuilt from `library` too, and its slash commands
-        and config options announced again, so a command or mode added there is
-        offered at once.
-
-        Call it only while no turn is running.
-        """
-        self.make_agent, self.harness = make_agent, harness
+    def _on_reload(self, reloader: "_Reloader") -> None:
+        """Serve new code: rebuild each session's handlers, announce them, move its agent."""
+        if isinstance(self.make_agent, type):
+            self.make_agent = typing.cast(
+                collections.abc.Callable[[str], A],
+                reloader.current_class(self.make_agent),
+            )
         for session in self.sessions.values():
-            session.new_code = True
             session.install_handlers()
             self._announce_commands(session)
             self._announce_config(session)
-            old, new = session.agent, make_agent(session.session_id)
-            new.__history__ = old.__history__
-            # Its fields and whatever the model set on `self`, but not the skills
-            # bound to it, which belong to the old class.
-            new.__dict__.update(
-                (key, value)
-                for key, value in vars(old).items()
-                if not key.startswith(INSTANCE_OP_PREFIX)
-            )
-            session.agent = new
-
-    def _current_stack(self) -> contextlib.AbstractContextManager:
-        """The stack for work outside a turn that reads persisted state.
-
-        Reading a history back goes through `SQLitePersister`, which ``--autoreload``
-        may have re-run since the server started; under the stack it started with, the
-        read would find nothing. Without ``--autoreload`` there is only one stack.
-        """
-        if self.harness is None:
-            return contextlib.nullcontext()
-        return interpreter(self.harness)
+            reloader.refresh(session.agent)
 
     def _answer(
         self,
@@ -2101,16 +1986,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
 
         Installing on top of the ambient stack, rather than assembling one, is what
         lets the launcher decide the model, the retry budget and the persistence: the
-        session contributes only its three translations to the editor. Once `reload`
-        has set `harness`, the turn runs under that stack *instead of* the ambient
-        one: installing it with `handler` would stack it on the launcher's, and
-        every forwarding handler would run twice.
+        session contributes only its three translations to the editor.
         """
-        with (
-            handler(session.intp)
-            if self.harness is None
-            else interpreter(coproduct(self.harness, session.intp))
-        ):
+        with handler(session.intp):
             # `Agent` the bound says nothing about a `prompt` skill; the contract
             # is this server's own (class docstring), so the checker is waved off
             # here rather than widened everywhere the type parameter travels.
@@ -2155,10 +2033,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         await session.close_mcp()
         return acp.schema.CloseSessionResponse()
 
-    async def serve(self, *, autoreload: bool = False) -> None:
+    async def serve(self) -> None:
         """Serve one agent over stdio until the editor disconnects.
 
-        With `autoreload`, code is re-run as it is edited; see `_reloading`.
+        Under the launcher's ``--autoreload`` this adopts the reloader, so edits apply
+        on this loop between turns and reach open sessions through `_on_reload`.
 
         stdout is the protocol, and the harness runs model-authored Python that may print
         to it. So fd 1 is pointed at stderr for the process's lifetime, after handing a
@@ -2189,176 +2068,25 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._cwd = os.getcwd()
         self._restored = os.environ.pop(RESTART_STATE_ENV, None)
 
-        async with self._reloading() if autoreload else contextlib.nullcontext():
-            try:
-                # `run_agent`'s parameters are named from the client's point of view:
-                # the stream the client reads is the one this agent writes.
-                await acp.run_agent(
-                    self,
-                    input_stream=writer,
-                    output_stream=reader,
-                    use_unstable_protocol=True,
-                    observers=[self._observe],
-                )
-            finally:
-                for session in list(self.sessions.values()):
-                    await session.close_mcp(force=True)
-
-    @contextlib.asynccontextmanager
-    async def _reloading(self) -> collections.abc.AsyncIterator[None]:
-        """Re-run edited code for as long as this is entered, via hmr.
-
-        hmr re-runs an edited module and whatever depends on it: the agent class's
-        file, the modules it imports from its directory, and the harness, whose stack
-        is then rebuilt from the launcher's flags. Once no turn is running, `reload`
-        moves every session onto the new code. That includes `library`, which this
-        module only ever reaches through `_library`. `_kept_modules` are never re-run,
-        nor is anything else hmr does not claim.
-
-        Failures follow hmr: a file that does not parse keeps its previous version, and
-        a module that raises is reported on stderr with whatever ran before the error
-        applied, until a fixed save re-runs it. `linecache` serves the source of the
-        version running, which is what a skill's code is checked against.
-        """
-        from reactivity.hmr.core import (
-            HMR_CONTEXT,
-            BaseReloader,
-            ReactiveModule,
-            ReactiveModuleFinder,
-            _loader,
-        )
-        from reactivity.hmr.hooks import use_pre_reload
-        from watchfiles import awatch
-
-        import effectful
-        import effectful.handlers.llm.harness.__main__ as launcher
-
-        args = _launcher_args()
-        assert isinstance(self.make_agent, type), "autoreload needs an agent class"
-        path = pathlib.Path(inspect.getfile(self.make_agent)).resolve()
-        harness = importlib.import_module(HARNESS)
-        # hmr finds modules only through `sys.path`, which an editable install of
-        # effectful need not put the repository on.
-        root = str(pathlib.Path(effectful.__file__).parent.parent)
-        if root not in sys.path:
-            sys.path.append(root)
-        reloader = BaseReloader(str(path), [str(path.parent), *harness.__path__], [])
-        finder = sys.meta_path[0]
-        assert isinstance(finder, ReactiveModuleFinder)
-
-        # What hmr now claims was imported before it was set up -- the handlers by
-        # the launcher, the agent's own imports by the script -- so it could not
-        # track it. Dropped here, it is imported again through hmr the next time the
-        # agent's file or the stack is built. The launcher's stack is left holding
-        # the dropped classes, so nothing may run under it from now on: the effect
-        # below installs the rebuilt stack before any turn, and the server runs
-        # under it.
-        kept = _kept_modules() | {__name__, "__main__"}
-        for name, loaded in list(sys.modules.items()):
-            file = getattr(loaded, "__file__", None)
-            if (
-                file is not None
-                and name not in kept
-                and not hasattr(loaded, "__path__")
-                and finder._accept(pathlib.Path(file).resolve())
-            ):
-                del sys.modules[name]
-
-        # Pinned without an mtime, which `linecache.checkcache` leaves alone, so the
-        # source served is the running version's rather than whatever is on disk.
-        pinned: dict[str, tuple] = {}
-
-        def unpin_sources() -> None:
-            # So a traceback printed during the re-run shows the lines that raised.
-            for file in pinned:
-                linecache.cache.pop(file, None)
-
-        def pin_sources() -> None:
-            for loaded in list(ReactiveModule.instances.values()):
-                if (file := vars(loaded).get("__file__")) is None:
-                    continue
-                try:
-                    source = pathlib.Path(file).read_text("utf-8")
-                    compile(source, file, "exec", dont_inherit=True)
-                except (OSError, SyntaxError, ValueError):
-                    continue  # hmr kept the previous version, and so does this
-                lines = source.splitlines(keepends=True)
-                pinned[file] = (len(source), None, lines, file)
-            linecache.cache.update(pinned)
-
-        # The running copy of the agent's file is `__main__`, which hmr cannot re-run.
-        sys.modules[path.stem] = module = importlib.util.module_from_spec(
-            importlib.machinery.ModuleSpec(path.stem, _loader, origin=str(path))
-        )
-        name = self.make_agent.__qualname__
-        stack = HMR_CONTEXT.derived(lambda: launcher._build_harness(args))
-
-        def forget_removed_names() -> None:
-            # hmr re-runs a module into the namespace it had, so a name its file no
-            # longer binds -- a deleted function -- would stay defined and, reached
-            # from the agent's scope, stay a tool. Pruned for each of the agent's
-            # own modules, through hmr's mapping, which keeps its own record of
-            # names; repeated because pruning one changes what a star import of it
-            # binds.
-            pruned = True
-            while pruned:
-                pruned = False
-                for loaded in list(ReactiveModule.instances.values()):
-                    names = vars(loaded)
-                    file = names.get("__file__")
-                    if "__path__" in names or file is None:
-                        continue
-                    if names["__name__"].startswith(f"{HARNESS}."):
-                        continue
-                    if (bound := _bound_names(pathlib.Path(file))) is None:
-                        continue
-                    proxy = loaded._ReactiveModule__namespace_proxy
-                    for key in list(proxy.raw):
-                        if key.startswith(("__", "_ReactiveModule__")):
-                            continue
-                        if key not in bound:
-                            del proxy[key]
-                            pruned = True
-
-        last: list[typing.Any] = []
-
-        def install() -> None:
-            forget_removed_names()
-            # Read off the modules rather than through deriveds, so a read after a
-            # batch sees what it left. `session_handlers` is read so that any re-run
-            # of `library` -- a new slash command -- reaches `reload`.
-            current = [getattr(module, name), stack(), _library().session_handlers]
-            if len(last) == len(current) and all(map(operator.is_, last, current)):
-                return
-            last[:] = current
-            self.reload(current[0], current[1])
-
-        installed = HMR_CONTEXT.effect(install)
-        pin_sources()
-
-        async def watch() -> None:
-            async for events in awatch(*reloader.includes):
-                # So no turn sees two versions of the code, and nothing is sent to
-                # the editor while a restart waits for quiet.
-                while self._restarting is not None or any(
-                    s.lock.locked() for s in self.sessions.values()
-                ):
-                    await asyncio.sleep(0.1)
-                # One batch per file: hmr stops a batch at the first module that
-                # raises, which would leave the rest of its files unapplied.
-                for event in events:
-                    reloader.on_events([event])
-                # hmr runs a computation at most once per batch, so an edit that
-                # reaches `install` two ways can run it before the second has landed.
-                with reloader.error_filter:
-                    installed()
-                pin_sources()
-
-        watching = asyncio.ensure_future(watch())
+        reloader = autoreload.current()
+        watching: asyncio.Future | None = None
+        if reloader is not None:
+            reloader.subscribe(self._on_reload)
+            watching = asyncio.ensure_future(reloader.watch())
         try:
-            assert self.harness is not None
-            with use_pre_reload(unpin_sources), interpreter(self.harness):
-                yield
+            # `run_agent`'s parameters are named from the client's point of view:
+            # the stream the client reads is the one this agent writes.
+            await acp.run_agent(
+                self,
+                input_stream=writer,
+                output_stream=reader,
+                use_unstable_protocol=True,
+                observers=[self._observe],
+            )
         finally:
-            watching.cancel()
-            installed.dispose()
+            if reloader is not None:
+                reloader.unsubscribe(self._on_reload)
+            if watching is not None:
+                watching.cancel()
+            for session in list(self.sessions.values()):
+                await session.close_mcp(force=True)

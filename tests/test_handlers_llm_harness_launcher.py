@@ -37,10 +37,13 @@ from tests.conftest import (
 
 
 def test_parse_args_splits_harness_and_script_flags():
-    ns, rest = _parse_args(["s.py", "--model", "m", "--render", "--depth", "3"])
+    ns, rest = _parse_args(
+        ["s.py", "--model", "m", "--render", "--autoreload", "--depth", "3"]
+    )
     assert ns.script == "s.py"
     assert ns.model == "m"
     assert ns.render is True
+    assert ns.autoreload is True
     assert rest == ["--depth", "3"]
 
 

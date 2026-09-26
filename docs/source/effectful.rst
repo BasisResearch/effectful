@@ -68,6 +68,13 @@ Command-line launcher
    :members:
    :undoc-members:
 
+Autoreload
+~~~~~~~~~~
+
+.. automodule:: effectful.handlers.llm.harness.autoreload
+   :members:
+   :undoc-members:
+
 Hooks
 ~~~~~
 

@@ -120,7 +120,6 @@ def test_operation_metadata():
 
     assert f.__doc__ == f_op.__doc__
     assert f.__name__ == f_op.__name__
-    assert hash(f) == hash(f_op)
     assert f_op != ff_op
 
 

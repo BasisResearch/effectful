@@ -23,7 +23,7 @@ to a terminal, this one to a JSON-RPC pipe.
 
 ## Two modules
 
-This is the half of the server that may change while it runs: under
+This is the half of the server that may change while it runs: under the launcher's
 ``--autoreload`` an edit here -- a new slash command, a tool, a change to how a
 turn is reported -- reaches every open session at its next turn. `server.py` is the
 half that holds the running server, and its names are re-exported here.
@@ -66,7 +66,6 @@ from server import (  # noqa: F401 -- re-exported, so this module is the one to 
 )
 
 from effectful.handlers.llm import Agent, Encodable, Tool
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     PromptInjectingInterpretation,
     ToolCallExecutionError,
@@ -685,24 +684,6 @@ class ACPSessionConfig(ObjectInterpretation):
         if self.session.thought_level:
             kwargs = {**kwargs, "reasoning_effort": self.session.thought_level}
         return fwd(*args, **kwargs)
-
-    @implements(call_system)
-    def call_system(self, *args, **kwargs) -> typing.Any:
-        """After a reload, replace the conversation's system message with this one.
-
-        `HistoryBuilder` keeps the system message of a history's first call, so
-        without this an edit to a docstring would reach new sessions only. The
-        history is the transaction's buffer here, which adopts the replacement when
-        the call commits. Only the turn's first call does it: a nested call on the
-        same agent shares the history.
-        """
-        message = fwd(*args, **kwargs)
-        if self.session.new_code:
-            self.session.new_code = False
-            history = HistoryBuilder.get_history()
-            if history and history[0]["role"] == "system":
-                history[0] = message
-        return message
 
 
 def session_handlers(
