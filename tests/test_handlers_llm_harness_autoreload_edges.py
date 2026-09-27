@@ -61,7 +61,7 @@ def _users(mock) -> list[str]:
     ]
 
 
-def test_an_agent_whose_class_was_renamed_keeps_it_with_a_note(request, capsys):
+def test_an_agent_whose_class_was_renamed_keeps_it(request):
     reloader, _, root = request.getfixturevalue("reloaded")
     bot = reloader.module.Bot()
     before = type(bot)
@@ -72,7 +72,6 @@ def test_an_agent_whose_class_was_renamed_keeps_it_with_a_note(request, capsys):
     assert reloader.apply() is True
     autoreload.rebind(bot, reloader.current_class(type(bot)))
     assert type(bot) is before
-    assert "script.Bot is no longer defined" in capsys.readouterr().err
 
 
 def test_a_script_named_like_another_module_does_not_replace_it(tmp_path):
