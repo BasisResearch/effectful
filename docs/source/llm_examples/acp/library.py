@@ -47,6 +47,7 @@ import acp.schema
 import litellm
 import pydantic
 import pydantic_core
+from reactivity.hmr.hooks import on_dispose
 from server import (  # noqa: F401 -- re-exported, so this module is the one to import
     FLUSH_TIMEOUT,
     INHERIT_MODEL,
@@ -1406,16 +1407,6 @@ _SLASH_COMMANDS: dict[str, SlashCommand] = {}
 """Every command, dispatch and advertisement together, filled by `register_command`."""
 
 
-def _on_reload(fn: collections.abc.Callable, undo: collections.abc.Callable) -> None:
-    """Call `undo` before the launcher's ``--autoreload`` re-runs `fn`'s module."""
-    try:
-        from reactivity.hmr.hooks import on_dispose
-
-        on_dispose(undo, inspect.getfile(fn))
-    except (ImportError, KeyError):
-        pass  # not under --autoreload, or not a module it re-runs
-
-
 type _Command = collections.abc.Callable[
     typing.Concatenate[EffectfulACPAgent, ACPSession, ...], str
 ]
@@ -1493,7 +1484,9 @@ def register_command[F: _Command](
             if _SLASH_COMMANDS.get(command) is entry:
                 del _SLASH_COMMANDS[command]
 
-        _on_reload(fn, unregister)
+        # Undone before ``--autoreload`` re-runs `fn`'s module; KeyError if it does not.
+        with contextlib.suppress(KeyError):
+            on_dispose(unregister, inspect.getfile(fn))
         return fn
 
     return register if fn is None else register(fn)

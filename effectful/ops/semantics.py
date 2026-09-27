@@ -46,7 +46,6 @@ def fwd(*args, **kwargs) -> typing.Any:
 
 class LiveInterpretation(
     collections.abc.Mapping[Operation, collections.abc.Callable[..., typing.Any]],
-    abc.ABC,
 ):
     """An interpretation whose handlers may change; a coproduct with one follows it."""
 

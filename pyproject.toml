@@ -62,7 +62,7 @@ llm = [
   "fastmcp>=4.0.8,<5",
   "mcp>=2.2,<3",
   # For the launcher's `--autoreload`. Pinned to a minor version because the
-  # reloader reaches into hmr's module namespace proxy, which is private.
+  # reloader wraps hmr's private module load.
   "hmr>=0.7,<0.8",
 ]
 prettyprinter = ["prettyprinter"]
