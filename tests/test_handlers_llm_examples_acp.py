@@ -4115,9 +4115,6 @@ class _FakeReloader:
     def current_class(self, cls: type) -> type:
         return self.cls
 
-    def refresh(self, agent: object) -> None:
-        autoreload.rebind(agent, self.cls)
-
 
 def test_a_reload_gives_open_sessions_the_new_system_prompt():
     """An edit that changes the system prompt reaches a session already open.

@@ -187,7 +187,7 @@ def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
         bot.ask("two")
     assert "It says one." in _systems(mock)[0], "a history keeps its system message"
 
-    reloader.refresh(bot)
+    autoreload.rebind(bot, reloader.current_class(type(bot)))
     assert type(bot) is reloader.module.Bot
     with interpreter(reloader):
         bot.ask("three")
@@ -203,7 +203,7 @@ def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
 
     _edit(root / "script.py", "A bot, version one.", "A bot, version two.")
     assert reloader.apply() is True
-    reloader.refresh(bot)
+    autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
     stored = bot.__history__[0]
@@ -304,7 +304,7 @@ def test_a_class_from_the_running_script_maps_to_its_reloadable_copy(reloaded):
     assert type(main_bot).__module__ == "__main__"
 
     assert reloader.current_class(type(main_bot)) is reloader.module.Bot
-    reloader.refresh(main_bot)
+    autoreload.rebind(main_bot, reloader.current_class(type(main_bot)))
     assert type(main_bot) is reloader.module.Bot
     assert main_bot.__dict__[autoreload.INSTANCE_STALE] is True
 

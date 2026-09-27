@@ -4,6 +4,7 @@ import pytest
 
 pytest.importorskip("reactivity.hmr")
 
+from effectful.handlers.llm.harness import autoreload  # noqa: E402
 from effectful.internals.runtime import interpreter  # noqa: E402
 from tests.test_handlers_llm_harness_autoreload import (  # noqa: E402, F401
     _edit,
@@ -48,7 +49,7 @@ def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(request):
 
     _edit(root / "script.py", '"""{question}"""', '"""Q: {question}"""')
     assert reloader.apply() is True
-    reloader.refresh(bot)
+    autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
     assert "Q: two" in _users(mock)[-1]
@@ -69,7 +70,7 @@ def test_an_agent_whose_class_was_renamed_keeps_it_with_a_note(request, capsys):
     _edit(root / "script.py", "Bot.__doc__", "Robot.__doc__")
     _edit(root / "script.py", "MAIN = Bot()", "MAIN = Robot()")
     assert reloader.apply() is True
-    reloader.refresh(bot)
+    autoreload.rebind(bot, reloader.current_class(type(bot)))
     assert type(bot) is before
     assert "script.Bot is no longer defined" in capsys.readouterr().err
 

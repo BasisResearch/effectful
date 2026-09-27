@@ -113,8 +113,6 @@ class _Reloader(typing.Protocol):
 
     def current_class(self, cls: type, /) -> type: ...
 
-    def refresh(self, agent: object, /) -> None: ...
-
 
 class _Library(typing.Protocol):
     """Everything this module takes from `library`, and so the line between them.
@@ -1968,7 +1966,9 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             session.install_handlers()
             self._announce_commands(session)
             self._announce_config(session)
-            reloader.refresh(session.agent)
+            autoreload.rebind(
+                session.agent, reloader.current_class(type(session.agent))
+            )
 
     def _answer(
         self,
