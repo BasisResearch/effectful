@@ -50,14 +50,9 @@ class LiveInterpretation(
 ):
     """An interpretation whose handlers may change; a coproduct with one follows it."""
 
-    @property
-    @abc.abstractmethod
-    def version(self) -> typing.Any:
-        """A value that changes whenever the handlers do."""
-
     @abc.abstractmethod
     def snapshot(self) -> Interpretation:
-        """The handlers as they are now."""
+        """The handlers as they are now, as a new object whenever they change."""
 
     def __getitem__(self, op: Operation) -> collections.abc.Callable[..., typing.Any]:
         return self.snapshot()[op]
@@ -69,10 +64,6 @@ class LiveInterpretation(
         return len(self.snapshot())
 
 
-def _version(intp: Interpretation) -> typing.Any:
-    return intp.version if isinstance(intp, LiveInterpretation) else None
-
-
 def _snapshot(intp: Interpretation) -> Interpretation:
     return intp.snapshot() if isinstance(intp, LiveInterpretation) else intp
 
@@ -82,20 +73,17 @@ class _LiveCoproduct(LiveInterpretation):
 
     def __init__(self, intp: Interpretation, intp2: Interpretation) -> None:
         self._intp, self._intp2 = intp, intp2
-        self._cached: tuple[typing.Any, Interpretation] | None = None
-
-    @property
-    def version(self) -> typing.Any:
-        return (_version(self._intp), _version(self._intp2))
+        self._cached: tuple[Interpretation, Interpretation, Interpretation] | None = (
+            None
+        )
 
     def snapshot(self) -> Interpretation:
-        version = self.version
-        if self._cached is None or self._cached[0] != version:
-            self._cached = (
-                version,
-                coproduct(_snapshot(self._intp), _snapshot(self._intp2)),
-            )
-        return self._cached[1]
+        left, right = _snapshot(self._intp), _snapshot(self._intp2)
+        # The snapshots are held, so a new one is never mistaken for an old one.
+        cached = self._cached
+        if cached is None or left is not cached[0] or right is not cached[1]:
+            self._cached = cached = (left, right, coproduct(left, right))
+        return cached[2]
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
