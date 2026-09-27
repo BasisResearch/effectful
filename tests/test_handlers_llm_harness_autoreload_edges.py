@@ -16,29 +16,20 @@ from tests.test_handlers_llm_harness_autoreload import (  # noqa: E402, F401
 def test_a_build_that_fails_keeps_the_stack_and_is_retried(request):
     """A handler whose constructor raises leaves the running stack, and the next edit rebuilds."""
     reloader, _, root = request.getfixturevalue("helper_stack")
-    reloader.module.Bot
     stack = reloader.snapshot()
 
     _edit(root / "helper.py", "self.answer = ANSWER", 'raise RuntimeError("boom")')
-    assert reloader.apply([root / "helper.py"]) is True
+    reloader.refresh()
     assert reloader.snapshot() is stack
 
     _edit(root / "script.py", "version one", "version two")
-    assert reloader.apply([root / "script.py"]) is True, (
-        "an unrelated edit still applies"
-    )
+    reloader.refresh()
     assert reloader.snapshot() is stack
+    assert "version two" in reloader.module.Bot.__doc__, "an unrelated edit applies"
 
     _edit(root / "helper.py", 'raise RuntimeError("boom")', "self.answer = ANSWER")
-    assert reloader.apply([root / "helper.py"]) is True
+    reloader.refresh()
     assert reloader.snapshot() is not stack
-
-
-def test_the_watcher_survives_an_error_in_a_reload(request, monkeypatch):
-    reloader, _, root = request.getfixturevalue("reloaded")
-
-    monkeypatch.setattr(reloader, "apply", lambda *a, **k: 1 / 0)
-    assert reloader._applied({str(root / "script.py")}, wait=True) is False
 
 
 def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(request):
@@ -50,7 +41,6 @@ def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(request):
     assert not _users(mock)[-1].startswith("Q:")
 
     _edit(root / "script.py", '"""{question}"""', '"""Q: {question}"""')
-    assert reloader.apply([root / "script.py"]) is True
     with interpreter(reloader):
         bot.ask("two")
     assert "Q: two" in _users(mock)[-1]
@@ -70,7 +60,6 @@ def test_an_agent_whose_class_was_renamed_keeps_it(request):
     _edit(root / "script.py", "class Bot:", "class Robot:")
     _edit(root / "script.py", "Bot.__doc__", "Robot.__doc__")
     _edit(root / "script.py", "MAIN = Bot()", "MAIN = Robot()")
-    assert reloader.apply([root / "script.py"]) is True
     assert type(bot) is before
     assert "version one" in before.__doc__, "the old name still binds the old class"
 
@@ -95,7 +84,7 @@ def test_zero_argument_super_works_in_an_updated_class(tmp_path, monkeypatch):
 
         child = family.Child()
         (tmp_path / "family.py").write_text(source.replace("child one", "child two"))
-        assert reloader.apply([tmp_path / "family.py"]) is True
+        reloader.refresh()
         assert type(child) is family.Child
         assert child.greet() == "child two, base"
     finally:
@@ -107,12 +96,70 @@ def test_a_script_named_like_another_module_does_not_replace_it(tmp_path):
     import json
     import sys
 
-
     script = tmp_path / "json.py"
     script.write_text("VALUE = 1\n")
     reloader = autoreload.Reloader(script, dict)
     try:
         assert sys.modules["json"] is json
         assert reloader.module is None
+    finally:
+        reloader.close()
+
+
+FAMILY = """\
+import enum
+
+from effectful.ops.syntax import ObjectInterpretation, implements
+from effectful.ops.types import Operation
+
+
+@Operation.define
+def greet() -> str:
+    return "hello"
+
+
+class Base(ObjectInterpretation):
+    @implements(greet)
+    def greet(self) -> str:
+        return "base"
+
+
+class Child(Base):
+    @implements(greet)
+    def greet(self) -> str:
+        return "child one, " + super().greet()
+
+
+class Mode(enum.StrEnum):
+    ASK = "ask"
+"""
+
+
+def test_what_refers_to_a_re_run_class_moves_to_the_class_it_updated(
+    tmp_path, monkeypatch
+):
+    """`super()` in a wrapped method, enum members, and a class the edit adds."""
+    from effectful.ops.semantics import handler
+
+    (tmp_path / "family.py").write_text(FAMILY)
+    (tmp_path / "main.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    reloader = autoreload.Reloader(tmp_path / "main.py", dict)
+    try:
+        import family
+
+        child, child_class, mode = family.Child(), family.Child, family.Mode
+        (tmp_path / "family.py").write_text(
+            FAMILY.replace("child one", "child two")
+            + "\n\nclass Grandchild(Child):\n    pass\n"
+        )
+        reloader.refresh()
+        family.Mode  # not imported by the script, so it re-runs when next read
+
+        with handler(child):
+            assert family.greet() == "child two, base"
+        assert family.Mode is mode and isinstance(family.Mode.ASK, mode)
+        assert family.Mode("ask") is family.Mode.ASK
+        assert issubclass(family.Grandchild, child_class)
     finally:
         reloader.close()
