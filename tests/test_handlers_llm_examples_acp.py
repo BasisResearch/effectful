@@ -27,6 +27,7 @@ import base64
 import collections.abc
 import contextlib
 import dataclasses
+import importlib
 import inspect
 import io
 import json
@@ -56,6 +57,7 @@ from effectful.handlers.llm.harness.serialization import (
     _NameAndTool,
     to_content_blocks,
 )
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import coproduct, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from tests.conftest import (
@@ -4106,28 +4108,26 @@ def test_an_idle_editor_is_not_disconnected():
     assert "receive_timeout" not in {kw.arg for kw in served[0].keywords}
 
 
-class _FakeReloader:
-    """A reloader that has re-run modules `reloads` times, with nothing left stale."""
-
-    def __init__(self) -> None:
-        self.reloads = 0
-
-    def refresh(self) -> None:
-        pass
-
-
-def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
+def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch, tmp_path):
     """An edit that changes the system prompt reaches a session already open.
 
     `HistoryBuilder` keeps a history's first system message, so without the
-    reloader's `gate_interpretation` the edit would reach new sessions only.
+    reloader the edit would reach new sessions only.
     """
 
     # Made up at run time: the system prompt also carries this file's source, so a
     # marker written out here would be found in every version of it.
     marker = f"edited-{os.urandom(8).hex()}"
-    reloader = _FakeReloader()
     model = MockCompletionHandler([make_text_response("ok")])
+    # A module of handlers in the stack, for the reloader to re-run.
+    (tmp_path / "acp_reloaded.py").write_text("HANDLERS = {}\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    reloader = autoreload.Reloader(
+        tmp_path / "script.py",
+        lambda: coproduct(
+            _stack(model), importlib.import_module("acp_reloaded").HANDLERS
+        ),
+    )
 
     def systems(messages) -> list[str]:
         return [str(m["content"]) for m in messages if m["role"] == "system"]
@@ -4144,7 +4144,7 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
         before = await turn("one")
         # What a reload does to a class: the same object, with the edit applied.
         monkeypatch.setattr(_Bot, "__doc__", f"A minimal agent, {marker}.")
-        reloader.reloads += 1
+        (tmp_path / "acp_reloaded.py").write_text("HANDLERS = {}  # edited\n")
         server._on_reload()
         after = await turn("two")
         stored = session.agent.__history__[0]
@@ -4152,9 +4152,11 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
         await server.close_session(session_id)
         return before, after, stored, later, session
 
-    gate = autoreload.gate_interpretation(typing.cast(typing.Any, reloader))
-    with handler(_stack(gate, model)):
-        before, after, stored, later, session = asyncio.run(drive())
+    try:
+        with interpreter(reloader):
+            before, after, stored, later, session = asyncio.run(drive())
+    finally:
+        reloader.close()
 
     assert len(before) == len(after) == len(later) == 1
     assert marker not in before[0]

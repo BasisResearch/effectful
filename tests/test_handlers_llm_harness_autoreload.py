@@ -1,9 +1,9 @@
 """Tests for the launcher's ``--autoreload``, run in-process on a temporary directory.
 
-A `Reloader` is installed over a two-file script, edits are written to disk by this
-process and applied by the next agent call or by `Reloader.refresh`, and the result is
-checked. Only the temporary files reload here; the harness modules were imported
-before the reloader started.
+A `Reloader` is installed over a two-file script, which runs as a stand-in
+``__main__``; edits are written to disk by this process and applied by the next agent
+call or by `Reloader.refresh`, and the result is checked. Only the temporary files
+reload here; the harness modules were imported before the reloader started.
 """
 
 import importlib
@@ -122,16 +122,26 @@ def _mocked_harness(mock):
     )
 
 
-@pytest.fixture
-def reloaded(tmp_path, monkeypatch):
+def _running(tmp_path, monkeypatch, build):
+    """Start a `Reloader` over the script, and run the script as ``__main__``."""
     (tmp_path / "helper.py").write_text(HELPER)
     script = tmp_path / "script.py"
     script.write_text(SCRIPT)
     monkeypatch.syspath_prepend(str(tmp_path))
+    reloader = autoreload.Reloader(script, build)
+    main = types.ModuleType("__main__")
+    main.__file__ = str(script)
+    exec(compile(SCRIPT, str(script), "exec"), vars(main))
+    monkeypatch.setitem(sys.modules, "__main__", main)
+    return reloader, main
+
+
+@pytest.fixture
+def reloaded(tmp_path, monkeypatch):
     mock = MockCompletionHandler([make_text_response("ok")])
-    reloader = autoreload.Reloader(script, lambda: _mocked_harness(mock))
+    reloader, main = _running(tmp_path, monkeypatch, lambda: _mocked_harness(mock))
     try:
-        yield reloader, mock, tmp_path
+        yield reloader, mock, tmp_path, main
     finally:
         reloader.close()
 
@@ -139,19 +149,16 @@ def reloaded(tmp_path, monkeypatch):
 @pytest.fixture
 def helper_stack(tmp_path, monkeypatch):
     """As `reloaded`, with a handler from the reloadable `helper` on top of the stack."""
-    (tmp_path / "helper.py").write_text(HELPER)
-    script = tmp_path / "script.py"
-    script.write_text(SCRIPT)
-    monkeypatch.syspath_prepend(str(tmp_path))
     mock = MockCompletionHandler([make_text_response("ok")])
-    reloader = autoreload.Reloader(
-        script,
+    reloader, main = _running(
+        tmp_path,
+        monkeypatch,
         lambda: coproduct(
             _mocked_harness(mock), importlib.import_module("helper").Answering()
         ),
     )
     try:
-        yield reloader, mock, tmp_path
+        yield reloader, mock, tmp_path, main
     finally:
         reloader.close()
 
@@ -169,8 +176,8 @@ def _systems(mock) -> list[str]:
 
 
 def test_an_edit_to_an_imported_value_reaches_an_existing_agent(reloaded):
-    reloader, mock, root = reloaded
-    bot = reloader.module.Bot()
+    reloader, mock, root, main = reloaded
+    bot = main.Bot()
     before = type(bot)
     with interpreter(reloader):
         bot.ask("one")
@@ -179,15 +186,15 @@ def test_an_edit_to_an_imported_value_reaches_an_existing_agent(reloaded):
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
     with interpreter(reloader):
         bot.ask("two")
-    assert type(bot) is before is reloader.module.Bot, "the class kept its identity"
+    assert type(bot) is before is main.Bot, "the class kept its identity"
     assert "It says two." in before.__doc__, "the script re-ran too"
     assert _systems(mock) == [str(bot.__history__[0]["content"])]
     assert "It says two." in _systems(mock)[0]
 
 
 def test_an_existing_agent_replaces_its_system_message_once(reloaded):
-    reloader, mock, root = reloaded
-    bot = reloader.module.Bot()
+    reloader, mock, root, main = reloaded
+    bot = main.Bot()
     with interpreter(reloader):
         bot.ask("one")
 
@@ -205,39 +212,40 @@ def test_an_existing_agent_replaces_its_system_message_once(reloaded):
 
 def test_a_definition_an_edit_removes_stays_bound(reloaded):
     """As under `importlib.reload`: nothing can tell a stale definition from state."""
-    reloader, _, root = reloaded
-    reloader.module.Bot
+    reloader, _, root, main = reloaded
+    main.Bot
     helper = sys.modules["helper"]
 
-    reloads = reloader.reloads
-    _edit(root / "helper.py", 'def extra() -> str:\n    return "extra"\n', "")
+    _edit(
+        root / "helper.py", 'def extra() -> str:\n    return "extra"\n', "EDITED = 1\n"
+    )
     reloader.refresh()
+    assert helper.EDITED == 1, "the module re-ran"
     assert helper.extra() == "extra"
-    assert reloader.reloads > reloads, "the module re-ran"
 
 
 def test_a_file_that_does_not_parse_keeps_its_running_version(reloaded):
-    reloader, _, root = reloaded
-    before = reloader.module.Bot
+    reloader, _, root, main = reloaded
+    before = main.Bot
     script = root / "script.py"
     old = script.read_text()
     # Shifts every line, then fails to parse.
     script.write_text("import dataclasses\n" + old + "\n\ndef broken(:\n")
     reloader.refresh()
 
-    assert reloader.module.Bot is before
+    assert main.Bot is before
     _, skill_def = _recover_skill_def(before.ask)
     assert skill_def.name == "ask"
 
 
 def test_an_agents_edit_to_its_own_module_is_live_when_its_call_returns(reloaded):
     """The write happens mid-call, in this process; no watcher is involved."""
-    reloader, mock, root = reloaded
+    reloader, mock, root, main = reloaded
     mock.responses[:] = [
         make_tool_call_response("write_here", "{}"),
         make_text_response("ok"),
     ]
-    bot = reloader.module.Bot()
+    bot = main.Bot()
     helper = sys.modules["helper"]
     assert not hasattr(helper, "WRITTEN")
 
@@ -247,8 +255,8 @@ def test_an_agents_edit_to_its_own_module_is_live_when_its_call_returns(reloaded
 
 
 def test_a_kept_module_is_not_re_run(reloaded):
-    reloader, _, root = reloaded
-    reloader.module.Bot
+    reloader, _, root, main = reloaded
+    main.Bot
     helper = sys.modules["helper"]
     helper.__autoreload__ = False
 
@@ -257,26 +265,25 @@ def test_a_kept_module_is_not_re_run(reloaded):
     assert helper.GREETING == "one"
 
 
-def test_the_running_scripts_classes_follow_an_edit_to_it(reloaded, monkeypatch):
-    """``__main__`` is never re-run; the script's first edit updates its classes."""
-    reloader, _, root = reloaded
-    script = root / "script.py"
-    main = types.ModuleType("__main__")
-    exec(compile(script.read_text(), str(script), "exec"), vars(main))
-    monkeypatch.setitem(sys.modules, "__main__", main)
-    bot = main.MAIN
-    before = type(bot)
+def test_the_running_script_is_re_run_in_place_without_its_main_block(reloaded):
+    """``__main__`` itself re-runs on its first edit, and its main block stays shut."""
+    reloader, _, root, main = reloaded
+    bot, before, started = main.MAIN, main.Bot, main.MAIN
+    ask = vars(before)["ask"]
 
-    _edit(script, "version one", "version two")
+    _edit(root / "script.py", "version one", "version two")
     reloader.refresh()
-    assert type(bot) is before is main.Bot is reloader.module.Bot
+    assert type(bot) is before is main.Bot
+    assert vars(before)["ask"] is ask, "a handler keyed by it still applies"
     assert "version two" in before.__doc__
+    assert main.MAIN is started, "the main block did not run again"
+    assert main.__name__ == "__main__"
 
 
 def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):
     """`handler(...)` around a script's loop composes onto the stack as it now is."""
-    reloader, _, root = helper_stack
-    bot = reloader.module.Bot()
+    reloader, _, root, main = helper_stack
+    bot = main.Bot()
     seen: list[str] = []
 
     class Recorder(ObjectInterpretation):
@@ -295,8 +302,8 @@ def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):
 
 def test_a_redefined_operation_keeps_its_identity(reloaded):
     """An edit to a module that defines an operation updates it in place."""
-    reloader, _, root = reloaded
-    reloader.module.Bot
+    reloader, _, root, main = reloaded
+    main.Bot
     helper = sys.modules["helper"]
     ping, label = helper.ping, helper.Box.label
     assert (ping(), label()) == ("pong", "box")
@@ -312,7 +319,7 @@ def test_a_redefined_operation_keeps_its_identity(reloaded):
 
 def test_a_build_that_fails_keeps_the_stack_and_is_retried(helper_stack):
     """A handler whose constructor raises leaves the running stack, and the next edit rebuilds."""
-    reloader, _, root = helper_stack
+    reloader, _, root, main = helper_stack
     stack = reloader.snapshot()
 
     _edit(root / "helper.py", "self.answer = ANSWER", 'raise RuntimeError("boom")')
@@ -322,7 +329,7 @@ def test_a_build_that_fails_keeps_the_stack_and_is_retried(helper_stack):
     _edit(root / "script.py", "version one", "version two")
     reloader.refresh()
     assert reloader.snapshot() is stack
-    assert "version two" in reloader.module.Bot.__doc__, "an unrelated edit applies"
+    assert "version two" in main.Bot.__doc__, "an unrelated edit applies"
 
     _edit(root / "helper.py", 'raise RuntimeError("boom")', "self.answer = ANSWER")
     reloader.refresh()
@@ -331,8 +338,8 @@ def test_a_build_that_fails_keeps_the_stack_and_is_retried(helper_stack):
 
 def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(reloaded):
     """The instance op an agent cached is rebuilt once its class op is redefined."""
-    reloader, mock, root = reloaded
-    bot = reloader.module.Bot()
+    reloader, mock, root, main = reloaded
+    bot = main.Bot()
     with interpreter(reloader):
         bot.ask("one")
     assert not _users(mock)[-1].startswith("Q:")
@@ -350,32 +357,17 @@ def _users(mock) -> list[str]:
 
 
 def test_an_agent_whose_class_was_renamed_keeps_it(reloaded):
-    reloader, _, root = reloaded
-    bot = reloader.module.Bot()
+    reloader, _, root, main = reloaded
+    bot = main.Bot()
     before = type(bot)
 
     _edit(root / "script.py", "class Bot:", "class Robot:")
     _edit(root / "script.py", "Bot.__doc__", "Robot.__doc__")
     _edit(root / "script.py", "MAIN = Bot()", "MAIN = Robot()")
     reloader.refresh()
-    assert hasattr(reloader.module, "Robot"), "the edit applied"
+    assert hasattr(main, "Robot"), "the edit applied"
     assert type(bot) is before
     assert "version one" in before.__doc__, "the old name still binds the old class"
-
-
-def test_a_script_named_like_another_module_does_not_replace_it(tmp_path):
-    """A script called ``json.py`` has no reloadable copy; the real `json` stays put."""
-    import json
-    import sys
-
-    script = tmp_path / "json.py"
-    script.write_text("VALUE = 1\n")
-    reloader = autoreload.Reloader(script, dict)
-    try:
-        assert sys.modules["json"] is json
-        assert reloader.module is None
-    finally:
-        reloader.close()
 
 
 FAMILY = """\
