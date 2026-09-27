@@ -73,7 +73,6 @@ import fastmcp
 import pydantic
 from PIL import Image
 
-from effectful.handlers.llm.harness import autoreload
 from effectful.ops.semantics import handler
 from effectful.ops.types import Interpretation
 
@@ -386,6 +385,9 @@ class ACPSession[A: "Agent"]:
 
     mcp_connecting: asyncio.Task | None = None
     """A connection started outside a request, which the next turn waits for."""
+
+    reloaded: bool = False
+    """Whether code was reloaded since `install_handlers` last ran."""
 
     loop: asyncio.AbstractEventLoop = dataclasses.field(
         default_factory=asyncio.get_running_loop
@@ -1402,15 +1404,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         A failure anywhere short of the `exec` succeeding leaves this process serving,
         and says so to the session that asked.
         """
-        reloader = autoreload.current()
-        suspended = (
-            reloader.hold() if reloader is not None else contextlib.nullcontext()
-        )
-        with suspended:
-            await self._exec_replacement(requested_by)
-
-    async def _exec_replacement(self, requested_by: ACPSession[A]) -> None:
-        """The body of `_restart`, with reloads held off around it."""
         assert self._channel is not None and self._stdout is not None
         assert self._stdin is not None
         path = None
@@ -1850,15 +1843,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         self._refuse_while_restarting()
         session = self._session(session_id)
-        reloader = autoreload.current()
-        with reloader.hold() if reloader is not None else contextlib.nullcontext():
-            return await self._turn(session, prompt)
-
-    async def _turn(
-        self, session: ACPSession[A], prompt: list[ContentBlock]
-    ) -> acp.schema.PromptResponse:
-        """The body of `prompt`, with reloads held off around it."""
         async with session.lock:
+            # Between turns, so no turn loses the reporter it is using.
+            if session.reloaded:
+                session.install_handlers()
+                session.reloaded = False
             if session.mcp_connecting is not None:
                 await session.mcp_connecting
                 session.mcp_connecting = None
@@ -1949,10 +1938,11 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return f"Unknown command `/{name}`. Try {offered}."
         return command.run(self, session, argument)
 
-    def _on_reload(self, reloader: "autoreload.Reloader") -> None:
-        """Serve new code: rebuild each session's handlers and announce them."""
+    def _on_reload(self) -> None:
+        """Announce each session's commands and options as the edited code now has
+        them; its handlers are rebuilt at its next turn."""
         for session in self.sessions.values():
-            session.install_handlers()
+            session.reloaded = True
             self._announce_commands(session)
             self._announce_config(session)
 
@@ -2022,8 +2012,8 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
     async def serve(self) -> None:
         """Serve one agent over stdio until the editor disconnects.
 
-        Under the launcher's ``--autoreload`` this adopts the reloader, so edits apply
-        on this loop between turns and reach open sessions through `_on_reload`.
+        Under the launcher's ``--autoreload``, each reload reaches open sessions through
+        `_on_reload`, on this loop.
 
         stdout is the protocol, and the harness runs model-authored Python that may print
         to it. So fd 1 is pointed at stderr for the process's lifetime, after handing a
@@ -2054,23 +2044,29 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._cwd = os.getcwd()
         self._restored = os.environ.pop(RESTART_STATE_ENV, None)
 
-        reloader = autoreload.current()
-        watching: asyncio.Future | None = None
-        if reloader is not None:
-            reloader.subscribe(self._on_reload)
-            watching = asyncio.ensure_future(reloader.watch())
+        hooked: contextlib.AbstractContextManager = contextlib.nullcontext()
         try:
-            # `run_agent`'s parameters are named from the client's point of view:
-            # the stream the client reads is the one this agent writes.
-            await acp.run_agent(
-                self,
-                input_stream=writer,
-                output_stream=reader,
-                use_unstable_protocol=True,
-                observers=[self._observe],
-            )
-        finally:
-            if watching is not None:
-                watching.cancel()
-            for session in list(self.sessions.values()):
-                await session.close_mcp(force=True)
+            from reactivity.hmr.hooks import use_post_reload
+        except ImportError:  # no hmr, so nothing is ever reloaded
+            pass
+        else:
+            loop = asyncio.get_running_loop()
+
+            def reloaded() -> None:  # hmr may call this on any thread
+                loop.call_soon_threadsafe(self._on_reload)
+
+            hooked = use_post_reload(reloaded)
+        with hooked:
+            try:
+                # `run_agent`'s parameters are named from the client's point of view:
+                # the stream the client reads is the one this agent writes.
+                await acp.run_agent(
+                    self,
+                    input_stream=writer,
+                    output_stream=reader,
+                    use_unstable_protocol=True,
+                    observers=[self._observe],
+                )
+            finally:
+                for session in list(self.sessions.values()):
+                    await session.close_mcp(force=True)

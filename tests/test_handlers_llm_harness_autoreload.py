@@ -1,14 +1,14 @@
 """Tests for the launcher's ``--autoreload``, run in-process on a temporary directory.
 
-A `Reloader` is installed over a two-file script, edits are written to disk and
-applied with `Reloader.apply`, and the next call is checked against them. The harness
-modules are already imported when a test runs, so only the temporary files reload
-here; the stack itself is rebuilt from them by the same mechanism.
+A `Reloader` is installed over a two-file script, edits are written to disk by this
+process, which makes them live on the next read, and the next read or call is checked
+against them. The harness modules are already imported when a test runs, so only the
+temporary files reload here; the stack itself is rebuilt from them by the same
+mechanism.
 """
 
 import importlib
 import sys
-import threading
 import types
 
 import pytest
@@ -30,7 +30,7 @@ from tests.conftest import (  # noqa: E402
 )
 
 HELPER = '''\
-import threading
+import pathlib
 
 from effectful.handlers.llm import Tool
 from effectful.handlers.llm.harness.hooks import completion
@@ -53,8 +53,6 @@ class Box:
     def label(cls) -> str:
         return "box"
 ANSWER = "one"
-STARTED = threading.Event()
-RELEASE = threading.Event()
 
 
 class Answering(ObjectInterpretation):
@@ -76,11 +74,11 @@ def shout(text: str) -> str:
 
 
 @Tool.define
-def wait_here() -> str:
-    """Wait until the test releases this call."""
-    STARTED.set()
-    RELEASE.wait(10)
-    return "released"
+def write_here() -> str:
+    """Add a line to this very file."""
+    path = pathlib.Path(__file__)
+    path.write_text(path.read_text() + "\\nWRITTEN = True\\n")
+    return "written"
 
 
 def extra() -> str:
@@ -90,7 +88,7 @@ def extra() -> str:
 SCRIPT = '''\
 import dataclasses
 
-from helper import GREETING, shout, wait_here  # noqa: F401
+from helper import GREETING, shout, write_here  # noqa: F401
 
 from effectful.handlers.llm import Skill
 
@@ -180,12 +178,10 @@ def test_an_edit_to_an_imported_value_reaches_an_existing_agent(reloaded):
     assert "It says one." in _systems(mock)[0]
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
-    assert reloader.apply([root / "helper.py"]) is True
-    assert type(bot) is before is reloader.module.Bot, "the class kept its identity"
-    assert "It says two." in before.__doc__, "the script re-ran too"
-
     with interpreter(reloader):
         bot.ask("two")
+    assert type(bot) is before is reloader.module.Bot, "the class kept its identity"
+    assert "It says two." in before.__doc__, "the script re-ran too"
     assert _systems(mock) == [str(bot.__history__[0]["content"])]
     assert "It says two." in _systems(mock)[0]
 
@@ -197,7 +193,6 @@ def test_an_existing_agent_replaces_its_system_message_once(reloaded):
         bot.ask("one")
 
     _edit(root / "script.py", "A bot, version one.", "A bot, version two.")
-    assert reloader.apply([root / "script.py"]) is True
     with interpreter(reloader):
         bot.ask("two")
     stored = bot.__history__[0]
@@ -215,9 +210,11 @@ def test_a_definition_an_edit_removes_stays_bound(reloaded):
     reloader.module.Bot
     helper = sys.modules["helper"]
 
+    reloads = reloader.reloads
     _edit(root / "helper.py", 'def extra() -> str:\n    return "extra"\n', "")
-    assert reloader.apply([root / "helper.py"]) is True
+    reloader.refresh()
     assert helper.extra() == "extra"
+    assert reloader.reloads > reloads, "the module re-ran"
 
 
 def test_a_file_that_does_not_parse_keeps_its_running_version(reloaded):
@@ -228,57 +225,25 @@ def test_a_file_that_does_not_parse_keeps_its_running_version(reloaded):
     # Shifts every line, then fails to parse.
     script.write_text("import dataclasses\n" + old + "\n\ndef broken(:\n")
 
-    assert reloader.apply([script]) is True
     assert reloader.module.Bot is before
     _, skill_def = _recover_skill_def(before.ask)
     assert skill_def.name == "ask"
 
 
-def test_apply_waits_for_a_turn(reloaded):
-    reloader, _, root = reloaded
-    reloader.module.Bot
-    _edit(root / "script.py", "version one", "version two")
-    applied: list = []
-    done = threading.Event()
-
-    def apply_from_a_thread():
-        applied.append(reloader.apply([root / "script.py"]))
-        done.set()
-
-    with reloader.hold():
-        assert reloader.apply([root / "script.py"], wait=False) is None, (
-            "deferred, not applied"
-        )
-        threading.Thread(target=apply_from_a_thread).start()
-        assert not done.wait(0.3)
-    assert done.wait(5)
-    assert applied == [True]
-    assert "version two" in reloader.module.Bot.__doc__
-
-
-def test_apply_waits_for_a_call_in_flight(reloaded):
+def test_an_agents_edit_to_its_own_module_is_live_when_its_call_returns(reloaded):
+    """The write happens mid-call, in this process; no watcher is involved."""
     reloader, mock, root = reloaded
     mock.responses[:] = [
-        make_tool_call_response("wait_here", "{}"),
+        make_tool_call_response("write_here", "{}"),
         make_text_response("ok"),
     ]
     bot = reloader.module.Bot()
     helper = sys.modules["helper"]
+    assert not hasattr(helper, "WRITTEN")
 
-    def call():
-        with interpreter(reloader):
-            bot.ask("go")
-
-    thread = threading.Thread(target=call)
-    thread.start()
-    assert helper.STARTED.wait(10)
-    _edit(root / "script.py", "version one", "version two")
-    assert reloader.apply([root / "script.py"], wait=False) is None
-    helper.RELEASE.set()
-    thread.join(10)
-    assert not thread.is_alive()
-    assert reloader.apply([root / "script.py"]) is True
-    assert "version two" in reloader.module.Bot.__doc__
+    with interpreter(reloader):
+        bot.ask("go")
+    assert helper.WRITTEN is True
 
 
 def test_a_kept_module_is_not_re_run(reloaded):
@@ -288,7 +253,7 @@ def test_a_kept_module_is_not_re_run(reloaded):
     helper.__autoreload__ = False
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
-    assert reloader.apply([root / "helper.py"]) is False
+    reloader.refresh()
     assert helper.GREETING == "one"
 
 
@@ -303,7 +268,7 @@ def test_the_running_scripts_classes_follow_an_edit_to_it(reloaded, monkeypatch)
     before = type(bot)
 
     _edit(script, "version one", "version two")
-    assert reloader.apply([script]) is True
+    reloader.refresh()
     assert type(bot) is before is main.Bot is reloader.module.Bot
     assert "version two" in before.__doc__
 
@@ -324,7 +289,6 @@ def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):
     with interpreter(reloader), handler(Recorder()):
         bot.ask("one")
         _edit(root / "helper.py", 'ANSWER = "one"', 'ANSWER = "two"')
-        assert reloader.apply([root / "helper.py"]) is True
         bot.ask("two")
     assert seen == ["one", "two"]
 
@@ -339,15 +303,8 @@ def test_a_redefined_operation_keeps_its_identity(reloaded):
 
     _edit(root / "helper.py", 'return "pong"', 'return "PONG"')
     _edit(root / "helper.py", 'return "box"', 'return "BOX"')
+    reloader.refresh()
     with handler({ping: lambda: "mine"}):
-        assert reloader.apply([root / "helper.py"]) is True
         assert helper.ping is ping and helper.Box.label is label
         assert ping() == "mine", "a handler keyed before the edit still applies"
     assert (ping(), label()) == ("PONG", "BOX")
-
-
-def test_current_is_the_installed_reloader(reloaded):
-    reloader, _, _ = reloaded
-    assert autoreload.current() is None
-    with interpreter(reloader):
-        assert autoreload.current() is reloader

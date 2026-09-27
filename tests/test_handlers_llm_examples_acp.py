@@ -4107,13 +4107,13 @@ def test_an_idle_editor_is_not_disconnected():
 
 
 class _FakeReloader:
-    """A reloader that has applied `version` reloads, and holds nothing off."""
+    """A reloader that has re-run modules `reloads` times, with nothing left stale."""
 
     def __init__(self) -> None:
-        self.version = 0
+        self.reloads = 0
 
-    def hold(self) -> contextlib.AbstractContextManager[None]:
-        return contextlib.nullcontext()
+    def refresh(self) -> None:
+        pass
 
 
 def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
@@ -4144,8 +4144,8 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
         before = await turn("one")
         # What a reload does to a class: the same object, with the edit applied.
         monkeypatch.setattr(_Bot, "__doc__", f"A minimal agent, {marker}.")
-        reloader.version += 1
-        server._on_reload(typing.cast(typing.Any, reloader))
+        reloader.reloads += 1
+        server._on_reload()
         after = await turn("two")
         stored = session.agent.__history__[0]
         later = await turn("three")
@@ -4175,7 +4175,7 @@ def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
         monkeypatch.setattr(
             library, "SESSION_MODES", (library.SESSION_MODES[0], review)
         )
-        server._on_reload(typing.cast(typing.Any, _FakeReloader()))
+        server._on_reload()
         await session.flush()
         return session.mode_id
 
