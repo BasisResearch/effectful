@@ -4,11 +4,14 @@ Under ``python -m effectful.handlers.llm.harness --autoreload <script>``, `hmr
 <https://pypi.org/project/hmr/>`_ re-runs each edited module that was imported from a
 directory on `sys.path` -- not the standard library or installed packages, nor any
 module imported before it started, which includes effectful's core -- the harness
-stack is rebuilt from the launcher's flags, and each subscriber is told, so it can move its agents onto the new classes
-with `rebind` and `Reloader.current_class`. The running script is ``__main__`` and is never re-run;
-`Reloader.module`, the script imported under its own name on first use, supplies its
-current classes. A module that holds the running process sets ``__autoreload__ =
-False`` and imports reloadable modules only inside functions.
+stack is rebuilt from the launcher's flags, and each subscriber is told. A class keeps
+its identity across edits: the class its instances already have is updated from the
+re-run and bound to its name again, so every instance, held anywhere, runs the edited
+code, and an agent's next call replaces its conversation's system message. The running
+script is ``__main__`` and is never re-run; `Reloader.module`, the script imported
+under its own name when it is first edited, updates its classes. A module that holds
+the running process sets ``__autoreload__ = False`` and imports reloadable modules
+only inside functions.
 
 Edits apply between calls, on the thread that calls `Reloader.apply`: the launcher's
 watcher thread, or the event loop of a host that awaits `Reloader.watch`, which a host
@@ -21,16 +24,16 @@ Limits. A file that does not parse, or a stack that does not build, keeps its pr
 version. A module that raises while re-running keeps the names bound before the error
 updated and the rest as they were. A name an edit removes stays bound, as under
 `importlib.reload` or in a notebook, since nothing can tell a stale definition from
-state; so a deleted tool is still offered, and an agent whose class was renamed keeps
-the old one, until a restart. The script's module-level code runs again in
-`Reloader.module`, so what should run once belongs under ``if __name__ ==
-"__main__"``.
+state; so a deleted tool is still offered, and an instance of a renamed class keeps
+the old one, until a restart. A class whose layout an edit changed -- its bases,
+metaclass or slots -- is bound anew, and its existing instances keep the old one. The
+script's module-level code runs again in `Reloader.module`, so what should run once
+belongs under ``if __name__ == "__main__"``.
 """
 
 import asyncio
 import collections.abc
 import contextlib
-import dataclasses
 import functools
 import gc
 import importlib
@@ -50,8 +53,8 @@ from effectful.ops.types import REDEFINING, Interpretation, Operation
 
 HARNESS = "effectful.handlers.llm.harness"
 
-INSTANCE_STALE = "__autoreload_stale__"
-"""Set in an agent's ``__dict__`` by `rebind`; its next call replaces its system message."""
+GENERATION = "__autoreload_generation__"
+"""The reload an agent's conversation last ran under, kept in the agent's ``__dict__``."""
 
 
 @Operation.define
@@ -60,28 +63,80 @@ def current() -> "Reloader | None":
     return None
 
 
-def rebind(agent: object, cls: type) -> None:
-    """Move `agent` onto `cls` in place, and have its next call refresh its system message."""
-    if type(agent) is not cls:
-        try:
-            object.__setattr__(agent, "__class__", cls)
-        except TypeError as e:
-            raise RuntimeError(
-                f"cannot move a {type(agent).__qualname__} onto {cls}"
-            ) from e
-        # A field's plain default is a class attribute; one from a factory is not.
-        for field in dataclasses.fields(cls) if dataclasses.is_dataclass(cls) else ():
-            if (
-                field.name not in vars(agent)
-                and field.default_factory is not dataclasses.MISSING
-            ):
-                object.__setattr__(agent, field.name, field.default_factory())
-    vars(agent)[INSTANCE_STALE] = True
+def _layout(cls: type) -> tuple:
+    """What an existing class cannot be changed to match."""
+    bases = [(base.__module__, base.__qualname__) for base in cls.__mro__[1:]]
+    return type(cls), cls.__basicsize__, cls.__dict__.get("__slots__"), bases
+
+
+def _update(old: type, new: type) -> bool:
+    """Make `old` define what `new` does, if their layouts match; whether it could."""
+    if _layout(old) != _layout(new):
+        return False
+    for name in set(vars(old)) - set(vars(new)):
+        with contextlib.suppress(AttributeError, TypeError):
+            delattr(old, name)
+    for name, value in vars(new).items():
+        if name in ("__dict__", "__weakref__", "__module__") or name.startswith(
+            "_abc_"
+        ):
+            continue
+        inner = vars(old).get(name)
+        if (
+            isinstance(value, type)
+            and isinstance(inner, type)
+            and _update(inner, value)
+        ):
+            continue
+        # Zero-argument `super()` reads the class from a `__class__` cell.
+        for fn in (
+            value,
+            *(getattr(value, a, None) for a in ("__func__", "fget", "fset", "fdel")),
+        ):
+            code = getattr(fn, "__code__", None)
+            if code is not None and "__class__" in code.co_freevars:
+                cell = fn.__closure__[code.co_freevars.index("__class__")]
+                if cell.cell_contents is new:
+                    cell.cell_contents = old
+        with contextlib.suppress(AttributeError, TypeError):
+            setattr(old, name, value)
+    return True
+
+
+def _keep_classes(namespace: dict[str, typing.Any], before: dict[str, type]) -> None:
+    """Bind each of the classes `namespace` had `before` again, updated from its re-run."""
+    for name, old in before.items():
+        new = namespace.get(name)
+        if (
+            new is old
+            or not isinstance(new, type)
+            or new.__qualname__ != old.__qualname__
+        ):
+            continue
+        if _update(old, new):
+            namespace[name] = old
+        else:
+            print(
+                f"note: {name} changed layout; its instances keep the old class",
+                file=sys.stderr,
+            )
+
+
+def _classes(namespace: dict[str, typing.Any]) -> dict[str, type]:
+    """The classes `namespace` defines at its top level."""
+    return {
+        name: value
+        for name, value in namespace.items()
+        if isinstance(value, type)
+        and value.__module__ == namespace["__name__"]
+        and value.__qualname__ == name
+    }
 
 
 def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
     """Handlers that hold `reloader` off during a call, answer `current` with it, and
-    replace a rebound agent's system message; built from the hooks as they now are."""
+    replace the system message of a conversation last run before a reload; built from
+    the hooks as they now are."""
     hooks = importlib.import_module(f"{HARNESS}.hooks")
     transaction = importlib.import_module(f"{HARNESS}.durability.transaction")
 
@@ -94,9 +149,12 @@ def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
         return message
 
     def call_agent(skill, *args, **kwargs):
+        if reloader is None:
+            return fwd()
         state = getattr(getattr(skill, "__self__", None), "__dict__", {})
-        with reloader.hold() if reloader is not None else contextlib.nullcontext():
-            if not state.pop(INSTANCE_STALE, False):
+        with reloader.hold():
+            last, state[GENERATION] = state.get(GENERATION), reloader.version
+            if last is None or last == reloader.version:
                 return fwd()
             with handler({hooks.call_system: call_system}):
                 return fwd(skill, *args, **kwargs)
@@ -156,7 +214,8 @@ class Reloader(LiveInterpretation):
 
     @functools.cached_property
     def module(self) -> types.ModuleType | None:
-        """The script imported under its own name, which supplies its current classes."""
+        """The script imported under its own name, which updates the classes of
+        ``__main__``; executed when first read."""
         existing = sys.modules.get(self.script.stem)
         if existing is not None and vars(existing).get("__file__") == str(self.script):
             return existing
@@ -168,27 +227,15 @@ class Reloader(LiveInterpretation):
             return None
         module = importlib.util.module_from_spec(spec)
         sys.modules[spec.name] = module
+        main = vars(sys.modules["__main__"])
+        before = {n: c for n, c in _classes(main | {"__name__": "__main__"}).items()}
         spec.loader.exec_module(module)
+        _keep_classes(vars(module), before)
         return module
 
     def subscribe(self, callback: collections.abc.Callable[["Reloader"], None]) -> None:
         """Call `callback` after each reload, before any call runs under it."""
         self._subscribers.append(callback)
-
-    def current_class(self, cls: type) -> type:
-        """The class `cls`'s module now defines under its name, else `cls`."""
-        from reactivity.hmr.core import ReactiveModule
-
-        name = cls.__module__
-        module = self.module if name == "__main__" else sys.modules.get(name)
-        if not isinstance(module, ReactiveModule) or "<locals>" in cls.__qualname__:
-            return cls
-        found = functools.reduce(
-            lambda scope, part: getattr(scope, part, None),
-            cls.__qualname__.split("."),
-            module,
-        )
-        return found if isinstance(found, type) else cls
 
     @contextlib.contextmanager
     def hold(self) -> collections.abc.Iterator[None]:
@@ -220,10 +267,16 @@ class Reloader(LiveInterpretation):
         from watchfiles import Change
 
         paths = {pathlib.Path(file).resolve() for file in files}
+        # The script's copy is imported by its first edit, which it then already runs.
+        first = self.script in paths and "module" not in vars(self)
         modules = [
-            ReactiveModule.instances.get(path) for path in paths if path.is_file()
+            ReactiveModule.instances.get(path)
+            for path in paths
+            if path.is_file() and not (first and path == self.script)
         ]
-        if not any(m and vars(m).get("__autoreload__") is not False for m in modules):
+        if not first and not any(
+            m and vars(m).get("__autoreload__") is not False for m in modules
+        ):
             return False
         if not self._room.acquire(blocking=wait):
             return None
@@ -231,6 +284,8 @@ class Reloader(LiveInterpretation):
             token = REDEFINING.set(True)
             built = False
             try:
+                if first:
+                    self.module
                 self._hmr.on_events(
                     [(Change.modified, str(m.__file__)) for m in modules if m]
                 )
@@ -239,10 +294,12 @@ class Reloader(LiveInterpretation):
                     stack, built = self._derived(), True
             finally:
                 REDEFINING.reset(token)
-            if not built:
+            if built:
+                self._stack = stack
+            else:
                 self._derived.dirty = True  # rebuilt on the next edit
-            elif stack is not self._stack:
-                self._stack, self._generation = stack, self._generation + 1
+            # Every reload, not only one that rebuilt the stack: classes changed too.
+            self._generation += 1
             for callback in self._subscribers:
                 with self._hmr.error_filter:
                     callback(self)
@@ -264,16 +321,17 @@ class Reloader(LiveInterpretation):
         ]:
             for module in dirty:
                 ran.add(module)
+                before = _classes(vars(module))
                 with self._hmr.error_filter:
                     module._ReactiveModule__load()
+                _keep_classes(vars(module), before)
 
     def _dirs(self) -> set[str]:
         """The directories of the modules hmr loaded, which are all an edit can reach."""
         from reactivity.hmr.core import ReactiveModule
 
-        return {
-            str(p.parent) for p in list(ReactiveModule.instances) if p.parent.is_dir()
-        }
+        paths = [*ReactiveModule.instances, self.script]
+        return {str(path.parent) for path in paths if path.parent.is_dir()}
 
     def _applied(self, files: set[str], wait: bool) -> bool | None:
         """`apply`, for a watcher, which must outlive an error in a reload."""

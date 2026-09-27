@@ -7,9 +7,9 @@ here; the stack itself is rebuilt from them by the same mechanism.
 """
 
 import importlib
-import runpy
 import sys
 import threading
+import types
 
 import pytest
 
@@ -171,30 +171,26 @@ def _systems(mock) -> list[str]:
     ]
 
 
-def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
+def test_an_edit_to_an_imported_value_reaches_an_existing_agent(reloaded):
     reloader, mock, root = reloaded
     bot = reloader.module.Bot()
+    before = type(bot)
     with interpreter(reloader):
         bot.ask("one")
     assert "It says one." in _systems(mock)[0]
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
     assert reloader.apply([root / "helper.py"]) is True
-    assert "It says two." in reloader.module.Bot.__doc__, "the script re-ran too"
+    assert type(bot) is before is reloader.module.Bot, "the class kept its identity"
+    assert "It says two." in before.__doc__, "the script re-ran too"
 
     with interpreter(reloader):
         bot.ask("two")
-    assert "It says one." in _systems(mock)[0], "a history keeps its system message"
-
-    autoreload.rebind(bot, reloader.current_class(type(bot)))
-    assert type(bot) is reloader.module.Bot
-    with interpreter(reloader):
-        bot.ask("three")
     assert _systems(mock) == [str(bot.__history__[0]["content"])]
     assert "It says two." in _systems(mock)[0]
 
 
-def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
+def test_an_existing_agent_replaces_its_system_message_once(reloaded):
     reloader, mock, root = reloaded
     bot = reloader.module.Bot()
     with interpreter(reloader):
@@ -202,7 +198,6 @@ def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
 
     _edit(root / "script.py", "A bot, version one.", "A bot, version two.")
     assert reloader.apply([root / "script.py"]) is True
-    autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
     stored = bot.__history__[0]
@@ -297,16 +292,20 @@ def test_a_kept_module_is_not_re_run(reloaded):
     assert helper.GREETING == "one"
 
 
-def test_a_class_from_the_running_script_maps_to_its_reloadable_copy(reloaded):
+def test_the_running_scripts_classes_follow_an_edit_to_it(reloaded, monkeypatch):
+    """``__main__`` is never re-run; the script's first edit updates its classes."""
     reloader, _, root = reloaded
-    namespace = runpy.run_path(str(root / "script.py"), run_name="__main__")
-    main_bot = namespace["MAIN"]
-    assert type(main_bot).__module__ == "__main__"
+    script = root / "script.py"
+    main = types.ModuleType("__main__")
+    exec(compile(script.read_text(), str(script), "exec"), vars(main))
+    monkeypatch.setitem(sys.modules, "__main__", main)
+    bot = main.MAIN
+    before = type(bot)
 
-    assert reloader.current_class(type(main_bot)) is reloader.module.Bot
-    autoreload.rebind(main_bot, reloader.current_class(type(main_bot)))
-    assert type(main_bot) is reloader.module.Bot
-    assert main_bot.__dict__[autoreload.INSTANCE_STALE] is True
+    _edit(script, "version one", "version two")
+    assert reloader.apply([script]) is True
+    assert type(bot) is before is main.Bot is reloader.module.Bot
+    assert "version two" in before.__doc__
 
 
 def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):

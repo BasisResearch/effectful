@@ -51,7 +51,6 @@ def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(request):
 
     _edit(root / "script.py", '"""{question}"""', '"""Q: {question}"""')
     assert reloader.apply([root / "script.py"]) is True
-    autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
     assert "Q: two" in _users(mock)[-1]
@@ -72,8 +71,35 @@ def test_an_agent_whose_class_was_renamed_keeps_it(request):
     _edit(root / "script.py", "Bot.__doc__", "Robot.__doc__")
     _edit(root / "script.py", "MAIN = Bot()", "MAIN = Robot()")
     assert reloader.apply([root / "script.py"]) is True
-    autoreload.rebind(bot, reloader.current_class(type(bot)))
     assert type(bot) is before
+    assert "version one" in before.__doc__, "the old name still binds the old class"
+
+
+def test_zero_argument_super_works_in_an_updated_class(tmp_path, monkeypatch):
+    """A method copied onto the existing class finds that class through `super()`."""
+
+    source = (
+        "class Base:\n"
+        "    def greet(self) -> str:\n"
+        "        return 'base'\n\n\n"
+        "class Child(Base):\n"
+        "    def greet(self) -> str:\n"
+        "        return 'child one, ' + super().greet()\n"
+    )
+    (tmp_path / "family.py").write_text(source)
+    (tmp_path / "main.py").write_text("")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    reloader = autoreload.Reloader(tmp_path / "main.py", dict)
+    try:
+        import family
+
+        child = family.Child()
+        (tmp_path / "family.py").write_text(source.replace("child one", "child two"))
+        assert reloader.apply([tmp_path / "family.py"]) is True
+        assert type(child) is family.Child
+        assert child.greet() == "child two, base"
+    finally:
+        reloader.close()
 
 
 def test_a_script_named_like_another_module_does_not_replace_it(tmp_path):
@@ -81,7 +107,6 @@ def test_a_script_named_like_another_module_does_not_replace_it(tmp_path):
     import json
     import sys
 
-    from effectful.handlers.llm.harness import autoreload
 
     script = tmp_path / "json.py"
     script.write_text("VALUE = 1\n")
