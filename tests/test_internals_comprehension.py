@@ -27,8 +27,6 @@ from effectful.internals.comprehension import (
 )
 from effectful.ops.monoid import (  # noqa: F401 -- named by the reduction sources
     And,
-    ArgMax,
-    ArgMin,
     CartesianProduct,
     EvaluateIntp,
     Factor,
@@ -40,7 +38,7 @@ from effectful.ops.monoid import (  # noqa: F401 -- named by the reduction sourc
     Or,
     Product,
     ReduceDisequalityMask,
-    ReduceEqualityMaskRange,
+    ReduceEqualityMask,
     ReduceFusion,
     ReduceMaskHoist,
     ReduceSplit,
@@ -1948,14 +1946,14 @@ def evaluate_under(rule, term):
 
 RULES = [
     pytest.param(
-        ReduceEqualityMaskRange(),
+        ReduceEqualityMask(),
         lambda: Sum(f(x) for x in range(3) if x == c()),
         lambda a: Sum.reduce(Sum.mask(f(a()), a() == c()), {a: range(3)}),
         ["a"],
         id="ReduceEqualityMaskRange",
     ),
     pytest.param(
-        ReduceEqualityMaskRange(),
+        ReduceEqualityMask(),
         lambda: Sum(f(x) for x in range(4) if x == c() and c() < 3),
         lambda a: Sum.reduce(
             Sum.mask(f(a()), And.plus(a() == c(), c() < 3)), {a: range(4)}
@@ -3125,8 +3123,6 @@ SYMBOLIC_REDUCTIONS = [
         "LogSumExp.reduce(LogSumExp.reduce(u() + v(), {v: (0.5, 1.5)}), {u: (0.0, 1.0)})",
         id="a-nested-log-sum-exp",
     ),
-    pytest.param("ArgMax.reduce((u(), 1), {u: (0.0, 2.0, 1.0)})", id="arg-max"),
-    pytest.param("ArgMin.reduce((u(), 1), {u: (0.0, 2.0, 1.0)})", id="arg-min"),
     pytest.param(
         "Sum.reduce((Sum.reduce(j(), {j: range_(i())}), i()), {i: range(4)})",
         id="a-sequence-of-reductions",
