@@ -1401,26 +1401,19 @@ class SlashCommand:
     run: collections.abc.Callable[[EffectfulACPAgent, ACPSession, str], str]
     """The behaviour: handed the server, the session and the argument text."""
 
-    fn: collections.abc.Callable[..., str]
-    """The registered function, whose still being defined keeps the command on offer."""
-
-    @property
-    def current(self) -> bool:
-        """Whether `fn` is still what its module defines under its name.
-
-        ``--autoreload`` re-runs a module, which registers its commands again but
-        unregisters none: not one it no longer defines, and not the old name of one it
-        renamed. This is what drops those. A command defined inside a function cannot
-        be checked this way, and counts as current.
-        """
-        if self.fn.__qualname__ != self.fn.__name__:
-            return True
-        module = sys.modules.get(self.fn.__module__)
-        return module is None or vars(module).get(self.fn.__name__) is self.fn
-
 
 _SLASH_COMMANDS: dict[str, SlashCommand] = {}
 """Every command, dispatch and advertisement together, filled by `register_command`."""
+
+
+def _on_reload(fn: collections.abc.Callable, undo: collections.abc.Callable) -> None:
+    """Call `undo` before the launcher's ``--autoreload`` re-runs `fn`'s module."""
+    try:
+        from reactivity.hmr.hooks import on_dispose
+
+        on_dispose(undo, inspect.getfile(fn))
+    except (ImportError, KeyError):
+        pass  # not under --autoreload, or not a module it re-runs
 
 
 type _Command = collections.abc.Callable[
@@ -1489,13 +1482,18 @@ def register_command[F: _Command](
                     return f"`{word}` is not a valid {param.name}. Try {choices}."
             return fn(server, session, *values)
 
-        _SLASH_COMMANDS[command] = SlashCommand(
+        entry = _SLASH_COMMANDS[command] = SlashCommand(
             spec=acp.schema.AvailableCommand(
                 name=command, description=description, input=input
             ),
             run=run,
-            fn=fn,
         )
+
+        def unregister() -> None:
+            if _SLASH_COMMANDS.get(command) is entry:
+                del _SLASH_COMMANDS[command]
+
+        _on_reload(fn, unregister)
         return fn
 
     return register if fn is None else register(fn)
@@ -1683,10 +1681,10 @@ def set_model[A: "Agent"](
 
 
 def slash_commands() -> dict[str, SlashCommand]:
-    """The commands on offer now, by name: those registered and still current.
+    """The commands on offer now, by name.
 
     Read when the commands are announced and when one is dispatched, rather than
     fixed when this module is imported, so a command registered later -- from the
     agent's own file -- is offered too.
     """
-    return {name: c for name, c in _SLASH_COMMANDS.items() if c.current}
+    return dict(_SLASH_COMMANDS)
