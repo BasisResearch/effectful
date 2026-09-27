@@ -19,11 +19,12 @@ stack follow the stack as it is rebuilt.
 
 Limits. A file that does not parse, or a stack that does not build, keeps its previous
 version. A module that raises while re-running keeps the names bound before the error
-updated and the rest as they were. A name an edit removes is dropped only if it held a
-function, class or operation the module defined; anything else stays, as it does
-under `importlib.reload`. The script's module-level code runs again in
+updated and the rest as they were. A name an edit removes stays bound, as under
+`importlib.reload` or in a notebook, since nothing can tell a stale definition from
+state; so a deleted tool is still offered, and an agent whose class was renamed keeps
+the old one, until a restart. The script's module-level code runs again in
 `Reloader.module`, so what should run once belongs under ``if __name__ ==
-"__main__"``. An agent whose class an edit renamed or removed keeps its old class.
+"__main__"``.
 """
 
 import asyncio
@@ -38,7 +39,6 @@ import importlib.util
 import linecache
 import os
 import pathlib
-import symtable
 import sys
 import threading
 import traceback
@@ -130,21 +130,6 @@ class _Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module.__spec__.loader_state.exec_module(module)
 
 
-def _prune(module: types.ModuleType, file: str, source: str) -> None:
-    """Drop the functions, classes and operations `module` defined that `source` no
-    longer does; other names stay, as `importlib.reload` keeps them."""
-    table = symtable.symtable(source, file, "exec")
-    bound = {s.get_name() for s in table.get_symbols() if s.is_assigned()}
-    proxy = module._ReactiveModule__namespace_proxy
-    for name, value in list(proxy.raw.items()):
-        if (
-            name not in bound
-            and isinstance(value, types.FunctionType | type | Operation)
-            and value.__module__ == module.__name__
-        ):
-            del proxy[name]
-
-
 class Reloader(LiveInterpretation):
     """The launcher's harness stack, rebuilt as the modules it and the script import change."""
 
@@ -230,10 +215,7 @@ class Reloader(LiveInterpretation):
             cls.__qualname__.split("."),
             module,
         )
-        if isinstance(found, type):
-            return found
-        print(f"note: {name}.{cls.__qualname__} is no longer defined", file=sys.stderr)
-        return cls
+        return found if isinstance(found, type) else cls
 
     @contextlib.contextmanager
     def hold(self) -> collections.abc.Iterator[None]:
@@ -321,8 +303,6 @@ class Reloader(LiveInterpretation):
                 self._pin(file)
                 with self._hmr.error_filter:
                     module._ReactiveModule__load()
-                if (entry := self._pinned.get(file)) is not None:
-                    _prune(module, file, "".join(entry[2]))
 
     def _pin(self, file: str) -> None:
         """Serve `file` from `linecache` as it is about to run, if it compiles."""

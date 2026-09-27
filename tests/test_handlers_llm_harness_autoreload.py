@@ -215,18 +215,15 @@ def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
     assert bot.__history__[0] is stored, "a later call replaced it again"
 
 
-def test_a_definition_a_file_no_longer_binds_is_forgotten(reloaded):
-    """A removed function goes; a name the file never bound is kept, as state."""
+def test_a_definition_an_edit_removes_stays_bound(reloaded):
+    """As under `importlib.reload`: nothing can tell a stale definition from state."""
     reloader, _, root = reloaded
     reloader.module.Bot
     helper = sys.modules["helper"]
-    assert helper.extra() == "extra"
-    helper.CACHE = {"kept": True}
 
     _edit(root / "helper.py", 'def extra() -> str:\n    return "extra"\n', "")
     assert reloader.apply() is True
-    assert not hasattr(helper, "extra")
-    assert helper.CACHE == {"kept": True}
+    assert helper.extra() == "extra"
 
 
 def test_a_file_that_does_not_parse_keeps_its_running_version(reloaded):
