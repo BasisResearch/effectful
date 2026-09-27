@@ -19,12 +19,13 @@ stack follow the stack as it is rebuilt.
 
 Limits. A file that does not parse, or a stack that does not build, keeps its previous
 version. A module that raises while re-running keeps the names bound before the error
-updated and the rest as they were. The script's module-level code runs again in
+updated and the rest as they were. A name an edit removes is dropped only if it held a
+function, class or operation the module defined; anything else stays, as it does
+under `importlib.reload`. The script's module-level code runs again in
 `Reloader.module`, so what should run once belongs under ``if __name__ ==
 "__main__"``. An agent whose class an edit renamed or removed keeps its old class.
 """
 
-import ast
 import asyncio
 import collections.abc
 import contextlib
@@ -130,25 +131,17 @@ class _Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
 
 def _prune(module: types.ModuleType, file: str, source: str) -> None:
-    """Drop the names `module` binds that its `source` no longer does."""
-    tree = ast.parse(source)
-    if "__path__" in vars(module) or any(
-        isinstance(node, ast.ImportFrom) and node.names[0].name == "*"
-        for node in ast.walk(tree)
-    ):
-        return
+    """Drop the functions, classes and operations `module` defined that `source` no
+    longer does; other names stay, as `importlib.reload` keeps them."""
     table = symtable.symtable(source, file, "exec")
-    bound = {
-        s.get_name() for s in table.get_symbols() if s.is_assigned() or s.is_imported()
-    }
-    tables = table.get_children()
-    while tables:
-        child = tables.pop()
-        bound |= {s.get_name() for s in child.get_symbols() if s.is_declared_global()}
-        tables += child.get_children()
+    bound = {s.get_name() for s in table.get_symbols() if s.is_assigned()}
     proxy = module._ReactiveModule__namespace_proxy
-    for name in [n for n in proxy.raw if n not in bound]:
-        if not name.startswith(("__", "_ReactiveModule__")):
+    for name, value in list(proxy.raw.items()):
+        if (
+            name not in bound
+            and isinstance(value, types.FunctionType | type | Operation)
+            and value.__module__ == module.__name__
+        ):
             del proxy[name]
 
 
