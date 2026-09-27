@@ -460,7 +460,7 @@ class ACPSession[A: "Agent"]:
         `intp` is the stack a prompt on this session runs under, added on top of the
         harness (see `EffectfulACPAgent._answer`); `reporter` is the one handler in it
         that outlives a call, which `EffectfulACPAgent.prompt` reads once the worker is
-        done. Called when the session opens and again by `EffectfulACPAgent._on_reload`.
+        done. Called when the session opens, and at a turn's start after a reload.
         """
         self.reporter, self.intp = _library().session_handlers(self)
 
@@ -2044,19 +2044,14 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._cwd = os.getcwd()
         self._restored = os.environ.pop(RESTART_STATE_ENV, None)
 
-        hooked: contextlib.AbstractContextManager = contextlib.nullcontext()
-        try:
-            from reactivity.hmr.hooks import use_post_reload
-        except ImportError:  # no hmr, so nothing is ever reloaded
-            pass
-        else:
-            loop = asyncio.get_running_loop()
+        from reactivity.hmr.hooks import use_post_reload
 
-            def reloaded() -> None:  # hmr may call this on any thread
-                loop.call_soon_threadsafe(self._on_reload)
+        loop = asyncio.get_running_loop()
 
-            hooked = use_post_reload(reloaded)
-        with hooked:
+        def reloaded() -> None:  # hmr may call this on any thread
+            loop.call_soon_threadsafe(self._on_reload)
+
+        with use_post_reload(reloaded):
             try:
                 # `run_agent`'s parameters are named from the client's point of view:
                 # the stream the client reads is the one this agent writes.

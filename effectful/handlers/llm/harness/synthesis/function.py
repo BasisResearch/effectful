@@ -111,13 +111,13 @@ def _recover_skill_def(
     # Recover the module source via fn's own filename -- a real path or a
     # linecache-registered synthetic name (e.g. <synthesis:...>) for REPL/exec/
     # notebook skills; linecache.getlines reads real files from disk too.
-    try:
-        source_file = inspect.getsourcefile(fn)
-    except TypeError:
-        source_file = None
     lines = getattr(fn, "__module_source__", None)
-    if lines is None and source_file:
-        lines = linecache.getlines(source_file)
+    if lines is None:
+        try:
+            source_file = inspect.getsourcefile(fn)
+        except TypeError:
+            source_file = None
+        lines = linecache.getlines(source_file) if source_file else []
     module_source = "".join(lines or ())
     if not module_source:
         logger.warning("skipping type check: cannot recover source for %r", fn)

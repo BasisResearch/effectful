@@ -1,26 +1,14 @@
-"""Re-run edited code while a script served by the launcher keeps running.
+"""Re-run edited code while a script served by the launcher's ``--autoreload`` runs.
 
-Under ``python -m effectful.handlers.llm.harness --autoreload <script>``, `hmr
-<https://pypi.org/project/hmr/>`_ re-runs each edited module imported from a directory
-on `sys.path` (not the standard library, installed packages, or any module imported
-before the reloader started), and what depends on it, as its file watcher sees edits;
-an agent's own writes are handed to hmr when its call starts and ends. As hmr runs an
-entry file, the reloader runs the script's copy, `Reloader.module`, in an effect; the
-running script is ``__main__`` and never re-runs, and the copy's re-runs update its
-classes. A re-run keeps the identity of the operations and classes it defines,
-updating classes in place, and an agent's next call picks up its edited skills and
-system prompt. A module that holds the running process sets ``__autoreload__ =
-False``.
-
-Limits: a call may see an edit partway through; a file that does not parse keeps its
-previous version, and one that raises keeps what ran before the error; a name an edit
-removes stays bound; a class whose layout changed is bound anew; and the script's
-module-level code runs again in `Reloader.module`.
+`hmr <https://pypi.org/project/hmr/>`_ re-runs what an edit reaches, keeping the
+identity of the operations and classes a re-run defines; `Reloader` is the harness
+stack it rebuilds.
 """
 
 import collections.abc
 import contextlib
 import gc
+import importlib.abc
 import importlib.util
 import inspect
 import os
@@ -30,6 +18,11 @@ import threading
 import types
 import typing
 import weakref
+
+# Here, so the watcher thread imports nothing: a daemon thread frozen at exit while
+# importing keeps the import lock, and the interpreter's shutdown then waits on it.
+import watchfiles  # noqa: F401
+from reactivity.hmr.core import HMR_CONTEXT, ReactiveModule, SyncReloader
 
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.semantics import LiveInterpretation, coproduct, fwd, handler
@@ -114,7 +107,7 @@ def _classes(namespace: dict[str, typing.Any]) -> dict[str, type]:
     }
 
 
-def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
+def gate_interpretation(reloader: "Reloader") -> Interpretation:
     """Handlers that bring a called agent up to date with `reloader`'s edits, and
     replace the system message of a conversation last run before a reload."""
     # Here rather than at the top, so that hmr, installed after this module was
@@ -132,19 +125,16 @@ def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
         return message
 
     def call_agent(skill, *args, **kwargs):
-        agent = getattr(skill, "__self__", None)
-        state = getattr(agent, "__dict__", None)
-        if reloader is None or state is None:
-            return fwd()
         reloader.refresh()
-        # Looked up before `refresh` brought the class up to date; this looks it up
-        # again, which rebuilds it only if an edit changed it.
-        if (op := getattr(skill, "__classop__", None)) is not None:
-            skill = op.__get__(agent, type(agent))
-        # The reload count this agent's conversation last ran under.
-        key = "__autoreload_reloads__"
-        last, state[key] = state.get(key), reloader.reloads
         try:
+            agent = getattr(skill, "__self__", None)
+            # Looked up before `refresh` brought the class up to date; this looks it
+            # up again, which rebuilds it only if an edit changed it.
+            if (op := getattr(skill, "__classop__", None)) is not None:
+                skill = op.__get__(agent, type(agent))
+            # The reload count this agent's conversation last ran under.
+            state, key = getattr(agent, "__dict__", {}), "__autoreload_reloads__"
+            last, state[key] = state.get(key), reloader.reloads
             if last is None or last == reloader.reloads:
                 return fwd(skill, *args, **kwargs)
             with handler({system_op: call_system}):
@@ -156,7 +146,9 @@ def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
 
 
 class Reloader(LiveInterpretation):
-    """The launcher's harness stack, rebuilt as the modules it and the script import change."""
+    """The launcher's harness stack, rebuilt as the modules it and the script import
+    change; the script's own module is re-run in a copy, `module`, whose classes update
+    those of ``__main__``, which never re-runs."""
 
     reloads: int
     """How many times a module has re-run."""
@@ -169,29 +161,24 @@ class Reloader(LiveInterpretation):
         script: str | os.PathLike[str],
         build: collections.abc.Callable[[], Interpretation],
     ) -> None:
-        try:
-            from reactivity.hmr._common import HMR_CONTEXT
-            from reactivity.hmr.core import BaseReloader, ReactiveModule
-            from reactivity.primitives import Derived
-        except ImportError as e:
-            raise ImportError(
-                "--autoreload needs hmr: pip install effectful[llm]"
-            ) from e
         import effectful
 
         self.script = pathlib.Path(script).resolve()
         self.reloads = 0
         self._lock = threading.RLock()
         self._pending: set[pathlib.Path] = set()
+        self._pending_lock = threading.Lock()
         self._closed = False
 
         # hmr finds modules through `sys.path`, where an editable install need not
-        # put effectful.
-        root = str(pathlib.Path(effectful.__file__).parents[1])
-        if root not in sys.path:
-            sys.path.append(root)
-        self._hmr = BaseReloader(
-            str(self.script), [p or "." for p in sys.path if os.path.isdir(p or ".")]
+        # put effectful, whose core it must never re-run.
+        package = pathlib.Path(effectful.__file__).parent
+        if str(package.parent) not in sys.path:
+            sys.path.append(str(package.parent))
+        self._hmr = SyncReloader(
+            str(self.script),
+            [p or "." for p in sys.path if os.path.isdir(p or ".")],
+            [str(package / "ops"), str(package / "internals")],
         )
         self._finder = sys.meta_path[0]
         on_changes = self._hmr.on_changes
@@ -203,8 +190,30 @@ class Reloader(LiveInterpretation):
         self._hmr.on_changes = serialized
         # Every module hmr runs, first or again, runs through here.
         self._load = vars(ReactiveModule)["_ReactiveModule__load"]
-        self._original = self._load.method
-        self._load.method = self._runner(Derived.UNSET)
+        self._original = original = self._load.method
+        ran: weakref.WeakSet[types.ModuleType] = weakref.WeakSet()
+
+        def run(module: types.ModuleType) -> None:
+            if module not in ran:  # inside its import, which must not wait on the lock
+                ran.add(module)
+                original(module)
+                return
+            with self._lock:
+                if vars(module).get("__autoreload__") is False:
+                    self._load.find(module).reactivity_loss_strategy = "restore"
+                    return
+                before = _classes(vars(module))
+                if module is self.module:  # which stands in for ``__main__``
+                    before |= _classes(vars(sys.modules["__main__"]))
+                token = REDEFINING.set(True)
+                # Reported rather than raised, so one broken edit leaves the rest to run.
+                with self._hmr.error_filter:
+                    original(module)
+                REDEFINING.reset(token)
+                _keep_classes(vars(module), before)
+                self.reloads += 1
+
+        self._load.method = run
         audit = weakref.WeakMethod(self._audit)
         sys.addaudithook(lambda event, args: (hook := audit()) and hook(event, args))
 
@@ -214,49 +223,23 @@ class Reloader(LiveInterpretation):
         )
         # A build that reads nothing reloadable is legitimate, not a lost dependency.
         self._derived.reactivity_loss_strategy = "ignore"
-        self._stack: Interpretation = {}
+        # Outside the effect, so a first build that fails raises, as without a reloader.
+        self._stack: Interpretation = self._derived()
         spec = self._finder.find_spec(self.script.stem, None)
         self.module = None
+        self._script_loader: importlib.abc.Loader | None = None
         if spec is not None and spec.loader is not None:
             self.module = importlib.util.module_from_spec(spec)
+            self._script_loader = spec.loader
             sys.modules[spec.name] = self.module
         self._effect = HMR_CONTEXT.effect(self._track)
-
-    def _runner(
-        self, unset: object
-    ) -> collections.abc.Callable[[types.ModuleType], None]:
-        """hmr's way of running a module, keeping the identities a re-run replaces."""
-        original, lock = self._original, self._lock
-
-        def run(module: types.ModuleType) -> None:
-            with lock:
-                load = self._load.find(module)
-                if load._value is unset:  # its first run
-                    original(module)
-                    return
-                if vars(module).get("__autoreload__") is False:
-                    load.reactivity_loss_strategy = "restore"
-                    return
-                before = _classes(vars(module))
-                if module is self.module:  # which stands in for ``__main__``
-                    main = vars(sys.modules["__main__"])
-                    before |= _classes(main | {"__name__": "__main__"})
-                token = REDEFINING.set(True)
-                # Reported rather than raised, so one broken edit leaves the rest to run.
-                with self._hmr.error_filter:
-                    original(module)
-                REDEFINING.reset(token)
-                _keep_classes(vars(module), before)
-                self.reloads += 1
-
-        return run
 
     def _track(self) -> None:
         """Run the script's copy and read the stack, as hmr runs an entry file, so an
         edit to anything they import re-runs it and what depends on it."""
-        if self.module is not None:
-            getattr(self.module, "__autoreload__", None)
-        with self._hmr.error_filter:  # a stack that fails to build keeps the last
+        if self.module is not None and self._script_loader is not None:
+            self._script_loader.exec_module(self.module)
+        with self._hmr.error_filter:  # a later build that fails keeps the last
             self._stack = self._derived()
 
     def snapshot(self) -> Interpretation:
@@ -264,8 +247,9 @@ class Reloader(LiveInterpretation):
 
     def refresh(self) -> None:
         """Tell hmr about the files this process wrote; it re-runs what they reach."""
-        if self._pending:
+        with self._pending_lock:
             paths, self._pending = self._pending, set()
+        if paths:
             self._hmr.on_changes(paths)
 
     def _audit(self, event: str, args: tuple) -> None:
@@ -276,23 +260,16 @@ class Reloader(LiveInterpretation):
         if not isinstance(path, str | os.PathLike) or not isinstance(flags, int):
             return
         if flags & (os.O_WRONLY | os.O_RDWR):
-            from reactivity.hmr.core import ReactiveModule
-
             if (resolved := pathlib.Path(path).resolve()) in ReactiveModule.instances:
-                self._pending.add(resolved)
+                with self._pending_lock:
+                    self._pending.add(resolved)
 
     def start(self) -> None:
         """Watch for edits from a daemon thread, until `close`."""
-        from reactivity.hmr.core import SyncReloader
-
-        threading.Thread(
-            target=SyncReloader.start_watching, args=(self._hmr,), daemon=True
-        ).start()
+        threading.Thread(target=self._hmr.start_watching, daemon=True).start()
 
     def close(self) -> None:
         """Stop watching and forget every module hmr loaded; for tests."""
-        from reactivity.hmr.core import ReactiveModule
-
         self._closed = True
         self._hmr.stop_watching()
         sys.meta_path.remove(self._finder)

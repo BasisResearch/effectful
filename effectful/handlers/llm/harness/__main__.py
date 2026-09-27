@@ -174,8 +174,8 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         "--autoreload",
         action="store_true",
         help=(
-            "Re-run edited code -- the script's directory and the harness -- while "
-            "the script runs (needs hmr)"
+            "Re-run edited code imported from sys.path directories, including the "
+            "harness, while the script runs"
         ),
     )
     parser.add_argument(

@@ -50,7 +50,6 @@ type Wait = Callable[[concurrent.futures.Future[Any]], Any]
 
 
 @functools.cache
-@functools.cache
 def background_loop() -> asyncio.AbstractEventLoop:
     """A process-wide event loop on a daemon thread, for callers that have none."""
     loop = asyncio.new_event_loop()

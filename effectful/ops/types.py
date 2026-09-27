@@ -581,9 +581,22 @@ class Operation[**Q, V]:
         if not issubclass(owner, Term):
             expected = f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
             assert getattr(self, "_name_on_instance", expected) == expected, (
-                "should only be called once"
+                "should only be bound under one name"
             )
             self._name_on_instance: str = expected
+
+    def _cached_instance_op(self, instance: object) -> "Operation | None":
+        """The instance op cached on `instance`, if it is still this op's current one."""
+        cached = getattr(instance, "__dict__", {}).get(
+            getattr(self, "_name_on_instance", None)
+        )
+        if (
+            cached is not None
+            and getattr(cached, "__classop__", None) is self
+            and getattr(cached, "__classdefault__", None) is self.__default__
+        ):
+            return cached
+        return None
 
     @overload
     def __get__[T, **P](
@@ -617,14 +630,7 @@ class Operation[**Q, V]:
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
             from effectful.ops.semantics import fvsof
 
-            cached = instance.__dict__.get(self._name_on_instance)
-            # Rebuilt when the class op it was made from is no longer this one,
-            # or was redefined since.
-            if (
-                cached is not None
-                and getattr(cached, "__classop__", None) is self
-                and getattr(cached, "__classdefault__", None) is self.__default__
-            ):
+            if (cached := self._cached_instance_op(instance)) is not None:
                 return cached
             elif isinstance(instance, Term) or fvsof(instance):
                 return types.MethodType(self, instance)  # type: ignore[return-value]
