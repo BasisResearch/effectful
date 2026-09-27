@@ -1344,17 +1344,13 @@ def test_a_coproduct_with_a_live_interpretation_follows_it():
 
     class Live(LiveInterpretation):
         def __init__(self):
-            self._version, self._handlers = 0, {answer: lambda: "one"}
-
-        @property
-        def version(self):
-            return self._version
+            self._handlers = {answer: lambda: "one"}
 
         def snapshot(self):
             return self._handlers
 
         def become(self, handlers):
-            self._version, self._handlers = self._version + 1, handlers
+            self._handlers = handlers
 
     live = Live()
     with handler(coproduct(live, {wrapped: lambda: f"[{answer()}]"})):

@@ -180,7 +180,7 @@ class Reloader(LiveInterpretation):
         import effectful
 
         self.script = pathlib.Path(script).resolve()
-        self.reloads = self._builds = 0
+        self.reloads = 0
         self._lock = threading.RLock()
         self._pending: set[pathlib.Path] = set()
         self._closed = False
@@ -257,12 +257,7 @@ class Reloader(LiveInterpretation):
         if self.module is not None:
             getattr(self.module, "__autoreload__", None)
         with self._hmr.error_filter:  # a stack that fails to build keeps the last
-            if (stack := self._derived()) is not self._stack:
-                self._stack, self._builds = stack, self._builds + 1
-
-    @property
-    def version(self) -> int:
-        return self._builds
+            self._stack = self._derived()
 
     def snapshot(self) -> Interpretation:
         return self._stack
