@@ -284,9 +284,9 @@ def main(argv: list[str] | None = None) -> None:
         # Before the first build, so the handler modules load through hmr.
         from effectful.handlers.llm.harness import autoreload
 
-        reloader = autoreload.install(ns.script, lambda: _build_harness(ns))
+        reloader = autoreload.Reloader(ns.script, lambda: _build_harness(ns))
         reloader.start()
-        installed = interpreter(reloader.live())
+        installed = interpreter(reloader)
     else:
         installed = handler(_build_harness(ns))
     with installed:

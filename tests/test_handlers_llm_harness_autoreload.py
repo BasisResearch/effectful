@@ -133,7 +133,7 @@ def reloaded(tmp_path, monkeypatch):
     script.write_text(SCRIPT)
     monkeypatch.syspath_prepend(str(tmp_path))
     mock = MockCompletionHandler([make_text_response("ok")])
-    reloader = autoreload.install(script, lambda: _mocked_harness(mock))
+    reloader = autoreload.Reloader(script, lambda: _mocked_harness(mock))
     try:
         yield reloader, mock, tmp_path
     finally:
@@ -148,7 +148,7 @@ def helper_stack(tmp_path, monkeypatch):
     script.write_text(SCRIPT)
     monkeypatch.syspath_prepend(str(tmp_path))
     mock = MockCompletionHandler([make_text_response("ok")])
-    reloader = autoreload.install(
+    reloader = autoreload.Reloader(
         script,
         lambda: coproduct(
             _mocked_harness(mock), importlib.import_module("helper").Answering()
@@ -175,7 +175,7 @@ def _systems(mock) -> list[str]:
 def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
     reloader, mock, root = reloaded
     bot = reloader.module.Bot()
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("one")
     assert "It says one." in _systems(mock)[0]
 
@@ -183,13 +183,13 @@ def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
     assert reloader.apply() is True
     assert "It says two." in reloader.module.Bot.__doc__, "the script re-ran too"
 
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("two")
     assert "It says one." in _systems(mock)[0], "a history keeps its system message"
 
     reloader.refresh(bot)
     assert type(bot) is reloader.module.Bot
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("three")
     assert _systems(mock) == [str(bot.__history__[0]["content"])]
     assert "It says two." in _systems(mock)[0]
@@ -198,19 +198,19 @@ def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
 def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
     reloader, mock, root = reloaded
     bot = reloader.module.Bot()
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("one")
 
     _edit(root / "script.py", "A bot, version one.", "A bot, version two.")
     assert reloader.apply() is True
     reloader.refresh(bot)
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("two")
     stored = bot.__history__[0]
     assert len(_systems(mock)) == 1 and "version two" in _systems(mock)[0]
     assert "version two" in str(stored["content"])
 
-    with interpreter(reloader.live()):
+    with interpreter(reloader):
         bot.ask("three")
     assert bot.__history__[0] is stored, "a later call replaced it again"
 
@@ -252,7 +252,7 @@ def test_apply_waits_for_a_turn(reloaded):
         applied.append(reloader.apply())
         done.set()
 
-    with reloader.turn():
+    with reloader.hold():
         assert reloader.apply(wait=False) is None, "deferred, not applied"
         threading.Thread(target=apply_from_a_thread).start()
         assert not done.wait(0.3)
@@ -271,7 +271,7 @@ def test_apply_waits_for_a_call_in_flight(reloaded):
     helper = sys.modules["helper"]
 
     def call():
-        with interpreter(reloader.live()):
+        with interpreter(reloader):
             bot.ask("go")
 
     thread = threading.Thread(target=call)
@@ -290,7 +290,7 @@ def test_a_kept_module_is_not_re_run(reloaded):
     reloader, _, root = reloaded
     reloader.module.Bot
     helper = sys.modules["helper"]
-    reloader.keep(helper)
+    helper.__autoreload__ = False
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
     assert reloader.apply() is False
@@ -322,7 +322,7 @@ def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):
             seen.append(response.choices[0].message.content)
             return response
 
-    with interpreter(reloader.live()), handler(Recorder()):
+    with interpreter(reloader), handler(Recorder()):
         bot.ask("one")
         _edit(root / "helper.py", 'ANSWER = "one"', 'ANSWER = "two"')
         assert reloader.apply() is True
@@ -349,6 +349,6 @@ def test_a_redefined_operation_keeps_its_identity(reloaded):
 
 def test_current_is_the_installed_reloader(reloaded):
     reloader, _, _ = reloaded
-    assert autoreload.current() is reloader
-    with pytest.raises(RuntimeError):
-        autoreload.install(reloader.script, dict)
+    assert autoreload.current() is None
+    with interpreter(reloader):
+        assert autoreload.current() is reloader

@@ -81,7 +81,7 @@ if typing.TYPE_CHECKING:
     from effectful.handlers.llm import Agent
 
 # This module holds the running server, so an edit to it needs `/restart`.
-autoreload.keep(__name__)
+__autoreload__ = False
 
 LIBRARY = "library"
 """The module holding the reloadable half of the server; see `_library`."""
@@ -1412,7 +1412,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         """
         reloader = autoreload.current()
         suspended = (
-            reloader.suspended() if reloader is not None else contextlib.nullcontext()
+            reloader.hold() if reloader is not None else contextlib.nullcontext()
         )
         with suspended:
             await self._exec_replacement(requested_by)
@@ -1859,7 +1859,7 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
         self._refuse_while_restarting()
         session = self._session(session_id)
         reloader = autoreload.current()
-        with reloader.turn() if reloader is not None else contextlib.nullcontext():
+        with reloader.hold() if reloader is not None else contextlib.nullcontext():
             return await self._turn(session, prompt)
 
     async def _turn(
@@ -2084,8 +2084,6 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
                 observers=[self._observe],
             )
         finally:
-            if reloader is not None:
-                reloader.unsubscribe(self._on_reload)
             if watching is not None:
                 watching.cancel()
             for session in list(self.sessions.values()):
