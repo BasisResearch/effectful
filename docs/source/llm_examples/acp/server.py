@@ -108,12 +108,6 @@ class _Command(typing.Protocol):
     ) -> collections.abc.Callable[["EffectfulACPAgent", "ACPSession", str], str]: ...
 
 
-class _Reloader(typing.Protocol):
-    """What `EffectfulACPAgent._on_reload` asks of the launcher's reloader."""
-
-    def current_class(self, cls: type, /) -> type: ...
-
-
 class _Library(typing.Protocol):
     """Everything this module takes from `library`, and so the line between them.
 
@@ -1955,20 +1949,12 @@ class EffectfulACPAgent[A: Agent](acp.Agent):
             return f"Unknown command `/{name}`. Try {offered}."
         return command.run(self, session, argument)
 
-    def _on_reload(self, reloader: "_Reloader") -> None:
-        """Serve new code: rebuild each session's handlers, announce them, move its agent."""
-        if isinstance(self.make_agent, type):
-            self.make_agent = typing.cast(
-                collections.abc.Callable[[str], A],
-                reloader.current_class(self.make_agent),
-            )
+    def _on_reload(self, reloader: "autoreload.Reloader") -> None:
+        """Serve new code: rebuild each session's handlers and announce them."""
         for session in self.sessions.values():
             session.install_handlers()
             self._announce_commands(session)
             self._announce_config(session)
-            autoreload.rebind(
-                session.agent, reloader.current_class(type(session.agent))
-            )
 
     def _answer(
         self,

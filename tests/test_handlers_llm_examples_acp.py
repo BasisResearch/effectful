@@ -4107,16 +4107,16 @@ def test_an_idle_editor_is_not_disconnected():
 
 
 class _FakeReloader:
-    """A reloader whose new code is one class, for `EffectfulACPAgent._on_reload`."""
+    """A reloader that has applied `version` reloads, and holds nothing off."""
 
-    def __init__(self, cls: type):
-        self.cls = cls
+    def __init__(self) -> None:
+        self.version = 0
 
-    def current_class(self, cls: type) -> type:
-        return self.cls
+    def hold(self) -> contextlib.AbstractContextManager[None]:
+        return contextlib.nullcontext()
 
 
-def test_a_reload_gives_open_sessions_the_new_system_prompt():
+def test_a_reload_gives_open_sessions_the_new_system_prompt(monkeypatch):
     """An edit that changes the system prompt reaches a session already open.
 
     `HistoryBuilder` keeps a history's first system message, so without the
@@ -4126,11 +4126,7 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt():
     # Made up at run time: the system prompt also carries this file's source, so a
     # marker written out here would be found in every version of it.
     marker = f"edited-{os.urandom(8).hex()}"
-
-    class _Rebuilt(_Bot):
-        pass
-
-    _Rebuilt.__doc__ = f"A minimal agent, {marker}."
+    reloader = _FakeReloader()
     model = MockCompletionHandler([make_text_response("ok")])
 
     def systems(messages) -> list[str]:
@@ -4146,18 +4142,21 @@ def test_a_reload_gives_open_sessions_the_new_system_prompt():
             return systems(model.received_messages[-1])
 
         before = await turn("one")
-        server._on_reload(_FakeReloader(_Rebuilt))
+        # What a reload does to a class: the same object, with the edit applied.
+        monkeypatch.setattr(_Bot, "__doc__", f"A minimal agent, {marker}.")
+        reloader.version += 1
+        server._on_reload(typing.cast(typing.Any, reloader))
         after = await turn("two")
         stored = session.agent.__history__[0]
         later = await turn("three")
         await server.close_session(session_id)
         return before, after, stored, later, session
 
-    with handler(_stack(autoreload.gate_interpretation(), model)):
+    gate = autoreload.gate_interpretation(typing.cast(typing.Any, reloader))
+    with handler(_stack(gate, model)):
         before, after, stored, later, session = asyncio.run(drive())
 
     assert len(before) == len(after) == len(later) == 1
-    assert isinstance(session.agent, _Rebuilt)
     assert marker not in before[0]
     assert marker in after[0]
     assert marker in str(stored["content"])
@@ -4176,7 +4175,7 @@ def test_a_reload_offers_open_sessions_the_edited_modes(monkeypatch):
         monkeypatch.setattr(
             library, "SESSION_MODES", (library.SESSION_MODES[0], review)
         )
-        server._on_reload(_FakeReloader(_Bot))
+        server._on_reload(typing.cast(typing.Any, _FakeReloader()))
         await session.flush()
         return session.mode_id
 
