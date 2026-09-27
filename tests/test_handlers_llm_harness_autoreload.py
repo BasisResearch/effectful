@@ -7,7 +7,6 @@ here; the stack itself is rebuilt from them by the same mechanism.
 """
 
 import importlib
-import linecache
 import runpy
 import sys
 import threading
@@ -180,7 +179,7 @@ def test_an_edit_to_an_imported_value_reaches_a_refreshed_agent(reloaded):
     assert "It says one." in _systems(mock)[0]
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
-    assert reloader.apply() is True
+    assert reloader.apply([root / "helper.py"]) is True
     assert "It says two." in reloader.module.Bot.__doc__, "the script re-ran too"
 
     with interpreter(reloader):
@@ -202,7 +201,7 @@ def test_a_refreshed_agent_replaces_its_system_message_once(reloaded):
         bot.ask("one")
 
     _edit(root / "script.py", "A bot, version one.", "A bot, version two.")
-    assert reloader.apply() is True
+    assert reloader.apply([root / "script.py"]) is True
     autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
@@ -222,7 +221,7 @@ def test_a_definition_an_edit_removes_stays_bound(reloaded):
     helper = sys.modules["helper"]
 
     _edit(root / "helper.py", 'def extra() -> str:\n    return "extra"\n', "")
-    assert reloader.apply() is True
+    assert reloader.apply([root / "helper.py"]) is True
     assert helper.extra() == "extra"
 
 
@@ -234,9 +233,8 @@ def test_a_file_that_does_not_parse_keeps_its_running_version(reloaded):
     # Shifts every line, then fails to parse.
     script.write_text("import dataclasses\n" + old + "\n\ndef broken(:\n")
 
-    assert reloader.apply() is True
+    assert reloader.apply([script]) is True
     assert reloader.module.Bot is before
-    assert linecache.getlines(str(script)) == old.splitlines(keepends=True)
     _, skill_def = _recover_skill_def(before.ask)
     assert skill_def.name == "ask"
 
@@ -249,11 +247,13 @@ def test_apply_waits_for_a_turn(reloaded):
     done = threading.Event()
 
     def apply_from_a_thread():
-        applied.append(reloader.apply())
+        applied.append(reloader.apply([root / "script.py"]))
         done.set()
 
     with reloader.hold():
-        assert reloader.apply(wait=False) is None, "deferred, not applied"
+        assert reloader.apply([root / "script.py"], wait=False) is None, (
+            "deferred, not applied"
+        )
         threading.Thread(target=apply_from_a_thread).start()
         assert not done.wait(0.3)
     assert done.wait(5)
@@ -278,11 +278,11 @@ def test_apply_waits_for_a_call_in_flight(reloaded):
     thread.start()
     assert helper.STARTED.wait(10)
     _edit(root / "script.py", "version one", "version two")
-    assert reloader.apply(wait=False) is None
+    assert reloader.apply([root / "script.py"], wait=False) is None
     helper.RELEASE.set()
     thread.join(10)
     assert not thread.is_alive()
-    assert reloader.apply() is True
+    assert reloader.apply([root / "script.py"]) is True
     assert "version two" in reloader.module.Bot.__doc__
 
 
@@ -293,7 +293,7 @@ def test_a_kept_module_is_not_re_run(reloaded):
     helper.__autoreload__ = False
 
     _edit(root / "helper.py", 'GREETING = "one"', 'GREETING = "two"')
-    assert reloader.apply() is False
+    assert reloader.apply([root / "helper.py"]) is False
     assert helper.GREETING == "one"
 
 
@@ -325,7 +325,7 @@ def test_a_handler_installed_around_calls_follows_a_rebuilt_stack(helper_stack):
     with interpreter(reloader), handler(Recorder()):
         bot.ask("one")
         _edit(root / "helper.py", 'ANSWER = "one"', 'ANSWER = "two"')
-        assert reloader.apply() is True
+        assert reloader.apply([root / "helper.py"]) is True
         bot.ask("two")
     assert seen == ["one", "two"]
 
@@ -341,7 +341,7 @@ def test_a_redefined_operation_keeps_its_identity(reloaded):
     _edit(root / "helper.py", 'return "pong"', 'return "PONG"')
     _edit(root / "helper.py", 'return "box"', 'return "BOX"')
     with handler({ping: lambda: "mine"}):
-        assert reloader.apply() is True
+        assert reloader.apply([root / "helper.py"]) is True
         assert helper.ping is ping and helper.Box.label is label
         assert ping() == "mine", "a handler keyed before the edit still applies"
     assert (ping(), label()) == ("PONG", "BOX")

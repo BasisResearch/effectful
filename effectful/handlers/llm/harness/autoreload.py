@@ -2,9 +2,9 @@
 
 Under ``python -m effectful.handlers.llm.harness --autoreload <script>``, `hmr
 <https://pypi.org/project/hmr/>`_ re-runs each edited module that was imported from a
-directory on `sys.path` -- not the standard library or installed packages, and of
-effectful only this package -- the harness stack is rebuilt from the launcher's
-flags, and each subscriber is told, so it can move its agents onto the new classes
+directory on `sys.path` -- not the standard library or installed packages, nor any
+module imported before it started, which includes effectful's core -- the harness
+stack is rebuilt from the launcher's flags, and each subscriber is told, so it can move its agents onto the new classes
 with `rebind` and `Reloader.current_class`. The running script is ``__main__`` and is never re-run;
 `Reloader.module`, the script imported under its own name on first use, supplies its
 current classes. A module that holds the running process sets ``__autoreload__ =
@@ -12,8 +12,8 @@ False`` and imports reloadable modules only inside functions.
 
 Edits apply between calls, on the thread that calls `Reloader.apply`: the launcher's
 watcher thread, or the event loop of a host that awaits `Reloader.watch`, which a host
-with a loop should, since hmr is not thread-safe. `linecache` serves the running
-version of each reloadable file. An operation keeps its identity across edits (see
+with a loop should, since hmr is not thread-safe. An operation keeps its identity
+across edits (see
 `~effectful.ops.types.REDEFINING`), and handlers a script installs over the launcher's
 stack follow the stack as it is rebuilt.
 
@@ -36,7 +36,6 @@ import gc
 import importlib
 import importlib.abc
 import importlib.util
-import linecache
 import os
 import pathlib
 import sys
@@ -105,31 +104,6 @@ def gate_interpretation(reloader: "Reloader | None" = None) -> Interpretation:
     return {hooks.call_agent: call_agent, current: lambda: reloader}
 
 
-class _Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
-    """hmr's finder, minus effectful outside this package, pinning each module as it runs."""
-
-    def __init__(self, hmr: typing.Any, pin) -> None:
-        self._hmr, self._pin = hmr, pin
-
-    def find_spec(self, name, path, target=None):
-        if name.partition(".")[0] == "effectful" and (
-            not name.startswith(f"{HARNESS}.")
-            or name in (__name__, f"{HARNESS}.__main__")
-        ):
-            return None
-        spec = self._hmr.find_spec(name, path, target)
-        if spec is not None:
-            spec.loader_state, spec.loader = spec.loader, self
-        return spec
-
-    def create_module(self, spec):
-        return spec.loader_state.create_module(spec)
-
-    def exec_module(self, module):
-        self._pin(module.__spec__.origin)
-        module.__spec__.loader_state.exec_module(module)
-
-
 class Reloader(LiveInterpretation):
     """The launcher's harness stack, rebuilt as the modules it and the script import change."""
 
@@ -149,7 +123,6 @@ class Reloader(LiveInterpretation):
 
         self.script = pathlib.Path(script).resolve()
         self._subscribers: list[collections.abc.Callable[[Reloader], None]] = []
-        self._pinned: dict[str, tuple] = {}
         self._stop = threading.Event()
         # Held while calls run or a reload applies; the first call in takes it, the
         # last one out releases it.
@@ -163,7 +136,7 @@ class Reloader(LiveInterpretation):
         self._hmr = BaseReloader(
             str(self.script), [p or "." for p in sys.path if os.path.isdir(p or ".")]
         )
-        self._finder = sys.meta_path[0] = _Finder(sys.meta_path[0], self._pin)
+        self._finder = sys.meta_path[0]
 
         base = get_interpretation()
         self._derived = HMR_CONTEXT.derived(
@@ -188,7 +161,7 @@ class Reloader(LiveInterpretation):
         if existing is not None and vars(existing).get("__file__") == str(self.script):
             return existing
         spec = self._finder.find_spec(self.script.stem, None)
-        if spec is None or spec.origin != str(self.script):
+        if spec is None or spec.loader is None or spec.origin != str(self.script):
             print(
                 f"note: {self.script.name} cannot be imported by name", file=sys.stderr
             )
@@ -203,7 +176,7 @@ class Reloader(LiveInterpretation):
         self._subscribers.append(callback)
 
     def current_class(self, cls: type) -> type:
-        """The class `cls`'s module now defines under its name, else `cls`, with a note."""
+        """The class `cls`'s module now defines under its name, else `cls`."""
         from reactivity.hmr.core import ReactiveModule
 
         name = cls.__module__
@@ -234,11 +207,11 @@ class Reloader(LiveInterpretation):
 
     def apply(
         self,
-        files: collections.abc.Iterable[str | os.PathLike[str]] | None = None,
+        files: collections.abc.Iterable[str | os.PathLike[str]],
         *,
         wait: bool = True,
     ) -> bool | None:
-        """Re-run the edited `files`, by default every reloadable file changed on disk.
+        """Re-run the edited `files`.
 
         `None` if a call holds reloads off and `wait` is false; otherwise whether
         anything was re-run. Subscribers must not call skills or apply.
@@ -246,13 +219,6 @@ class Reloader(LiveInterpretation):
         from reactivity.hmr.core import ReactiveModule
         from watchfiles import Change
 
-        if files is None:
-            files = [
-                file
-                for file, (_, _, lines, _) in self._pinned.items()
-                if not os.path.isfile(file)
-                or pathlib.Path(file).read_text("utf-8") != "".join(lines)
-            ]
         paths = {pathlib.Path(file).resolve() for file in files}
         modules = [
             ReactiveModule.instances.get(path) for path in paths if path.is_file()
@@ -277,7 +243,6 @@ class Reloader(LiveInterpretation):
                 self._derived.dirty = True  # rebuilt on the next edit
             elif stack is not self._stack:
                 self._stack, self._generation = stack, self._generation + 1
-            linecache.cache.update(self._pinned)
             for callback in self._subscribers:
                 with self._hmr.error_filter:
                     callback(self)
@@ -299,20 +264,8 @@ class Reloader(LiveInterpretation):
         ]:
             for module in dirty:
                 ran.add(module)
-                file = str(module.__file__)
-                self._pin(file)
                 with self._hmr.error_filter:
                     module._ReactiveModule__load()
-
-    def _pin(self, file: str) -> None:
-        """Serve `file` from `linecache` as it is about to run, if it compiles."""
-        try:
-            source = pathlib.Path(file).read_text("utf-8")
-            compile(source, file, "exec", dont_inherit=True)
-        except (OSError, SyntaxError, ValueError):
-            return
-        lines = source.splitlines(keepends=True)
-        linecache.cache[file] = self._pinned[file] = (len(source), None, lines, file)
 
     def _dirs(self) -> set[str]:
         """The directories of the modules hmr loaded, which are all an edit can reach."""
@@ -385,8 +338,6 @@ class Reloader(LiveInterpretation):
         self._stop.set()
         sys.meta_path.remove(self._finder)
         self._derived.dispose()
-        for file in self._pinned:
-            linecache.cache.pop(file, None)
         for name, module in list(sys.modules.items()):
             if isinstance(module, ReactiveModule):
                 del sys.modules[name]

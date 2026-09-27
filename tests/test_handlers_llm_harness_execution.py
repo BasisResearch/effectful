@@ -7,6 +7,7 @@ import dataclasses
 import importlib.util
 import io
 import json
+import linecache
 import sys
 import types
 from collections.abc import Callable
@@ -1636,6 +1637,24 @@ def test_repl_splice_skips_sourceless_anchor():
     exec("def t(readings):\n    raise NotImplementedError", ns)
     anchor_asts = _recover_skill_def(ns["t"])
     assert anchor_asts is None
+
+
+def test_a_skill_whose_file_is_edited_is_recovered_as_it_was_compiled(tmp_path):
+    """Editing a Skill's file under a running process does not move its def."""
+    source = (
+        "from effectful.handlers.llm import Skill\n\n\n"
+        "@Skill.define\n"
+        "def summarize(text: str) -> str:\n"
+        '    """Summarize {text}."""\n'
+        "    raise NotImplementedError\n"
+    )
+    skill = _anchor_from_source(tmp_path, source, "summarize", "edited_skill")
+    (tmp_path / "edited_skill.py").write_text("import os\nimport sys\n\n" + source)
+    linecache.checkcache()  # as any traceback or `inspect.getsource` does
+
+    anchor_asts = _recover_skill_def(skill)
+    assert anchor_asts is not None
+    assert anchor_asts[1].name == "summarize"
 
 
 # --- decode-time type-checking: a decode gate, exactly like Callable synthesis ---

@@ -45,6 +45,7 @@ import doctest
 import functools
 import inspect
 import json
+import linecache
 import pickle
 import re
 import string
@@ -502,6 +503,11 @@ class Skill[**P, T](Tool[P, T]):
         )
         op = super().define(default, *args, **kwargs)
         op.__context__ = context
+        if isinstance(_fn, types.FunctionType):
+            # The module's source as the function was compiled from it, for
+            # `_recover_skill_def`: the file may be edited while this runs.
+            linecache.checkcache(_fn.__code__.co_filename)
+            _fn.__module_source__ = linecache.getlines(_fn.__code__.co_filename)  # type: ignore[attr-defined]
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
