@@ -5,7 +5,7 @@ Under ``python -m effectful.handlers.llm.harness --autoreload <script>``, `hmr
 directory on `sys.path` -- not the standard library or installed packages, and of
 effectful only this package -- the harness stack is rebuilt from the launcher's
 flags, and each subscriber is told, so it can move its agents onto the new classes
-with `Reloader.refresh`. The running script is ``__main__`` and is never re-run;
+with `rebind` and `Reloader.current_class`. The running script is ``__main__`` and is never re-run;
 `Reloader.module`, the script imported under its own name on first use, supplies its
 current classes. A module that holds the running process sets ``__autoreload__ =
 False`` and imports reloadable modules only inside functions.
@@ -129,17 +129,6 @@ class _Finder(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         module.__spec__.loader_state.exec_module(module)
 
 
-def _read(file: str) -> str | None:
-    try:
-        return pathlib.Path(file).read_text("utf-8")
-    except OSError:
-        return None
-
-
-def _reloadable(module: types.ModuleType) -> bool:
-    return vars(module).get("__autoreload__", True) is not False
-
-
 def _prune(module: types.ModuleType, file: str, source: str) -> None:
     """Drop the names `module` binds that its `source` no longer does."""
     tree = ast.parse(source)
@@ -253,10 +242,6 @@ class Reloader(LiveInterpretation):
         print(f"note: {name}.{cls.__qualname__} is no longer defined", file=sys.stderr)
         return cls
 
-    def refresh(self, agent: object) -> None:
-        """Move `agent` onto the class its module now defines; see `rebind`."""
-        rebind(agent, self.current_class(type(agent)))
-
     @contextlib.contextmanager
     def hold(self) -> collections.abc.Iterator[None]:
         """Keep reloads off while this is entered, as a call does; nests, across threads."""
@@ -287,12 +272,17 @@ class Reloader(LiveInterpretation):
         from watchfiles import Change
 
         if files is None:
-            files = [f for f, e in self._pinned.items() if _read(f) != "".join(e[2])]
+            files = [
+                file
+                for file, (_, _, lines, _) in self._pinned.items()
+                if not os.path.isfile(file)
+                or pathlib.Path(file).read_text("utf-8") != "".join(lines)
+            ]
         paths = {pathlib.Path(file).resolve() for file in files}
         modules = [
             ReactiveModule.instances.get(path) for path in paths if path.is_file()
         ]
-        if not any(m is not None and _reloadable(m) for m in modules):
+        if not any(m and vars(m).get("__autoreload__") is not False for m in modules):
             return False
         if not self._room.acquire(blocking=wait):
             return None
@@ -329,7 +319,7 @@ class Reloader(LiveInterpretation):
             module
             for module in list(ReactiveModule.instances.values())
             if module not in ran
-            and _reloadable(module)
+            and vars(module).get("__autoreload__") is not False
             and module._ReactiveModule__load.dirty
         ]:
             for module in dirty:
@@ -343,19 +333,13 @@ class Reloader(LiveInterpretation):
 
     def _pin(self, file: str) -> None:
         """Serve `file` from `linecache` as it is about to run, if it compiles."""
-        source = _read(file)
         try:
-            compile(source or "", file, "exec", dont_inherit=True)
-        except (SyntaxError, ValueError):
+            source = pathlib.Path(file).read_text("utf-8")
+            compile(source, file, "exec", dont_inherit=True)
+        except (OSError, SyntaxError, ValueError):
             return
-        if source is not None:
-            lines = source.splitlines(keepends=True)
-            linecache.cache[file] = self._pinned[file] = (
-                len(source),
-                None,
-                lines,
-                file,
-            )
+        lines = source.splitlines(keepends=True)
+        linecache.cache[file] = self._pinned[file] = (len(source), None, lines, file)
 
     def _dirs(self) -> set[str]:
         """The directories of the modules hmr loaded, which are all an edit can reach."""
