@@ -20,15 +20,17 @@ def test_a_build_that_fails_keeps_the_stack_and_is_retried(request):
     stack = reloader.snapshot()
 
     _edit(root / "helper.py", "self.answer = ANSWER", 'raise RuntimeError("boom")')
-    assert reloader.apply() is True
+    assert reloader.apply([root / "helper.py"]) is True
     assert reloader.snapshot() is stack
 
     _edit(root / "script.py", "version one", "version two")
-    assert reloader.apply() is True, "an unrelated edit still applies"
+    assert reloader.apply([root / "script.py"]) is True, (
+        "an unrelated edit still applies"
+    )
     assert reloader.snapshot() is stack
 
     _edit(root / "helper.py", 'raise RuntimeError("boom")', "self.answer = ANSWER")
-    assert reloader.apply() is True
+    assert reloader.apply([root / "helper.py"]) is True
     assert reloader.snapshot() is not stack
 
 
@@ -48,7 +50,7 @@ def test_an_edit_to_a_skill_docstring_reaches_an_existing_agent(request):
     assert not _users(mock)[-1].startswith("Q:")
 
     _edit(root / "script.py", '"""{question}"""', '"""Q: {question}"""')
-    assert reloader.apply() is True
+    assert reloader.apply([root / "script.py"]) is True
     autoreload.rebind(bot, reloader.current_class(type(bot)))
     with interpreter(reloader):
         bot.ask("two")
@@ -69,7 +71,7 @@ def test_an_agent_whose_class_was_renamed_keeps_it(request):
     _edit(root / "script.py", "class Bot:", "class Robot:")
     _edit(root / "script.py", "Bot.__doc__", "Robot.__doc__")
     _edit(root / "script.py", "MAIN = Bot()", "MAIN = Robot()")
-    assert reloader.apply() is True
+    assert reloader.apply([root / "script.py"]) is True
     autoreload.rebind(bot, reloader.current_class(type(bot)))
     assert type(bot) is before
 

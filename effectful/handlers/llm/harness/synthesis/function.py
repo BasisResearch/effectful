@@ -115,7 +115,10 @@ def _recover_skill_def(
         source_file = inspect.getsourcefile(fn)
     except TypeError:
         source_file = None
-    module_source = "".join(linecache.getlines(source_file)) if source_file else ""
+    lines = getattr(fn, "__module_source__", None)
+    if lines is None and source_file:
+        lines = linecache.getlines(source_file)
+    module_source = "".join(lines or ())
     if not module_source:
         logger.warning("skipping type check: cannot recover source for %r", fn)
         return None
