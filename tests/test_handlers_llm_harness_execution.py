@@ -47,6 +47,7 @@ from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Agent, Encodable, Skill
 from effectful.ops.semantics import handler
+from effectful.ops.syntax import defop
 
 from .conftest import (
     MockCompletionHandler,
@@ -150,6 +151,148 @@ def test_good_function_typechecks():
 
 def test_wrong_return_type_raises():
     assert _raises("def count_a(s: str) -> str:\n    return s\n", _count_char)
+
+
+@pytest.mark.parametrize("factory", ["defop", "Operation.define"])
+@pytest.mark.parametrize("lenient", [False, True])
+def test_operation_signature_accepts_valid_calls(factory, lenient):
+    source = f"""
+from collections.abc import Callable
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
+
+@{factory}
+def select(value: int, /, *, enabled: bool = True) -> int:
+    return value
+
+@{factory}
+def identity[T](value: T) -> T:
+    return value
+
+@{factory}
+def invoke[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    return fn(*args, **kwargs)
+
+result: int = select(1, enabled=False)
+generic: str = identity("text")
+higher_order: int = invoke(select, 1, enabled=True)
+copied = {factory}(select, name="copied")
+copied_result: int = copied(1, enabled=True)
+variable = {factory}(int, name="variable")
+value: int = variable()
+"""
+    with handler(TYPE_CHECKER()):
+        type_check(source, 1, len(source.splitlines()), lenient=lenient)
+
+
+@pytest.mark.parametrize("factory", ["defop", "Operation.define"])
+@pytest.mark.parametrize("lenient", [False, True])
+@pytest.mark.parametrize(
+    "statement",
+    [
+        'select("wrong")',
+        'select(1, enabled="false")',
+        "select(1, False)",
+        "select(value=1)",
+        "wrong: str = select(1)",
+        'copied(1, enabled="false")',
+        "variable(1)",
+        "wrong: str = variable()",
+    ],
+)
+def test_operation_signature_rejects_invalid_calls(factory, lenient, statement):
+    source = f"""
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
+
+@{factory}
+def select(value: int, /, *, enabled: bool = True) -> int:
+    return value
+
+copied = {factory}(select)
+variable = {factory}(int)
+{statement}
+"""
+    with handler(TYPE_CHECKER()), pytest.raises(TypeError):
+        type_check(source, 1, len(source.splitlines()), lenient=lenient)
+
+
+@pytest.mark.parametrize("factory", ["Tool.define", "Skill.define"])
+def test_operation_subclass_signature_rejects_wrong_argument(factory):
+    source = f'''
+from effectful.handlers.llm import Skill, Tool
+
+@{factory}
+def select(value: int, *, enabled: bool = True) -> int:
+    """Select {{value}}."""
+    return value
+'''
+    with handler(TYPE_CHECKER()):
+        valid = source + "result: int = select(1, enabled=True)"
+        type_check(valid, 1, len(valid.splitlines()))
+        with pytest.raises(TypeError):
+            invalid = source + 'select(1, enabled="false")'
+            type_check(invalid, 1, len(invalid.splitlines()))
+
+
+@pytest.mark.parametrize("factory", ["defop", "Operation.define"])
+def test_operation_signature_accepts_descriptors(factory):
+    source = f"""
+import functools
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
+
+class Reader:
+    @{factory}
+    @staticmethod
+    def static(value: int) -> int:
+        return value
+
+    @{factory}
+    @classmethod
+    def bound(cls, value: int) -> int:
+        return value
+
+    @{factory}
+    @functools.singledispatchmethod
+    def dispatched(self, value: int) -> int:
+        return value
+
+static_result: int = Reader.static(1)
+class_result: int = Reader.bound(1)
+instance_result: int = Reader().dispatched(1)
+"""
+    with handler(TYPE_CHECKER()):
+        type_check(source, 1, len(source.splitlines()))
+
+
+@defop
+def _operation_flag(value: int, *, enabled: bool = True) -> int:
+    return value if enabled else 0
+
+
+def test_synthesized_operation_call_is_checked_before_execution():
+    source = """def extract(readings: list[int]) -> int:
+    from tests.test_handlers_llm_harness_execution import _operation_flag
+    readings.append(_operation_flag(1, enabled=POLARITY))
+    return len(readings)
+"""
+    readings: list[int] = []
+    adapter = pydantic.TypeAdapter(Encodable[Callable[[list[int]], int]])
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        with pytest.raises(TypeError):
+            invalid = adapter.validate_python(
+                SynthesizedFunction(code=source.replace("POLARITY", '"false"')),
+                context={_TYPE_CHECK_ANCHOR_KEY: _loose},
+            )
+            invalid(readings)
+        assert readings == []
+        valid = adapter.validate_python(
+            SynthesizedFunction(code=source.replace("POLARITY", "True")),
+            context={_TYPE_CHECK_ANCHOR_KEY: _loose},
+        )
+        assert valid(readings) == 1
+        assert readings == [1]
 
 
 def test_synthesized_name_collides_with_context_var_issue_542():
@@ -1507,6 +1650,22 @@ def test_repl_decode_rejects_illtyped_snippet():
         assert isinstance(
             _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
         )
+
+
+def test_repl_operation_call_is_checked_before_execution():
+    source = """from tests.test_handlers_llm_harness_execution import _operation_flag
+readings.append(_operation_flag(1, enabled=POLARITY))
+"""
+    readings: list[int] = []
+    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        session = ReplSession({"readings": readings})
+        with pytest.raises(TypeError):
+            session.exec_code(
+                _decode(source.replace("POLARITY", '"false"'), anchor=True)
+            )
+        assert readings == []
+        session.exec_code(_decode(source.replace("POLARITY", "True"), anchor=True))
+        assert readings == [1]
 
 
 def test_repl_decode_without_anchor_skips_typecheck():

@@ -4,6 +4,7 @@ import abc
 import collections.abc
 import contextlib
 import dataclasses
+import functools
 import inspect
 import re
 import typing
@@ -59,7 +60,7 @@ class SkillStringIntp(ObjectInterpretation):
     """
 
     @implements(call_agent)
-    def _[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    def _[**P](self, skill: Skill[P, str], *args: P.args, **kwargs: P.kwargs) -> str:
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = skill.__context__.new_child(bound_args.arguments)
@@ -71,9 +72,7 @@ class SkillStringIntp(ObjectInterpretation):
                 content=format_as_content_blocks(skill.__doc__, env),
             )
         )
-        skill_result = model_input["content"]
-        assert len(skill_result) == 1
-        return skill_result[0]["text"]
+        return _message_text(model_input["content"])
 
 
 def test_skill_formatting_simple():
@@ -1560,6 +1559,19 @@ class TestLexicalScopeCollection:
 
 class TestStaticAndClassMethodSkills:
     """Tests for @Skill.define applied to staticmethod and classmethod descriptors."""
+
+    def test_singledispatchmethod_skill_uses_lexical_prompt(self):
+        prefix = "Answer"
+
+        class Reader:
+            @Skill.define
+            @functools.singledispatchmethod
+            def ask(self, question: str) -> str:
+                """{prefix}: {question}"""
+                raise NotHandled
+
+        with handler(SkillStringIntp()):
+            assert f"{prefix}: hello" in Reader().ask("hello")
 
     def test_staticmethod_skill_in_class(self):
         """@Skill.define @staticmethod in a class body produces a Skill

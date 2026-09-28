@@ -103,7 +103,12 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
 
     @classmethod
     def define[**Q, V](
-        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+        cls,
+        default: collections.abc.Callable[Q, V]
+        | classmethod
+        | functools.singledispatchmethod,
+        *args,
+        **kwargs,
     ) -> "Tool[Q, V]":
         """Define a tool.
 
@@ -327,7 +332,12 @@ class Skill[**P, T](Tool[P, T]):
 
     @classmethod
     def define[**Q, V](
-        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+        cls,
+        default: collections.abc.Callable[Q, V]
+        | classmethod
+        | functools.singledispatchmethod,
+        *args,
+        **kwargs,
     ) -> "Skill[Q, V]":
         """Define a skill.
 
@@ -358,7 +368,11 @@ class Skill[**P, T](Tool[P, T]):
         # A segment preceding "<locals>" in the qualname is an enclosing
         # function; everything else (class names, the function itself) is not.
         assert frame is not None
-        _fn = default
+        _fn = (
+            default.func
+            if isinstance(default, functools.singledispatchmethod)
+            else default
+        )
         if isinstance(_fn, staticmethod | classmethod):
             _fn = _fn.__func__
         parts = _fn.__qualname__.split(".")

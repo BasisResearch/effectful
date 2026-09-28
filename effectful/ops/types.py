@@ -64,6 +64,38 @@ class _ClassMethodOpDescriptor(classmethod):
 INSTANCE_OP_PREFIX = "__instanceop"
 
 
+class _OperationDefine(Protocol):
+    @overload
+    def __call__[T](
+        self, default: type[T], /, *, name: str | None = None
+    ) -> "Operation[[], T]": ...
+
+    @overload
+    def __call__[**P, T](
+        self, default: Callable[P, T], /, *, name: str | None = None
+    ) -> "Operation[P, T]": ...
+
+    # Higher-rank callables cannot always be inferred as one ParamSpec and result.
+    @overload
+    def __call__[F: Callable](
+        self, default: F, /, *, name: str | None = None
+    ) -> "Operation": ...
+
+    @overload
+    def __call__(
+        self,
+        default: classmethod | functools.singledispatchmethod,
+        /,
+        *,
+        name: str | None = None,
+    ) -> Any: ...
+
+
+class _OperationDefinition(functools.singledispatchmethod):
+    def __get__(self, obj: object, cls: type | None = None) -> _OperationDefine:
+        return typing.cast(_OperationDefine, super().__get__(obj, cls))
+
+
 class Operation[**Q, V]:
     """An abstract class representing an effect that can be implemented by an effect handler.
 
@@ -134,10 +166,13 @@ class Operation[**Q, V]:
     def __hash__(self):
         return hash(self.__default__)
 
-    @functools.singledispatchmethod
+    @_OperationDefinition
     @classmethod
     def define[**P, T](
-        cls: Callable[P, T], default: Callable[Q, V], *, name: str | None = None
+        cls: "type[Operation[P, T]]",
+        default: Callable[P, T],
+        *,
+        name: str | None = None,
     ) -> "Operation[P, T]":
         """Creates a fresh :class:`Operation`.
 
@@ -148,6 +183,11 @@ class Operation[**Q, V]:
                   operation will be a distinct copy of the operation.
         :param name: Optional name for the operation.
         :returns: A fresh operation.
+
+        Static checking preserves the parameters and return type of ordinary
+        annotated callables. Type inputs produce nullary operations. Descriptor
+        inputs and higher-order signatures that cannot be inferred as one
+        parameter specification and result may remain dynamically typed.
 
         .. note::
 
@@ -275,7 +315,7 @@ class Operation[**Q, V]:
     )
     @classmethod
     def _define_callable[**P, T](
-        cls, t: Callable[P, T], *, name: str | None = None
+        cls: "type[Operation[P, T]]", t: Callable[P, T], *, name: str | None = None
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
 
@@ -283,11 +323,9 @@ class Operation[**Q, V]:
             def func(*args, **kwargs):
                 raise NotHandled
 
-            op = cls.define(func, name=name)
+            return cls.define(func, name=name)
         else:
-            op = cls(t, name=name)  # type: ignore[arg-type]
-
-        return op  # type: ignore[return-value]
+            return cls(t, name=name)
 
     @define.register(type)
     @define.register(typing.cast(type, types.GenericAlias))
@@ -594,19 +632,9 @@ def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) ->
     return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
-Operation.__apply__ = ApplyOperation.define(staticmethod(__apply__))
-del __apply__
-
-
-if typing.TYPE_CHECKING:
-
-    @runtime_checkable
-    class _OperationDefine(Protocol):
-        def __call__[**Q, V](
-            self, op: Callable[Q, V], *, name: str | None = None
-        ) -> Operation[Q, V]: ...
-
-    assert isinstance(Operation.define, _OperationDefine)
+_apply_descriptor: staticmethod = staticmethod(__apply__)
+Operation.__apply__ = ApplyOperation.define(_apply_descriptor)
+del __apply__, _apply_descriptor
 
 
 class Term[T](abc.ABC):

@@ -6,7 +6,6 @@ tools in scope -- is imported from a real file per test so the splice-based
 type check can recover its source.
 """
 
-import ast
 import contextlib
 import importlib.util
 import json
@@ -23,7 +22,6 @@ from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.hooks import compile as compile_op
 from effectful.handlers.llm.harness.execution.hooks import eval as eval_op
-from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.hooks import (
     AgentLoop,
@@ -284,8 +282,7 @@ def _call(expr: str, tool_name: str = "extend_sequence"):
 
 def _eval_expr(provider, source: str, env: dict[str, Any]) -> Any:
     with handler(provider):
-        module = parse_op(source, "<test-eval>")
-        code = compile_op(ast.Expression(module.body[0].value), "<test-eval>", "eval")
+        code = compile_op(source, "<test-eval>", "eval")
         return eval_op(code, env)
 
 
