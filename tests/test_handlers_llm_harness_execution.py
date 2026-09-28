@@ -1339,6 +1339,17 @@ def _repl_raises(prior: list[str], snippet: str, anchor=_repl_anchor) -> bool:
             return True
 
 
+def test_mypy_reports_only_the_checked_source(tmp_path, monkeypatch):
+    """A type error inside an imported module never rejects the checked source,
+    while the source's own error still does. The model can fix only its code."""
+    (tmp_path / "flawed_dependency.py").write_text('x: int = "a"\n')
+    monkeypatch.setenv("MYPYPATH", str(tmp_path))
+    with handler(MypyTypeChecker()):
+        type_check("import flawed_dependency\ny: int = 1\n")
+        with pytest.raises(TypeError):
+            type_check("import flawed_dependency\ny: int = 'b'\n")
+
+
 # --- Type-check semantics: checked in the Skill body, leniently ---
 
 
