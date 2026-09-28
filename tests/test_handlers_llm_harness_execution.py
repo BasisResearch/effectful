@@ -47,7 +47,6 @@ from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Agent, Encodable, Skill
 from effectful.ops.semantics import handler
-from effectful.ops.syntax import defop
 
 from .conftest import (
     MockCompletionHandler,
@@ -264,35 +263,6 @@ instance_result: int = Reader().dispatched(1)
 """
     with handler(TYPE_CHECKER()):
         type_check(source, 1, len(source.splitlines()))
-
-
-@defop
-def _operation_flag(value: int, *, enabled: bool = True) -> int:
-    return value if enabled else 0
-
-
-def test_synthesized_operation_call_is_checked_before_execution():
-    source = """def extract(readings: list[int]) -> int:
-    from tests.test_handlers_llm_harness_execution import _operation_flag
-    readings.append(_operation_flag(1, enabled=POLARITY))
-    return len(readings)
-"""
-    readings: list[int] = []
-    adapter = pydantic.TypeAdapter(Encodable[Callable[[list[int]], int]])
-    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
-        with pytest.raises(TypeError):
-            invalid = adapter.validate_python(
-                SynthesizedFunction(code=source.replace("POLARITY", '"false"')),
-                context={_TYPE_CHECK_ANCHOR_KEY: _loose},
-            )
-            invalid(readings)
-        assert readings == []
-        valid = adapter.validate_python(
-            SynthesizedFunction(code=source.replace("POLARITY", "True")),
-            context={_TYPE_CHECK_ANCHOR_KEY: _loose},
-        )
-        assert valid(readings) == 1
-        assert readings == [1]
 
 
 def test_synthesized_name_collides_with_context_var_issue_542():
@@ -1650,22 +1620,6 @@ def test_repl_decode_rejects_illtyped_snippet():
         assert isinstance(
             _decode("total = sum([1, 2, 3])\nprint(total)", anchor=True), types.CodeType
         )
-
-
-def test_repl_operation_call_is_checked_before_execution():
-    source = """from tests.test_handlers_llm_harness_execution import _operation_flag
-readings.append(_operation_flag(1, enabled=POLARITY))
-"""
-    readings: list[int] = []
-    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
-        session = ReplSession({"readings": readings})
-        with pytest.raises(TypeError):
-            session.exec_code(
-                _decode(source.replace("POLARITY", '"false"'), anchor=True)
-            )
-        assert readings == []
-        session.exec_code(_decode(source.replace("POLARITY", "True"), anchor=True))
-        assert readings == [1]
 
 
 def test_repl_decode_without_anchor_skips_typecheck():

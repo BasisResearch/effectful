@@ -54,13 +54,10 @@ from tests.conftest import offered_tools, skill_tools
 
 
 class SkillStringIntp(ObjectInterpretation):
-    """Returns the result of skill formatting as a string. Only supports
-    skills that produce string prompts.
-
-    """
+    """Render a skill's prompt as text regardless of its declared result type."""
 
     @implements(call_agent)
-    def _[**P](self, skill: Skill[P, str], *args: P.args, **kwargs: P.kwargs) -> str:
+    def _[**P, T](self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs) -> str:
         bound_args = inspect.signature(skill).bind(*args, **kwargs)
         bound_args.apply_defaults()
         env = skill.__context__.new_child(bound_args.arguments)
