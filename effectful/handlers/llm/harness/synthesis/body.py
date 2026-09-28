@@ -41,6 +41,7 @@ import inspect
 import textwrap
 import types
 import typing
+import uuid
 from collections.abc import Callable
 
 import pydantic
@@ -245,7 +246,7 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.code)}>"
+        filename = f"<synthesis:{uuid.uuid4()}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
             value.code, filename
         )
@@ -411,7 +412,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
             assert isinstance(anchor, Skill)
             ctx = anchor.__context__
 
-        filename = f"<synthesis:{id(value.code)}>"
+        filename = f"<synthesis:{uuid.uuid4()}>"
         module: ast.Module = effectful.handlers.llm.harness.execution.hooks.parse(
             value.code, filename
         )

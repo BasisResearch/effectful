@@ -399,7 +399,7 @@ def _vars_section(
         name: _binding_type(value)
         for name, value in env.items()
         if not (name.startswith("__") and name.endswith("__"))
-        and value not in vars(builtins).values()
+        and all(value is not builtin for builtin in vars(builtins).values())
         and not isinstance(value, types.ModuleType)
     }
     if not rows:
@@ -423,7 +423,7 @@ def _imports_section(
         name: value.__name__
         for name, value in env.items()
         if not (name.startswith("__") and name.endswith("__"))
-        and value not in vars(builtins).values()
+        and all(value is not builtin for builtin in vars(builtins).values())
         and isinstance(value, types.ModuleType)
     }
     if not rows:
