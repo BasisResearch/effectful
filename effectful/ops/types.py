@@ -8,7 +8,6 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import (
     Any,
     Concatenate,
-    Protocol,
     _ProtocolMeta,
     overload,
     runtime_checkable,
@@ -596,17 +595,6 @@ def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) ->
 
 Operation.__apply__ = ApplyOperation.define(staticmethod(__apply__))
 del __apply__
-
-
-if typing.TYPE_CHECKING:
-
-    @runtime_checkable
-    class _OperationDefine(Protocol):
-        def __call__[**Q, V](
-            self, op: Callable[Q, V], *, name: str | None = None
-        ) -> Operation[Q, V]: ...
-
-    assert isinstance(Operation.define, _OperationDefine)
 
 
 class Term[T](abc.ABC):

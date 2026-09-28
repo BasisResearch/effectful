@@ -399,7 +399,22 @@ class Scoped(Annotation):
         return bound_vars
 
 
-defop = Operation.define
+@typing.overload
+def defop[T](default: type[T], *, name: str | None = None) -> Operation[[], T]: ...
+
+
+@typing.overload
+def defop[**P, T](
+    default: Callable[P, T], *, name: str | None = None
+) -> Operation[P, T]: ...
+
+
+def defop(default, *, name: str | None = None):
+    """Create an operation with a callable's signature, or a nullary type operation.
+
+    See :meth:`Operation.define` for the supported definitions and examples.
+    """
+    return Operation.define(default, name=name)
 
 
 @Operation.define

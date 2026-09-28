@@ -152,6 +152,50 @@ def test_wrong_return_type_raises():
     assert _raises("def count_a(s: str) -> str:\n    return s\n", _count_char)
 
 
+@pytest.mark.parametrize("lenient", [False, True])
+def test_operation_signature_accepts_valid_calls(lenient):
+    source = """
+from effectful.ops.syntax import defop
+
+@defop
+def extract(text: str, /, *, negated: bool = False) -> str:
+    return text
+
+result: str = extract("Drug A inhibits Gene B", negated=False)
+copy = defop(default=extract, name="copy")
+copied: str = copy("Drug A inhibits Gene B", negated=True)
+variable = defop(default=int, name="variable")
+value: int = variable()
+"""
+    with handler(TYPE_CHECKER()):
+        type_check(source, 1, len(source.splitlines()), lenient=lenient)
+
+
+@pytest.mark.parametrize("lenient", [False, True])
+@pytest.mark.parametrize(
+    "call",
+    [
+        'extract("text", negated="false")',
+        'extract("text", False)',
+        'extract(text="text")',
+        'wrong: bool = extract("text")',
+        'defop(extract)("text", negated="false")',
+        "defop(int)(1)",
+        "wrong: str = defop(int)()",
+    ],
+)
+def test_operation_signature_rejects_invalid_calls(call, lenient):
+    source = """
+from effectful.ops.syntax import defop
+
+@defop
+def extract(text: str, /, *, negated: bool = False) -> str:
+    return text
+"""
+    with handler(TYPE_CHECKER()), pytest.raises(TypeError):
+        type_check(source + call, 1, len((source + call).splitlines()), lenient=lenient)
+
+
 def test_synthesized_name_collides_with_context_var_issue_542():
     # The synthesized ``count_a`` collides with the module-level ``count_a``
     # binding. Nested as a local it *shadows* it (no ``[no-redef]``), where the
