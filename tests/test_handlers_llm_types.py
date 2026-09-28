@@ -69,7 +69,11 @@ class SkillStringIntp(ObjectInterpretation):
                 content=format_as_content_blocks(skill.__doc__, env),
             )
         )
-        return _message_text(model_input["content"])
+        skill_result = model_input["content"]
+        assert isinstance(skill_result, list)
+        assert len(skill_result) == 1
+        assert skill_result[0]["type"] == "text"
+        return skill_result[0]["text"]
 
 
 def test_skill_formatting_simple():
