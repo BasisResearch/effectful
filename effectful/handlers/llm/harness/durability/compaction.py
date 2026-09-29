@@ -35,7 +35,6 @@ class MiddleCompactor(ObjectInterpretation):
     soft_tokens: int
     hard_tokens: int
     max_stale_output_chars: int
-    summary_tokens: int
     recent_tokens: int
 
     def __init__(
@@ -44,28 +43,22 @@ class MiddleCompactor(ObjectInterpretation):
         hard_tokens: int,
         *,
         max_stale_output_chars: int = 256,
-        summary_tokens: int = 512,
         recent_tokens: int | None = None,
     ):
         if not 0 < soft_tokens < hard_tokens:
             raise ValueError("require 0 < soft_tokens < hard_tokens")
-        if (
-            max_stale_output_chars <= 0
-            or summary_tokens <= 0
-            or (recent_tokens is not None and recent_tokens <= 0)
+        if max_stale_output_chars <= 0 or (
+            recent_tokens is not None and recent_tokens <= 0
         ):
             raise ValueError("output, summary and recent budgets must be positive")
         self.soft_tokens = soft_tokens
         self.hard_tokens = hard_tokens
         self.max_stale_output_chars = max_stale_output_chars
-        self.summary_tokens = summary_tokens
         self.recent_tokens = (
             recent_tokens if recent_tokens is not None else hard_tokens // 4
         )
-        if summary_tokens + self.recent_tokens >= hard_tokens:
-            raise ValueError(
-                "summary_tokens + recent_tokens must be less than hard_tokens"
-            )
+        if self.recent_tokens >= hard_tokens:
+            raise ValueError("recent_tokens must be less than hard_tokens")
 
     def _recent(self, history: Sequence[Message]) -> int:
         """Keep a budget-sized recent window of at least two complete rounds.
@@ -136,7 +129,6 @@ class MiddleCompactor(ObjectInterpretation):
             ],
             tools=[],
             tool_choice="none",
-            max_tokens=self.summary_tokens,
         )
         summary = response.choices[0].message.content
         if isinstance(summary, str) and summary.strip():
