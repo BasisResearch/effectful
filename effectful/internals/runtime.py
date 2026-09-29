@@ -106,9 +106,19 @@ def _get_args() -> tuple[tuple, Mapping]:
 
 
 @weak_memoize(cache=WeakIdKeyDictionary())
+def _takes_arguments(fn: Callable[..., typing.Any]) -> bool:
+    """Whether ``fn`` accepts any argument.
+
+    This is the only part of wrapping a handler that is memoized: a cached
+    wrapper would call ``fn`` and so refer back to its own weak key, keeping
+    the handler and everything its closure holds alive for the life of the
+    cache.
+    """
+    return bool(inspect.signature(fn).parameters)
+
+
 def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    sig = inspect.signature(fn)
-    if not sig.parameters:
+    if not _takes_arguments(fn):
         return fn
 
     @functools.wraps(fn)
@@ -119,12 +129,10 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-@weak_memoize(cache=WeakIdKeyDictionary())
 def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     from effectful.ops.semantics import handler
 
-    sig = inspect.signature(fn)
-    if not sig.parameters:
+    if not _takes_arguments(fn):
         return fn
 
     @functools.wraps(fn)
@@ -135,13 +143,11 @@ def _save_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     return _cont_wrapper
 
 
-@weak_memoize(cache=WeakIdKeyDictionary())
 def _save_then_restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     # should be equivalent to _restore_args(_save_args(fn)), just fused
     from effectful.ops.semantics import handler
 
-    sig = inspect.signature(fn)
-    if not sig.parameters:
+    if not _takes_arguments(fn):
         return fn
 
     @functools.wraps(fn)
