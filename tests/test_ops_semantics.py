@@ -1,7 +1,9 @@
 import contextlib
 import dataclasses
+import gc
 import itertools
 import logging
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal, Union
 
@@ -1278,3 +1280,29 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+def test_handlers_release_their_closures_after_the_block():
+    """What a handler closes over is collectable once its block has ended."""
+
+    class Offset:
+        value = 0
+
+    op = defop(int)
+
+    def run_block() -> weakref.ref[Offset]:
+        payload = Offset()
+
+        def scale(x: int) -> int:
+            return payload.value + 2 * x
+
+        def override(x: int) -> int:
+            return fwd() + 1
+
+        with handler({op: scale}), handler({op: override}):
+            assert op(3) == 7
+        return weakref.ref(payload)
+
+    released = run_block()
+    gc.collect()
+    assert released() is None
