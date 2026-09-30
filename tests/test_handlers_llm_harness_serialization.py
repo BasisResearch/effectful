@@ -1477,7 +1477,8 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
         )
 
 
-# Tools whose parameters have no strict schema, and so are never advertised.
+# Calls that don't match an advertised schema: tools with none, and a mapping, which
+# the model writes as key-value pairs but which encodes as an object.
 _UNADVERTISED_CALLS = {
     "dtc-open-parameter-object",
     "dtc-keyword-arguments",
@@ -1512,6 +1513,7 @@ def test_toolcall_arguments_satisfy_advertised_schema(ty, call, ctx):
         pytest.param(_tool_add, id="flat"),
         pytest.param(_tool_city, id="nested-required-fields"),
         pytest.param(_tool_connect, id="nested-optional-fields"),
+        pytest.param(_tool_total, id="mapping-parameter"),
         pytest.param(_tool_scale, id="default-marked-by-null"),
         pytest.param(_tool_label, id="defaults-and-none-default"),
         pytest.param(_tool_wait, id="default-marked-by-string"),
@@ -1529,7 +1531,6 @@ def test_tool_is_advertised_strict(tool):
 @pytest.mark.parametrize(
     "tool",
     [
-        pytest.param(_tool_total, id="open-parameter-object"),
         pytest.param(_tool_total_keywords, id="keyword-arguments"),
         pytest.param(_tool_contacts, id="keyword-schema-definitions"),
         pytest.param(_tool_echo, id="default-with-no-free-marker"),
