@@ -297,9 +297,8 @@ def _stack(*handlers):
 def _tool_schema(tool: Tool) -> dict:
     """The JSON Schema for `tool`'s parameters, as the model is shown it.
 
-    Through the harness's own encoder rather than pydantic's, because the difference
-    is the point: `_ensure_strict_json_schema` is what closes the objects and moves
-    every property into ``required``, and both are what the tests below are about.
+    Through the harness's own encoder rather than pydantic's, since that encoder
+    decides which properties are required and whether the schema is strict.
     """
     return _serialize_name_and_tool(_NameAndTool(tool.__name__, tool))["function"][
         "parameters"
@@ -2834,18 +2833,15 @@ def test_a_plan_step_speaks_the_protocols_own_vocabulary():
 def test_the_plan_the_model_is_shown_has_no_protocol_metadata_in_it():
     """Which is the reason `PlanStep` exists rather than `acp.schema.PlanEntry`.
 
-    Every ACP type carries `_meta`, a free-form object reserved for implementations to
-    attach things to. Tool parameters become a *strict* JSON Schema, and strict schemas
-    list every property as required -- so using the wire type would oblige the model to
-    invent a value for a field documented as one nobody may assume anything about.
+    Every ACP type carries `_meta`, a free-form object reserved for implementations;
+    the wire type would put it in front of the model.
     """
-    parameters = _tool_schema(acp_update_plan)
-    step = parameters["$defs"]["PlanStep"]
-    assert "_meta" not in step["properties"]
-    assert set(step["required"]) == {"content", "priority", "status"}
+    step = _tool_schema(acp_update_plan)["$defs"]["PlanStep"]
+    assert set(step["properties"]) == {"content", "priority", "status"}
+    assert step["required"] == ["content"]
 
     wire = _tool_schema(_plan_tool_taking(schema.PlanEntry))["$defs"]["PlanEntry"]
-    assert "_meta" in wire["required"], "the wire type would demand it of the model"
+    assert "_meta" in wire["properties"], "the wire type would show it to the model"
 
 
 def test_the_plan_is_replaced_whole_rather_than_appended_to():
