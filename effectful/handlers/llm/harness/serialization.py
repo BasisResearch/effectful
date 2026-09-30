@@ -1013,17 +1013,16 @@ def _serialize_tool_call(
         encoded_args["call"] = value.source
     else:
         for k, v in value.bound_args.arguments.items():
-            v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[nested_type(v).value]  # type: ignore[misc]
-            )
-            encoded = v_enc.dump_python(v, mode="json", by_alias=True, context=ctx)
-            if (
-                value.bound_args.signature.parameters[k].kind
-                == inspect.Parameter.VAR_KEYWORD
-            ):
-                encoded_args.update(encoded)
-            else:
-                encoded_args[k] = encoded
+            kind = value.bound_args.signature.parameters[k].kind
+            # Keyword arguments collected by **kwargs travel as arguments of their own.
+            items = v.items() if kind == inspect.Parameter.VAR_KEYWORD else [(k, v)]
+            for name, arg in items:
+                v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                    Encodable[nested_type(arg).value]  # type: ignore[misc]
+                )
+                encoded_args[name] = v_enc.dump_python(
+                    arg, mode="json", by_alias=True, context=ctx
+                )
         # Strict schemas require every field, so an omitted default is sent as its marker.
         for param in value.bound_args.signature.parameters.values():
             marker = _default_marker(param)
