@@ -135,3 +135,28 @@ def test_defop_generic_typeddict_type_inference():
     term = unwrap_outer({"inner": {"name": "a", "value": 1}})
 
     assert typeof(term) == int
+
+
+def test_bound_operation_names_what_it_is_bound_to():
+    """A bound operation carries `__func__` and `__self__`, as a bound method does.
+
+    `defdata` reads them to recognize a node it is rebuilding when the bound
+    operation re-enters it under the class operation.
+    """
+
+    class MyClass:
+        @defop
+        def my_method(self, x: int) -> str:
+            raise NotHandled
+
+    instance = MyClass()
+    bound = instance.my_method
+
+    assert bound.__func__ is MyClass.my_method
+    assert bound.__self__ is instance
+    assert not hasattr(MyClass.my_method, "__self__")
+
+    # The same operation bound to another instance is a distinct operation.
+    other = MyClass()
+    assert other.my_method is not bound
+    assert other.my_method.__self__ is other

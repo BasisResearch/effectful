@@ -1,5 +1,6 @@
 import collections.abc
 import dataclasses
+import enum
 import functools
 import inspect
 import typing
@@ -744,6 +745,392 @@ def test_infer_return_type_failure(
         unify(sig, bound)
 
 
+# --- Calling a Callable[P, T]: `*args: P.args` against the components of P ---
+#
+# The shape of ``_CallableTerm.__call__``. Per the typing spec, such a function
+# may be called with ``(*args, **kwargs)` exactly when ``args`` has the type
+# ``P.args``, so the arguments are matched against ``P``'s components rather
+# than against the ``P.args`` annotation, which denotes nothing on its own.
+
+
+def call_paramspec[**P, T](
+    f: collections.abc.Callable[P, T], *args: P.args, **kwargs: P.kwargs
+) -> T:
+    return f(*args, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "callee,args,expected",
+    [
+        # A monomorphic callee: the return type never depended on the arguments.
+        (collections.abc.Callable[[int], str], (int,), str),
+        # A polymorphic callee: its variables are solved by the call.
+        (collections.abc.Callable[[T], T], (int,), int),
+        (collections.abc.Callable[[T], T], (str,), str),
+        (collections.abc.Callable[[list[T]], T], (list[int],), int),
+        (collections.abc.Callable[[T, U], dict[T, U]], (int, str), dict[int, str]),
+        # A subclass argument still unifies with the declared parameter.
+        (collections.abc.Callable[[int], str], (bool,), str),
+        # ``...`` is consistent with any signature, so it constrains nothing.
+        (collections.abc.Callable[..., str], (int, str), str),
+    ],
+)
+def test_unify_paramspec_args(callee, args: tuple, expected):
+    sig = inspect.signature(call_paramspec)
+    result = substitute(sig.return_annotation, unify(sig, sig.bind(callee, *args)))
+    assert canonicalize(result) == canonicalize(expected)
+
+
+@pytest.mark.parametrize("args", [(), (int, int)])
+def test_unify_paramspec_args_arity_mismatch_is_unconstrained(args: tuple):
+    """A call of the wrong arity is invalid, but inference does not reject it.
+
+    Matching what lines up and leaving the rest alone keeps inference out of the
+    business of checking calls, which nothing here does today.
+    """
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], *args)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is str
+
+
+def test_unify_paramspec_args_conflicting_argument():
+    """A conflicting argument is rejected, as it is for an ordinary parameter."""
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], str)
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, bound)
+
+
+def test_unify_paramspec_args_forwarded():
+    """Forwarding another call's ``*args`` supplies components, not types.
+
+    There is nothing to match them against, so they constrain nothing, but the
+    return type still resolves.
+    """
+    (Q,) = call_paramspec.__type_params__[:1]
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[[int], str], Q.args)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is str
+
+
+# --- Concatenate: parameters prepended to those a ParamSpec stands for ---
+
+
+def drop_prepended[**P, R](
+    f: collections.abc.Callable[typing.Concatenate[int, P], R],
+) -> collections.abc.Callable[P, R]: ...
+
+
+def call_with_prepended[R](
+    f: collections.abc.Callable[typing.Concatenate[int, ...], R],
+) -> R: ...
+
+
+@pytest.mark.parametrize(
+    "callee,expected",
+    [
+        # ``P`` is solved to what is left after the prepended parameter.
+        (
+            collections.abc.Callable[[int, str], bool],
+            collections.abc.Callable[[str], bool],
+        ),
+        (collections.abc.Callable[[int], bool], collections.abc.Callable[[], bool]),
+        (
+            collections.abc.Callable[[int, str, float], bool],
+            collections.abc.Callable[[str, float], bool],
+        ),
+        # ``...`` is consistent with any signature, so it satisfies the
+        # prepended parameter and leaves the rest unknown.
+        (collections.abc.Callable[..., bool], collections.abc.Callable[..., bool]),
+    ],
+)
+def test_unify_concatenate_solves_remaining_parameters(callee, expected):
+    sig = inspect.signature(drop_prepended)
+    assert substitute(sig.return_annotation, unify(sig, sig.bind(callee))) == expected
+
+
+@pytest.mark.parametrize(
+    "callee",
+    [
+        collections.abc.Callable[[], bool],  # prepended parameter absent
+        collections.abc.Callable[[str], bool],  # present but not assignable
+    ],
+)
+def test_unify_concatenate_requires_prepended_parameters(callee):
+    """The prepended parameters "are required to be present ... and be assignable"."""
+    sig = inspect.signature(drop_prepended)
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(callee))
+
+
+def test_unify_concatenate_gradual_tail():
+    """With a trailing ``...``, "any additional parameters are permitted"."""
+    sig = inspect.signature(call_with_prepended)
+
+    for callee in [
+        collections.abc.Callable[[int], bool],
+        collections.abc.Callable[[int, str], bool],
+        collections.abc.Callable[[int, str, float], bool],
+    ]:
+        assert substitute(sig.return_annotation, unify(sig, sig.bind(callee))) is bool
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(collections.abc.Callable[[str], bool]))
+
+
+def test_unify_concatenate_as_a_solution():
+    """A ``ParamSpec`` may be solved *to* a ``Concatenate`` rather than from one."""
+
+    def identity[**P, R](
+        f: collections.abc.Callable[P, R],
+    ) -> collections.abc.Callable[P, R]: ...
+
+    (Q,) = [
+        p for p in drop_prepended.__type_params__ if isinstance(p, typing.ParamSpec)
+    ]
+    sig = inspect.signature(identity)
+    callee = collections.abc.Callable[typing.Concatenate[int, Q], bool]
+
+    result = substitute(sig.return_annotation, unify(sig, sig.bind(callee)))
+    params, ret = typing.get_args(result)
+    assert ret is bool
+    # The concrete side is freshened, so compare the shape rather than the tail.
+    assert typing.get_args(params)[0] is int
+
+
+def test_canonicalize_concatenate():
+    """A ``Concatenate`` canonicalizes componentwise rather than to ``...``."""
+    (Q,) = [
+        p for p in drop_prepended.__type_params__ if isinstance(p, typing.ParamSpec)
+    ]
+
+    canonical = canonicalize(typing.Concatenate[list, Q])
+    assert canonical == typing.Concatenate[collections.abc.MutableSequence, Q]
+    assert canonicalize(canonical) == canonical
+
+
+# --- TypeVarTuple: a variable-length run of type arguments ---
+
+
+# The patterns are read back off real signatures: a ``TypeVarTuple`` pulled out
+# of ``__type_params__`` is only a variable, and writing type expressions with
+# it is not something a type checker will accept.
+def tail_of[*Ts](xs: tuple[int, *Ts]) -> tuple[*Ts]: ...
+
+
+def head_of[*Ts](xs: tuple[*Ts, int]) -> tuple[*Ts]: ...
+
+
+def middle_of[*Ts](xs: tuple[int, *Ts, str]) -> tuple[*Ts]: ...
+
+
+def args_to_tuple[*Ts](*args: *Ts) -> tuple[*Ts]: ...
+
+
+def _pattern(func, name: str = "xs"):
+    return inspect.signature(func).parameters[name].annotation
+
+
+def _subscript(base, *args):
+    """Build a type at runtime, unread by a type checker."""
+    return base[args]
+
+
+@pytest.mark.parametrize(
+    "typ,expected",
+    [
+        # Every type checker renders a fixed-length unpacking spliced, so the
+        # members are canonically the enclosing type's own arguments.
+        (tuple[int, *tuple[str, bool]], tuple[int, str, bool]),
+        (tuple[int, *tuple[str, *tuple[bool, float]]], tuple[int, str, bool, float]),
+        # An unbounded unpacking is not spliced, and keeps its ``tuple`` shape:
+        # the rule that turns ``tuple[X, ...]`` into a ``Sequence`` must not
+        # reach inside it, or it would unpack something that is not a tuple.
+        # The starred and ``Unpack`` spellings are what these cases tell apart,
+        # so the expected side is written out rather than starred.
+        (tuple[int, *tuple[str, ...]], tuple[int, typing.Unpack[tuple[str, ...]]]),  # noqa: UP044
+        (
+            tuple[int, *tuple[list, ...]],
+            tuple[int, typing.Unpack[tuple[collections.abc.MutableSequence, ...]]],  # noqa: UP044
+        ),
+        # Unstarred, the same alias still normalizes to a ``Sequence``.
+        (tuple[str, ...], collections.abc.Sequence[str]),
+    ],
+)
+def test_canonicalize_unpacked(typ, expected):
+    assert canonicalize(typ) == expected
+    assert canonicalize(canonicalize(typ)) == canonicalize(typ)
+
+
+def test_canonicalize_unpacked_typevartuple():
+    """``*Ts`` is already the canonical spelling: it *is* ``Unpack[Ts]``."""
+    pattern = _pattern(tail_of)
+    assert canonicalize(pattern) == pattern
+    assert typing.get_args(pattern)[1] == typing.Unpack[tail_of.__type_params__[0]]
+
+
+@pytest.mark.parametrize(
+    "func,concrete,expected",
+    [
+        (tail_of, tuple[int, str, bool], typing.Unpack[tuple[str, bool]]),
+        (head_of, tuple[str, bool, int], typing.Unpack[tuple[str, bool]]),
+        (middle_of, tuple[int, bool, float, str], typing.Unpack[tuple[bool, float]]),
+        # The run it covers may be empty.
+        (tail_of, tuple[int], typing.Unpack[tuple[()]]),
+    ],
+)
+def test_unify_typevartuple_solves_the_run(func, concrete, expected):
+    (ts,) = func.__type_params__
+    assert unify(_pattern(func), concrete) == {ts: expected}
+
+
+@pytest.mark.parametrize(
+    "pattern,concrete",
+    [
+        (_pattern(middle_of), tuple[int]),  # fixed ends do not fit
+        (_pattern(tail_of), tuple[str, bool]),  # prefix does not match
+        # Which run is which? The runtime allows writing it; the spec does not.
+        (
+            _subscript(
+                tuple,
+                _pattern(args_to_tuple, "args"),
+                _pattern(args_to_tuple, "args"),
+            ),
+            tuple[int, str],
+        ),
+    ],
+)
+def test_unify_typevartuple_rejects(pattern, concrete):
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(pattern, concrete)
+
+
+@pytest.mark.parametrize(
+    "concrete,expected",
+    [
+        (tuple[int, str, bool], tuple[str, bool]),
+        (tuple[int], tuple[()]),
+    ],
+)
+def test_unify_typevartuple_round_trips_through_substitute(concrete, expected):
+    """The solution is stored unpacked, which is the form that splices back in."""
+    sig = inspect.signature(tail_of)
+    subs = unify(sig, sig.bind(concrete))
+    assert substitute(sig.return_annotation, subs) == expected
+
+
+def test_unify_star_args_of_unbounded_tuple():
+    """``*args: *tuple[int, ...]`` constrains every argument.
+
+    Only ``get_type_hints`` spells such an annotation as an ``Unpack``;
+    ``inspect.signature`` alone leaves the bare starred ``tuple`` that the
+    source wrote. ``Operation.__signature__`` resolves hints, so annotations
+    reach unification already in the form ``canonicalize`` normalizes to.
+    """
+
+    def homogeneous(*args: *tuple[int, ...]) -> bool: ...
+
+    hints = typing.get_type_hints(homogeneous)
+    sig = inspect.signature(homogeneous).replace(
+        parameters=[
+            p.replace(annotation=hints[p.name])
+            for p in inspect.signature(homogeneous).parameters.values()
+        ]
+    )
+
+    assert unify(sig, sig.bind(int, int)) == {}
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(sig, sig.bind(int, str))
+
+
+@pytest.mark.parametrize(
+    "args,expected",
+    [
+        ((int, str), tuple[int, str]),
+        ((int,), tuple[int]),
+        # "If no arguments are passed ... behaves like an empty tuple".
+        ((), tuple[()]),
+    ],
+)
+def test_unify_typevartuple_star_args(args, expected):
+    """ "The types of the individual arguments become the types in" ``Ts``."""
+    sig = inspect.signature(args_to_tuple)
+    subs = unify(sig, sig.bind(*args))
+    assert substitute(sig.return_annotation, subs) == expected
+
+
+def test_unify_unpacked_unbounded_tuple_constrains_each_member():
+    """An unpacked unbounded tuple "accepts zero or more values" of its type."""
+    pattern = tuple[int, *tuple[str, ...]]
+
+    assert unify(pattern, tuple[int]) == {}
+    assert unify(pattern, tuple[int, str, str]) == {}
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(pattern, tuple[int, bool])
+
+
+def test_canonicalize_unbounded_paramspec():
+    """An unbounded ``ParamSpec`` is canonical whichever way it was built.
+
+    One built at runtime reports its absent bound as ``NoneType`` where ``**P``
+    reports ``None``, and reading that as a bound rejects every ``ParamSpec``
+    ``_freshen`` produces, which in turn fails any unification against a type
+    that mentions one.
+    """
+    (declared,) = call_paramspec.__type_params__[:1]
+    constructed = typing.ParamSpec("constructed")
+
+    assert canonicalize(declared) is declared
+    assert canonicalize(constructed) is constructed
+
+    sig = inspect.signature(call_paramspec)
+    bound = sig.bind(collections.abc.Callable[declared, int], int)
+    assert substitute(sig.return_annotation, unify(sig, bound)) is int
+
+    # A bound that is really a bound is still out of scope.
+    bounded = typing.ParamSpec("bounded", bound=collections.abc.Callable[..., int])
+    with pytest.raises(TypeError, match="nonempty attributes"):
+        canonicalize(bounded)
+
+
+def test_unify_paramspec_solution_representation():
+    """A solved ``ParamSpec`` has one representation, whatever generic solved it.
+
+    ``typing.get_args`` reports a parameter list as a list for ``Callable`` and
+    as a tuple for every other generic, so without normalizing, two equal
+    solutions compare unequal -- which ``_unify_union`` decides by.
+    """
+
+    from effectful.ops.types import Operation
+
+    class Holder[**P]:
+        pass
+
+    def from_holder[**P](z: Holder[P]) -> Holder[P]: ...
+
+    def from_callable[**P, R](c: collections.abc.Callable[P, R]) -> R: ...
+
+    def from_operation[**P, R](o: Operation[P, R]) -> R: ...
+
+    solutions = []
+    for func, arg in [
+        (from_holder, Holder[[int, str]]),
+        (from_callable, collections.abc.Callable[[int, str], bool]),
+        (from_operation, Operation[[int, str], bool]),
+    ]:
+        sig = inspect.signature(func)
+        (pspec,) = [p for p in func.__type_params__ if isinstance(p, typing.ParamSpec)]
+        solutions.append(unify(sig, sig.bind(arg))[pspec])
+
+    assert solutions == [[int, str]] * 3
+
+    # Normalizing must not break substituting back into the generic it came from.
+    sig = inspect.signature(from_holder)
+    subs = unify(sig, sig.bind(Holder[[int, str]]))
+    assert substitute(sig.return_annotation, subs) == Holder[[int, str]]
+
+
 @pytest.mark.parametrize(
     "value,expected",
     [
@@ -764,7 +1151,7 @@ def test_infer_return_type_failure(
         (Box(int), int),
         # Boxed generic aliases pass through
         (Box(list[int]), list[int]),
-        (int, type),
+        (int, type[int]),
         # Empty collections
         ([], list),
         ({}, dict),
@@ -971,6 +1358,131 @@ def test_nested_type_eager_annotation_produces_precise_type():
     arg_types, return_type = typing.get_args(inferred)
     assert list(arg_types) == [ClientSession]
     assert return_type is int
+
+
+def test_nested_type_class_object_is_type_of_class():
+    """A class object inhabits ``type[C]``, not ``C`` (typing spec, "type[]")."""
+
+    class Plain:
+        pass
+
+    class Meta(type):
+        pass
+
+    class WithMeta(metaclass=Meta):
+        pass
+
+    assert nested_type(int).value == type[int]
+    assert nested_type(object).value == type[object]
+    assert nested_type(Plain).value == type[Plain]
+    assert nested_type(WithMeta).value == type[WithMeta]
+
+
+def test_nested_type_class_object_ignores_init_return_annotation():
+    """``__init__``'s ``-> None`` is not the constructor's return type.
+
+    The Callable branch used to claim ``Callable[[int], None]`` here, which made
+    ``unify`` bind a ``Callable[..., T]`` pattern's ``T`` to ``None``.
+    """
+
+    class Annotated:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert nested_type(Annotated).value == type[Annotated]
+
+
+def test_nested_type_enum_class_is_type_of_class():
+    """An ``Enum`` class is a Collection of its members, but still a class.
+
+    The ``Collection`` branch wins singledispatch over the one on ``type``, so it
+    has to defer for a value that is itself a class.
+    """
+
+    class Color(enum.Enum):
+        R = 1
+        G = 2
+
+    assert nested_type(Color).value == type[Color]
+    # An instance still reports the enum class it belongs to.
+    assert nested_type(Color.R).value is Color
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        typing.Any,
+        int | str,
+        typing.Literal[1],
+        typing.Annotated[int, "meta"],
+        list[int],
+        collections.abc.Callable[[int], str],
+        typing.Callable[[int], str],
+    ],
+)
+def test_nested_type_non_class_type_value_widens_to_class(value):
+    """Only a class becomes ``type[C]``.
+
+    The spec requires ``type[]``'s argument to be a concrete class object, and a
+    consumer that builds a schema from the result relies on that: ``type[int]``
+    is a type it can render, ``type[list[int]]`` is not. So every other
+    type-denoting value keeps the ``Box(type(value))`` widening it had.
+    """
+    assert nested_type(value).value is type(value)
+
+
+def test_unify_type_of_class_binds_typevar():
+    """``type[T]`` binds against the class a caller passed."""
+    T = typing.TypeVar("T")
+    assert unify(type[T], type[int]) == {T: int}
+    assert unify(type[T], nested_type(int).value) == {T: int}
+
+
+def test_unify_distributes_type_over_union():
+    """The spec's ``type[A | B] == type[A] | type[B]`` holds of unification.
+
+    Both spellings must yield the same substitution, which they only do if a
+    variable bound against a union accommodates every member rather than
+    conflicting on the second one.
+    """
+    T = typing.TypeVar("T")
+    assert unify(type[T], type[int | str]) == unify(type[T], type[int] | type[str])
+    assert unify(type[T], type[int] | type[str]) == {T: int | str}
+
+
+def test_unify_binds_variable_to_the_join_of_union_members():
+    """A variable under a union subtype binds to the join, not the first member.
+
+    Every member still has to unify -- a union is assignable to the pattern only
+    if each of its members is -- so a member that cannot unify at all is still
+    an error.
+    """
+    T = typing.TypeVar("T")
+    assert unify(T, int | str) == {T: int | str}
+    assert unify(list[T], list[int] | list[str]) == {T: int | str}
+
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(int, int | str)
+
+    # A conflicting binding is still a conflict when no union is involved.
+    with pytest.raises(TypeError, match="Cannot unify"):
+        unify(T, str, {T: int})
+
+
+def test_unify_callable_pattern_against_type_binds_nothing():
+    """A class object is callable, so ``type[C]`` satisfies a ``Callable``
+    pattern, but no constructor signature is synthesized: nothing binds, and in
+    particular unification does not fail."""
+    T = typing.TypeVar("T")
+
+    class Foo:
+        def __init__(self, a: int) -> None:
+            pass
+
+    assert unify(collections.abc.Callable[..., T], type[int]) == {}
+    assert unify(collections.abc.Callable[[int], T], type[Foo]) == {}
+    # Bare ``type`` behaved this way before class values gained a parameter.
+    assert unify(collections.abc.Callable[..., T], type) == {}
 
 
 def sequence_getitem[T](seq: collections.abc.Sequence[T], index: int) -> T:
