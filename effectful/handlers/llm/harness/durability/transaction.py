@@ -13,7 +13,10 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     call_user,
 )
-from effectful.handlers.llm.harness.serialization import ToolCallID
+from effectful.handlers.llm.harness.serialization import (
+    ToolCallID,
+    _is_empty_text_block,
+)
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -34,14 +37,11 @@ class HistoryBuilder(ObjectInterpretation):
 
     @classmethod
     def append_message(cls, message: Message) -> None:
-        """Append `message` to the ambient history, if it is legal where it lands.
-
-        Both checks are about position rather than content, which is why they sit
-        here: every message the harness records passes through this method,
-        including the ones a failed attempt records on its way out, and those are
-        the ones that get a history into a shape no provider will accept.
-        """
+        """Append `message` to the ambient history, if it is legal where it lands."""
         history = cls.get_history()
+        assert cls._carries_no_empty_block(message), (
+            f"a message may not carry an empty text block: {message}"
+        )
         if message["role"] == "tool":
             assert cls._tool_call_answers_request(message, history)
         elif message["role"] == "assistant":
@@ -50,6 +50,14 @@ class HistoryBuilder(ObjectInterpretation):
                 "`HistoryBuilder._assistant_speaks_in_turn`"
             )
         history.append(message)
+
+    @staticmethod
+    def _carries_no_empty_block(message: Message) -> bool:
+        """Whether `message` is free of the empty text blocks Anthropic rejects."""
+        content = message.get("content")
+        return not isinstance(content, list) or not any(
+            _is_empty_text_block(block) for block in content
+        )
 
     @staticmethod
     def _assistant_speaks_in_turn(
