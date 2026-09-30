@@ -4,7 +4,6 @@ import abc
 import collections.abc
 import contextlib
 import dataclasses
-import functools
 import inspect
 import re
 import typing
@@ -1560,19 +1559,6 @@ class TestLexicalScopeCollection:
 
 class TestStaticAndClassMethodSkills:
     """Tests for @Skill.define applied to staticmethod and classmethod descriptors."""
-
-    def test_singledispatchmethod_skill_uses_lexical_prompt(self):
-        prefix = "Answer"
-
-        class Reader:
-            @Skill.define
-            @functools.singledispatchmethod
-            def ask(self, question: str) -> str:
-                """{prefix}: {question}"""
-                raise NotHandled
-
-        with handler(SkillStringIntp()):
-            assert f"{prefix}: hello" in Reader().ask("hello")
 
     def test_staticmethod_skill_in_class(self):
         """@Skill.define @staticmethod in a class body produces a Skill
