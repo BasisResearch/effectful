@@ -821,17 +821,53 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
 
 
 def _requires_non_strict(schema: typing.Any) -> bool:
-    """Strict generation must not require optional fields or forbid extra keys."""
+    """Whether an object in `schema` allows keys it does not name, which strict schemas cannot."""
     if isinstance(schema, list):
         return any(_requires_non_strict(item) for item in schema)
     if not isinstance(schema, dict):
         return False
-    if schema.get("type") == "object" and (
-        schema.get("additionalProperties") not in (None, False)
-        or set(schema.get("required", ())) != set(schema.get("properties", ()))
+    if schema.get("type") == "object" and schema.get("additionalProperties") not in (
+        None,
+        False,
     ):
         return True
     return any(_requires_non_strict(value) for value in schema.values())
+
+
+_NO_MARKER = object()
+_UseDefault = typing.TypedDict("_UseDefault", {"__default__": typing.Literal[True]})
+# Arguments that can stand for a parameter's default, each with the type advertising it.
+_DEFAULT_MARKERS: tuple[tuple[typing.Any, typing.Any], ...] = (
+    (None, type(None)),
+    ("__default__", typing.Literal["__default__"]),
+    ({"__default__": True}, _UseDefault),
+)
+
+
+def _default_marker(param: inspect.Parameter) -> typing.Any:
+    """The argument standing for `param`'s default, or `_NO_MARKER` if none is unambiguous.
+
+    Strict schemas require every field, so a defaulted parameter is advertised as
+    required and this value, which its type cannot produce, stands for the default.
+    """
+    if (
+        param.default is inspect.Parameter.empty
+        or param.kind == inspect.Parameter.VAR_KEYWORD
+    ):
+        return _NO_MARKER
+    if param.default is None:
+        return None
+    adapter: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        TypeToPydanticType().evaluate(param.annotation)
+    )
+    for marker, _ in _DEFAULT_MARKERS:
+        try:
+            adapter.validate_python(marker)
+        except pydantic.ValidationError:
+            return marker
+        except Exception:
+            continue
+    return _NO_MARKER
 
 
 def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
@@ -845,6 +881,7 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             )
     fields: dict[str, typing.Any] = {}
     extra: typing.Literal["allow", "forbid"] = "forbid"
+    unmarked: list[str] = []
     for i, param in enumerate(params.values()):
         annotation = TypeToPydanticType().evaluate(param.annotation)
         if param.kind == inspect.Parameter.VAR_KEYWORD:
@@ -853,7 +890,19 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
                 dict[str, annotation],  # type: ignore[valid-type]
                 pydantic.Field(init=False),
             )
+        elif (marker := _default_marker(param)) is not _NO_MARKER:
+            marker_type = next(ty for m, ty in _DEFAULT_MARKERS if m == marker)
+            default_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                Encodable[param.annotation]  # type: ignore[name-defined]
+            )
+            shown = {"default": default_enc.dump_python(param.default, mode="json")}
+            fields[f"arg_{i}"] = (
+                annotation | marker_type,
+                pydantic.Field(alias=param.name, json_schema_extra=shown),
+            )
         else:
+            if param.default is not inspect.Parameter.empty:
+                unmarked.append(param.name)
             default = ... if param.default is inspect.Parameter.empty else param.default
             # Model attributes cannot start with '_' or shadow BaseModel methods.
             fields[f"arg_{i}"] = (annotation, pydantic.Field(default, alias=param.name))
@@ -862,12 +911,19 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
         __config__={"extra": extra},
         **fields,
     )
-    parameters = sig_model.model_json_schema()
-    strict = not _requires_non_strict(parameters)
-    if strict:
-        response_format = litellm.utils.type_to_response_format_param(sig_model)
-        assert response_format is not None
-        parameters = response_format["json_schema"]["schema"]
+    if unmarked:
+        raise TypeError(
+            f"tool {name!r} has no strict JSON schema: no argument can stand for "
+            f"the default of {', '.join(unmarked)}"
+        )
+    if _requires_non_strict(sig_model.model_json_schema()):
+        raise TypeError(
+            f"tool {name!r} has no strict JSON schema: it accepts arguments it does "
+            f"not name"
+        )
+    response_format = litellm.utils.type_to_response_format_param(sig_model)
+    assert response_format is not None
+    parameters = response_format["json_schema"]["schema"]
     description = _tool_description(tool)
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
@@ -878,7 +934,7 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
                 "name": name,
                 "description": description,
                 "parameters": parameters,
-                "strict": strict,
+                "strict": True,
             },
         }
     )
@@ -929,6 +985,9 @@ def _validate_tool_call(
     for name, raw_arg in json.loads(call.function.arguments).items():
         param = sig.parameters.get(name, extra_param)
         assert param is not None, f"Unexpected argument {name} for tool {tool.__name__}"
+        marker = _default_marker(param)
+        if marker is not _NO_MARKER and raw_arg == marker:
+            continue  # leave the parameter to its default
         arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[param.annotation]  # type: ignore[name-defined]
         )
@@ -965,6 +1024,11 @@ def _serialize_tool_call(
                 encoded_args.update(encoded)
             else:
                 encoded_args[k] = encoded
+        # Strict schemas require every field, so an omitted default is sent as its marker.
+        for param in value.bound_args.signature.parameters.values():
+            marker = _default_marker(param)
+            if param.name not in encoded_args and marker is not _NO_MARKER:
+                encoded_args[param.name] = marker
     return OpenAIChatCompletionMessageToolCall.model_validate(
         {
             "type": "function",

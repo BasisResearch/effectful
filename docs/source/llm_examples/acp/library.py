@@ -191,10 +191,9 @@ class PlanStep:
     """One step of the plan you are showing the user.
 
     Deliberately not `acp.schema.PlanEntry`, which is the same three fields plus the
-    ``_meta`` every ACP type carries, and would show the model a field whose own
-    documentation says implementations must not assume anything about it. The two
-    vocabularies below are borrowed from the protocol rather than restated, so the part
-    that could drift cannot.
+    free-form ``_meta`` every ACP type carries, which no strict tool schema can
+    describe. The two vocabularies below are borrowed from the protocol rather than
+    restated, so the part that could drift cannot.
     """
 
     content: str

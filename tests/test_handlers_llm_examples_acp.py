@@ -2833,15 +2833,15 @@ def test_a_plan_step_speaks_the_protocols_own_vocabulary():
 def test_the_plan_the_model_is_shown_has_no_protocol_metadata_in_it():
     """Which is the reason `PlanStep` exists rather than `acp.schema.PlanEntry`.
 
-    Every ACP type carries `_meta`, a free-form object reserved for implementations;
-    the wire type would put it in front of the model.
+    Every ACP type carries `_meta`, a free-form object reserved for implementations,
+    which no strict tool schema can describe.
     """
     step = _tool_schema(acp_update_plan)["$defs"]["PlanStep"]
     assert set(step["properties"]) == {"content", "priority", "status"}
-    assert step["required"] == ["content"]
+    assert set(step["required"]) == {"content", "priority", "status"}
 
-    wire = _tool_schema(_plan_tool_taking(schema.PlanEntry))["$defs"]["PlanEntry"]
-    assert "_meta" in wire["properties"], "the wire type would show it to the model"
+    with pytest.raises(Exception):
+        _tool_schema(_plan_tool_taking(schema.PlanEntry))
 
 
 def test_the_plan_is_replaced_whole_rather_than_appended_to():
