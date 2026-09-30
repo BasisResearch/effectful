@@ -108,7 +108,7 @@ class LangfuseTracer(ObjectInterpretation):
             return message, result, is_final
 
     @implements(call_agent)
-    def call_agent(self, skill: Skill, *args, **kwargs):
+    def call_agent(self, skill: Skill, /, *args, **kwargs):
         """Trace one Skill call as a Langfuse *agent* observation.
 
         This is the observation the completions and tool calls of the call nest

@@ -303,7 +303,7 @@ class TextGradOptimizer(ObjectInterpretation):
     # -- Recording (handler methods) ------------------------------------------
 
     @implements(call_agent)
-    def _trace_call(self, skill, *args, **kwargs):
+    def _trace_call(self, skill, /, *args, **kwargs):
         node = CallNode(skill_name=skill.__name__)
 
         try:

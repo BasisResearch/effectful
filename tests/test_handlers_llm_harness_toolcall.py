@@ -285,7 +285,9 @@ def _call(expr: str, tool_name: str = "extend_sequence"):
 def _eval_expr(provider, source: str, env: dict[str, Any]) -> Any:
     with handler(provider):
         module = parse_op(source, "<test-eval>")
-        code = compile_op(ast.Expression(module.body[0].value), "<test-eval>", "eval")
+        (expression,) = module.body
+        assert isinstance(expression, ast.Expr)
+        code = compile_op(ast.Expression(expression.value), "<test-eval>", "eval")
         return eval_op(code, env)
 
 

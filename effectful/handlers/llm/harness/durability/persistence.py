@@ -152,7 +152,7 @@ class SQLitePersister(PromptInjectingInterpretation):
 
     @implements(call_agent)
     def call_agent[**P, T](
-        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+        self, skill: Skill[P, T], /, *args: P.args, **kwargs: P.kwargs
     ) -> T:
         """Checkpoint the agent after the call returns.
 
@@ -182,7 +182,7 @@ class SQLitePersister(PromptInjectingInterpretation):
             agent_id = agent.__agent_id__
             state_blob = pickle.dumps(self._checkpoint_state(agent))
             history_json = json.dumps(list(skill.__history__), default=str)
-            with self._checkpoint_connection() as conn:
+            with self._checkpoint_connection() as conn:  # type: ignore[union-attr]
                 conn.execute(
                     """
                     INSERT INTO checkpoints (agent_id, state, history)

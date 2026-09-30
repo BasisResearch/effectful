@@ -79,7 +79,7 @@ class PydanticSkillArgValidator(PromptInjectingInterpretation):
 
     @implements(call_agent)
     def call_agent[**P, T](
-        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+        self, skill: Skill[P, T], /, *args: P.args, **kwargs: P.kwargs
     ) -> T:
         """Validate the annotated arguments, then forward the normalized call.
 

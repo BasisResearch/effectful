@@ -123,8 +123,8 @@ def _restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
-        return fn(*a, **k)
+        args, kwargs = (a, k) if a or k else _get_args()
+        return fn(*args, **kwargs)
 
     return _cont_wrapper
 
@@ -152,9 +152,9 @@ def _save_then_restore_args[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
 
     @functools.wraps(fn)
     def _cont_wrapper(*a: P.args, **k: P.kwargs) -> T:
-        a, k = (a, k) if a or k else _get_args()
-        with handler({_get_args: lambda: (a, k)}):
-            return fn(*a, **k)
+        args, kwargs = (a, k) if a or k else _get_args()
+        with handler({_get_args: lambda: (args, kwargs)}):
+            return fn(*args, **kwargs)
 
     return _cont_wrapper
 

@@ -156,7 +156,9 @@ def _bind_dims_tensor(
         for i, o in enumerate(dims)
         if not isinstance(o, Term) or o.op not in names_set
     ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    dim_ops: list[Operation | None] = [
+        a.op if isinstance(a, Term) else None for a in dims
+    ]
     perm = [dim_ops.index(o) for o in names] + reindex_dims
     tensor = tensor.permute(perm)
     return tensor[(slice(None),) * len(names) + tuple(dims[i] for i in reindex_dims)]
@@ -309,7 +311,7 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
 
 
 @defdata.register(torch.Tensor)
-def _embed_tensor(ty, op, *args, **kwargs):
+def _embed_tensor(ty, op, /, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)
@@ -337,7 +339,7 @@ def _torch_function[T](func: Callable[..., T], args=(), kwargs=None) -> Expr[T]:
 
 class _TensorTerm(Term[torch.Tensor]):
     def __init__(
-        self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
+        self, op: Operation[..., torch.Tensor], /, *args: Expr, **kwargs: Expr
     ) -> None:
         self._op = op
         self._args = args

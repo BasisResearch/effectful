@@ -663,7 +663,7 @@ class AgentLoop(PromptInjectingInterpretation):
 
     @implements(call_agent)
     def call_agent[**P, T](
-        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+        self, skill: Skill[P, T], /, *args: P.args, **kwargs: P.kwargs
     ) -> T:
         """The terminal rule: run the completion loop that answers `skill`.
 
@@ -690,7 +690,7 @@ class AgentLoop(PromptInjectingInterpretation):
 
         message = call_user(self._skill_user_prompt(skill, env))
 
-        result: T | None = None
+        result: T | ToolCallExecutionError | None = None
         is_final: bool = False
         response_type = _instantiate_return_type(skill, bound_args)
         while not is_final:
