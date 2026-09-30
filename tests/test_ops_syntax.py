@@ -380,13 +380,13 @@ def test_defop_setattr_class() -> None:
 
     MyClass.my_op = my_op
 
-    tm = MyClass.my_op(5)
+    tm = MyClass.my_op(5)  # type: ignore[arg-type]
     assert isinstance(tm, Term)
     assert isinstance(tm.op, Operation)
     assert tm.op is MyClass.my_op
     assert tm.args == (5,)
 
-    MyClass().my_op(5)
+    MyClass().my_op(5)  # type: ignore[arg-type]
 
 
 def test_defop_classmethod():

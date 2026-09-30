@@ -255,9 +255,23 @@ def _fail(future: asyncio.Future, error: BaseException) -> None:
 # ── Endpoint projection ───────────────────────────────────────────
 
 
-@Operation.define
+if typing.TYPE_CHECKING:
+
+    class _StepOperation(Operation[..., Awaitable[Any]]):
+        """The type of `step`, which is generic in the skill's parameters."""
+
+        def __call__[**P, T](
+            self, skill: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+        ) -> Awaitable[T]: ...
+
+    _define_step: Callable[[Callable[..., Any]], _StepOperation]
+else:
+    _define_step = Operation.define
+
+
+@_define_step
 def step[**P, T](
-    skill: Callable[P, T], *args: P.args, **kwargs: P.kwargs
+    skill: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
 ) -> Awaitable[T]:
     """Take one step of a choreography, and return an awaitable for its result.
 
@@ -368,14 +382,14 @@ class EndpointProjection(ObjectInterpretation):
         return self._agent.__agent_id__
 
     @implements(step)
-    def _step(self, skill: Callable, *args, **kwargs) -> Awaitable:
+    def _step(self, skill: Callable, /, *args, **kwargs) -> Awaitable:
         return self._run_step(self._next_step(), skill, args, kwargs)
 
     @implements(scatter)
     def _scatter_items(self, items, agent, fn) -> Awaitable:
         return self._scatter(self._next_step(), items, agent, fn)
 
-    def _step_within_item(self, skill: Callable, *args, **kwargs) -> Awaitable:
+    def _step_within_item(self, skill: Callable, /, *args, **kwargs) -> Awaitable:
         """`step`, as interpreted while this agent runs a scatter item.
 
         The item already is a step, with its own ID and its own place in the
@@ -393,7 +407,7 @@ class EndpointProjection(ObjectInterpretation):
             )
         return self._in_thread(skill, *args, **kwargs)
 
-    async def _in_thread[T](self, fn: Callable[..., T], *args, **kwargs) -> T:
+    async def _in_thread[T](self, fn: Callable[..., T], /, *args, **kwargs) -> T:
         """Await *fn* on a worker thread, carrying the current context along.
 
         The context copy is what puts the agent's `effectful` handler stack --
@@ -558,7 +572,7 @@ class Choreography[**P, T]:
         self.log = pathlib.Path(log) if log is not None else None
         self._steps = _Steps(self.log)
 
-    async def run_async(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    async def run_async(self, /, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run the choreography to completion.
 
         The arguments are the program's own, forwarded to every agent. They all
@@ -610,7 +624,7 @@ class Choreography[**P, T]:
 
         return tasks[0].result()
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    def __call__(self, /, *args: P.args, **kwargs: P.kwargs) -> T:
         """Run the choreography from synchronous code.
 
         Equivalent to ``asyncio.run(choreo.run_async(...))``; await `run_async`

@@ -207,7 +207,7 @@ class _DistributionTerm(dist.Distribution):
     _kwargs: dict
     __pos_base_dist: dist.Distribution | None = None
 
-    def __init__(self, constr, op, *args, **kwargs):
+    def __init__(self, constr, op, /, *args, **kwargs):
         assert issubclass(constr, dist.Distribution)
 
         self._constr = constr
@@ -404,7 +404,7 @@ class _DistributionMethodTerm(_DistributionTerm):
     (``expand``, ``to_event``). Catches the ``defdata`` fallthrough that would
     otherwise hit ``_CallableTerm``. See #666."""
 
-    def __init__(self, ty, op, *args, **kwargs):
+    def __init__(self, ty, op, /, *args, **kwargs):
         receiver = args[0] if args else None
         constr = (
             receiver._constr

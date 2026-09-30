@@ -181,7 +181,7 @@ class HistoryBuilder(ObjectInterpretation):
         return (message, result, is_final)
 
     @implements(call_agent)
-    def call_agent(self, skill, *args, **kwargs):
+    def call_agent(self, skill, /, *args, **kwargs):
         """Run the call in a transaction over the agent's own history.
 
         The buffer starts as a copy, so a call that raises leaves the agent's

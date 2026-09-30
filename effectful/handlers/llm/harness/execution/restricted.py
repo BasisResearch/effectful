@@ -754,7 +754,7 @@ def _guarded_inplacevar(op: str, x: typing.Any, y: typing.Any) -> typing.Any:
 
 
 def _guarded_apply(
-    func: collections.abc.Callable, *args: typing.Any, **kwargs: typing.Any
+    func: collections.abc.Callable, /, *args: typing.Any, **kwargs: typing.Any
 ) -> typing.Any:
     """``f(*args, **kwargs)`` -- the form the transformer routes starred calls
     through. Argument *values* need no guarding here: whatever built them was

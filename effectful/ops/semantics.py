@@ -303,17 +303,17 @@ def _simple_type(tp: type) -> type:
 
 class _TypeofIntp(ObjectInterpretation):
     @implements(apply)
-    def _apply(self, op, *args, **kwargs):
+    def _apply(self, op, /, *args, **kwargs):
         from effectful.internals.unification import Box
 
         return Box(op.__type_rule__(*args, **kwargs))
 
     @implements(ConstructorOperation.__apply__)
-    def _constructor_apply(self, op, *args, **kwargs):
+    def _constructor_apply(self, op, /, *args, **kwargs):
         return op.__default_rule__(*args, **kwargs)
 
     @implements(DataclassConstructorOperation.__apply__)
-    def _dataclass_constructor_apply(self, op, *args, **kwargs):
+    def _dataclass_constructor_apply(self, op, /, *args, **kwargs):
         from effectful.internals.unification import Box
 
         return Box(op.__type_rule__(*args, **kwargs))
@@ -366,7 +366,7 @@ class _FvsofIntp(ObjectInterpretation):
             return _FvsAnalysis(Scoped.extract_operations(value))
 
     @implements(ConstructorOperation.__apply__)
-    def _apply_collection_binders(self, op, *args, **kwargs):
+    def _apply_collection_binders(self, op, /, *args, **kwargs):
         analyses = tuple(self._analysis(x) for x in (*args, *kwargs.values()))
         return _FvsAnalysis(
             frozenset().union(frozenset(), *(a.ops for a in analyses)),
@@ -374,7 +374,7 @@ class _FvsofIntp(ObjectInterpretation):
         )
 
     @implements(apply)
-    def _apply_fvs(self, op, *args, **kwargs):
+    def _apply_fvs(self, op, /, *args, **kwargs):
         arg_analyses = tuple(self._analysis(a) for a in args)
         kwarg_analyses = {k: self._analysis(v) for k, v in kwargs.items()}
         bindings = op.__fvs_rule__(

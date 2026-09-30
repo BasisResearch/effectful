@@ -168,13 +168,8 @@ def select(value: int, /, *, enabled: bool = True) -> int:
 def identity[T](value: T) -> T:
     return value
 
-@{factory}
-def invoke[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
-    return fn(*args, **kwargs)
-
 result: int = select(1, enabled=False)
 generic: str = identity("text")
-higher_order: int = invoke(select, 1, enabled=True)
 copied = {factory}(select, name="copied")
 copied_result: int = copied(1, enabled=True)
 variable = {factory}(int, name="variable")
@@ -243,11 +238,6 @@ from effectful.ops.types import Operation
 
 class Reader:
     @{factory}
-    @staticmethod
-    def static(value: int) -> int:
-        return value
-
-    @{factory}
     @classmethod
     def bound(cls, value: int) -> int:
         return value
@@ -257,9 +247,67 @@ class Reader:
     def dispatched(self, value: int) -> int:
         return value
 
-static_result: int = Reader.static(1)
 class_result: int = Reader.bound(1)
 instance_result: int = Reader().dispatched(1)
+"""
+    with handler(TYPE_CHECKER()):
+        type_check(source, 1, len(source.splitlines()))
+
+
+def _xfail_under_mypy(request, type_checker, reason: str) -> None:
+    if type_checker is MypyTypeChecker:
+        request.applymarker(pytest.mark.xfail(strict=True, reason=reason))
+
+
+@pytest.mark.parametrize("factory", ["defop", "Operation.define"])
+def test_operation_signature_accepts_paramspec_generic_ops(
+    request, type_checker, factory
+):
+    _xfail_under_mypy(
+        request,
+        type_checker,
+        "mypy solves an op generic in its own ParamSpec to Never at definition",
+    )
+    source = f"""
+from collections.abc import Callable
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
+
+@{factory}
+def select(value: int, /, *, enabled: bool = True) -> int:
+    return value
+
+@{factory}
+def invoke[**P, T](fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> T:
+    return fn(*args, **kwargs)
+
+higher_order: int = invoke(select, 1, enabled=True)
+"""
+    with handler(TYPE_CHECKER()):
+        type_check(source, 1, len(source.splitlines()))
+
+
+@pytest.mark.parametrize("factory", ["defop", "Operation.define"])
+def test_operation_signature_accepts_staticmethod_descriptors(
+    request, type_checker, factory
+):
+    _xfail_under_mypy(
+        request,
+        type_checker,
+        "mypy binds the first parameter of an Operation wrapped in staticmethod",
+    )
+    source = f"""
+from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
+
+class Reader:
+    @{factory}
+    @staticmethod
+    def static(value: int) -> int:
+        return value
+
+static_result: int = Reader.static(1)
+instance_result: int = Reader().static(1)
 """
     with handler(TYPE_CHECKER()):
         type_check(source, 1, len(source.splitlines()))

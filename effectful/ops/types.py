@@ -14,6 +14,54 @@ from typing import (
     runtime_checkable,
 )
 
+if typing.TYPE_CHECKING:
+
+    class _DefineCallable(Protocol):
+        """The type of Operation.define once bound to a class."""
+
+        @overload
+        def __call__[T](
+            self, default: type[T], *, name: str | None = None
+        ) -> "Operation[[], T]": ...
+        @overload
+        def __call__[**P, T](  # type: ignore[overload-overlap]
+            self, default: "staticmethod[P, T]", *, name: str | None = None
+        ) -> "_StaticMethodOperationDescriptor[Operation[P, T]]": ...
+        @overload
+        def __call__[T](
+            self,
+            default: "functools.singledispatchmethod[T]",
+            *,
+            name: str | None = None,
+        ) -> "Operation[Concatenate[Any, ...], T]": ...
+        @overload
+        def __call__[**P, T](
+            self, default: Callable[P, T], *, name: str | None = None
+        ) -> "Operation[P, T]": ...
+        @overload
+        def __call__[S, **P, T](
+            self, default: "classmethod[S, P, T]", *, name: str | None = None
+        ) -> "_ClassMethodOpDescriptor[S, P, T, Operation[P, T]]": ...
+
+    class _StaticMethodOperationDescriptor[O: "Operation"](Protocol):
+        """A static method operation, which yields an unbound operation on access."""
+
+        __name__: str
+        __qualname__: str
+
+        @property
+        def __func__(self) -> O: ...
+
+        def __get__(self, instance: object, owner: type | None = None) -> O: ...
+
+    class _SingleDispatchDefine(functools.singledispatchmethod):
+        """singledispatchmethod with a signature-preserving __get__."""
+
+        def __get__(self, obj: Any, cls: type | None = None) -> "_DefineCallable": ...
+
+else:
+    _SingleDispatchDefine = functools.singledispatchmethod
+
 
 class NotHandled(Exception):
     """Raised by an operation when the operation should remain unhandled."""
@@ -38,20 +86,42 @@ class _CustomSingleDispatchCallable[**P, **Q, S, T]:
     def register(self):
         return self._registry.register
 
-    def __call__(self, *args: P.args, **kwargs: P.kwargs) -> T:
+    def __call__(self, /, *args: P.args, **kwargs: P.kwargs) -> T:
         return self.func(self.dispatch, *args, **kwargs)
 
 
-class _ClassMethodOpDescriptor(classmethod):
-    def __init__(self, define, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+if typing.TYPE_CHECKING:
+    _GenericClassMethod = classmethod
+else:
+    # classmethod is generic in typeshed but not subscriptable at runtime.
+    class _GenericClassMethod(classmethod):
+        __class_getitem__ = classmethod(types.GenericAlias)
+
+
+class _ClassMethodOpDescriptor[S, **P, T, O: "Operation[..., Any]"](
+    _GenericClassMethod[S, P, T]
+):
+    """A class method operation, which yields an operation bound to ``S`` on access."""
+
+    def __init__(
+        self,
+        define: Callable[[Callable[P, T]], O],
+        f: Callable[Concatenate[type[S], P], T],
+    ):
+        super().__init__(f)
         self._define = define
 
-    def __set_name__(self, owner, name):
+    def __set_name__(self, owner: type, name: str) -> None:
         assert not hasattr(self, "_name_on_owner"), "should only be called once"
         self._name_on_owner = f"_descriptorop_{name}"
 
-    def __get__(self, instance, owner: type | None = None):
+    @overload
+    def __get__(self, instance: S, owner: type[S] | None = None) -> O: ...
+
+    @overload
+    def __get__(self, instance: None, owner: type[S]) -> O: ...
+
+    def __get__(self, instance: Any, owner: type | None = None) -> O:
         owner = owner if owner is not None else type(instance)
         try:
             return owner.__dict__[self._name_on_owner]
@@ -62,38 +132,6 @@ class _ClassMethodOpDescriptor(classmethod):
 
 
 INSTANCE_OP_PREFIX = "__instanceop"
-
-
-class _OperationDefine(Protocol):
-    @overload
-    def __call__[T](
-        self, default: type[T], /, *, name: str | None = None
-    ) -> "Operation[[], T]": ...
-
-    @overload
-    def __call__[**P, T](
-        self, default: Callable[P, T], /, *, name: str | None = None
-    ) -> "Operation[P, T]": ...
-
-    # Higher-rank callables cannot always be inferred as one ParamSpec and result.
-    @overload
-    def __call__[F: Callable](
-        self, default: F, /, *, name: str | None = None
-    ) -> "Operation": ...
-
-    @overload
-    def __call__(
-        self,
-        default: classmethod | functools.singledispatchmethod,
-        /,
-        *,
-        name: str | None = None,
-    ) -> Any: ...
-
-
-class _OperationDefinition(functools.singledispatchmethod):
-    def __get__(self, obj: object, cls: type | None = None) -> _OperationDefine:
-        return typing.cast(_OperationDefine, super().__get__(obj, cls))
 
 
 class Operation[**Q, V]:
@@ -108,7 +146,7 @@ class Operation[**Q, V]:
 
     __name__: str
     __default__: Callable[Q, V]
-    __apply__: typing.ClassVar["Operation"]
+    __apply__: typing.ClassVar["_ApplyOperation"]
 
     def __init__(self, default: Callable[Q, V], name: str | None = None):
         functools.update_wrapper(self, default)
@@ -166,14 +204,11 @@ class Operation[**Q, V]:
     def __hash__(self):
         return hash(self.__default__)
 
-    @_OperationDefinition
+    @_SingleDispatchDefine
     @classmethod
     def define[**P, T](
-        cls: "type[Operation[P, T]]",
-        default: Callable[P, T],
-        *,
-        name: str | None = None,
-    ) -> "Operation[P, T]":
+        cls: type[typing.Self], default: Callable[P, T], *, name: str | None = None
+    ) -> typing.Self:
         """Creates a fresh :class:`Operation`.
 
         :param t: May be a type, callable, or :class:`Operation`. If a type, the
@@ -183,11 +218,6 @@ class Operation[**Q, V]:
                   operation will be a distinct copy of the operation.
         :param name: Optional name for the operation.
         :returns: A fresh operation.
-
-        Static checking preserves the parameters and return type of ordinary
-        annotated callables. Type inputs produce nullary operations. Descriptor
-        inputs and higher-order signatures that cannot be inferred as one
-        parameter specification and result may remain dynamically typed.
 
         .. note::
 
@@ -310,12 +340,10 @@ class Operation[**Q, V]:
         """
         raise NotImplementedError
 
-    @define.register(
-        typing.cast(type[collections.abc.Callable], collections.abc.Callable)
-    )
+    @define.register(typing.cast(type, collections.abc.Callable))
     @classmethod
     def _define_callable[**P, T](
-        cls: "type[Operation[P, T]]", t: Callable[P, T], *, name: str | None = None
+        cls, t: Callable[P, T], *, name: str | None = None
     ) -> "Operation[P, T]":
         if isinstance(t, Operation):
 
@@ -323,9 +351,11 @@ class Operation[**Q, V]:
             def func(*args, **kwargs):
                 raise NotHandled
 
-            return cls.define(func, name=name)
+            op = cls.define(func, name=name)
         else:
-            return cls(t, name=name)
+            op = cls(t, name=name)  # type: ignore[arg-type]
+
+        return op  # type: ignore[return-value]
 
     @define.register(type)
     @define.register(typing.cast(type, types.GenericAlias))
@@ -373,7 +403,7 @@ class Operation[**Q, V]:
             raise NotImplementedError("Operations as classmethod are not yet supported")
 
         @functools.wraps(default.func)
-        def _wrapper(obj, *args, **kwargs):
+        def _wrapper(obj, /, *args, **kwargs):
             return default.__get__(obj)(*args, **kwargs)
 
         op = cls.define(_wrapper, **kwargs)
@@ -396,7 +426,7 @@ class Operation[**Q, V]:
         return op
 
     @typing.final
-    def __default_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
+    def __default_rule__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> "Expr[V]":
         """The default rule is used when the operation is not handled.
 
         If no default rule is supplied, the free rule is used instead.
@@ -411,7 +441,7 @@ class Operation[**Q, V]:
             )(self, *args, **kwargs)
 
     @typing.final
-    def __type_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
+    def __type_rule__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> type[V]:
         """Returns the type of the operation applied to arguments.
 
         .. note::
@@ -455,7 +485,9 @@ class Operation[**Q, V]:
         return Scoped.infer_annotations(self.__signature__)
 
     @typing.final
-    def __fvs_rule__(self, *args: Q.args, **kwargs: Q.kwargs) -> inspect.BoundArguments:
+    def __fvs_rule__(
+        self, /, *args: Q.args, **kwargs: Q.kwargs
+    ) -> inspect.BoundArguments:
         """Returns the sets of variables that appear free in each argument and
         keyword argument but not in the result of the operation, i.e. the
         variables bound by the operation.
@@ -506,18 +538,46 @@ class Operation[**Q, V]:
                 f"{INSTANCE_OP_PREFIX}_{owner.__name__}_{name}"
             )
 
-    def __get__[T](self, instance: T | None, owner: type[T] | None = None):
+    @overload
+    def __get__[T, **P](
+        self: "Operation[Concatenate[T, P], V]",
+        instance: T,
+        owner: type[T] | None = None,
+    ) -> "Operation[P, V]": ...
+
+    @overload
+    def __get__[T, **P](
+        self: "Operation[Concatenate[T, P], V]",
+        instance: None,
+        owner: type[T],
+    ) -> "Operation[Concatenate[T, P], V]": ...
+
+    @overload
+    def __get__[T, **P](
+        self: "Operation[Concatenate[type[T], P], V]",
+        instance: T | None,
+        owner: type[T],
+    ) -> "Operation[P, V]": ...
+
+    @overload
+    def __get__[T](
+        self, instance: T | None, owner: type[T] | None = None
+    ) -> typing.Self: ...
+
+    def __get__[T](
+        self, instance: T | None, owner: type[T] | None = None
+    ) -> "Operation[..., V] | typing.Self":
         if hasattr(instance, "__dict__") and hasattr(self, "_name_on_instance"):
             from effectful.ops.semantics import fvsof
 
             if self._name_on_instance in instance.__dict__:
                 return instance.__dict__[self._name_on_instance]
             elif isinstance(instance, Term) or fvsof(instance):
-                return types.MethodType(self, instance)
+                return types.MethodType(self, instance)  # type: ignore[return-value]
             else:
 
                 @functools.wraps(self)
-                def _instance_op(instance, *args, **kwargs):
+                def _instance_op(instance, /, *args, **kwargs):
                     from effectful.ops.syntax import defdata
 
                     default_result = self(instance, *args, **kwargs)
@@ -543,7 +603,7 @@ class Operation[**Q, V]:
                 instance.__dict__[self._name_on_instance] = instance_op
                 return instance_op
         elif instance is not None:
-            return types.MethodType(self, instance)
+            return types.MethodType(self, instance)  # type: ignore[return-value]
         else:
             return self
 
@@ -558,7 +618,7 @@ class Operation[**Q, V]:
         )
         return _restore_args(rule)
 
-    def __call__(self, *args: Q.args, **kwargs: Q.kwargs) -> V:
+    def __call__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import fwd, handler
 
@@ -584,11 +644,11 @@ class Operation[**Q, V]:
         assert "__apply__" not in cls.__dict__, "Cannot manually override apply"
         assert isinstance(cls.__apply__, ApplyOperation)
 
-        cls.__apply__ = cls.__apply__.define(
+        cls.__apply__ = cls.__apply__.define(  # type: ignore[assignment]
             staticmethod(
-                functools.wraps(cls.__apply__)(
+                functools.wraps(cls.__apply__)(  # type: ignore[arg-type]
                     functools.partial(
-                        lambda app, op, *args, **kwargs: app(op, *args, **kwargs),
+                        lambda app, op, /, *args, **kwargs: app(op, *args, **kwargs),
                         cls.__apply__,
                     )
                 )
@@ -600,7 +660,24 @@ class ApplyOperation[**Q, V](Operation[Q, V], _generate_apply=False):
     """An operation that implements application for an Operation subclass."""
 
 
-def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) -> B:
+if typing.TYPE_CHECKING:
+
+    class _ApplyOperation(ApplyOperation[..., Any]):
+        """The type of Operation.__apply__, generic in the applied operation."""
+
+        def __call__[**A, B](
+            self, op: "Operation[A, B]", /, *args: A.args, **kwargs: A.kwargs
+        ) -> B: ...
+
+        def __get__(
+            self, instance: Any, owner: "type | None" = None
+        ) -> "typing.Self": ...
+
+else:
+    _ApplyOperation = ApplyOperation
+
+
+def __apply__[**A, B](op: Operation[A, B], /, *args: A.args, **kwargs: A.kwargs) -> B:
     """Apply ``op`` to ``args``, ``kwargs`` in interpretation ``intp``.
 
     Handling :func:`Operation.__apply__` changes the evaluation strategy of terms.
@@ -632,9 +709,8 @@ def __apply__[**A, B](op: Operation[A, B], *args: A.args, **kwargs: A.kwargs) ->
     return op.__default_rule__(*args, **kwargs)  # type: ignore[return-value]
 
 
-_apply_descriptor: staticmethod = staticmethod(__apply__)
-Operation.__apply__ = ApplyOperation.define(_apply_descriptor)
-del __apply__, _apply_descriptor
+Operation.__apply__ = ApplyOperation.define(staticmethod(__apply__))  # type: ignore[arg-type, assignment]
+del __apply__
 
 
 class Term[T](abc.ABC):
@@ -709,10 +785,10 @@ class Term[T](abc.ABC):
                 ret += f"{', ' if args else ''}"
             return _Rendered(f"{ret}{kwargs_str})")
 
-        def _apply(op, *args, **kwargs) -> str:
+        def _apply(op, /, *args, **kwargs) -> str:
             return _format_call(op_str(op), args, kwargs)
 
-        def _constructor_apply(op, *args, **kwargs):
+        def _constructor_apply(op, /, *args, **kwargs):
             # Dataclass constructors are introduced by evaluate() while traversing
             # an operation's arguments. They are traversal machinery, not nodes in
             # the expression being displayed.
