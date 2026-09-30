@@ -437,7 +437,7 @@ def _pydantic_method_skill_body(ty: typing.Any) -> typing.Any:
         # implementation.
         result = functools.wraps(class_skill)(result)
 
-        def _doctest_apply(op, *args, **kwargs):
+        def _doctest_apply(op, /, *args, **kwargs):
             instance = _method_instance(op, class_skill)
             if instance is None:
                 return fwd()
@@ -653,7 +653,7 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
 
     @implements(call_agent)
     def call_agent[**P, T](
-        self, skill: Skill[P, T], *args: P.args, **kwargs: P.kwargs
+        self, skill: Skill[P, T], /, *args: P.args, **kwargs: P.kwargs
     ) -> T:
         """Offer ``write_and_run_body`` for the duration of this call.
 

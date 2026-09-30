@@ -101,15 +101,67 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
             raise ValueError("Tools must have docstrings.")
         super().__init__(default, name=name)
 
+    if typing.TYPE_CHECKING:
+        # Operation.__get__'s overloads, returning Tool; the runtime is inherited.
+        @typing.overload
+        def __get__[S, **Q](
+            self: "Tool[typing.Concatenate[S, Q], T]",
+            instance: S,
+            owner: "type[S] | None" = None,
+        ) -> "Tool[Q, T]": ...
+
+        @typing.overload
+        def __get__[S, **Q](
+            self: "Tool[typing.Concatenate[S, Q], T]",
+            instance: None,
+            owner: "type[S]",
+        ) -> "Tool[typing.Concatenate[S, Q], T]": ...
+
+        @typing.overload
+        def __get__[S, **Q](
+            self: "Tool[typing.Concatenate[type[S], Q], T]",
+            instance: "S | None",
+            owner: "type[S]",
+        ) -> "Tool[Q, T]": ...
+
+        @typing.overload
+        def __get__[S](
+            self, instance: "S | None", owner: "type[S] | None" = None
+        ) -> "typing.Self": ...
+
+        def __get__(self, instance: typing.Any, owner: typing.Any = None) -> typing.Any:
+            return super().__get__(instance, owner)
+
+    @typing.overload
+    @classmethod
+    def define[V](cls, default: type[V], *args, **kwargs) -> "Tool[[], V]": ...
+
+    @typing.overload
     @classmethod
     def define[**Q, V](
-        cls,
-        default: collections.abc.Callable[Q, V]
-        | classmethod
-        | functools.singledispatchmethod,
-        *args,
-        **kwargs,
-    ) -> "Tool[Q, V]":
+        cls, default: "staticmethod[Q, V]", *args, **kwargs
+    ) -> "effectful.ops.types._StaticMethodOperationDescriptor[Tool[Q, V]]": ...
+
+    @typing.overload
+    @classmethod
+    def define[V](
+        cls, default: "functools.singledispatchmethod[V]", *args, **kwargs
+    ) -> "Tool[typing.Concatenate[typing.Any, ...], V]": ...
+
+    @typing.overload
+    @classmethod
+    def define[**Q, V](
+        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+    ) -> "Tool[Q, V]": ...
+
+    @typing.overload
+    @classmethod
+    def define[S, **Q, V](
+        cls, default: "classmethod[S, Q, V]", *args, **kwargs
+    ) -> "effectful.ops.types._ClassMethodOpDescriptor[S, Q, V, Tool[Q, V]]": ...
+
+    @classmethod
+    def define(cls, default: typing.Any, *args, **kwargs) -> typing.Any:
         """Define a tool.
 
         Binds the result's type parameters from ``default`` (as `Skill.define`
@@ -122,7 +174,7 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
         use of `Tool.define`.
 
         """
-        return typing.cast("Tool[Q, V]", super().define(default, *args, **kwargs))
+        return super().define(default, *args, **kwargs)
 
 
 class Skill[**P, T](Tool[P, T]):
@@ -316,14 +368,30 @@ class Skill[**P, T](Tool[P, T]):
         Agent.register(owner)
 
     @typing.overload
-    def __get__(self, instance: None, owner: "type | None" = None) -> "typing.Self": ...
-
-    @typing.overload
     def __get__[S, **Q](
         self: "Skill[typing.Concatenate[S, Q], T]",
         instance: S,
         owner: "type[S] | None" = None,
     ) -> "Skill[Q, T]": ...
+
+    @typing.overload
+    def __get__[S, **Q](
+        self: "Skill[typing.Concatenate[S, Q], T]",
+        instance: None,
+        owner: "type[S]",
+    ) -> "Skill[typing.Concatenate[S, Q], T]": ...
+
+    @typing.overload
+    def __get__[S, **Q](
+        self: "Skill[typing.Concatenate[type[S], Q], T]",
+        instance: "S | None",
+        owner: "type[S]",
+    ) -> "Skill[Q, T]": ...
+
+    @typing.overload
+    def __get__[S](
+        self, instance: "S | None", owner: "type[S] | None" = None
+    ) -> "typing.Self": ...
 
     def __get__[S](
         self, instance: "S | None", owner: "type[S] | None" = None
@@ -342,15 +410,37 @@ class Skill[**P, T](Tool[P, T]):
             result.__self__ = instance  # type: ignore[attr-defined]
         return result
 
+    # Skills reject type and singledispatchmethod defaults, unlike Tool.define.
+    @typing.overload
+    @classmethod
+    def define(cls, default: type, *args, **kwargs) -> typing.NoReturn: ...
+
+    @typing.overload
     @classmethod
     def define[**Q, V](
-        cls,
-        default: collections.abc.Callable[Q, V]
-        | classmethod
-        | functools.singledispatchmethod,
-        *args,
-        **kwargs,
-    ) -> "Skill[Q, V]":
+        cls, default: "staticmethod[Q, V]", *args, **kwargs
+    ) -> "effectful.ops.types._StaticMethodOperationDescriptor[Skill[Q, V]]": ...
+
+    @typing.overload
+    @classmethod
+    def define(
+        cls, default: functools.singledispatchmethod, *args, **kwargs
+    ) -> typing.NoReturn: ...
+
+    @typing.overload
+    @classmethod
+    def define[**Q, V](
+        cls, default: collections.abc.Callable[Q, V], *args, **kwargs
+    ) -> "Skill[Q, V]": ...
+
+    @typing.overload
+    @classmethod
+    def define[S, **Q, V](
+        cls, default: "classmethod[S, Q, V]", *args, **kwargs
+    ) -> "effectful.ops.types._ClassMethodOpDescriptor[S, Q, V, Skill[Q, V]]": ...
+
+    @classmethod
+    def define(cls, default: typing.Any, *args, **kwargs) -> typing.Any:
         """Define a skill.
 
         `define` takes a function and can be used as a decorator.
@@ -380,11 +470,7 @@ class Skill[**P, T](Tool[P, T]):
         # A segment preceding "<locals>" in the qualname is an enclosing
         # function; everything else (class names, the function itself) is not.
         assert frame is not None
-        _fn = (
-            default.func
-            if isinstance(default, functools.singledispatchmethod)
-            else default
-        )
+        _fn = default
         if isinstance(_fn, staticmethod | classmethod):
             _fn = _fn.__func__
         parts = _fn.__qualname__.split(".")
@@ -411,7 +497,7 @@ class Skill[**P, T](Tool[P, T]):
             )
         )
         op = super().define(default, *args, **kwargs)
-        op.__context__ = context  # type: ignore[attr-defined]
+        op.__context__ = context
         # Keep validation on original define-time callables, but skip the bound wrapper path.
         # to avoid dropping `self` from the signature and falsely rejecting valid prompt fields like `{self.name}`.
         is_bound_wrapper = (
@@ -420,7 +506,7 @@ class Skill[**P, T](Tool[P, T]):
         if not isinstance(op, staticmethod | classmethod) and not is_bound_wrapper:
             cls._validate_prompt(typing.cast(Skill, op), context)
 
-        return typing.cast(Skill[Q, V], op)
+        return op
 
 
 # alias for backwards compatibility

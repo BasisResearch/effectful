@@ -19,6 +19,7 @@ from effectful.ops.semantics import (
 from effectful.ops.syntax import (
     ObjectInterpretation,
     Scoped,
+    defdata,
     deffn,
     defop,
     implements,
@@ -1278,3 +1279,24 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+@pytest.mark.parametrize("name", ["self", "op", "app", "ty", "instance"])
+def test_keyword_arguments_named_like_internal_receivers(name):
+    namespace: dict[str, Any] = {}
+    exec(f"def f(*, {name}: int) -> int:\n    return {name} + 1", namespace)
+    f = Operation.define(namespace["f"])
+    kwargs = {name: 1}
+
+    assert f(**kwargs) == 2
+    with handler({f: lambda **kw: fwd(**kw) + 1}):
+        assert f(**kwargs) == 3
+    with handler({apply: lambda o, *a, **k: fwd(o, *a, **k)}):
+        assert f(**kwargs) == 2
+
+    with handler({apply: defdata}):
+        term = f(**kwargs)
+    assert term.kwargs == kwargs
+    assert typeof(term) is int
+    assert fvsof(term) == {f}
+    assert evaluate(term) == 2

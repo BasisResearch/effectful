@@ -311,7 +311,7 @@ def sizesof(value) -> Mapping[Operation[[], torch.Tensor], int]:
 
 
 @defdata.register(torch.Tensor)
-def _embed_tensor(ty, op, *args, **kwargs):
+def _embed_tensor(ty, op, /, *args, **kwargs):
     if (
         op is torch_getitem
         and not isinstance(args[0], Term)
@@ -339,7 +339,7 @@ def _torch_function[T](func: Callable[..., T], args=(), kwargs=None) -> Expr[T]:
 
 class _TensorTerm(Term[torch.Tensor]):
     def __init__(
-        self, op: Operation[..., torch.Tensor], *args: Expr, **kwargs: Expr
+        self, op: Operation[..., torch.Tensor], /, *args: Expr, **kwargs: Expr
     ) -> None:
         self._op = op
         self._args = args

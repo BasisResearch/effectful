@@ -56,7 +56,7 @@ class _IndexUpdateRef:
 
 
 @defdata.register(jax.Array)
-def _embed_array(ty, op, *args, **kwargs):
+def _embed_array(ty, op, /, *args, **kwargs):
     if (
         op is jax_getitem
         and not isinstance(args[0], Term)
@@ -68,7 +68,7 @@ def _embed_array(ty, op, *args, **kwargs):
 
 
 class _ArrayTerm(Term[jax.Array]):
-    def __init__(self, op: Operation[..., jax.Array], *args: Expr, **kwargs: Expr):
+    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
         self._op = op
         self._args = args
         self._kwargs = kwargs
