@@ -277,6 +277,30 @@ def _tool_city(person: _PersonWithAddress) -> str:
     return person.address.city
 
 
+@Tool.define
+def _tool_scale(x: int, factor: int = 2) -> int:
+    """Scale a number."""
+    return x * factor
+
+
+@Tool.define
+def _tool_wait(timeout: float | None = 5.0) -> str:
+    """Wait for at most the timeout, or indefinitely for None."""
+    return str(timeout)
+
+
+@Tool.define
+def _tool_salute(name: str | None = "friend") -> str:
+    """Greet someone, or no one for None."""
+    return f"Hello, {name}"
+
+
+@Tool.define
+def _tool_echo(value: Any = 1) -> str:
+    """Echo any value."""
+    return str(value)
+
+
 # ---------------------------------------------------------------------------
 # Module-level callable definitions
 # ---------------------------------------------------------------------------
@@ -568,21 +592,21 @@ ROUNDTRIP_CASES = [
     ),
     pytest.param(
         _NameAndTool,
-        _NameAndTool("_tool_total", _tool_total),
-        {_NAME2TOOL_KEY: {"_tool_total": _tool_total}},
-        id="tool-open-parameter-object",
+        _NameAndTool("_tool_scale", _tool_scale),
+        {_NAME2TOOL_KEY: {"_tool_scale": _tool_scale}},
+        id="tool-default-marked-by-null",
     ),
     pytest.param(
         _NameAndTool,
-        _NameAndTool("_tool_total_keywords", _tool_total_keywords),
-        {_NAME2TOOL_KEY: {"_tool_total_keywords": _tool_total_keywords}},
-        id="tool-keyword-arguments",
+        _NameAndTool("_tool_wait", _tool_wait),
+        {_NAME2TOOL_KEY: {"_tool_wait": _tool_wait}},
+        id="tool-default-marked-by-string",
     ),
     pytest.param(
         _NameAndTool,
-        _NameAndTool("_tool_contacts", _tool_contacts),
-        {_NAME2TOOL_KEY: {"_tool_contacts": _tool_contacts}},
-        id="tool-keyword-schema-definitions",
+        _NameAndTool("_tool_salute", _tool_salute),
+        {_NAME2TOOL_KEY: {"_tool_salute": _tool_salute}},
+        id="tool-default-marked-by-object",
     ),
     # --- DecodedToolCall ---
     pytest.param(
@@ -1453,9 +1477,21 @@ def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
         )
 
 
+# Tools whose parameters have no strict schema, and so are never advertised.
+_UNADVERTISED_CALLS = {
+    "dtc-open-parameter-object",
+    "dtc-keyword-arguments",
+    "dtc-keyword-schema-definitions",
+}
+
+
 @pytest.mark.parametrize(
     "ty,call,ctx",
-    [case for case in ROUNDTRIP_CASES if case.values[0] is DecodedToolCall],
+    [
+        case
+        for case in ROUNDTRIP_CASES
+        if case.values[0] is DecodedToolCall and case.id not in _UNADVERTISED_CALLS
+    ],
 )
 def test_toolcall_arguments_satisfy_advertised_schema(ty, call, ctx):
     tool_spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
@@ -1471,21 +1507,65 @@ def test_toolcall_arguments_satisfy_advertised_schema(ty, call, ctx):
 
 
 @pytest.mark.parametrize(
-    "tool,strict",
+    "tool",
     [
-        pytest.param(_tool_add, True, id="flat"),
-        pytest.param(_tool_city, True, id="nested-required-fields"),
-        pytest.param(_tool_connect, False, id="nested-optional-fields"),
-        pytest.param(_tool_total, False, id="open-parameter-object"),
-        pytest.param(_tool_total_keywords, False, id="keyword-arguments"),
+        pytest.param(_tool_add, id="flat"),
+        pytest.param(_tool_city, id="nested-required-fields"),
+        pytest.param(_tool_connect, id="nested-optional-fields"),
+        pytest.param(_tool_scale, id="default-marked-by-null"),
+        pytest.param(_tool_label, id="defaults-and-none-default"),
+        pytest.param(_tool_wait, id="default-marked-by-string"),
+        pytest.param(_tool_salute, id="default-marked-by-object"),
     ],
 )
-def test_tool_is_strict_unless_its_schema_forbids_it(tool, strict):
+def test_tool_is_advertised_strict(tool):
     ctx = {_NAME2TOOL_KEY: {tool.__name__: tool}}
     tool_spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
         _NameAndTool(tool.__name__, tool), mode="json", context=ctx
     )
-    assert tool_spec["function"]["strict"] is strict
+    assert tool_spec["function"]["strict"] is True
+
+
+@pytest.mark.parametrize(
+    "tool",
+    [
+        pytest.param(_tool_total, id="open-parameter-object"),
+        pytest.param(_tool_total_keywords, id="keyword-arguments"),
+        pytest.param(_tool_contacts, id="keyword-schema-definitions"),
+        pytest.param(_tool_echo, id="default-with-no-free-marker"),
+    ],
+)
+def test_tool_without_a_strict_schema_is_not_advertised(tool):
+    ctx = {_NAME2TOOL_KEY: {tool.__name__: tool}}
+    with pytest.raises(Exception):
+        pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+            _NameAndTool(tool.__name__, tool), mode="json", context=ctx
+        )
+
+
+@pytest.mark.parametrize(
+    "tool,arguments,expected",
+    [
+        (_tool_scale, {"x": 3, "factor": None}, {"x": 3, "factor": 2}),
+        (_tool_scale, {"x": 3, "factor": 5}, {"x": 3, "factor": 5}),
+        (_tool_wait, {"timeout": "__default__"}, {"timeout": 5.0}),
+        (_tool_wait, {"timeout": None}, {"timeout": None}),
+        (_tool_salute, {"name": {"__default__": True}}, {"name": "friend"}),
+        (_tool_salute, {"name": None}, {"name": None}),
+    ],
+)
+def test_default_markers_decode_to_the_parameter_default(tool, arguments, expected):
+    ctx = {_NAME2TOOL_KEY: {tool.__name__: tool}}
+    call = pydantic.TypeAdapter(Encodable[DecodedToolCall]).validate_python(
+        {
+            "id": "call_default",
+            "type": "function",
+            "function": {"name": tool.__name__, "arguments": json.dumps(arguments)},
+        },
+        context=ctx,
+    )
+    call.bound_args.apply_defaults()
+    assert call.bound_args.arguments == expected
 
 
 # ============================================================================
