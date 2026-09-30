@@ -170,6 +170,10 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                         "--output=json",
                         "--ignore-missing-imports",
                         "--disable-error-code=import-untyped",
+                        # Imported modules are typed but their own diagnostics
+                        # stay out: they are not the model's to fix, and their
+                        # line numbers would be read as the region's.
+                        "--follow-imports=silent",
                         *(self.lenient_flags if lenient else []),
                     ],
                     capture_output=True,
