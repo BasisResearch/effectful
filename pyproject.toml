@@ -51,7 +51,7 @@ llm = [
   "rich",
   "tenacity",
   "mypy",
-  "ty>=0.0.84",
+  "ty",
   "pillow",
   "pydantic",
   "annotated-types",
