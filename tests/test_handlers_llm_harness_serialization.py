@@ -271,6 +271,12 @@ def _tool_contacts(
     return [person.address.city for person in (primary, *others.values())]
 
 
+@Tool.define
+def _tool_city(person: _PersonWithAddress) -> str:
+    """Return the city a person lives in."""
+    return person.address.city
+
+
 # ---------------------------------------------------------------------------
 # Module-level callable definitions
 # ---------------------------------------------------------------------------
@@ -1462,6 +1468,24 @@ def test_toolcall_arguments_satisfy_advertised_schema(ty, call, ctx):
         json.loads(encoded_call["function"]["arguments"]),
         tool_spec["function"]["parameters"],
     )
+
+
+@pytest.mark.parametrize(
+    "tool,strict",
+    [
+        pytest.param(_tool_add, True, id="flat"),
+        pytest.param(_tool_city, True, id="nested-required-fields"),
+        pytest.param(_tool_connect, False, id="nested-optional-fields"),
+        pytest.param(_tool_total, False, id="open-parameter-object"),
+        pytest.param(_tool_total_keywords, False, id="keyword-arguments"),
+    ],
+)
+def test_tool_is_strict_unless_its_schema_forbids_it(tool, strict):
+    ctx = {_NAME2TOOL_KEY: {tool.__name__: tool}}
+    tool_spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool(tool.__name__, tool), mode="json", context=ctx
+    )
+    assert tool_spec["function"]["strict"] is strict
 
 
 # ============================================================================

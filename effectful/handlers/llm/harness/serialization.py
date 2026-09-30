@@ -827,7 +827,7 @@ def _requires_non_strict(schema: typing.Any) -> bool:
     if not isinstance(schema, dict):
         return False
     if schema.get("type") == "object" and (
-        schema.get("additionalProperties") is not False
+        schema.get("additionalProperties") not in (None, False)
         or set(schema.get("required", ())) != set(schema.get("properties", ()))
     ):
         return True
