@@ -827,8 +827,8 @@ def test_a_constrained_tool_parameter_stays_strict_schema_legal(mod):
     """
     from effectful.handlers.llm.harness.serialization import (
         _NameAndTool,
-        _serialize_name_and_tool,
     )
+    from effectful.handlers.llm.types import Encodable
 
     @Tool.define
     def bounded_bump(x: typing.Annotated[int, pydantic.Field(gt=0)]) -> int:
@@ -841,7 +841,9 @@ def test_a_constrained_tool_parameter_stays_strict_schema_legal(mod):
         return x + 1
 
     def _params(name, tool):
-        return _serialize_name_and_tool(_NameAndTool(name, tool))["function"]
+        return pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+            _NameAndTool(name, tool)
+        )["function"]
 
     bounded = _params("bounded_bump", bounded_bump)
     plain = _params("plain_bump", plain_bump)
