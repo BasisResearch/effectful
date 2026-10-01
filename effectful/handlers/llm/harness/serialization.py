@@ -619,6 +619,49 @@ def _pydantic_type_tuple(ty):
     ]
 
 
+class _KeyValuePair[K, V](pydantic.BaseModel):
+    """One entry of a mapping, in a form strict schemas can describe."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    key: K
+    value: V
+
+
+@TypeToPydanticType.register(collections.abc.Mapping)
+def _pydantic_type_mapping(ty):
+    """Encode mappings as lists of key-value pairs, or as JSON objects if keyed by strings.
+
+    OpenAI's strict mode rejects objects with arbitrary keys, so what the model
+    writes is described as a list of `_KeyValuePair`. Mappings not parameterized
+    by a key and value type, such as TypedDicts, keep Pydantic's own encoding.
+    """
+    args = typing.get_args(ty)
+    if typing_extensions.is_typeddict(typing.get_origin(ty) or ty) or len(args) != 2:
+        return _pydantic_type_base(ty)
+    pair = _KeyValuePair[args]
+
+    def _decode(value, info: pydantic.ValidationInfo):
+        """Collect the key-value pairs the model writes into the mapping Pydantic validates."""
+        if isinstance(value, list):
+            entries = pydantic.TypeAdapter(list[pair]).validate_python(
+                value, context=info.context
+            )
+            return {entry.key: entry.value for entry in entries}
+        return value
+
+    def _serialize(value):
+        return [pair.model_construct(key=k, value=v) for k, v in value.items()]
+
+    validator = pydantic.BeforeValidator(_decode, json_schema_input_type=list[pair])
+    key = args[0]
+    if isinstance(key, type) and issubclass(key, str):
+        return typing.Annotated[ty, validator]
+    return typing.Annotated[
+        ty, validator, pydantic.PlainSerializer(_serialize, return_type=list[pair])
+    ]
+
+
 @TypeToPydanticType.register(Term)
 def _pydantic_type_term(ty: type[Term]):
     raise pydantic.errors.PydanticSchemaGenerationError(
@@ -723,31 +766,6 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     ]
 
 
-@TypeToPydanticType.register(Tool)
-def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
-    return typing.Annotated[
-        ty,
-        pydantic.InstanceOf,
-        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
-    ]
-
-
-def _validate_name_and_tool(
-    value: typing.Any, info: pydantic.ValidationInfo
-) -> _NameAndTool:
-    if isinstance(value, _NameAndTool):
-        return value
-    assert isinstance(info.context, collections.abc.Mapping), (
-        "Tool decoding requires context"
-    )
-    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
-    name = value["function"]["name"]
-    try:
-        return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
-    except KeyError as e:
-        raise NotImplementedError(f"Unknown tool: {name}") from e
-
-
 def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     """The model-facing prose describing ``tool``: ``qualname : signature``, its
     docstring, and the `Encodable` schema of its return type.
@@ -777,8 +795,58 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     return description
 
 
-def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
-    name, tool = value
+def _requires_non_strict(schema: typing.Any) -> bool:
+    """Whether an object in `schema` allows keys it does not name, which strict schemas cannot."""
+    if isinstance(schema, list):
+        return any(_requires_non_strict(item) for item in schema)
+    if not isinstance(schema, dict):
+        return False
+    if schema.get("type") == "object" and schema.get("additionalProperties") not in (
+        None,
+        False,
+    ):
+        return True
+    return any(_requires_non_strict(value) for value in schema.values())
+
+
+_NO_MARKER = object()
+_UseDefault = typing.TypedDict("_UseDefault", {"__default__": typing.Literal[True]})
+# Arguments that can stand for a parameter's default, each with the type advertising it.
+_DEFAULT_MARKERS: tuple[tuple[typing.Any, typing.Any], ...] = (
+    (None, type(None)),
+    ("__default__", typing.Literal["__default__"]),
+    ({"__default__": True}, _UseDefault),
+)
+
+
+def _default_marker(param: inspect.Parameter) -> typing.Any:
+    """The argument standing for `param`'s default, or `_NO_MARKER` if none is unambiguous.
+
+    Strict schemas require every field, so a defaulted parameter is advertised as
+    required and this value, which its type cannot produce, stands for the default.
+    """
+    if (
+        param.default is inspect.Parameter.empty
+        or param.kind == inspect.Parameter.VAR_KEYWORD
+    ):
+        return _NO_MARKER
+    if param.default is None:
+        return None
+    adapter: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+        TypeToPydanticType().evaluate(param.annotation)
+    )
+    for marker, _ in _DEFAULT_MARKERS:
+        try:
+            adapter.validate_python(marker)
+        except pydantic.ValidationError:
+            return marker
+        except Exception:
+            continue
+    return _NO_MARKER
+
+
+def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+    name, tool = value.__name__, value
     params = inspect.signature(tool).parameters
     for param_name, param in params.items():
         if not _is_decodable(param.annotation):
@@ -786,17 +854,51 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
                 f"`{name}` cannot be advertised as JSON: no value of parameter "
                 f"`{param_name}` could be decoded from the model's output"
             )
-    fields: dict[str, typing.Any] = {
-        param_name: TypeToPydanticType().evaluate(param.annotation)
-        for param_name, param in params.items()
-    }
+    fields: dict[str, typing.Any] = {}
+    extra: typing.Literal["allow", "forbid"] = "forbid"
+    unmarked: list[str] = []
+    for i, param in enumerate(params.values()):
+        annotation = TypeToPydanticType().evaluate(param.annotation)
+        if param.kind == inspect.Parameter.VAR_KEYWORD:
+            extra = "allow"
+            fields["__pydantic_extra__"] = (
+                dict[str, annotation],  # type: ignore[valid-type]
+                pydantic.Field(init=False),
+            )
+        elif (marker := _default_marker(param)) is not _NO_MARKER:
+            marker_type = next(ty for m, ty in _DEFAULT_MARKERS if m == marker)
+            default_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                Encodable[param.annotation]  # type: ignore[name-defined]
+            )
+            shown = {"default": default_enc.dump_python(param.default, mode="json")}
+            fields[f"arg_{i}"] = (
+                annotation | marker_type,
+                pydantic.Field(alias=param.name, json_schema_extra=shown),
+            )
+        else:
+            if param.default is not inspect.Parameter.empty:
+                unmarked.append(param.name)
+            default = ... if param.default is inspect.Parameter.empty else param.default
+            # Model attributes cannot start with '_' or shadow BaseModel methods.
+            fields[f"arg_{i}"] = (annotation, pydantic.Field(default, alias=param.name))
     sig_model = pydantic.create_model(
         "Params",
-        __config__={"extra": "forbid"},
+        __config__={"extra": extra},
         **fields,
     )
+    if unmarked:
+        raise TypeError(
+            f"tool {name!r} has no strict JSON schema: no argument can stand for "
+            f"the default of {', '.join(unmarked)}"
+        )
+    if _requires_non_strict(sig_model.model_json_schema()):
+        raise TypeError(
+            f"tool {name!r} has no strict JSON schema: it accepts arguments it does "
+            f"not name"
+        )
     response_format = litellm.utils.type_to_response_format_param(sig_model)
     assert response_format is not None
+    parameters = response_format["json_schema"]["schema"]
     description = _tool_description(tool)
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
@@ -806,11 +908,47 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": response_format["json_schema"]["schema"],
+                "parameters": parameters,
                 "strict": True,
             },
         }
     )
+
+
+@TypeToPydanticType.register(Tool)
+def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
+    return typing.Annotated[
+        ty,
+        pydantic.InstanceOf,
+        pydantic.PlainSerializer(_serialize_tool, return_type=ChatCompletionToolParam),
+    ]
+
+
+def _serialize_name_and_tool(
+    value: _NameAndTool, info: pydantic.SerializationInfo
+) -> ChatCompletionToolParam:
+    raw_tool_enc = pydantic.TypeAdapter(Encodable[type(value.tool)]).dump_python(  # type: ignore[misc]
+        value.tool, context=info.context
+    )
+    assert isinstance(raw_tool_enc, dict) and "function" in raw_tool_enc
+    raw_tool_enc["function"]["name"] = value.name
+    return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(raw_tool_enc)
+
+
+def _validate_name_and_tool(
+    value: typing.Any, info: pydantic.ValidationInfo
+) -> _NameAndTool:
+    if isinstance(value, _NameAndTool):
+        return value
+    assert isinstance(info.context, collections.abc.Mapping), (
+        "Tool decoding requires context"
+    )
+    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
+    name = value["function"]["name"]
+    try:
+        return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
+    except KeyError as e:
+        raise NotImplementedError(f"Unknown tool: {name}") from e
 
 
 @TypeToPydanticType.register(_NameAndTool)
@@ -850,12 +988,17 @@ def _validate_tool_call(
     tool = ctx[_NAME2TOOL_KEY][call.function.name]
     assert isinstance(tool, Tool)
     sig = inspect.signature(tool)
+    extra_param = next(
+        (p for p in sig.parameters.values() if p.kind == inspect.Parameter.VAR_KEYWORD),
+        None,
+    )
     decoded_args = {}
     for name, raw_arg in json.loads(call.function.arguments).items():
-        assert name in sig.parameters, (
-            f"Unexpected argument {name} for tool {tool.__name__}"
-        )
-        param = sig.parameters[name]
+        param = sig.parameters.get(name, extra_param)
+        assert param is not None, f"Unexpected argument {name} for tool {tool.__name__}"
+        marker = _default_marker(param)
+        if marker is not _NO_MARKER and raw_arg == marker:
+            continue  # leave the parameter to its default
         arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
             Encodable[param.annotation]  # type: ignore[name-defined]
         )
@@ -881,10 +1024,21 @@ def _serialize_tool_call(
         encoded_args["call"] = value.source
     else:
         for k, v in value.bound_args.arguments.items():
-            v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[nested_type(v).value]  # type: ignore[misc]
-            )
-            encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
+            kind = value.bound_args.signature.parameters[k].kind
+            # Keyword arguments collected by **kwargs travel as arguments of their own.
+            items = v.items() if kind == inspect.Parameter.VAR_KEYWORD else [(k, v)]
+            for name, arg in items:
+                v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
+                    Encodable[nested_type(arg).value]  # type: ignore[misc]
+                )
+                encoded_args[name] = v_enc.dump_python(
+                    arg, mode="json", by_alias=True, context=ctx
+                )
+        # Strict schemas require every field, so an omitted default is sent as its marker.
+        for param in value.bound_args.signature.parameters.values():
+            marker = _default_marker(param)
+            if param.name not in encoded_args and marker is not _NO_MARKER:
+                encoded_args[param.name] = marker
     return OpenAIChatCompletionMessageToolCall.model_validate(
         {
             "type": "function",
