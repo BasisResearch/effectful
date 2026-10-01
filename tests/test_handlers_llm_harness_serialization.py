@@ -27,7 +27,11 @@ import jsonschema
 import litellm
 import pydantic
 import pytest
-from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
+from litellm import (
+    ChatCompletionMessageToolCall,
+    ChatCompletionToolParam,
+    OpenAIMessageContentListBlock,
+)
 from PIL import Image
 
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
@@ -39,6 +43,7 @@ from effectful.handlers.llm.harness.serialization import (
     _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
     DecodedToolCall,
+    TypeToPydanticType,
     _BoxedResponse,
     _is_decodable,
     _NameAndTool,
@@ -2049,14 +2054,43 @@ def test_serialize_callable_matches_its_declared_schema():
 @pytest.mark.parametrize(
     "ty", [Tool, Skill], ids=["tool", "skill"]
 )  # `Skill` reaches the same encoding through its base
-def test_serialize_tool_value_encodes_the_callable_it_is(ty):
-    """A `Tool` arriving as a *value* -- returned by another tool, spliced into a
-    prompt -- encodes as its source, like any other callable.
-
-    The `ChatCompletionToolParam` advertisement is the encoding of `_NameAndTool`
-    (above), not of `Tool`: it needs a name, which a bare `Tool` does not carry.
-    """
+def test_tool_encodes_as_its_advertisement(ty):
+    """A `Tool` encodes as the `ChatCompletionToolParam` advertising it under its name."""
     encoded = pydantic.TypeAdapter(Encodable[ty]).dump_python(
         _tool_add, mode="json", context={}
     )
-    assert "def _tool_add" in encoded
+    assert encoded["function"]["name"] == "_tool_add"
+    assert encoded["function"]["strict"] is True
+
+
+class _CustomlyAdvertisedTool[**P, T](Tool[P, T]):
+    pass
+
+
+@TypeToPydanticType.register(_CustomlyAdvertisedTool)
+def _pydantic_type_customly_advertised_tool(ty):
+    def _serialize(tool, info: pydantic.SerializationInfo):
+        spec = pydantic.TypeAdapter(Encodable[Tool]).dump_python(tool)
+        spec["function"]["description"] = info.context["description"]
+        return spec
+
+    return Annotated[
+        ty,
+        pydantic.InstanceOf,
+        pydantic.PlainSerializer(_serialize, return_type=ChatCompletionToolParam),
+    ]
+
+
+def test_named_tool_is_advertised_by_its_tool_types_encoding():
+    """A `Tool` subclass's encoding advertises it, under the name it is assigned."""
+
+    @_CustomlyAdvertisedTool.define
+    def custom(a: int) -> int:
+        """Advertised by default."""
+        return a
+
+    spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool("renamed", custom), context={"description": "Advertised here."}
+    )
+    assert spec["function"]["name"] == "renamed"
+    assert spec["function"]["description"] == "Advertised here."
