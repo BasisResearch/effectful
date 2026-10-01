@@ -12,7 +12,7 @@ import inspect
 import json
 import threading
 from collections.abc import Callable, Coroutine, Iterator, Mapping, Sequence, Set
-from typing import Any, Self, cast, get_args, get_origin
+from typing import Annotated, Any, Self, cast, get_args, get_origin
 
 import fastmcp
 import fastmcp.exceptions
@@ -23,6 +23,7 @@ from fastmcp.client.sampling.handlers.openai import (
     _image_content_to_openai_part,
 )
 from fastmcp.utilities.json_schema_type import json_schema_to_type
+from litellm import ChatCompletionToolParam
 from litellm.types.llms.openai import (
     ChatCompletionAudioObject,
     ChatCompletionFileObject,
@@ -34,6 +35,10 @@ from effectful.handlers.llm.harness.hooks import (
     Message,
     call_agent,
     call_assistant,
+)
+from effectful.handlers.llm.harness.serialization import (
+    TypeToPydanticType,
+    _serialize_tool,
 )
 from effectful.handlers.llm.types import Encodable, Skill, Tool
 from effectful.ops.semantics import fwd, handler
@@ -162,9 +167,13 @@ class _MCPTool(Tool[..., _MCPResult[Any]]):
         """Wrap a discovered tool, using the current event loop unless supplied."""
         event_loop = loop if loop is not None else asyncio.get_running_loop()
         parameter_type = json_schema_to_type(schema.input_schema)
-        # Schemas without named properties convert to dict[str, T].
-        signature = (
-            inspect.Signature(
+        # Schemas without named properties convert to dict[str, T], even when closed.
+        if get_origin(parameter_type) is not dict:
+            signature = inspect.signature(parameter_type)
+        elif schema.input_schema.get("additionalProperties") is False:
+            signature = inspect.Signature()
+        else:
+            signature = inspect.Signature(
                 [
                     inspect.Parameter(
                         "_extra",
@@ -173,9 +182,6 @@ class _MCPTool(Tool[..., _MCPResult[Any]]):
                     )
                 ]
             )
-            if get_origin(parameter_type) is dict
-            else inspect.signature(parameter_type)
-        )
         output_type = (
             json_schema_to_type(schema.output_schema)
             if schema.output_schema is not None
@@ -239,6 +245,19 @@ class _MCPTool(Tool[..., _MCPResult[Any]]):
         invoke.__doc__ = schema.description or schema.name
         invoke.__signature__ = signature  # type: ignore[attr-defined]
         return cast(Self, super().define(invoke))
+
+
+@TypeToPydanticType.register(_MCPTool)
+def _pydantic_type_mcp_tool(ty: type[_MCPTool]) -> Any:
+    """Advertise an MCP tool non-strict when its server's schema cannot be strict."""
+    return Annotated[
+        ty,
+        pydantic.InstanceOf,
+        pydantic.PlainSerializer(
+            functools.partial(_serialize_tool, require_strict=False),
+            return_type=ChatCompletionToolParam,
+        ),
+    ]
 
 
 @dataclasses.dataclass

@@ -209,10 +209,12 @@ def test_harness_roundtrip(transport, mode, request, tmp_path):
         assert echo_schema["properties"]["_id"]["type"] == "string"
         assert echo_schema["properties"]["user_id"]["type"] == "integer"
         assert set(echo_schema["required"]) == set(VALID_ARGUMENTS)
-        assert not lookup["draft7"]["parameters"].get("required")
-        assert lookup["echo"]["strict"] is False
+        draft7 = lookup["draft7"]["parameters"]
+        assert set(draft7["required"]) == set(draft7["properties"])
+        assert lookup["echo"]["strict"] is True
         assert lookup["subtract"]["strict"] is True
-        assert "prefix" not in lookup["describe"]["parameters"]["required"]
+        assert lookup["describe"]["strict"] is True
+        assert "prefix" in lookup["describe"]["parameters"]["required"]
         if len(rounds) == 1:
             arguments = {
                 "add": {"a": 19, "b": 23},
@@ -434,8 +436,9 @@ def test_generated_parameter_types_are_serialized_to_json(include_null):
         assert converted["tags"] == {"first", "second"}
         assert isinstance(converted["when"], datetime.datetime)
         message, result, final = call_tool(call)
+        # A null `note` stands for its default, so the server is not sent one.
         expected = {
-            **arguments,
+            **{name: value for name, value in arguments.items() if name != "note"},
             "items": [{"value": 1, "label": None}, {"value": 2, "label": None}],
         }
         returned = result.structuredContent
@@ -443,7 +446,11 @@ def test_generated_parameter_types_are_serialized_to_json(include_null):
         assert {**returned, "tags": arguments["tags"]} == expected
         assert not final
         encoded = pydantic.TypeAdapter(Encodable[DecodedToolCall]).dump_python(call)
-        assert json.loads(encoded["function"]["arguments"]) == returned
+        # An omitted default is written as the marker that stands for it.
+        assert json.loads(encoded["function"]["arguments"]) == {
+            "note": None,
+            **returned,
+        }
 
     run_with_client(Client(echo_server), check)
 
