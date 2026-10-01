@@ -22,7 +22,16 @@ Table of Contents
    :maxdepth: 2
    :caption: Documentation
 
-   effectful
+   apidocs/index
+
+.. Resolving ``effectful.handlers.jax`` through its ``__all__`` is what surfaces
+   its re-exported operations, but it also empties that package's generated
+   submodule toctree, so its one subpackage is linked here instead.
+
+.. toctree::
+   :hidden:
+
+   apidocs/effectful/effectful.handlers.jax.numpy
 
 Indices and Tables
 ==================
