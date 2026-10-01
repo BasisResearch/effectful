@@ -59,7 +59,8 @@ llm = [
   "restrictedpython>=8.1",
   "matplotlib>=3.11.1",
   "agent-client-protocol",
-  "fastmcp",
+  "fastmcp>=4.0.8,<5",
+  "mcp>=2.2,<3",
 ]
 prettyprinter = ["prettyprinter"]
 docs = [
@@ -79,7 +80,8 @@ test = [
     "effectful[torch,pyro,jax,numpyro,docs,prettyprinter]",
     # litellm 1.102.0 incorrectly reaches into its own proxy package from
     # the cache-hit path of `completion`. This requirement is a workaround.
-    "litellm[proxy]>1.92",
+    # Use a proxy extra compatible with MCP 2, required by FastMCP 4.
+    "litellm[proxy]>=1.104.0.dev1",
     "pytest",
     "pytest-cov",
     "pytest-xdist",
