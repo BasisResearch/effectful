@@ -26,7 +26,9 @@ import typing
 import litellm
 
 from effectful.handlers.llm.harness import harness
+from effectful.internals.runtime import interpreter
 from effectful.ops.semantics import handler
+from effectful.ops.types import Interpretation
 
 
 def _reasoning_effort_choices() -> list[str] | None:
@@ -169,6 +171,14 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help="Drop into pdb post-mortem on an unhandled error (like `python -m pdb`)",
     )
     parser.add_argument(
+        "--autoreload",
+        action="store_true",
+        help=(
+            "Re-run edited code imported from sys.path directories, including the "
+            "harness, while the script runs"
+        ),
+    )
+    parser.add_argument(
         "--persist-db",
         type=str,
         default=None,
@@ -242,17 +252,9 @@ def _provider_config(ns: argparse.Namespace) -> dict[str, typing.Any]:
     return config
 
 
-def main(argv: list[str] | None = None) -> None:
-    litellm.drop_params = True
-    ns, script_args = _parse_args(sys.argv[1:] if argv is None else argv)
-    # The script should see only its own flags, under its own name.
-    sys.argv = [ns.script, *script_args]
-    # Mirror `python <script>`: put the script's directory on sys.path so it can
-    # import sibling modules (e.g. a shared environment definition) by absolute name.
-    # `runpy.run_path` runs the file as `__main__` with no package, so relative
-    # imports can't work and this dir would otherwise be off the path.
-    sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
-    h = harness(
+def _build_harness(ns: argparse.Namespace) -> Interpretation:
+    """The handler stack the parsed harness flags ask for."""
+    return harness(
         num_retries=ns.num_retries,
         langfuse=ns.langfuse,
         render=ns.render,
@@ -266,7 +268,28 @@ def main(argv: list[str] | None = None) -> None:
         mcp_config=ns.mcp_config,
         **_provider_config(ns),
     )
-    with handler(h):
+
+
+def main(argv: list[str] | None = None) -> None:
+    litellm.drop_params = True
+    ns, script_args = _parse_args(sys.argv[1:] if argv is None else argv)
+    # The script should see only its own flags, under its own name.
+    sys.argv = [ns.script, *script_args]
+    # Mirror `python <script>`: put the script's directory on sys.path so it can
+    # import sibling modules (e.g. a shared environment definition) by absolute name.
+    # `runpy.run_path` runs the file as `__main__` with no package, so relative
+    # imports can't work and this dir would otherwise be off the path.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
+    if ns.autoreload:
+        # Before the first build, so the handler modules load through hmr.
+        from effectful.handlers.llm.harness import autoreload
+
+        reloader = autoreload.Reloader(ns.script, lambda: _build_harness(ns))
+        reloader.start()
+        installed = interpreter(reloader)
+    else:
+        installed = handler(_build_harness(ns))
+    with installed:
         if ns.pdb:
             try:
                 runpy.run_path(ns.script, run_name="__main__")
