@@ -766,31 +766,6 @@ def _pydantic_callable_serialize_only(ty: typing.Any) -> typing.Any:
     ]
 
 
-@TypeToPydanticType.register(Tool)
-def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
-    return typing.Annotated[
-        ty,
-        pydantic.InstanceOf,
-        pydantic.PlainSerializer(_serialize_callable, return_type=EncodedFunction),
-    ]
-
-
-def _validate_name_and_tool(
-    value: typing.Any, info: pydantic.ValidationInfo
-) -> _NameAndTool:
-    if isinstance(value, _NameAndTool):
-        return value
-    assert isinstance(info.context, collections.abc.Mapping), (
-        "Tool decoding requires context"
-    )
-    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
-    name = value["function"]["name"]
-    try:
-        return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
-    except KeyError as e:
-        raise NotImplementedError(f"Unknown tool: {name}") from e
-
-
 def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     """The model-facing prose describing ``tool``: ``qualname : signature``, its
     docstring, and the `Encodable` schema of its return type.
@@ -870,8 +845,8 @@ def _default_marker(param: inspect.Parameter) -> typing.Any:
     return _NO_MARKER
 
 
-def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
-    name, tool = value
+def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+    name, tool = value.__name__, value
     params = inspect.signature(tool).parameters
     for param_name, param in params.items():
         if not _is_decodable(param.annotation):
@@ -938,6 +913,42 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             },
         }
     )
+
+
+@TypeToPydanticType.register(Tool)
+def _pydantic_type_tool(ty: type[Tool]) -> typing.Any:
+    return typing.Annotated[
+        ty,
+        pydantic.InstanceOf,
+        pydantic.PlainSerializer(_serialize_tool, return_type=ChatCompletionToolParam),
+    ]
+
+
+def _serialize_name_and_tool(
+    value: _NameAndTool, info: pydantic.SerializationInfo
+) -> ChatCompletionToolParam:
+    raw_tool_enc = pydantic.TypeAdapter(Encodable[type(value.tool)]).dump_python(  # type: ignore[misc]
+        value.tool, context=info.context
+    )
+    assert isinstance(raw_tool_enc, dict) and "function" in raw_tool_enc
+    raw_tool_enc["function"]["name"] = value.name
+    return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(raw_tool_enc)
+
+
+def _validate_name_and_tool(
+    value: typing.Any, info: pydantic.ValidationInfo
+) -> _NameAndTool:
+    if isinstance(value, _NameAndTool):
+        return value
+    assert isinstance(info.context, collections.abc.Mapping), (
+        "Tool decoding requires context"
+    )
+    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
+    name = value["function"]["name"]
+    try:
+        return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
+    except KeyError as e:
+        raise NotImplementedError(f"Unknown tool: {name}") from e
 
 
 @TypeToPydanticType.register(_NameAndTool)

@@ -41,7 +41,6 @@ from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     _NameAndTool,
-    _serialize_name_and_tool,
 )
 from effectful.handlers.llm.harness.synthesis.snippet import StatefulReplSynthesizer
 from effectful.handlers.llm.harness.synthesis.toolcall import (
@@ -689,7 +688,9 @@ def test_wrapper_description_parity(poly_mod):
     wrapper = ExpressionToolCaller._ExpressionToolCallTool.define(
         poly_mod.extend_sequence, "extend_sequence"
     )
-    spec = _serialize_name_and_tool(_NameAndTool("extend_sequence", wrapper))
+    spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool("extend_sequence", wrapper)
+    )
     desc = spec["function"]["description"]
     # The wrapped tool's docstring and signature.
     assert "Extends the input sequence with a new example." in desc
@@ -702,7 +703,9 @@ def test_wrapper_description_parity(poly_mod):
     wrapper2 = ExpressionToolCaller._ExpressionToolCallTool.define(
         poly_mod.handled_tool, "handled_tool"
     )
-    spec2 = _serialize_name_and_tool(_NameAndTool("handled_tool", wrapper2))
+    spec2 = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool("handled_tool", wrapper2)
+    )
     desc2 = spec2["function"]["description"]
     assert '"integer"' in desc2  # both the parameter and return schemas
 
@@ -732,7 +735,9 @@ def test_wrapper_advertises_reference_path(poly_mod):
     wrapper = ExpressionToolCaller._ExpressionToolCallTool.define(
         poly_mod.counter.bump, "counter.bump"
     )
-    spec = _serialize_name_and_tool(_NameAndTool("bump", wrapper))
+    spec = pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool("bump", wrapper)
+    )
     assert "`counter.bump(...)`" in spec["function"]["description"]
 
 

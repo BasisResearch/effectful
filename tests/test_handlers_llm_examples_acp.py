@@ -53,7 +53,6 @@ from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     _NameAndTool,
-    _serialize_name_and_tool,
     to_content_blocks,
 )
 from effectful.ops.semantics import coproduct, handler
@@ -300,9 +299,9 @@ def _tool_schema(tool: Tool) -> dict:
     Through the harness's own encoder rather than pydantic's, since that encoder
     decides which properties are required and whether the schema is strict.
     """
-    return _serialize_name_and_tool(_NameAndTool(tool.__name__, tool))["function"][
-        "parameters"
-    ]
+    return pydantic.TypeAdapter(Encodable[_NameAndTool]).dump_python(
+        _NameAndTool(tool.__name__, tool)
+    )["function"]["parameters"]
 
 
 def _plan_tool_taking(step_type: type) -> Tool:
