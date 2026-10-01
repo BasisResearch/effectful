@@ -113,6 +113,16 @@ OVERRIDES: dict[str, Override] = {
             "answer key"
         ),
     ),
+    "optimization/athena": Override(
+        args=("--problems", "burgers", "--budget", "1", "--step-budget", "3"),
+        timeout=10 * 60,
+        why=(
+            "its default is the case study: six problems, four agentic variation "
+            "steps each, a debrief per problem. One step on the target problem "
+            "exercises formalization, variation with its return guards, evaluation "
+            "and the debrief"
+        ),
+    ),
     "autoformalization/informalization": Override(
         args=("--domain", "counter"),
         why=(
