@@ -11,10 +11,16 @@ import typing
 
 import tenacity
 
-from effectful.handlers.llm.harness.durability.compaction import MiddleCompactor
+from effectful.handlers.llm.harness.durability.compaction import (
+    ForcedCompactor,
+    MiddleCompactor,
+)
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+from effectful.handlers.llm.harness.durability.transaction import (
+    CompactionScope,
+    HistoryBuilder,
+)
 from effectful.handlers.llm.harness.durability.truncation import (
     DEFAULT_TOOL_OUTPUT_MAX_CHARS,
     ToolOutputTruncator,
@@ -67,6 +73,7 @@ def harness(
     compaction_soft_tokens: int | None = None,
     compaction_hard_tokens: int | None = None,
     compaction_recent_tokens: int | None = None,
+    compaction_scope: CompactionScope = CompactionScope.CONVERSATION,
     **provider_config,
 ) -> Interpretation:
     """
@@ -87,7 +94,9 @@ def harness(
        `ImplicitToolExtractor` for ``"auto"``, nothing for ``"none"``), plus,
        above it, the tool *caller* it feeds (`MixedToolCaller` for
        ``tool_calling="auto"``, `ExpressionToolCaller` for ``"code"``, none
-       for ``"json"``).
+       for ``"json"``). Between the pipeline and the configurer sits
+       `ForcedCompactor` (if ``compaction_hard_tokens`` and an eval provider),
+       which makes the model compact a conversation that has outgrown it.
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `ToolOutputTruncator` -- bound each textual tool result before it enters
@@ -172,11 +181,17 @@ def harness(
             kept. Pass ``None`` to disable truncation.
         compaction_soft_tokens: Approximate token threshold for stale tool-output
             elision. ``None`` (default) disables middle-region compaction.
-        compaction_hard_tokens: Approximate token threshold for summarization,
-            required and greater than the soft threshold when enabled.
+        compaction_hard_tokens: Token threshold for compaction. With an eval
+            provider, a request at least this large is nudged and forced to
+            call ``exec_code`` with ``compact`` set (`ForcedCompactor`). With
+            ``compaction_soft_tokens`` too, it is also the threshold at which
+            `MiddleCompactor` summarizes, and must exceed the soft one.
         compaction_recent_tokens: Approximate size of the recent window, in
             addition to keeping at least the last two rounds. Defaults to a
             quarter of the hard threshold.
+        compaction_scope: What a forced compaction drops, ``"conversation"``
+            (the default) or ``"turn"``; see
+            `~effectful.handlers.llm.harness.durability.transaction.CompactionScope`.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -201,6 +216,9 @@ def harness(
     elif tool_collection == "auto":
         h = coproduct(h, ImplicitToolExtractor(json_only=json_only))
 
+    # It compacts through the REPL, which needs an eval provider.
+    if compaction_hard_tokens is not None and eval_provider != "none":
+        h = coproduct(h, ForcedCompactor(compaction_hard_tokens, compaction_scope))
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     if max_tool_output_chars is not None:

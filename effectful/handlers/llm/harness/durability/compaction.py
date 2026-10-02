@@ -1,13 +1,28 @@
-"""Threshold-driven, lossy compaction of the middle of an agent transcript."""
+"""Threshold-driven compaction of an agent transcript: lossy, by the harness, or
+forced on the model."""
 
 import collections.abc
+import dataclasses
+import functools
 import json
 import typing
 from collections.abc import Sequence
 
-from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+import litellm
+
+from effectful.handlers.llm.harness.durability.transaction import (
+    CompactionScope,
+    HistoryBuilder,
+)
 from effectful.handlers.llm.harness.durability.truncation import _truncate_content
-from effectful.handlers.llm.harness.hooks import Message, call_assistant, completion
+from effectful.handlers.llm.harness.hooks import (
+    Message,
+    PromptInjectingInterpretation,
+    ToolCallDecodingError,
+    call_assistant,
+    completion,
+)
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 
@@ -154,3 +169,127 @@ class MiddleCompactor(ObjectInterpretation):
         history.clear()
         history.extend(compact_history)
         return fwd(list(compact_history), response_type, env, tools)
+
+
+@dataclasses.dataclass
+class ForcedCompactor(PromptInjectingInterpretation):
+    """
+    This conversation has a token budget. When a request would exceed it, you
+    are told so at the end of that request and must call `exec_code` with the
+    `compact` scope you are given; any other reply is rejected and you are asked
+    again. Use the snippet to promote anything you still need onto `self`;
+    your message with the call, the snippet and its output survive the compaction.
+    """
+
+    limit: int
+    scope: CompactionScope = CompactionScope.CONVERSATION
+
+    @functools.cached_property
+    def _exec_code_name(self) -> str:
+        from effectful.handlers.llm.harness.synthesis.snippet import (
+            StatefulReplSynthesizer,
+        )
+
+        return StatefulReplSynthesizer.exec_code.__name__
+
+    @implements(completion)
+    def completion(self, *args, **kwargs) -> typing.Any:
+        """Nudge an over-budget request to compact through `exec_code`, and
+        require a tool call.
+
+        The tools are left as they are and the nudge is appended after the
+        history, outside the stored transcript, so the request reuses the cached
+        prefix. Below `LiteLLMConfigurer`, so the model is in the request and the
+        ``tool_choice`` sent is this one; the configurer's enforcement does not
+        see it, so the reply is held to it here, with the same rule.
+        """
+        names = {t["function"]["name"] for t in kwargs.get("tools") or []}
+        name = self._exec_code_name
+        if name not in names:
+            return fwd()
+        messages = kwargs.get("messages") or []
+        dropped = messages
+        if self.scope is CompactionScope.TURN:
+            request = max(
+                (i for i, m in enumerate(messages) if m["role"] == "user"), default=-1
+            )
+            dropped = messages[request + 1 :]
+        # One round is what a previous forced compaction kept, so requiring a
+        # second keeps a floor above the limit from forcing every round.
+        if sum(m["role"] == "assistant" for m in dropped) < 2 or (
+            litellm.token_counter(
+                model=kwargs.get("model", ""),
+                messages=list(messages),
+                tools=kwargs.get("tools"),
+            )
+            < self.limit
+        ):
+            return fwd()
+        nudge: Message = {
+            "role": "user",
+            "content": (
+                f"This conversation is over its token budget. Call `{name}` with "
+                f'`compact="{self.scope.value}"` now, saving anything you still '
+                "need onto `self` first. ANY OTHER ACTION WILL BE REJECTED."
+            ),
+        }
+        response = fwd(
+            *args,
+            **{
+                **kwargs,
+                "messages": [*messages, nudge],
+                "tool_choice": {"type": "function", "function": {"name": name}},
+                # Lets litellm downgrade the choice to "auto" for models that
+                # reject forced tool use; the reply check below still holds.
+                "drop_params": True,
+            },
+        )
+        if not isinstance(response, litellm.types.utils.ModelResponse):
+            return self._enforce_on_stream(response, kwargs.get("messages"))
+        else:
+            self._enforce(response)
+            return response
+
+    def _enforce(self, response: litellm.types.utils.ModelResponse) -> None:
+        """Reject a reply that is not `exec_code` with this handler's scope.
+
+        A provider may treat a named ``tool_choice`` as advisory, and a strict
+        schema still admits any scope. A wrong call raises `ToolCallDecodingError`,
+        so `HistoryBuilder` answers it and its siblings before the retry.
+        """
+        LiteLLMConfigurer._enforce_tool_choice("required", response)
+        name = self._exec_code_name
+        choice = response.choices[0]
+        assert isinstance(choice, litellm.types.utils.Choices)
+        for call in choice.message.get("tool_calls") or []:
+            try:
+                compact = json.loads(call.function.arguments or "{}").get("compact")
+            except json.JSONDecodeError:
+                compact = None
+            if call.function.name != name or compact != self.scope.value:
+                raise ToolCallDecodingError(
+                    original_error=ValueError(
+                        "the conversation is over its token budget, so this round "
+                        f'must call `{name}` with `compact="{self.scope.value}"`, '
+                        f"not `{call.function.name}` with `compact={compact!r}`"
+                    ),
+                    raw_message=typing.cast(
+                        litellm.ChatCompletionAssistantMessage,
+                        choice.message.model_dump(mode="json"),
+                    ),
+                    raw_tool_call=call,
+                )
+
+    def _enforce_on_stream(
+        self,
+        stream: collections.abc.Iterable[typing.Any],
+        messages: list[Message] | None,
+    ) -> collections.abc.Iterator[typing.Any]:
+        """`stream`, re-yielded, with `_enforce` applied once it ends."""
+        chunks = []
+        for chunk in stream:
+            chunks.append(chunk)
+            yield chunk
+        assembled = litellm.stream_chunk_builder(chunks, messages=messages)
+        if isinstance(assembled, litellm.types.utils.ModelResponse):
+            self._enforce(assembled)
