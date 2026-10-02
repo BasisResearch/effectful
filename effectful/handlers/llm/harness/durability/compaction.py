@@ -3,28 +3,87 @@ forced on the model."""
 
 import collections.abc
 import dataclasses
-import functools
+import enum
 import json
 import typing
 from collections.abc import Sequence
 
 import litellm
 
-from effectful.handlers.llm.harness.durability.transaction import (
-    CompactionScope,
-    HistoryBuilder,
-)
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.durability.truncation import _truncate_content
 from effectful.handlers.llm.harness.hooks import (
+    AssistantResult,
     Message,
     PromptInjectingInterpretation,
+    ResultDecodingError,
     ToolCallDecodingError,
     call_assistant,
     completion,
 )
 from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
-from effectful.ops.semantics import fwd
+from effectful.handlers.llm.harness.serialization import ToolCallID
+from effectful.handlers.llm.types import Tool
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+class CompactionScope(enum.StrEnum):
+    """How much of the conversation a compacting tool call drops.
+
+    ``"none"`` compacts nothing. ``"turn"`` drops the current call's earlier rounds,
+    keeping every previous call. ``"conversation"`` additionally drops those previous
+    calls, leaving the system message, the request and the asking round.
+    """
+
+    NONE = "none"
+    TURN = "turn"
+    CONVERSATION = "conversation"
+
+
+def compact_(
+    history: collections.abc.MutableSequence[Message],
+    tool_call_id: ToolCallID,
+    scope: CompactionScope,
+) -> None:
+    """Compact a history in-place, keeping the request and the asking round.
+
+    `tool_call_id` identifies the call that asked, and so the round to keep: the
+    assistant message advertising it, and everything after (which is exactly the
+    tool messages answering it and its siblings, whether they were appended
+    before this one or are still to come -- truncation only ever removes messages
+    *ahead* of that assistant message, so no tool message is ever orphaned from
+    the call it answers).
+
+    The request kept is the last user message before that round -- the one this
+    call opened -- carried over untouched.
+
+    A no-op for ``scope="none"``, and whenever the shape this reads off the
+    history is not the one it expects: no assistant message advertising
+    `tool_call_id`, or no user message ahead of it. Declining is the right
+    failure here; a compaction is a courtesy, and a wrong guess about the shape
+    would corrupt the history the call still has to finish over. A conversation
+    that opens with something other than a system message simply has no head to
+    keep, which is not a failure.
+    """
+    asking, request = None, None
+    for i, message in reversed(list(enumerate(history))):
+        if message["role"] == "assistant" and any(
+            call["id"] == tool_call_id for call in message.get("tool_calls") or []
+        ):
+            for j in reversed(range(i)):
+                if history[j]["role"] == "user":
+                    asking, request = i, j
+                    break
+            break
+
+    if scope == CompactionScope.NONE or asking is None or request is None:
+        return
+    elif scope == CompactionScope.CONVERSATION:
+        history[:] = [history[0], history[request], *history[asking:]]
+    elif scope == CompactionScope.TURN:
+        history[:] = [*history[:request], history[request], *history[asking:]]
+
 
 _SUMMARY_PREFIX = "[Earlier conversation summary]\n"
 
@@ -172,7 +231,7 @@ class MiddleCompactor(ObjectInterpretation):
 
 
 @dataclasses.dataclass
-class ForcedCompactor(PromptInjectingInterpretation):
+class ReplCompactor(PromptInjectingInterpretation):
     """
     This conversation has a token budget. When a request would exceed it, you
     are told so at the end of that request and must call `exec_code` with the
@@ -181,50 +240,52 @@ class ForcedCompactor(PromptInjectingInterpretation):
     your message with the call, the snippet and its output survive the compaction.
     """
 
-    limit: int
+    hard_tokens: int
     scope: CompactionScope = CompactionScope.CONVERSATION
 
-    @functools.cached_property
-    def _exec_code_name(self) -> str:
-        from effectful.handlers.llm.harness.synthesis.snippet import (
-            StatefulReplSynthesizer,
-        )
+    def _over_budget(self, messages: Sequence[Message]) -> bool:
+        """Whether `messages` is over budget with at least two rounds to drop.
 
-        return StatefulReplSynthesizer.exec_code.__name__
-
-    @implements(completion)
-    def completion(self, *args, **kwargs) -> typing.Any:
-        """Nudge an over-budget request to compact through `exec_code`, and
-        require a tool call.
-
-        The tools are left as they are and the nudge is appended after the
-        history, outside the stored transcript, so the request reuses the cached
-        prefix. Below `LiteLLMConfigurer`, so the model is in the request and the
-        ``tool_choice`` sent is this one; the configurer's enforcement does not
-        see it, so the reply is held to it here, with the same rule.
+        One round is what a previous forced compaction kept, so requiring a second
+        keeps a floor above ``hard_tokens`` from forcing every round. The count uses
+        litellm's default tokenizer and leaves out tool schemas, so it is approximate
+        and low.
         """
-        names = {t["function"]["name"] for t in kwargs.get("tools") or []}
-        name = self._exec_code_name
-        if name not in names:
-            return fwd()
-        messages = kwargs.get("messages") or []
         dropped = messages
         if self.scope is CompactionScope.TURN:
             request = max(
                 (i for i, m in enumerate(messages) if m["role"] == "user"), default=-1
             )
             dropped = messages[request + 1 :]
-        # One round is what a previous forced compaction kept, so requiring a
-        # second keeps a floor above the limit from forcing every round.
-        if sum(m["role"] == "assistant" for m in dropped) < 2 or (
-            litellm.token_counter(
-                model=kwargs.get("model", ""),
-                messages=list(messages),
-                tools=kwargs.get("tools"),
-            )
-            < self.limit
-        ):
+        return (
+            sum(m["role"] == "assistant" for m in dropped) >= 2
+            and litellm.token_counter(messages=list(messages)) >= self.hard_tokens
+        )
+
+    @implements(call_assistant)
+    def call_assistant[T](
+        self,
+        messages: Sequence[Message],
+        response_type: type[T],
+        env: collections.abc.Mapping[str, typing.Any],
+        tools: collections.abc.Set[Tool] = frozenset(),
+    ) -> AssistantResult[T]:
+        """Nudge an over-budget request to compact through `exec_code`, force the
+        call, and reject any other reply.
+
+        The tools are left as they are and the nudge is appended after the history,
+        outside the stored transcript, so the request reuses the cached prefix.
+        Installed inside `HistoryBuilder`, so a rejected reply is recorded with its
+        feedback before the retry.
+        """
+        from effectful.handlers.llm.harness.synthesis.snippet import (
+            StatefulReplSynthesizer,
+        )
+
+        exec_code = StatefulReplSynthesizer.exec_code
+        if exec_code not in tools or not self._over_budget(messages):
             return fwd()
+        name = exec_code.__name__
         nudge: Message = {
             "role": "user",
             "content": (
@@ -233,63 +294,38 @@ class ForcedCompactor(PromptInjectingInterpretation):
                 "need onto `self` first. ANY OTHER ACTION WILL BE REJECTED."
             ),
         }
-        response = fwd(
-            *args,
-            **{
-                **kwargs,
-                "messages": [*messages, nudge],
-                "tool_choice": {"type": "function", "function": {"name": name}},
-                # Lets litellm downgrade the choice to "auto" for models that
-                # reject forced tool use; the reply check below still holds.
-                "drop_params": True,
-            },
+        forced = LiteLLMConfigurer(
+            model=None,
+            tool_choice={"type": "function", "function": {"name": name}},
+            # Lets litellm downgrade the choice to "auto" for models that reject
+            # forced tool use; the check below still holds.
+            drop_params=True,
         )
-        if not isinstance(response, litellm.types.utils.ModelResponse):
-            return self._enforce_on_stream(response, kwargs.get("messages"))
-        else:
-            self._enforce(response)
-            return response
-
-    def _enforce(self, response: litellm.types.utils.ModelResponse) -> None:
-        """Reject a reply that is not `exec_code` with this handler's scope.
-
-        A provider may treat a named ``tool_choice`` as advisory, and a strict
-        schema still admits any scope. A wrong call raises `ToolCallDecodingError`,
-        so `HistoryBuilder` answers it and its siblings before the retry.
-        """
-        LiteLLMConfigurer._enforce_tool_choice("required", response)
-        name = self._exec_code_name
-        choice = response.choices[0]
-        assert isinstance(choice, litellm.types.utils.Choices)
-        for call in choice.message.get("tool_calls") or []:
-            try:
-                compact = json.loads(call.function.arguments or "{}").get("compact")
-            except json.JSONDecodeError:
-                compact = None
-            if call.function.name != name or compact != self.scope.value:
+        with handler(forced):
+            message, tool_calls, result = fwd(
+                [*messages, nudge], response_type, env, tools
+            )
+        if not tool_calls:
+            raise ResultDecodingError(
+                ValueError(
+                    "the conversation is over its token budget, so this round must "
+                    f'call `{name}` with `compact="{self.scope.value}"`, not answer'
+                ),
+                raw_message=message,
+            )
+        raw_calls = {raw["id"]: raw for raw in message.get("tool_calls") or []}
+        for call in tool_calls:
+            compact = call.bound_args.arguments.get("compact")
+            if call.tool is not exec_code or compact != self.scope:
                 raise ToolCallDecodingError(
                     original_error=ValueError(
                         "the conversation is over its token budget, so this round "
                         f'must call `{name}` with `compact="{self.scope.value}"`, '
-                        f"not `{call.function.name}` with `compact={compact!r}`"
+                        f"not `{call.name}` with `compact={compact!r}`"
                     ),
-                    raw_message=typing.cast(
-                        litellm.ChatCompletionAssistantMessage,
-                        choice.message.model_dump(mode="json"),
+                    raw_message=message,
+                    raw_tool_call=litellm.types.utils.ChatCompletionMessageToolCall(
+                        **raw_calls[call.id]
                     ),
-                    raw_tool_call=call,
                 )
-
-    def _enforce_on_stream(
-        self,
-        stream: collections.abc.Iterable[typing.Any],
-        messages: list[Message] | None,
-    ) -> collections.abc.Iterator[typing.Any]:
-        """`stream`, re-yielded, with `_enforce` applied once it ends."""
-        chunks = []
-        for chunk in stream:
-            chunks.append(chunk)
-            yield chunk
-        assembled = litellm.stream_chunk_builder(chunks, messages=messages)
-        if isinstance(assembled, litellm.types.utils.ModelResponse):
-            self._enforce(assembled)
+        return message, tool_calls, result
