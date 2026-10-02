@@ -7,13 +7,11 @@ import pytest
 from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness import harness
 from effectful.handlers.llm.harness.durability.compaction import (
-    ForcedCompactor,
-    MiddleCompactor,
-)
-from effectful.handlers.llm.harness.durability.transaction import (
     CompactionScope,
-    transaction,
+    MiddleCompactor,
+    ReplCompactor,
 )
+from effectful.handlers.llm.harness.durability.transaction import transaction
 from effectful.handlers.llm.harness.hooks import call_assistant, completion
 from effectful.ops.semantics import handler
 
@@ -182,6 +180,11 @@ class Counter:
     @Skill.define
     def count(self, up_to: int) -> str:
         """Count to {up_to}, then say how far you got."""
+
+    @Tool.define
+    def tally(self) -> int:
+        """Return the count so far."""
+        return 0
 
 
 def _exec(code: str, call_id: str = "call_1"):
@@ -372,7 +375,7 @@ def test_prose_under_forcing_is_retried():
 
 
 def test_prose_under_forcing_fails_the_call_once_retries_run_out():
-    with pytest.raises(Exception, match="tool_choice='required'"):
+    with pytest.raises(Exception, match="must call `exec_code`"):
         _count(
             [
                 _exec("x = 1"),
@@ -389,7 +392,7 @@ def test_prose_under_forcing_fails_the_call_once_retries_run_out():
     [
         _exec("y = x", "call_3"),
         _compact("y = x", "call_3", scope=CompactionScope.TURN),
-        make_tool_call_response("count", json.dumps({"up_to": 1}), "call_3"),
+        make_tool_call_response("tally", json.dumps({}), "call_3"),
     ],
     ids=["no-scope", "wrong-scope", "other-tool"],
 )
@@ -425,6 +428,6 @@ def test_a_forced_round_rejects_anything_but_the_scoped_exec_code(wrong):
 
 def test_constructor_validation():
     with pytest.raises(ValueError, match="positive"):
-        ForcedCompactor(0)
+        ReplCompactor(0)
     with pytest.raises(ValueError, match="drop something"):
-        ForcedCompactor(10, CompactionScope.NONE)
+        ReplCompactor(10, CompactionScope.NONE)

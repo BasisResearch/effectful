@@ -12,15 +12,13 @@ import typing
 import tenacity
 
 from effectful.handlers.llm.harness.durability.compaction import (
-    ForcedCompactor,
+    CompactionScope,
     MiddleCompactor,
+    ReplCompactor,
 )
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
-from effectful.handlers.llm.harness.durability.transaction import (
-    CompactionScope,
-    HistoryBuilder,
-)
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.durability.truncation import (
     DEFAULT_TOOL_OUTPUT_MAX_CHARS,
     ToolOutputTruncator,
@@ -94,16 +92,16 @@ def harness(
        `ImplicitToolExtractor` for ``"auto"``, nothing for ``"none"``), plus,
        above it, the tool *caller* it feeds (`MixedToolCaller` for
        ``tool_calling="auto"``, `ExpressionToolCaller` for ``"code"``, none
-       for ``"json"``). Between the pipeline and the configurer sits
-       `ForcedCompactor` (if ``compaction_hard_tokens`` and an eval provider),
-       which makes the model compact a conversation that has outgrown it.
+       for ``"json"``).
     2. `FrameworkDocumenter` -- describe the framework's concepts in the system
        prompt.
     3. `ToolOutputTruncator` -- bound each textual tool result before it enters
        history (unless ``max_tool_output_chars=None``).
-    4. `HistoryBuilder` -- accumulate the message history of a call, with optional
-       `MiddleCompactor` -- truncate stale middle-region tool output and summarize
-       older rounds at configurable thresholds.
+    4. `HistoryBuilder` -- accumulate the message history of a call, with one
+       optional compactor: `MiddleCompactor` (if both compaction thresholds) to
+       truncate stale middle-region tool output and summarize older rounds, or,
+       just inside it, `ReplCompactor` (if only ``compaction_hard_tokens``, with
+       an eval provider) to make the model compact through ``exec_code``.
     5. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
     6. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
     7. The ``type_checker`` and the ``eval_provider`` -- check and run
@@ -181,17 +179,17 @@ def harness(
             kept. Pass ``None`` to disable truncation.
         compaction_soft_tokens: Approximate token threshold for stale tool-output
             elision. ``None`` (default) disables middle-region compaction.
-        compaction_hard_tokens: Token threshold for compaction. With an eval
-            provider, a request at least this large is nudged and forced to
-            call ``exec_code`` with ``compact`` set (`ForcedCompactor`). With
-            ``compaction_soft_tokens`` too, it is also the threshold at which
-            `MiddleCompactor` summarizes, and must exceed the soft one.
+        compaction_hard_tokens: Token threshold for compaction. With
+            ``compaction_soft_tokens``, it is the threshold at which
+            `MiddleCompactor` summarizes, and must exceed the soft one. Alone,
+            with an eval provider, a request at least this large is nudged and
+            forced to call ``exec_code`` with ``compact`` set (`ReplCompactor`).
         compaction_recent_tokens: Approximate size of the recent window, in
             addition to keeping at least the last two rounds. Defaults to a
             quarter of the hard threshold.
         compaction_scope: What a forced compaction drops, ``"conversation"``
             (the default) or ``"turn"``; see
-            `~effectful.handlers.llm.harness.durability.transaction.CompactionScope`.
+            `~effectful.handlers.llm.harness.durability.compaction.CompactionScope`.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -216,13 +214,18 @@ def harness(
     elif tool_collection == "auto":
         h = coproduct(h, ImplicitToolExtractor(json_only=json_only))
 
-    # It compacts through the REPL, which needs an eval provider.
-    if compaction_hard_tokens is not None and eval_provider != "none":
-        h = coproduct(h, ForcedCompactor(compaction_hard_tokens, compaction_scope))
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     if max_tool_output_chars is not None:
         h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
+    # Inside `HistoryBuilder`, so a reply it rejects is recorded with its feedback.
+    # It compacts through the REPL, which needs an eval provider.
+    if (
+        compaction_soft_tokens is None
+        and compaction_hard_tokens is not None
+        and eval_provider != "none"
+    ):
+        h = coproduct(h, ReplCompactor(compaction_hard_tokens, compaction_scope))
     h = coproduct(h, HistoryBuilder())
     if compaction_soft_tokens is not None and compaction_hard_tokens is not None:
         h = coproduct(
