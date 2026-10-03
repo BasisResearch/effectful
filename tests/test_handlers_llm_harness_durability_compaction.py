@@ -9,7 +9,6 @@ from effectful.handlers.llm.harness import harness
 from effectful.handlers.llm.harness.durability.compaction import (
     CompactionScope,
     MiddleCompactor,
-    ReplCompactor,
 )
 from effectful.handlers.llm.harness.durability.transaction import transaction
 from effectful.handlers.llm.harness.hooks import call_assistant, completion
@@ -70,7 +69,7 @@ def test_hard_threshold_summarizes_complete_old_rounds_and_updates_summary():
     recent = copy.deepcopy(history[-4:])
     seen, summaries = _run(
         history,
-        MiddleCompactor(1, 400, recent_tokens=1, summary_tokens=64),
+        MiddleCompactor(1, 400, recent_tokens=1),
         summary="old work",
     )
     assert len(summaries) == 1
@@ -91,7 +90,7 @@ def test_hard_threshold_summarizes_complete_old_rounds_and_updates_summary():
     )
     _, summaries = _run(
         history,
-        MiddleCompactor(1, 400, recent_tokens=1, summary_tokens=64),
+        MiddleCompactor(1, 400, recent_tokens=1),
         summary="new work",
     )
     assert len(summaries) == 1
@@ -108,7 +107,7 @@ def test_preserves_history_if_summary_fails():
 
     with (
         handler({call_assistant: lambda *a: None, completion: fail}),
-        handler(MiddleCompactor(1, 400, recent_tokens=1, summary_tokens=64)),
+        handler(MiddleCompactor(1, 400, recent_tokens=1)),
         pytest.raises(RuntimeError, match="model down"),
         transaction(history),
     ):
@@ -164,11 +163,9 @@ def test_harness_compacts_before_resending_and_retains_tool_results():
 def test_invalid_thresholds():
     with pytest.raises(ValueError, match="soft_tokens"):
         MiddleCompactor(5, 5)
-    with pytest.raises(ValueError, match="summary_tokens \\+ recent_tokens"):
-        MiddleCompactor(1, 1000, summary_tokens=750)  # default recent: 250
-    with pytest.raises(ValueError, match="summary_tokens \\+ recent_tokens"):
-        MiddleCompactor(1, 1000, recent_tokens=900, summary_tokens=100)
-    MiddleCompactor(1, 1000, recent_tokens=899, summary_tokens=100)
+    with pytest.raises(ValueError, match="recent_tokens must be less"):
+        MiddleCompactor(1, 1000, recent_tokens=1000)
+    MiddleCompactor(1, 1000, recent_tokens=999)
 
 
 class Counter:
@@ -424,10 +421,3 @@ def test_a_forced_round_rejects_anything_but_the_scoped_exec_code(wrong):
         "assistant",
     ]
     assert agent.__history__[2]["tool_calls"][0]["id"] == "call_c"
-
-
-def test_constructor_validation():
-    with pytest.raises(ValueError, match="positive"):
-        ReplCompactor(0)
-    with pytest.raises(ValueError, match="drop something"):
-        ReplCompactor(10, CompactionScope.NONE)
