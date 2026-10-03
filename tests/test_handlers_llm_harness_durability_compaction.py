@@ -205,7 +205,7 @@ def _tool_names(request: dict) -> list[str]:
     return sorted(t["function"]["name"] for t in request["tools"])
 
 
-def _count(responses, *, limit: int, scope=CompactionScope.CONVERSATION, retries=3):
+def _count(responses, *, limit: int, retries=3):
     """A `Counter` driven through the harness by scripted responses, with the mock
     *under* the stack so the forcing rule sees every request on its way out."""
     mock = MockCompletionHandler(responses)
@@ -219,7 +219,6 @@ def _count(responses, *, limit: int, scope=CompactionScope.CONVERSATION, retries
                 tool_calling="json",
                 num_retries=retries,
                 compaction_hard_tokens=limit,
-                compaction_scope=scope,
             )
         ),
     ):
@@ -270,12 +269,12 @@ def test_over_budget_nudges_forces_and_compacts_on_success():
     assert not any(_nudged([m]) for m in agent.__history__[1:])
 
 
-def test_conversation_scope_drops_prior_turns_and_turn_scope_keeps_them():
-    def two_turns(scope):
+def test_compaction_drops_prior_turns():
+    def two_turns():
         script = [
             _exec("x = 1"),
             _exec("x += 1", "call_2"),
-            _compact("self.note = x", scope=scope),
+            _compact("self.note = x"),
             make_text_response("two"),
         ]
         mock = MockCompletionHandler([make_text_response("zero"), *script])
@@ -288,7 +287,6 @@ def test_conversation_scope_drops_prior_turns_and_turn_scope_keeps_them():
                     type_checker="none",
                     tool_calling="json",
                     compaction_hard_tokens=1,
-                    compaction_scope=scope,
                 )
             ),
         ):
@@ -296,17 +294,8 @@ def test_conversation_scope_drops_prior_turns_and_turn_scope_keeps_them():
             agent.count(3)
         return [m["role"] for m in agent.__history__]
 
-    assert two_turns(CompactionScope.CONVERSATION) == [
+    assert two_turns() == [
         "system",
-        "user",
-        "assistant",
-        "tool",
-        "assistant",
-    ]
-    assert two_turns(CompactionScope.TURN) == [
-        "system",
-        "user",
-        "assistant",
         "user",
         "assistant",
         "tool",

@@ -71,7 +71,6 @@ def harness(
     compaction_soft_tokens: int | None = None,
     compaction_hard_tokens: int | None = None,
     compaction_recent_tokens: int | None = None,
-    compaction_scope: CompactionScope = CompactionScope.CONVERSATION,
     **provider_config,
 ) -> Interpretation:
     """
@@ -187,9 +186,6 @@ def harness(
         compaction_recent_tokens: Approximate size of the recent window, in
             addition to keeping at least the last two rounds. Defaults to a
             quarter of the hard threshold.
-        compaction_scope: What a forced compaction drops, ``"conversation"``
-            (the default) or ``"turn"``; see
-            `~effectful.handlers.llm.harness.durability.compaction.CompactionScope`.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -225,7 +221,9 @@ def harness(
         and compaction_hard_tokens is not None
         and eval_provider != "none"
     ):
-        h = coproduct(h, ReplCompactor(compaction_hard_tokens, compaction_scope))
+        h = coproduct(
+            h, ReplCompactor(compaction_hard_tokens, CompactionScope.CONVERSATION)
+        )
     h = coproduct(h, HistoryBuilder())
     if compaction_soft_tokens is not None and compaction_hard_tokens is not None:
         h = coproduct(
