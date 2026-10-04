@@ -161,7 +161,7 @@ def test_non_ascii_text_before_the_call_does_not_hide_the_operation_under_ty():
 def test_non_ascii_text_before_the_call_keeps_mypys_wording():
     # mypy's columns past non-ASCII text match neither characters nor bytes.
     message = failure(MypyTypeChecker, "café = 1; value = refine('one', 'a')\n")
-    assert "incompatible type" in message
+    assert "__call__" in message and "Function signature" not in message
 
 
 def test_a_clean_operation_call_passes(checker: Callable[[], Any]):
