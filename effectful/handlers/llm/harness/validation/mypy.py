@@ -212,7 +212,8 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         wording for a function call, with the operation's signature as its hint.
 
         mypy's span identifies the owner: ``arg-type`` is reported at the argument,
-        ``call-arg`` (missing, unexpected or too many arguments) at the call. One more
+        ``call-arg`` (missing, unexpected or too many arguments) and ``misc`` (a
+        parameter given twice) at the call. One more
         mypy run reveals each callee's type, probed in place (see
         `operations.probed`). A callee mypy does not type as an ``Operation``, or a
         module that does not parse, keeps mypy's wording.
@@ -237,7 +238,7 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                 argument=error["code"] == "arg-type",
             )
             if _OPERATION_CALL in error["message"]
-            and error["code"] in {"arg-type", "call-arg"}
+            and error["code"] in {"arg-type", "call-arg", "misc"}
             else None
             for error in errors
         ]

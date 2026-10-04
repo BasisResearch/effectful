@@ -362,7 +362,12 @@ class TyTypeChecker(PromptInjectingInterpretation):
 _OPERATION_CALL = "bound method `Operation.__call__`"
 _OPERATIONS_MODULE = os.path.join("effectful", "ops", "types.py")
 _ARGUMENT_RULES = frozenset(
-    {"invalid-argument-type", "unknown-argument", "too-many-positional-arguments"}
+    {
+        "invalid-argument-type",
+        "unknown-argument",
+        "too-many-positional-arguments",
+        "parameter-already-assigned",
+    }
 )
 _CALL_RULES = frozenset({"missing-argument"})
 _REVEALED = re.compile(
