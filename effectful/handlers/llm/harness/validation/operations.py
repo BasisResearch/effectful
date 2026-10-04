@@ -36,9 +36,15 @@ def owner(
     lines = source.splitlines()
 
     def starts_at(node: ast.expr | ast.keyword) -> bool:
-        return (
-            node.lineno == line
-            and character_column(lines, node.lineno, node.col_offset) == column
+        # A keyword argument also starts at its value, where mypy reports a wrongly
+        # typed one.
+        starts: list[ast.expr | ast.keyword] = (
+            [node, node.value] if isinstance(node, ast.keyword) else [node]
+        )
+        return any(
+            start.lineno == line
+            and character_column(lines, start.lineno, start.col_offset) == column
+            for start in starts
         )
 
     def arguments(call: ast.Call) -> list[ast.expr | ast.keyword]:

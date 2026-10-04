@@ -70,10 +70,11 @@ def names_operation(message: str, callee: str = "refine") -> bool:
     [
         "refine(1)",
         "refine('one', 'a')",
+        "refine(1, keyword=2)",
         "refine(1, 'a', colour='b')",
         "refine(1, 'a', 'b')",
     ],
-    ids=["missing", "wrong-type", "unknown-keyword", "too-many"],
+    ids=["missing", "wrong-type", "wrong-keyword-type", "unknown-keyword", "too-many"],
 )
 def test_operation_call_errors_name_the_operation_and_its_signature(
     checker: Callable[[], Any], call: str
