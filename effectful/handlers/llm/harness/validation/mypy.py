@@ -225,6 +225,9 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             # A syntax error outside the checked region; without a tree there is no
             # call to name.
             return errors
+        # mypy's columns match character columns on ASCII lines only; past non-ASCII
+        # text they count neither characters nor bytes, so no owner is found there
+        # and the error keeps mypy's wording.
         owners = [
             operations.owner(
                 tree,

@@ -153,6 +153,17 @@ def test_a_module_opening_with_a_docstring_and_future_import_is_probed(
     assert SIGNATURE in str(raised.value)
 
 
+def test_non_ascii_text_before_the_call_does_not_hide_the_operation_under_ty():
+    message = failure(TyTypeChecker, "café = 1; value = refine('one', 'a')\n")
+    assert names_operation(message) and SIGNATURE in message
+
+
+def test_non_ascii_text_before_the_call_keeps_mypys_wording():
+    # mypy's columns past non-ASCII text match neither characters nor bytes.
+    message = failure(MypyTypeChecker, "café = 1; value = refine('one', 'a')\n")
+    assert "incompatible type" in message
+
+
 def test_a_clean_operation_call_passes(checker: Callable[[], Any]):
     with handler(checker()):
         type_check(OPERATIONS + "value = refine(1, 'a')\n", None, None)
