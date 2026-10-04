@@ -243,8 +243,8 @@ class TyTypeChecker(PromptInjectingInterpretation):
         return proc.stdout, proc.stderr, proc.returncode
 
     def _name_operations(self, source: str, errors: list[str]) -> list[str]:
-        """`errors` with each diagnostic about an operation call rewritten in ty's
-        wording for a function call: the operation's name, and its signature.
+        """`errors` with each diagnostic about an operation call rewritten to name the
+        operation and show its signature.
 
         One more ty run reveals the type of each such call's callee, probed in place
         (see `operations.probed`). A callee ty does not type as an ``Operation``, or
@@ -328,8 +328,8 @@ class TyTypeChecker(PromptInjectingInterpretation):
         return revealed
 
     def _rename(self, rendered: str, callee: str, revealed: str) -> str:
-        """`rendered` in ty's wording for a call to function `callee`, with its
-        signature, if `revealed` is an ``Operation`` type; otherwise unchanged."""
+        """`rendered` naming operation `callee` and showing its signature, if
+        `revealed` is an ``Operation`` type; otherwise unchanged."""
         operation = _OPERATION_TYPE.fullmatch(revealed)
         if operation is None:
             return rendered
@@ -337,7 +337,7 @@ class TyTypeChecker(PromptInjectingInterpretation):
         if not operations.missing_parameters_declared(rendered, params):
             return rendered
         header, *body = rendered.splitlines()
-        header = header.replace(_OPERATION_CALL, f"function `{callee}`")
+        header = header.replace(_OPERATION_CALL, f"operation `{callee}`")
         # ty counts the bound `self` of `Operation.__call__` among the positionals.
         header = _POSITIONAL_COUNT.sub(
             lambda m: f"expected {int(m['expected']) - 1}, got {int(m['got']) - 1}",
@@ -354,7 +354,7 @@ class TyTypeChecker(PromptInjectingInterpretation):
                 )
             if not skipping:
                 kept.append(text)
-        kept.append(f"info: Function signature: {callee}({params}) -> {result}")
+        kept.append(f"info: `{callee}` is called as {callee}({params}) -> {result}")
         return "\n".join([header, *kept])
 
 

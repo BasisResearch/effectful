@@ -1,5 +1,5 @@
-"""A type checker's error about calling an operation reads as one about calling a
-function: it names the operation and carries its signature.
+"""A type checker's error about calling an operation names the operation and carries
+its signature.
 
 Both checkers report a wrong call to an operation against ``Operation.__call__``,
 whose parameters are the generic ``*args, **kwargs``; the reader repairing the call
@@ -56,10 +56,10 @@ def failure(
 
 
 def names_operation(message: str, callee: str = "refine") -> bool:
-    """Whether `message` names `callee` as a function and no longer mentions the
-    generic ``Operation.__call__``."""
+    """Whether `message` names operation `callee` and no longer mentions the generic
+    ``Operation.__call__``."""
     return (
-        (f"function `{callee}`" in message or f'\\"{callee}\\"' in message)
+        (f"operation `{callee}`" in message or f'operation \\"{callee}\\"' in message)
         and "__call__" not in message
         and "ops/types.py" not in message
     )
@@ -121,7 +121,7 @@ def test_operations_reached_through_local_names_are_named(
 
 def test_plain_function_errors_keep_the_checkers_wording(checker: Callable[[], Any]):
     message = failure(checker, "value = plain(1)\n")
-    assert "plain" in message and "Function signature" not in message
+    assert "plain" in message and "is called as" not in message
 
 
 @pytest.mark.parametrize(
@@ -170,7 +170,7 @@ def test_non_ascii_text_before_the_call_does_not_hide_the_operation_under_ty():
 def test_non_ascii_text_before_the_call_keeps_mypys_wording():
     # mypy's columns past non-ASCII text match neither characters nor bytes.
     message = failure(MypyTypeChecker, "café = 1; value = refine('one', 'a')\n")
-    assert "__call__" in message and "Function signature" not in message
+    assert "__call__" in message and "is called as" not in message
 
 
 def test_a_clean_operation_call_passes(checker: Callable[[], Any]):

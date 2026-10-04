@@ -208,8 +208,8 @@ class MypyTypeChecker(PromptInjectingInterpretation):
     def _name_operations(
         self, source: str, errors: list[dict[str, typing.Any]], lenient: bool
     ) -> list[dict[str, typing.Any]]:
-        """`errors` with each diagnostic about an operation call rewritten in mypy's
-        wording for a function call, with the operation's signature as its hint.
+        """`errors` with each diagnostic about an operation call rewritten to name the
+        operation, with its signature as the hint.
 
         mypy's span identifies the owner: ``arg-type`` is reported at the argument,
         ``call-arg`` (missing, unexpected or too many arguments) and ``misc`` (a
@@ -275,9 +275,8 @@ class MypyTypeChecker(PromptInjectingInterpretation):
     def _rename(
         error: dict[str, typing.Any], callee: str, revealed: str
     ) -> dict[str, typing.Any]:
-        """`error` in mypy's wording for a call to function `callee`, with its
-        signature as the hint, if `revealed` is an ``Operation`` type; otherwise
-        unchanged."""
+        """`error` naming operation `callee`, with its signature as the hint, if
+        `revealed` is an ``Operation`` type; otherwise unchanged."""
         operation = _OPERATION_TYPE.fullmatch(revealed)
         if operation is None:
             return error
@@ -287,8 +286,11 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             return error
         return {
             **error,
-            "message": error["message"].replace(_OPERATION_CALL, f'"{callee}"'),
-            "hint": f"Function signature: {callee}({params}) -> {operation['result']}",
+            "message": error["message"].replace(
+                _OPERATION_CALL, f'operation "{callee}"'
+            ),
+            "hint": f'"{callee}" is called as {callee}({params}) -> '
+            f"{operation['result']}",
         }
 
 
