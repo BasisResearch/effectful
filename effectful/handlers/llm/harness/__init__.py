@@ -11,6 +11,7 @@ import typing
 
 import tenacity
 
+from effectful.handlers.llm.harness.durability.compaction import MiddleCompactor
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
@@ -63,6 +64,9 @@ def harness(
     tool_collection: typing.Literal["none", "explicit", "auto"] = "explicit",
     check_contracts: bool = True,
     max_tool_output_chars: int | None = DEFAULT_TOOL_OUTPUT_MAX_CHARS,
+    compaction_soft_tokens: int | None = None,
+    compaction_hard_tokens: int | None = None,
+    compaction_recent_tokens: int | None = None,
     **provider_config,
 ) -> Interpretation:
     """
@@ -88,7 +92,9 @@ def harness(
        prompt.
     3. `ToolOutputTruncator` -- bound each textual tool result before it enters
        history (unless ``max_tool_output_chars=None``).
-    4. `HistoryBuilder` -- accumulate the message history of a call.
+    4. `HistoryBuilder` -- accumulate the message history of a call, with optional
+       `MiddleCompactor` -- truncate stale middle-region tool output and summarize
+       older rounds at configurable thresholds.
     5. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
     6. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
     7. The ``type_checker`` and the ``eval_provider`` -- check and run
@@ -164,6 +170,13 @@ def harness(
         max_tool_output_chars: Maximum text characters retained in each tool
             result, including the truncation notice. The beginning and end are
             kept. Pass ``None`` to disable truncation.
+        compaction_soft_tokens: Approximate token threshold for stale tool-output
+            elision. ``None`` (default) disables middle-region compaction.
+        compaction_hard_tokens: Approximate token threshold for summarization,
+            required and greater than the soft threshold when enabled.
+        compaction_recent_tokens: Approximate size of the recent window, in
+            addition to keeping at least the last two rounds. Defaults to a
+            quarter of the hard threshold.
 
     Raises:
         ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
@@ -191,6 +204,15 @@ def harness(
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     h = coproduct(h, HistoryBuilder())
+    if compaction_soft_tokens is not None and compaction_hard_tokens is not None:
+        h = coproduct(
+            h,
+            MiddleCompactor(
+                compaction_soft_tokens,
+                compaction_hard_tokens,
+                recent_tokens=compaction_recent_tokens,
+            ),
+        )
 
     if render:
         h = coproduct(h, RichTerminalRenderer())
