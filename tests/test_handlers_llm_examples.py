@@ -1,4 +1,4 @@
-"""Live runs of every script under ``docs/source/llm_examples``.
+"""Live runs of every script under ``effectful/handlers/llm/examples``.
 
 Each example is run the way its docs tell a reader to run it -- through the
 module launcher, as a subprocess, with the example's own default arguments -- so
@@ -109,9 +109,29 @@ OVERRIDES: dict[str, Override] = {
         args=("least-beautiful-base",),
         why="its parser requires one of several problem subcommands",
     ),
+    "optimization/kernels": Override(
+        args=("--budget", "2"),
+        timeout=10 * 60,
+        why="each optimizer iteration is a proposer call plus worker-model "
+        "evaluations, so the default budget is a research run, not a smoke test",
+    ),
+    "optimization/packing": Override(
+        args=("--budget", "2"),
+        timeout=10 * 60,
+        why="each optimizer iteration is a proposer call plus worker-model "
+        "evaluations, so the default budget is a research run, not a smoke test",
+    ),
+    "optimization/prompting": Override(
+        args=("--budget", "2"),
+        timeout=10 * 60,
+        why="each optimizer iteration is a proposer call plus worker-model "
+        "evaluations, so the default budget is a research run, not a smoke test",
+    ),
     "reasoning/continual": Override(
-        args=("--budget", "20"),
-        why="the default 400-press budget is a research run, not a smoke test",
+        args=("--rooms", "2", "--length", "3", "--budget", "40"),
+        why="six rooms under a 400-press budget is a research run, not a smoke test; "
+        "a wrong press resets the room, so a systematic search of two 3-press codes "
+        "takes at most 36 presses",
     ),
     "reasoning/taboo": Override(
         args=("--secret-word", "ocean", "--taboo-words", "water", "sea", "blue"),

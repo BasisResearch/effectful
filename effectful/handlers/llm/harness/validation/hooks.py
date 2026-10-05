@@ -1,3 +1,21 @@
+"""The two operations that gate model-authored code: `type_check` and `run_doctests`.
+
+`type_check` reports only diagnostics inside the spliced line span, with a
+``lenient`` mode for REPL snippets; its default rule accepts everything, and
+:mod:`~effectful.handlers.llm.harness.validation.ty` or :mod:`~effectful.handlers.llm.harness.validation.mypy` make it real.
+`run_doctests` runs a synthesized object's ``>>>`` examples through the
+``compile``/``exec`` operations of :mod:`~effectful.handlers.llm.harness.execution.hooks`.
+The standard harness can install a checker and executor together. For an
+application with ``main()`` defined::
+
+    from effectful.handlers.llm.harness import harness
+    from effectful.ops.semantics import handler
+
+    with handler(harness(model="openai/gpt-5-mini", type_checker="ty",
+                         eval_provider="builtin")):
+        main()
+"""
+
 import collections.abc
 import doctest
 import types
@@ -19,7 +37,7 @@ def type_check(
     Type check a module source, reporting only diagnostics inside a line region.
 
     source: A complete module source to check (e.g. produced by
-        ``splice_into_source``, which splices generated code into a Skill's real
+        ``_splice_function``, which splices generated code into a Skill's real
         module source).
     lo, hi: Inclusive line range within ``source`` to report errors from; when
         omitted, the whole source is in scope. Errors outside the region are

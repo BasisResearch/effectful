@@ -192,7 +192,7 @@ type _GenImageAlias[T] = list[tuple[T, Image.Image]]
 type _RecursiveAlias = int | list[_RecursiveAlias]
 type _RecursiveGenAlias[T] = T | list[_RecursiveGenAlias[T]]
 
-# Stands in for `Kernel` in `docs/source/llm_examples/optimization/kernels.py`:
+# Stands in for `Kernel` in `effectful/handlers/llm/examples/optimization/kernels.py`:
 # an alias that is in a skill's lexical *scope*, so the alias object itself
 # reaches the encoding as a value.
 type _KernelAlias = Callable[[list[float]], list[float]]

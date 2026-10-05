@@ -1,4 +1,4 @@
-"""Offline tests for the AG-UI bridge in ``docs/source/llm_examples/acp/client.py``.
+"""Offline tests for the AG-UI bridge in ``effectful/handlers/llm/examples/acp/client.py``.
 
 A scripted ACP agent talks to the bridge over the SDK's in-memory transport, so
 every test crosses the real wire; the last one drives the effectful ACP server
@@ -12,8 +12,6 @@ import contextlib
 import dataclasses
 import functools
 import json
-import pathlib
-import sys
 import typing
 
 import httpx
@@ -30,22 +28,11 @@ from tests.conftest import (
     make_tool_call_response,
 )
 
-EXAMPLE_DIR = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "docs"
-    / "source"
-    / "llm_examples"
-    / "acp"
-)
-sys.path.insert(0, str(EXAMPLE_DIR))
-
 pytest.importorskip("acp", reason="the ACP example needs agent-client-protocol")
 pytest.importorskip("ag_ui", reason="the AG-UI bridge needs ag-ui-protocol")
 
 import acp  # noqa: E402
 import acp.schema  # noqa: E402
-import client  # noqa: E402
-import library  # noqa: E402
 import mcp  # noqa: E402
 from acp._transport import memory_transport_pair  # noqa: E402
 from ag_ui.core import (  # noqa: E402
@@ -68,10 +55,14 @@ from ag_ui.core import (  # noqa: E402
     UserMessage,
 )
 from ag_ui.encoder import EventEncoder  # noqa: E402
+from mcp.client.streamable_http import streamable_http_client  # noqa: E402
+
+from effectful.handlers.llm.examples.acp import client, library  # noqa: E402
 
 # In scope for `_Writer`'s skill, which finds its tools lexically.
-from library import acp_write_text_file  # noqa: E402, F401
-from mcp.client.streamable_http import streamable_http_client  # noqa: E402
+from effectful.handlers.llm.examples.acp.library import (
+    acp_write_text_file,  # noqa: E402, F401
+)
 
 pytestmark = pytest.mark.timeout(60)
 

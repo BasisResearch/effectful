@@ -1,7 +1,16 @@
-"""The operations of the agent loop.
+"""Operations and types used to extend the LLM harness.
 
-These are the extension points that every other handler in
-:mod:`effectful.handlers.llm.harness` implements or intercepts.
+:func:`call_agent` starts a Skill turn. :func:`call_system` and
+:func:`call_user` build its prompts. :func:`call_assistant` gets one model
+response (a *round*) and decodes any Tool calls or answer. :func:`call_tool`
+runs a decoded Tool call. :func:`completion` makes the provider request beneath
+a round. :class:`AgentLoop` supplies the base behavior.
+
+A handler can implement one of these operations with ``@implements``. Install
+it with :func:`~effectful.ops.semantics.handler`; use
+:func:`~effectful.ops.semantics.fwd` to continue to the next handler. See
+:mod:`effectful.handlers.llm.examples.optimization.textgrad` for an example
+that records Skill calls.
 """
 
 import abc
@@ -144,12 +153,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 @Operation.define
 @functools.wraps(litellm.completion, assigned=(), updated=())
 def completion(*args, **kwargs) -> typing.Any:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
-
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
-
-    """
+    """Low-level LLM request; handlers intercept it to log or modify the request and delegate via fwd()."""
     return litellm.completion(*args, **kwargs)
 
 
@@ -183,10 +187,10 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     tools: collections.abc.Set[Tool] = frozenset(),
 ) -> AssistantResult[T]:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+    """One model round: send `messages` and decode the reply and its tool calls.
 
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
+    Handlers intercept it to add tools, rewrite the request, retry, or observe;
+    the provider request itself is the `completion` operation beneath.
 
     The request is fully determined by the arguments: `messages` is the
     conversation sent to the model, so the rule reads no ambient history and a
@@ -296,9 +300,7 @@ type ToolResult[T] = tuple[
 
 @Operation.define
 def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
-    """Implements a roundtrip call to a python function. Input is a json
-    string representing an LLM tool call request parameters. The output is
-    the serialised response to the model.
+    """Apply a decoded tool call and encode its result as a tool message.
 
     Returns the appended tool message, the tool's return value, and whether the
     call finalizes the Skill -- always ``False`` here. Finalization is a policy
@@ -310,7 +312,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 
     The returned value is a :class:`ToolCallExecutionError` rather than the tool's
     result when a handler captured a failed call (see
-    `effectful.handlers.llm.harness.durability.TenacityRetryer`); this rule itself
+    `effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`); this rule itself
     raises instead.
     """
     # call tool with python types
@@ -340,11 +342,8 @@ def call_user(user_prompt: PromptSection) -> litellm.ChatCompletionUserMessage:
     """
     Format a `Skill`'s prompt applied to arguments into a user message.
 
-    `user_prompt` is wrapped in an enclosing document for the same reason
-    `call_system` assembles one: `_render_prompt_section` treats level 0 as the
-    document itself and does not render its title, so a section handed straight
-    to it would lose its heading.  Wrapped, `user_prompt` is a child and its
-    title becomes the message's ``#`` heading.
+    `user_prompt` is wrapped in an enclosing document so its title renders as the
+    message's ``#`` heading (see `_render_prompt_section`).
     """
     document = PromptSection(
         type="prompt_section",
@@ -533,89 +532,54 @@ class PromptInjectingInterpretation(ObjectInterpretation):
 
 
 class AgentLoop(PromptInjectingInterpretation):
-    """Each turn of this conversation is one request in a loop, and every message
-    you see was assembled by the harness whose capabilities the sections above
-    describe. Here is how those messages are put together.
+    """Each Skill call is one conversation turn. The current user message names the
+    Skill and contains its formatted request. Answer with a value of its declared
+    return type, or call a Tool when one is needed. If the answer depends on a
+    Tool result, make the Tool call and wait for its result before answering;
+    saying that you intend to call it does not run it.
 
-    On each turn you either call tools -- results are appended to the
-    conversation and the loop continues -- or answer. It is one or the other: a
-    turn that calls a tool is not an answer, so any answer you write alongside a
-    tool call is discarded and you will be asked again. Finish your tool calls
-    first, then answer in a turn of its own. The answer is decoded into
-    the Skill's declared return type by constrained generation, so a non-`str`
-    return type (an int, a dataclass, a list of them) comes back to the caller as
-    a real Python value rather than as prose about one. A handler may also mark
-    one of its tools *finalizing*: calling that tool ends the call, and its
-    return value is the answer (`write_and_run_body` is the canonical one).
+    A model response is one round. If you call a Tool, wait for its result and
+    continue in another round; text alongside a Tool call is not the final answer.
+    Some Tools, such as ``write_and_run_body``, finalize the turn themselves. Call
+    a finalizing Tool by itself, after any other Tool calls.
 
-    When the return type *is* `str`, your message is not summarized or extracted
-    from -- the whole of it, verbatim, becomes the value the calling program
-    receives, and is often fed straight into something else. So write the value
-    itself, with no preamble, no sign-off and no commentary about producing it:
-    "Here is the summary you asked for:" is not a preface to the answer, it is
-    part of the answer.
+    For a ``str`` return type, your entire answer becomes the Python string. Give
+    the requested text directly, without a preface or sign-off. Other return
+    types are decoded and checked before Python receives them. A validation error
+    may ask you to repair the same turn; it is not a new Skill call.
 
-    ## Calls, turns, and what carries between them
+    Successful top-level Skill method calls share messages with later calls on
+    the same receiver (``self``). A free Skill function starts with fresh history.
+    Python objects can outlive a turn, but a REPL session does not automatically
+    carry its bindings into the next one. The system message describes the
+    installed handlers, the Skill's source and receiver, and its lexical scope.
+    Read the current user message to see which Skill you are answering.
 
-    A *call* is one invocation of a Skill by the program. A *turn* is one request
-    within it. They are not the same thing, and the conversation you are reading
-    may contain several calls:
+    The system message is assembled from these sections:
 
-    - Each call opens with exactly one user message. Everything after it -- your
-      replies, the tool results answering them -- belongs to that call.
-    - When you answer, the call ends and its value is returned to the program,
-      which goes on doing whatever it does with it.
-    - A *new* user message therefore means the previous call already finished and
-      you are being asked a new question. The one exception says so itself:
-      a user message reporting that your answer could not be decoded is
-      the *same* call, asked again, and the rest of it is the error to fix.
-    - Only an `Agent` accumulates history across calls, which is why earlier user
-      messages may be in view at all. For a plain `Skill` each call starts from
-      an empty conversation.
+    | Heading | Content |
+    | --- | --- |
+    | ``# Harness`` | Instructions from installed handlers |
+    | ``# <Skill signature>`` | Task description as the sections below |
+    | ``## Module <name>`` | Defining module source, or its docstring if source is unavailable |
+    | ``## Agent <class>`` or ``## Skill`` | Receiver description and sibling Skill signatures and docstrings |
+    | ``## Modules already in scope that do not need to be re-imported:`` | Imports already in scope |
+    | ``## Variables already in scope that do not need to be re-defined:`` | Other bindings and their types |
 
-    What survives from one call to the next is exactly what lives outside the
-    conversation: `self` and the other objects of the Skill's lexical scope,
-    which belong to the program and are untouched by anything the harness does to
-    the transcript. Per-call machinery does not survive -- a REPL session, a
-    submitted implementation, any name you bound while working -- so if something
-    you worked out should still be true next time, write it onto `self`.
+    Each Skill call adds one user message:
 
-    ## The system message
+    | Part | Content |
+    | --- | --- |
+    | Header | Current Skill name and signature |
+    | Body | Its docstring with named format fields replaced by encoded values |
 
-    Assembled once per conversation, in two `#` halves -- the harness the call
-    runs under, then the task itself. The task half is ordered most-constant-first,
-    so the document caches well as the conversation grows:
+    A model round then supplies an answer or Tool call. A Tool result or
+    validation error can start another round within the same Skill call.
 
-    | # | Section heading | Content | Constant over |
-    | - | --------------- | ------- | ------------- |
-    | 1 | `# Harness` | A `##` subsection per installed handler, each sourced from that handler's own docstring, describing what this particular stack does — which of them are present varies, so read the headings rather than assuming a fixed set | the handler stack |
-    | 2 | `# <name><signature>` | The task, introspected from the skill, as the `##` subsections below | the conversation |
-    | 2.1 | `## Module <name>` | Source of the skill's module (docstring if source is unavailable) | the module |
-    | 2.2 | `## Agent <cls>` (or `## Skill`) | Agent docstring, then a `### <name><signature>` spec — prompt with `{...}` holes intact and argument JSON schemas — for every skill sharing the instance's history (an `Agent`'s methods, or just this skill) | the instance |
-    | 2.3 | `## Imported modules` | Table of in-scope imports (name → module) | the scope |
-    | 2.4 | `## Lexical scope` | Table of other in-scope bindings (name → type) | the scope |
-
-    Section 1 is contributed entirely by handlers, so a stack that installs none
-    of them omits it; any section that ends up empty is left out of the document
-    entirely.
-
-    The whole system message is written once, on the first call of a
-    conversation, and kept as the conversation goes on. So for an `Agent` calling
-    several of its skills in turn, the `#` heading above is the *first* skill
-    called, which need not be the one you are answering now. It is the user
-    message, not this heading, that names the skill of the current turn; section
-    2.2 specs them all, so the one you need is there either way.
-
-    ## The user message
-
-    The per-call part -- written once when the call opens, carrying only what
-    varies between calls; everything constant lives in the system message above.
-    It has two parts, plus whatever the installed handlers add below them:
-
-    | # | Part | Content |
-    | - | ---- | ------- |
-    | 1 | Header | `<name><signature>` — identifies which skill this call is to |
-    | 2 | Body | The skill's docstring with each `{...}` hole replaced by the encoded value of that argument or in-scope name (non-text values, such as images, as separate content blocks) |
+    A bound receiver retains its first system message across successful calls.
+    Its top heading may therefore name an earlier Skill; use the current user
+    message to identify this call. Tool discovery can still refresh in later
+    rounds, even when the retained source and scope description are older.
     """
 
     def _skill_system_prompt(self, skill: Skill) -> PromptSection:
@@ -672,9 +636,8 @@ class AgentLoop(PromptInjectingInterpretation):
 
         Assembles the two prompts, then alternates `call_assistant` and
         `call_tool` until a turn produces no tool calls (the model answered) or
-        a tool call reports itself final. Everything else in the harness is a
-        handler layered over the operations this loop invokes, which is why this
-        rule forwards to nothing: it is the bottom of the stack.
+        a tool call reports itself final. Forwards to nothing: this is the bottom
+        of the stack.
         """
         from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 

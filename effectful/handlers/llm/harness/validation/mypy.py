@@ -1,17 +1,9 @@
 """Type checking of generated code by shelling out to mypy.
 
-`MypyTypeChecker` is independent of any executor: it says how generated code is
-*checked*, not how it is parsed, compiled or run, so it is installed alongside
-whichever of those handlers a stack uses::
-
-    handler(MypyTypeChecker()), handler(BuiltinExecutor())
-
-rather than being part of one.
-
-It is interchangeable with
-`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker`, which implements
-the same operation with the same contract and is substantially faster; that
-module's docstring compares the two.
+`MypyTypeChecker` implements ``type_check`` (:mod:`~effectful.handlers.llm.harness.validation.hooks`) with
+the same contract as :mod:`~effectful.handlers.llm.harness.validation.ty`'s `TyTypeChecker`, which is
+substantially faster; that module's docstring compares the two. Prefer ty unless
+a stack specifically needs mypy's analysis.
 """
 
 import dataclasses
@@ -34,19 +26,11 @@ from effectful.ops.syntax import implements
 
 @dataclasses.dataclass
 class MypyTypeChecker(PromptInjectingInterpretation):
-    """Python you write is type-checked before it is run, by mypy. Code that
-    fails the check does not execute at all: you get mypy's diagnostics back --
-    the message, the error code, the offending line -- and the turn is yours
-    again to fix them.
-
-    Treat that as a fast, free reviewer rather than an obstacle. Annotate what
-    you write, use the types the surrounding code declares, and read a
-    diagnostic as a claim about your code that is usually correct. Silencing one
-    with `typing.Any` or a blanket `# type: ignore` will pass the check and then
-    fail at runtime, where the error costs a whole turn instead of none.
-
-    Only the code you generate is checked; errors elsewhere in the module you
-    are working in are not yours to fix and will not block you.
+    """When generated source is available, mypy checks it before execution.
+    Errors in the generated span block that code and return diagnostics for
+    revision. Use the declared types when writing code; a passing check does
+    not establish its behavior. If source cannot be recovered, synthesis skips
+    this static check.
     """
 
     #: Flags added under ``lenient=True`` to waive the diagnostics that a REPL

@@ -1,5 +1,14 @@
-"""Threshold-driven compaction of an agent transcript: lossy, by the harness, or
-forced on the model."""
+"""Shorten conversation history when it grows too large.
+
+:class:`CompactionScope` chooses whether to remove earlier rounds in the
+current turn or earlier turns as well. :class:`MiddleCompactor` truncates old
+Tool output and summarizes older messages when token thresholds are reached.
+:class:`ReplCompactor` asks the model to compact through ``exec_code``.
+Compaction changes messages, not Python state or REPL bindings. Store facts
+that must survive transcript deletion on a program-owned object. The retained
+request keeps its original formatted values; it is not rendered again after
+``self`` changes.
+"""
 
 import collections.abc
 import dataclasses
@@ -46,7 +55,7 @@ def compact_(
     tool_call_id: ToolCallID,
     scope: CompactionScope,
 ) -> None:
-    """Compact a history in-place, keeping the request and the asking round.
+    """Compact `history` in place for `scope` (see `CompactionScope`).
 
     `tool_call_id` identifies the call that asked, and so the round to keep: the
     assistant message advertising it, and everything after (which is exactly the
@@ -219,8 +228,12 @@ class MiddleCompactor(ObjectInterpretation):
 
     @implements(call_assistant)
     def call_assistant(self, messages, response_type, env, tools=frozenset()):
-        # The loop passes a snapshot, but changes must reach the transaction's
-        # buffer so subsequent requests and persisted agent history agree.
+        """Rewrite the ambient `HistoryBuilder` buffer, then send the compacted history.
+
+        Under `TenacityRetryer` the ambient buffer is the attempt's scratch copy,
+        so committed history is untouched and the summary is recomputed each
+        round; without a retryer it is the committed history itself.
+        """
         history = HistoryBuilder.get_history()
         compact_history = self._compact_history(history)
         if compact_history is history:
@@ -232,12 +245,13 @@ class MiddleCompactor(ObjectInterpretation):
 
 @dataclasses.dataclass
 class ReplCompactor(PromptInjectingInterpretation):
-    """
-    This conversation has a token budget. When a request would exceed it, you
-    are told so at the end of that request and must call `exec_code` with the
-    `compact` scope you are given; any other reply is rejected and you are asked
-    again. Use the snippet to promote anything you still need onto `self`;
-    your message with the call, the snippet and its output survive the compaction.
+    """This conversation has a token budget. If a request exceeds it, you will
+    be asked to call ``exec_code`` with the specified ``compact`` scope before
+    answering. Use that snippet to store facts on a program-owned object if
+    later Skill calls will need them. The current request, compaction call,
+    code, and output remain in the shortened conversation. The current request
+    keeps its original formatted values, even if ``self`` has changed since it
+    was rendered.
     """
 
     hard_tokens: int

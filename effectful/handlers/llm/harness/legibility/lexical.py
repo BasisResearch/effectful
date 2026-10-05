@@ -1,35 +1,10 @@
-"""Making a `Skill`'s lexical scope legible to the model.
+"""Describe a Skill's lexical scope and discover reachable Tools.
 
-`LexicalToolExtractor` unions `_tools_in_scope(env)` into a request's `tools`
-and forwards, so a `Skill` is offered the `Tool`/`Skill` values bound in its
-context (and those its in-scope `Agent`\\ s hold) without naming them itself.
-`ImplicitToolExtractor` widens that discovery: ordinary functions and methods
-in scope that look deliberately published -- public name, docstring, complete
-annotations (see `ImplicitToolExtractor._implicit_tool_candidate`) -- are
-wrapped with `Tool.define` and offered too, no decorator required. The section
-builders this module shares with the rest of the harness render the
-surrounding scope as prompt tables.
-
-The extractors are the *discovery* stage of the tool pipeline, and the only
-one: the tool callers in
-`~effectful.handlers.llm.harness.synthesis.toolcall` *transform* the tools an
-extractor discovered (replacing lexical tools with expression wrappers) rather
-than re-walking the scope themselves. Install exactly one extractor per stack,
-below the tool caller and anything else that contributes tools, passing
-``json_only=False`` whenever a caller is installed above (see
-`LexicalToolExtractor.__init__`): the anchor `Skill` is dropped from the set
-by `call_assistant`'s default rule, and a tool caller without an extractor
-beneath it has no lexical tools to offer -- the request is well-formed either
-way, so the omission surfaces only as a model that never calls a tool it was
-supposed to have.
-
-A *polymorphic* tool advertises in degraded form under the JSON pathway: its
-TypeVar-carrying parameters render as untyped ``{}`` schemas and its JSON
-arguments cannot be decoded to typed values (issues #489/#505). Polymorphic
-tools, and tools whose advertisement cannot be encoded at all, are both fully
-supported by the code-generation pathway
-(`~effectful.handlers.llm.harness.synthesis.toolcall.ExpressionToolCaller`),
-which composes above either extractor.
+:class:`LexicalToolExtractor` advertises explicit ``Tool`` and ``Skill`` values.
+:class:`ImplicitToolExtractor` also offers qualifying ordinary functions and
+methods. The same scope supplies the module, receiver, import, and binding
+sections of the system prompt. See :mod:`~effectful.handlers.llm.harness.legibility`
+for what visibility and Tool advertisement mean.
 """
 
 import builtins
@@ -65,21 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 class LexicalToolExtractor(PromptInjectingInterpretation):
-    """The tools you are offered are the ones this Skill can actually reach:
-    the `Tool` and `Skill` values bound in its lexical scope, plus those held by
-    any `Agent` in that scope. Nobody chose them for you by hand -- they are
-    what the surrounding code has in view -- so the set is worth reading as
-    evidence of what the caller expects this task to need.
-
-    That has a practical consequence: a capability you might expect is missing
-    from the list because it is not in scope here, not because it is forbidden.
-    Do not try to name or invoke a tool that is not offered. If the work seems
-    to require one, do what you can with what is offered and say plainly what
-    was missing.
-
-    The *Lexical scope* and *Imported modules* tables list the same scope's
-    non-callable bindings, so the tools and those tables describe one
-    environment together.
+    """The Tools offered for this Skill come from its lexical scope: explicit
+    ``Tool`` and ``Skill`` values, including methods on reachable Skill owners.
+    A leading underscore does not hide an explicitly defined Tool or Skill.
+    The imported-module and binding sections describe that same scope. Use the
+    advertised Tool interface when it fits the task. If code execution is
+    available, other reachable Python values may also be used without being
+    advertised as Tools.
     """
 
     def __init__(self, json_only: bool = True):
@@ -152,25 +119,12 @@ class LexicalToolExtractor(PromptInjectingInterpretation):
 
 
 class ImplicitToolExtractor(LexicalToolExtractor):
-    """The tools you are offered are the ones this Skill can actually reach in
-    the surrounding code: the `Tool` and `Skill` values bound in its lexical
-    scope, those held by any `Agent` in that scope -- and, beyond the ones
-    declared as tools, the ordinary functions and methods of that scope that
-    are public, documented, and fully type-annotated, wrapped and offered as
-    tools automatically. Nobody chose them by hand: the set is what the
-    surrounding code has in view, so read it as evidence of what the caller
-    expects this task to need, and read each tool's own docstring as its
-    contract.
-
-    That has a practical consequence: a capability you might expect is missing
-    from the list because it is not in scope here (or is private, undocumented,
-    or unannotated), not because it is forbidden. Do not try to name or invoke
-    a tool that is not offered. If the work seems to require one, do what you
-    can with what is offered and say plainly what was missing.
-
-    The *Lexical scope* and *Imported modules* tables list the same scope's
-    non-callable bindings, so the tools and those tables describe one
-    environment together.
+    """In addition to explicit ``Tool`` and ``Skill`` values, this handler offers
+    ordinary synchronous functions and methods that are public, documented,
+    fully annotated, and have no variadic parameters. Read an advertised Tool's
+    description for its signature and
+    purpose. The Tool list is a calling interface; with code execution, other
+    reachable Python values may still be usable in the REPL.
     """
 
     def __init__(
@@ -523,29 +477,7 @@ def _tools_in_scope(
     wrap: collections.abc.Callable[[typing.Any], Tool | None] | None = None,
     seen: frozenset[int] = frozenset(),
 ) -> collections.abc.Set[Tool]:
-    """
-    Return the tools available to a Skill given its lexical context.
-
-    Default rule: `Tool` and `Skill` values bound directly in `env`, plus
-    those reachable through any `Agent` instance in `env` -- whatever is bound
-    on the instance or declared on its class, and, recursively, the tools of any
-    `Agent` those in turn hold.  `seen` guards that recursion against reference
-    cycles; it is internal, and callers pass only `env`.
-
-    ``wrap``, if given, widens discovery: it is offered every binding that is
-    not already a tool or an `Agent` (including, through the `Agent`
-    recursion, bound methods), and may return an implicitly wrapped `Tool` for
-    it (see `ImplicitToolExtractor`) or ``None`` to pass.
-
-    Reaching through a nested `Agent` flattens its whole toolset into the result.
-    That is what makes holding one as an attribute a way to compose tools, and it
-    is why a specialised sub-agent is better left a bare `Skill`, whose own
-    scope stays its own.
-
-    Tools are identified by object, so the same `Tool` visible under several
-    bindings appears once.  The name each one is offered under is assigned by
-    :func:`_advertised_names`, not taken from the binding name.
-    """
+    """The tools of `_tool_paths` as a set; ``wrap`` and ``seen`` are passed through."""
     return frozenset(_tool_paths(env, wrap=wrap, seen=seen))
 
 
@@ -587,8 +519,10 @@ def _tool_paths(
 ) -> dict[Tool, str]:
     """The tools of `_tools_in_scope`, each mapped to the expression that names it.
 
-    Same reachability rule as `_tools_in_scope` (which is defined in terms of
-    this), but remembering *how* each tool was reached: ``name`` for a `Tool`
+    `Tool` and `Skill` values bound directly in ``env``, plus those reachable
+    through any `Agent` instance in ``env`` -- bound on the instance or declared
+    on its class, and recursively the tools of any `Agent` those hold (``seen``
+    guards cycles) -- remembering *how* each tool was reached: ``name`` for a `Tool`
     bound directly in ``env``, ``name.attr`` (recursively) for one held by an
     in-scope `Agent`. This is the reference a code-writing model must use to
     call the tool -- ``self.retrieve(...)`` for a method tool of the Skill's
@@ -597,8 +531,15 @@ def _tool_paths(
     puts it in each wrapper's advertisement so the model need not discover the
     distinction by trial and error.
 
-    A tool visible under several bindings keeps the first path found, in
-    ``env`` order -- so for a Skill call, whose env lists bound arguments
+    ``wrap``, if given, widens discovery: it is offered every binding that is
+    not already a tool or an `Agent`, including bound methods reached through
+    the `Agent` recursion, and may return an implicitly wrapped `Tool` or
+    ``None``. Reaching through a nested `Agent` flattens its whole toolset into
+    the result, which is what makes holding one as an attribute a way to compose
+    tools. Tools are identified by object, so one visible under several
+    bindings appears once; the name it is offered under is assigned by
+    `_advertised_names`, not taken from the binding. A tool visible under several
+    bindings keeps the first path found, in ``env`` order -- so for a Skill call, whose env lists bound arguments
     before the enclosing context, a tool on the receiver is named through
     ``self`` rather than through some outer alias.
     """

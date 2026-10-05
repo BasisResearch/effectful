@@ -1,37 +1,29 @@
-"""Answering a `Skill` by synthesizing its body.
+"""Generate and run an implementation of the current Skill.
 
-This is the declarative "CodeAdapt" workflow: the LLM writes code implementing
-the body of the Skill rather than reasoning out the answer itself.
-`FinalBodySynthesizer` offers the synthesis tool *alongside* the Skill's normal
-completion paths rather than replacing them -- across turns the model may freely
-call any other tool in scope (their results are fed back as usual), and it may
-still answer the return type directly via structured output. The loop terminates
-when it either answers directly or calls ``write_and_run_body``. To force the
-synthesis path, pass ``tool_choice="required"``; handler config is forwarded to
-the model request.
+:class:`FinalBodySynthesizer` offers the model ``write_and_run_body``. It checks
+a submitted function against the Skill's signature, runs fixed doctests from
+the caller's Skill docstring, then calls it on the current arguments. A
+successful submission ends this Skill turn; it does not install a permanent
+implementation. Use ``tool_choice="required"`` to require a Tool call instead
+of a direct answer only when a finalizing Tool such as ``write_and_run_body`` is
+available; otherwise the model cannot finish with a direct reply. See
+:mod:`~effectful.handlers.llm.harness.synthesis` for how
+this route differs from a generated ``Callable`` return.
 
-The function is synthesized by reusing the existing ``Callable`` synthesis
-machinery: the tool's argument is typed as ``Callable[[params], ret]``, so
-`call_assistant`'s tool-call decoding parses, type-checks, compiles and executes
-the model's code into a real function before it is applied. An eval provider
-(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
-`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
-must therefore be installed.
+Put fixed examples in the caller's Skill docstring when they must test the
+submitted implementation::
 
-Failures compose with
-`~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`: a function
-that fails to synthesize surfaces as a `ToolCallDecodingError`, and one that
-raises when applied to the inputs as a `ToolCallExecutionError`; both are fed
-back to the model as a tool message and the loop continues so it can revise::
+    from effectful.handlers.llm import Skill
 
-    with (
-        handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="gpt-5-mini")),
-        handler(HistoryBuilder()),
-        handler(FinalBodySynthesizer()),
-        handler(TenacityRetryer()),
-    ):
-        ...
+    @Skill.define
+    def gcd(a: int, b: int) -> int:
+        \"\"\"Return the greatest common divisor of {a} and {b}.
+
+        >>> gcd(54, 24)
+        6
+        >>> gcd(17, 13)
+        1
+        \"\"\"
 """
 
 import ast
@@ -86,7 +78,7 @@ def _splice_body(
 ) -> SplicedRegion:
     """Splice a synthesized function in as the anchor Skill's *own body*.
 
-    Unlike `splice_into_source` (which appends ``return <fn>`` and checks that the
+    Unlike `_splice_function` (which appends ``return <fn>`` and checks that the
     Skill returns the synthesized *function*), this treats the synthesized
     function as the Skill's implementation: the Skill keeps its own
     authoritative signature and its body becomes ``[<helpers/imports the model
@@ -131,9 +123,8 @@ def _splice_body(
     *body* is taken, under the Skill's own header.
 
     Returns the modified module source and the ``[lo, hi]`` line span from the
-    ``def`` line through the last body line, or ``None`` when the anchor's source
-    can't be recovered (REPL/notebook skill -- the caller skips rather than
-    guesses). Raises ``RuntimeError`` on source drift, via `_recover_skill_def`.
+    ``def`` line through the last body line. The caller skips the splice when the
+    anchor's source can't be recovered; `_recover_skill_def` raises on drift.
     """
     last = generated.body[-1]
     assert isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -144,7 +135,7 @@ def _splice_body(
     # enforced. Any docstring/doctests in the recovered source are dropped.
     skill_def.body = [*generated.body[:-1], *last.body]
 
-    # Report the def line through the end of the body. Unlike `splice_into_source`,
+    # Report the def line through the end of the body. Unlike `_splice_function`,
     # the region starts at the `def` line (not the first body statement): mypy
     # anchors "Missing return statement"/"empty-body" there, and a body that doesn't
     # return the Skill's declared type is a real defect we want to catch. The
@@ -162,17 +153,9 @@ def _splice_body(
 
 
 class SkillBody:
-    """The synthesized *body* of a `Skill`, as opposed to a general `Callable`.
-
-    Used only as the type of `write_and_run_body`'s ``implementation`` parameter (see
-    `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`).  A `SkillBody[[P],
-    R]` carries the Skill's parameter and return types exactly like a
-    `Callable`, but gets its own `TypeToPydanticType` case (`_pydantic_skill_body`)
-    so the synthesized function is type-checked against the enclosing Skill's
-    source and its doctests run with self/recursive calls routed to the synthesized
-    implementation.  The enclosing `Skill` is recovered from the decode context
-    (the ``anchor``), so no state rides on the type itself.
-    """
+    """Marker type of ``write_and_run_body``'s ``implementation`` parameter, carrying
+    the Skill's parameter and return types like a `Callable`; its codec is
+    `_pydantic_skill_body`."""
 
     def __class_getitem__(cls, item):
         return types.GenericAlias(cls, item)
@@ -269,15 +252,8 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
 
 
 class MethodSkillBody(SkillBody):
-    """A `SkillBody` for an *instance-method* Skill.
-
-    Carries the method/free distinction on the type's origin (context-free schema
-    generation reads it) so `write_and_run_body`'s description names the leading
-    receiver ``self`` and the receiver is exempt from the annotation requirement --
-    the model no longer has to reverse-engineer that the first parameter is ``self``.
-    The Skill's real signature (which includes the receiver) remains the
-    type-check contract; see `splice_skill_body`.
-    """
+    """`SkillBody` for an instance-method Skill, so the schema names the leading
+    ``self`` and exempts it from annotation; its codec is `_pydantic_method_skill_body`."""
 
 
 def _class_skill_of(op: typing.Any) -> typing.Any | None:
@@ -410,49 +386,17 @@ def _callable_type_from_signature(
 
 
 class FinalBodySynthesizer(PromptInjectingInterpretation):
-    """You can state a Skill's answer directly, or you can *compute* it by
-    writing an implementation and submitting it with the `write_and_run_body`
-    tool. This section is about the tool. Reach for it when
-    working the answer out by hand would be error-prone — a search, an
-    enumeration, a constraint to check against — or when the Skill's doctests are
-    the standard your answer has to meet.
+    """You may answer the Skill directly or compute its answer with
+    ``write_and_run_body``. Use that Tool when an implementation helps satisfy the
+    Skill's contract or its fixed doctests. Submit a function for the *current*
+    Skill call. The harness checks its source when possible, runs the Skill's
+    doctests, and applies the function to the current arguments. A successful
+    submission ends the turn and returns the computed value to Python.
 
-    A direct answer is also accepted, and is the right choice when you already
-    hold the value: do not wrap a value you have in hand inside a function that
-    ignores its arguments and returns a constant.
-
-    The tool's own description says what to submit and what the code must
-    satisfy; follow it rather than any recollection of how such a tool usually
-    works. Two things it does not tell you. Your function may reference names
-    from the lexical scope (see the *Lexical scope* table). And what your
-    submission is judged on is the Skill's doctests: the harness attaches the
-    Skill's docstring to your function and runs *its* examples, with recursive
-    calls to the Skill routed back to your implementation. A solution whose
-    doctests fail — or that raises when applied — is rejected and returned to you
-    to revise, so the answer only stands once those examples pass.
-
-    A Skill whose declared *return type* is itself a function is a different
-    thing, easily confused with this one: you answer it by writing the function
-    it returns, as an ordinary direct answer, and this tool is not involved.
-    Three rules invert there, and nothing else states them. The signature to
-    write is the *returned* function's, taken from the return type — not the
-    Skill's own, and with no `self` receiver even when the Skill is a method.
-    Every parameter and the return type must be annotated there, where for this
-    tool they are optional. And your docstring is kept rather than replaced, so
-    if the Skill asks for doctests certifying what you wrote, write them: they
-    are run, and they are what your answer is accepted on.
-
-    A successful `write_and_run_body` call ends the call immediately: no further
-    turn is taken, and the value of applying your function to the original
-    arguments is the Skill's answer. Because it ends the call, it must be the
-    *only* tool call in its turn — call any other tools you need on earlier
-    turns, and call `write_and_run_body` by itself once you are ready to answer.
-
-    This answers the *current* call only. A submission is not a standing answer:
-    if an earlier user message in this conversation was a previous call that you
-    answered this way, that answer has already been returned to the program and
-    has nothing to do with the question you are being asked now. To answer this
-    call by synthesis you must call `write_and_run_body` again.
+    Call any other Tools in earlier rounds, then call ``write_and_run_body`` alone.
+    Doctests in the Skill docstring are caller-authored checks. A Skill whose
+    *return type* is ``Callable`` instead expects a generated function as its
+    direct answer; that function has the returned signature and its own doctests.
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
@@ -510,18 +454,14 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
                 implementation: body_type,  # type: ignore
                 compact: CompactionScope = CompactionScope.NONE,
             ) -> return_type:  # type: ignore
-                """
-                Answer this Skill by submitting a Python function that implements
-                it (see the `FinalBodySynthesizer` section of the system prompt);
-                its return value on the original arguments becomes the answer.
+                """Submit a Python function implementing the current Skill. The harness
+                checks it against the Skill's signature when source and a checker are
+                available, runs fixed doctests from the Skill docstring, and applies it to
+                the current arguments. A successful call ends this turn with that value.
 
-                `compact` compacts the conversation as the answer lands; its own
-                schema below says what each scope drops. Whichever you pick,
-                this submission survives whole -- your message, the source you
-                submit and its result -- so anything you want your later self to
-                know, write as comments in the body you submit.
-
-                WHEN TOOL CALLS ARE REQUIRED, THIS MAY BE THE ONLY WAY TO END THE TURN!
+                Call other Tools first, then submit this Tool alone. ``compact`` may
+                shorten conversation history after a successful submission. If Tool calls
+                are required, this may be the way to finish the turn.
                 """
                 result = implementation(*args, **kwargs)  # type: ignore
                 return return_encoding.validate_python(result, context=env)

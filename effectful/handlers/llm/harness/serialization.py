@@ -1,7 +1,15 @@
-"""Conversion between Python values and the model's wire format.
+"""Encode Skill inputs, answers, and Tool calls for the model.
 
-Python values are converted to the content blocks, tool schemas and JSON
-payloads exchanged with the model, and the model's output is converted back.
+Application code can extend supported values through
+:meth:`~effectful.handlers.llm.types.Encodable.register`. The remaining types
+here chiefly serve handler authors: :class:`PromptSection` builds nested prompt
+headings; :func:`to_content_blocks` and :func:`format_as_content_blocks` render
+text and images; :class:`DecodedToolCall` carries decoded Tool arguments; and
+:class:`TypeToPydanticType` maps Python types to validation schemas.
+
+See :mod:`effectful.handlers.llm.examples.basics.image_input` and
+:mod:`effectful.handlers.llm.examples.basics.image_tool` for multimodal input
+and Tool output.
 """
 
 import abc
@@ -87,9 +95,6 @@ def to_content_blocks(
     Inside JSON structures, separators match ``json.dumps`` defaults so that
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
-
-    Every text block goes through `_text_blocks`, so none of them is empty;
-    Anthropic rejects a request containing one.
     """
     if isinstance(value, str):
         return _text_blocks(value)
@@ -228,10 +233,6 @@ def _shift_headings(md: str, by: int) -> str:
 def _rebase_headings(md: str, top: int) -> str:
     """Renumber the headings in `md` so its shallowest one sits at level `top`,
     preserving relative nesting; text with no headings is returned unchanged.
-
-    Applied to every text block as a prompt is rendered, so a docstring written
-    with its own heading hierarchy nests beneath the section that carries it and
-    the assembled document has a single coherent outline.
     """
     if not md:
         return md
@@ -333,19 +334,9 @@ class DecodedToolCall[T]:
 
 
 class _NameAndTool(typing.NamedTuple):
-    """A `Tool` together with the name it is advertised to the model under.
-
-    A name is a property of the advertisement, not of the tool: the same `Tool`
-    can be offered to two different requests under two different names, and two
-    tools sharing a ``__name__`` (an `Agent` method bound to two instances, say)
-    must still be told apart.  `call_assistant` assigns the names and pairs each
-    one with its tool here, immediately before encoding; nothing else constructs
-    or consumes a `_NameAndTool`.
-
-    This exists so that the `ChatCompletionToolParam` encoding below can hang off
-    a type that actually *is* a tool advertisement, leaving `Tool` itself free to
-    encode as what it is -- a callable.
-    """
+    """A `Tool` paired with the name `_advertised_names` assigned it, so the
+    advertisement codec can hang off a type that *is* an advertisement and
+    `Tool` itself encodes as a callable."""
 
     name: str
     tool: Tool
@@ -355,7 +346,7 @@ class TypeToPydanticType(TypeEvaluator):
     """Substitute custom types with their Pydantic Annotated equivalents.
 
     Recursively walks a type annotation tree, replacing leaf types that have
-    registered Pydantic annotations (e.g., Image.Image -> PydanticImage) and
+    registered Pydantic annotations (e.g., Image.Image -> _pydantic_type_image) and
     reconstructing the full generic type.
 
     The result can be passed to pydantic.TypeAdapter() for automatic

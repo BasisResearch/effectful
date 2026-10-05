@@ -1,8 +1,13 @@
-"""Re-run edited code while a script served by the launcher's ``--autoreload`` runs.
+"""Reload edited modules while a launched script runs.
 
-`hmr <https://pypi.org/project/hmr/>`_ re-runs what an edit reaches, keeping the
-identity of the operations and classes a re-run defines; `Reloader` is the harness
-stack it rebuilds.
+Launch it with::
+
+    python -m effectful.handlers.llm.harness script.py --autoreload
+
+:class:`Reloader` rebuilds the handler stack when imported modules change. An
+edit can preserve an existing class's identity, but removed names may stay
+bound as with ``importlib.reload``. Set ``__autoreload__ = False`` in a module
+that owns a live resource and must not be reloaded.
 """
 
 import collections.abc

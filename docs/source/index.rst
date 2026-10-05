@@ -22,6 +22,7 @@ Table of Contents
    :maxdepth: 2
    :caption: Documentation
 
+   llm_example_review
    effectful
 
 Indices and Tables

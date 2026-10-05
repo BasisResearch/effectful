@@ -1,46 +1,32 @@
-"""Enforcement of the pre-conditions a caller writes into a `Skill`'s parameters.
+"""Validate annotated Skill arguments before a turn starts.
 
-A parameter annotated with pydantic metadata -- a `pydantic.AfterValidator`, an
-`annotated_types` constraint, a `pydantic.Field` -- states a contract its
-argument must satisfy::
+:class:`PydanticSkillArgValidator` applies Pydantic metadata on Skill
+parameters, such as a range or predicate. A failing direct Python call raises
+``pydantic.ValidationError`` before any model request. The standard harness
+installs this handler when ``check_contracts=True``.
+
+For example, the caller's argument is checked before the model receives it::
+
+    from typing import Annotated
+
+    from annotated_types import Predicate
+
+    from effectful.handlers.llm import Skill
+
+    def nonempty(value: str) -> bool:
+        return bool(value.strip())
 
     @Skill.define
-    def select_seat(user_input: Annotated[str, Predicate(is_seat_request)]) -> Seat:
-        \"""Extract the seat from {user_input}.\"""
+    def summarize(text: Annotated[str, Predicate(nonempty)]) -> str:
+        \"\"\"Summarize {text} in one sentence.\"\"\"
 
-What `PydanticSkillArgValidator` changes is the *top-level* call -- a skill
-invoked from Python, by a caller who wrote the annotation and can reasonably
-expect it to mean something. Nothing in Python consults an annotation, so
-without this handler the contract silently lapses there. Installed, the argument
-is validated before the prompt is built, and a violation raises
-`pydantic.ValidationError` -- a `ValueError`, so ordinary handling still applies
--- rather than reaching the model at all.
+JSON Tool-call arguments are also validated when decoded. Expression Tool
+calls evaluate Python expressions instead, so this handler is needed there to
+enforce Skill parameter constraints. It does not wrap plain Tools: parameter
+metadata on a plain Tool is not enforced by the expression pathway. Return
+constraints are checked by the answer decoder regardless of this handler.
 
-A skill the *model* calls as a tool is validated with or without this handler:
-`call_assistant` decodes each argument through `Encodable` of the parameter's
-own annotation, so the metadata is applied as the call is decoded, before the
-skill is ever entered. Two consequences follow.
-
-* For a model-supplied argument the validation happens twice -- once at decode,
-  once here -- so a pre-condition that costs something (an LLM-backed predicate,
-  say) pays it twice.
-* The exception is the expression pathway
-  (`~effectful.handlers.llm.harness.synthesis.toolcall.ExpressionToolCaller`),
-  which evaluates a Python call expression instead of decoding JSON arguments
-  and does not apply the parameter's metadata. There this handler is the only
-  thing enforcing the contract, which is why it is installed for every
-  tool-calling mode rather than only the JSON one.
-
-Post-conditions need no handler
--------------------------------
-
-The mirror image -- metadata on the *return* annotation -- is enforced by the
-decoder itself, since `call_assistant` decodes an answer through `Encodable` of
-the skill's declared return type and the caller's metadata rides along. A
-rejection there is a decoding failure, which
-`~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer` feeds back
-to the model as the instruction for its next attempt. So this handler governs
-the way in; the way out is contracted whether or not it is installed.
+See :mod:`effectful.handlers.llm.examples.basics.guardrails`.
 """
 
 import collections.abc
@@ -61,20 +47,11 @@ from effectful.ops.syntax import implements
 
 
 class PydanticSkillArgValidator(PromptInjectingInterpretation):
-    """The arguments you were given have already been checked. Where a
-    parameter's annotation carries a constraint -- a value range, a pattern, a
-    predicate that has to hold -- that constraint was evaluated before this call
-    reached you, and an argument that failed it never got here.
-
-    So do not re-verify them. Spending a turn confirming that an argument
-    satisfies a condition it was admitted for is work the harness already did,
-    and its result cannot differ. Take the arguments as given and answer the
-    request.
-
-    Your answer is checked the same way, against any constraint on the return
-    annotation. If it fails, you get the validation error back and another
-    attempt, so an answer that is close but out of the declared range is worth
-    correcting before you send it.
+    """Annotation constraints on this Skill's arguments were checked before
+    the turn started.
+    Use the admitted values to answer the request. Constraints on your return
+    value are checked before Python receives it; if validation fails and retries
+    are installed, you will see the error and can repair the answer.
     """
 
     @implements(call_agent)

@@ -37,6 +37,9 @@ from effectful.handlers.llm.harness.hooks import (
 )
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
 from effectful.handlers.llm.harness.observability.dump import SystemPromptDumper
+from effectful.handlers.llm.harness.observability.dump import (
+    _message_text as _dump_message_text,
+)
 from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
 from effectful.handlers.llm.harness.observability.rich import (
     RichTerminalRenderer,
@@ -737,6 +740,50 @@ def test_dumper_writes_system_prompt(tmp_path):
     assert "how the machinery works" in dumped
     assert "what to do" in dumped
     assert "Harness" in dumped and "Task" in dumped
+
+
+@pytest.mark.parametrize("eval_provider", ["builtin", "none"])
+def test_example_prompt_dump_matches_outgoing_system(tmp_path, eval_provider):
+    """The dump reflects the system message actually passed to completion.
+
+    Framework guidance is present with or without an executor. The Tool,
+    Agent, and Encodable references are included when Python execution is enabled.
+    """
+    from effectful.handlers.llm.examples.basics.conversation import ChatBot
+    from effectful.handlers.llm.harness import harness
+
+    path = tmp_path / "prompt.md"
+    mock = MockCompletionHandler([make_text_response("Hello!")])
+    with (
+        handler(
+            harness(
+                model="test-model",
+                num_retries=0,
+                dump_system_prompt=path,
+                eval_provider=eval_provider,
+                tool_calling="json" if eval_provider == "none" else "auto",
+            )
+        ),
+        handler(mock),
+    ):
+        assert ChatBot(bot_name="Chatty McChatface").send("Hi") == "Hello!"
+
+    prompt = path.read_text()
+    assert prompt == _dump_message_text(mock.received_messages[0][0]["content"])
+    assert prompt.startswith(
+        "# Harness\n\n## The effectful LLM framework\n\n### `Skill`"
+    )
+    assert prompt.index("### `Skill`") < prompt.index("## AgentLoop\n")
+    assert prompt.count("## The effectful LLM framework") == 1
+    assert prompt.count("### `Skill`") == 1
+    assert "ApiReferenceDocumenter" not in prompt
+    assert prompt.count("def summarize(text: str) -> str:") == 1
+    if eval_provider == "none":
+        for name in ("Tool", "Agent", "Encodable"):
+            assert f"### `{name}`" not in prompt
+    else:
+        for name in ("Tool", "Agent", "Encodable"):
+            assert prompt.count(f"### `{name}`") == 1
 
 
 def test_dumper_overwrites_on_each_call(tmp_path):

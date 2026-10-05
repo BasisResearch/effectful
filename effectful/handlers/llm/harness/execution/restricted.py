@@ -1,29 +1,10 @@
-"""A safer eval provider built on RestrictedPython.
+"""Run model-authored Python under a restricted execution policy.
 
-RestrictedPython is not a complete sandbox: it enforces a restricted language
-subset at compile time and expects the caller to supply a constrained exec
-environment. `RestrictedPythonExecutor` supplies that environment -- a
-`RestrictedPythonPolicy` at compile time, and at run time the guarded accessors
-that policy's output calls into (`_guarded_getattr`, `_guarded_import`, ...)
-over a builtins namespace with no I/O, no introspection and no way back to
-``compile``/``eval``/``exec``.
-
-It also cannot shut down the process it runs in. `call_tool` catches
-``Exception`` and not ``BaseException``, so that a real Ctrl-C interrupts the
-host rather than being handed to the model as a failed tool call -- which leaves
-anything a snippet can raise *outside* ``Exception`` uncontainable. So the
-``BaseException`` subclasses that are not ``Exception`` are removed from the
-builtins namespace (`_UNSAFE_BUILTIN_NAMES`), and ``os``/``signal`` are out of
-reach whether named in an ``import`` or fetched off an allowed module that
-imported them itself (`_checked_module`).
-
-Doctests are executed under the same policy as the code they exercise, so a
-model cannot smuggle past the sandbox in a docstring.
-
-The sandbox says nothing about types: install
-`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
-`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker` alongside this
-handler to type-check generated code before it is compiled and run.
+:class:`RestrictedPythonExecutor` limits imports, builtins, and attribute
+access. It is useful for narrowing ordinary execution authority, but is not
+a complete process sandbox. Choose it with ``eval_provider="restricted"``.
+The policy and runtime guards are defined here; the model prompt lists the
+modules it may import.
 """
 
 import ast
@@ -375,7 +356,7 @@ class RestrictedPythonPolicy(RestrictingNodeTransformer):
     is inherited untouched: ``exec``/``eval`` calls, star imports, ``async``,
     ``except*``, ``match`` and any other unreviewed syntax are still rejected, and
     attribute access, subscripting and iteration are still rewritten to the guarded
-    accessors that `RestrictedEvalProvider` installs.
+    accessors that `RestrictedPythonExecutor` installs.
     """
 
     def check_name(
@@ -453,7 +434,7 @@ class RestrictedPythonPolicy(RestrictingNodeTransformer):
         the ordinary `visit_Subscript`/`visit_Attribute` rewriting, so the store lands on
         ``_write_(a)`` and an attribute name is still checked. The read is the one thing
         not routed through ``_getitem_``/``_getattr_``; that costs nothing here, where
-        `RestrictedEvalProvider` reads are unrestricted, but a policy paired with a
+        `RestrictedPythonExecutor` reads are unrestricted, but a policy paired with a
         *restricting* ``_getitem_`` should not use this class.
         """
         if isinstance(node.target, ast.Name):
@@ -763,36 +744,14 @@ def _guarded_apply(
 
 
 class RestrictedPythonExecutor(PromptInjectingInterpretation):
-    """Code you write runs in a restricted subset of Python, not the full
-    language. What is unavailable is unavailable by design, and no amount of
-    indirection will reach it, so write within the subset rather than testing
-    its edges -- a rejected program costs a turn and tells you only what you
-    already know from here.
+    """Model-authored code runs under a RestrictedPython policy. The allowed
+    imports are listed below; the policy also blocks selected builtins and
+    reflective attributes. Write within that subset, and use ordinary
+    ``Exception`` values to report failures. Doctests run under the same
+    policy.
 
-    The restrictions: no file, network or process access, and no `open`,
-    `input`, `eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `dir` or
-    `breakpoint`. Imports are limited to the allowlist in the *Modules you may
-    import* section, and a module not on it stays out of reach however you get
-    to it -- naming it in an `import`,
-    or taking it off an allowed module that imported it. Introspection back into
-    the interpreter is closed: `__class__`, `__globals__`, `__code__`,
-    `__subclasses__`, `__dict__` and the rest raise, though the operator and
-    context-manager dunders you would implement on your own classes are fine.
-    Single-underscore names (`_helper`, `self._items`) are ordinary and allowed.
-    You also cannot exit the process: `SystemExit`, `KeyboardInterrupt` and the
-    other non-`Exception` classes are absent, so raise an ordinary `Exception`
-    to signal failure.
-
-    Everything else is Python as you know it. Classes, closures, comprehensions,
-    generators, decorators, dataclasses, `try`/`except`, `match`, f-strings,
-    augmented assignment and `print` all work normally, and the allowed modules
-    cover the arithmetic, collections, text and serialization work this
-    environment is for. Doctests you write in a docstring are run under exactly
-    this policy too, so they are subject to the same rules as the code around
-    them.
-
-    A violation is reported to you as an error naming the construct, and the
-    program does not run. Read it as a boundary, not a bug to work around.
+    This narrows direct code access but is not a process sandbox. An object
+    already in scope may still expose capabilities or side effects.
     """
 
     policy: type[RestrictingNodeTransformer] | None = None
@@ -838,13 +797,8 @@ class RestrictedPythonExecutor(PromptInjectingInterpretation):
     def call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
-        """Add the import allowlist, then the class docstring the base rule adds.
-
-        Appending before delegating puts `_allowed_modules_section` immediately
-        ahead of the section `PromptInjectingInterpretation` contributes, so the
-        two arrive together however the rest of the stack is composed -- which
-        is what lets the class docstring refer to the allowlist by name.
-        """
+        """Append `_allowed_modules_section` before delegating, so it lands just
+        ahead of the class docstring (see `PromptInjectingInterpretation`)."""
         return super().call_system(
             PromptSection(
                 type="prompt_section",

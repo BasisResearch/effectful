@@ -1,3 +1,11 @@
+"""Tracing Skill calls, tool calls and model rounds with Langfuse.
+
+`LangfuseTracer` opens one observation per operation, nested by call structure:
+`LangfuseTracer.call_agent` (an *agent*), `LangfuseTracer.call_tool` (a *tool*)
+and `LangfuseTracer.completion` (a *generation* with token usage). Enable with
+``harness(langfuse=True)`` or ``--langfuse``.
+"""
+
 import dataclasses
 import inspect
 
@@ -16,8 +24,10 @@ from effectful.ops.syntax import ObjectInterpretation, implements
 class LangfuseTracer(ObjectInterpretation):
     """Traces Tool, Skill, and completion calls with Langfuse.
 
-    Compose with a provider via :func:`~effectful.ops.semantics.handler`
-    to add tracing::
+    The client defaults to ``langfuse.get_client()``, configured by the
+    ``LANGFUSE_*`` environment variables. Values are encoded through
+    `Encodable`, falling back to ``repr`` so tracing never fails a call. Install
+    with ``harness(langfuse=True)`` or ``--langfuse``, or directly::
 
         with handler(provider), handler(LangfuseTracer()):
             print(limerick(theme))

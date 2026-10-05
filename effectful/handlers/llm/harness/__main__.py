@@ -1,21 +1,16 @@
-"""
-A reusable harness for running `effectful.handlers.llm` example scripts.
+"""Launch a script or installed module under the standard LLM harness.
 
-The example scripts under ``docs/source/llm_examples`` share a fixed stack of
-handlers -- a LiteLLM provider, a Python REPL, retry/decoding logic, and so on --
-that turns a bare `Skill`/`Agent` into something runnable. This module
-factors that stack into a single object, `harness`, so the scripts themselves
-carry none of the boilerplate.
-
-Run as a module it becomes a command-line launcher that wraps an arbitrary
-script in the same context::
-
-    python -m effectful.handlers.llm.harness <path_to_script.py> <harness_flags> <script_flags>
-
-Harness flags are consumed here; other flags pass through to the script unchanged.
+Use ``python -m effectful.handlers.llm.harness SCRIPT.py [flags]`` or replace
+the script path with ``-m MODULE``. ``--model`` selects a model; by default
+the launcher reads ``EFFECTFUL_LLM_MODEL``. Use ``--langfuse`` to record traces,
+``--dump-system-prompt PATH`` to inspect prompts, and ``--help`` for all flags.
+Unrecognized flags are passed to the script or module. ``--autoreload`` currently
+requires a script path.
 """
 
 import argparse
+import functools
+import importlib.util
 import os
 import pdb
 import runpy
@@ -64,12 +59,28 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
     parser's ``--model``, silently overwriting the model *and* dropping the flag the
     script needed.
     """
+    # Taken out first, so that with ``-m`` there is no script positional left to
+    # swallow a bare value among the script's own arguments (``--budget 20``).
+    module = None
+    if "-m" in argv:
+        at = argv.index("-m")
+        module, argv = (
+            argv[at + 1 : at + 2][0] if argv[at + 1 : at + 2] else "",
+            (argv[:at] + argv[at + 2 :]),
+        )
     parser = argparse.ArgumentParser(
         prog=f"python -m {__spec__.name}" if __spec__ else None,
         description=textwrap.dedent(__doc__),
         allow_abbrev=False,
     )
-    parser.add_argument("script", help="Path to the script to run")
+    if module is None:
+        parser.add_argument("script", help="Path to the script to run")
+    parser.add_argument(
+        "-m",
+        dest="module",
+        metavar="MODULE",
+        help="Run an installed module instead, e.g. an effectful.handlers.llm.examples one",
+    )
     parser.add_argument(
         "--model",
         type=str,
@@ -175,7 +186,7 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help=(
             "Re-run edited code imported from sys.path directories, including the "
-            "harness, while the script runs"
+            "harness, while the script runs (requires a script path)"
         ),
     )
     parser.add_argument(
@@ -189,6 +200,16 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         ),
     )
     parser.add_argument(
+        "--compaction-hard-tokens",
+        type=int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Request REPL compaction when the approximate conversation token "
+            "count reaches this threshold"
+        ),
+    )
+    parser.add_argument(
         "--mcp-config",
         type=str,
         default=None,
@@ -198,28 +219,43 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
             '{"mcpServers": {...}} configuration, to every Skill (installs MCPTools)'
         ),
     )
-    return parser.parse_known_args(argv)
+    ns, rest = parser.parse_known_args(argv)
+    if module is not None:
+        if not module or ns.module is not None:
+            parser.error("-m takes one module name")
+        ns.module, ns.script = module, None
+        if ns.autoreload:
+            parser.error(
+                "--autoreload currently requires a script path instead of -m MODULE"
+            )
+    return ns, rest
 
 
-def _needs_responses_api(model: str) -> bool:
-    """Whether `model` must be addressed through the Responses API to use tools.
+def _openai_model_needing_responses_api(model: str) -> str | None:
+    """`model` without its provider prefix, if it is an OpenAI model that must be
+    addressed through the Responses API to use tools; else ``None``.
 
     OpenAI rejects function tools alongside reasoning on ``/v1/chat/completions``
     for its GPT-5.4-and-later models (*Function tools with reasoning_effort are
     not supported ... use /v1/responses*), and the harness always sends tools.
-    Asked about a model litellm does not classify -- another provider's, or one
-    newer than the installed litellm knows -- this answers ``False`` and leaves
-    the model string alone, so an unfamiliar name degrades to today's behaviour
-    rather than being rewritten on a guess.
+    The same model reached through another provider, such as
+    ``openrouter/openai/gpt-5.4``, is that provider's business and is left alone,
+    as is a model litellm does not classify -- another provider's, or one newer
+    than the installed litellm knows -- so an unfamiliar name degrades to today's
+    behaviour rather than being rewritten on a guess.
     """
     try:
         from litellm.llms.openai.chat.gpt_5_transformation import OpenAIGPT5Config
 
-        return OpenAIGPT5Config.is_model_gpt_5_4_plus_model(
-            model
-        ) and not OpenAIGPT5Config.is_model_gpt_5_search_model(model)
+        name, provider, *_ = litellm.get_llm_provider(model)
+        if provider != "openai":
+            return None
+        needs = OpenAIGPT5Config.is_model_gpt_5_4_plus_model(
+            name
+        ) and not OpenAIGPT5Config.is_model_gpt_5_search_model(name)
+        return name if needs else None
     except Exception:
-        return False
+        return None
 
 
 def _provider_config(ns: argparse.Namespace) -> dict[str, typing.Any]:
@@ -243,8 +279,10 @@ def _provider_config(ns: argparse.Namespace) -> dict[str, typing.Any]:
     triggers the bridge by itself, and is left to do so.
     """
     model = ns.model
-    if ns.reasoning_effort is None and _needs_responses_api(model):
-        model = f"openai/responses/{model}"
+    if ns.reasoning_effort is None and (
+        name := _openai_model_needing_responses_api(model)
+    ):
+        model = f"openai/responses/{name}"
 
     config: dict[str, typing.Any] = {"model": model, "tool_choice": ns.tool_choice}
     if ns.reasoning_effort is not None:
@@ -260,6 +298,7 @@ def _build_harness(ns: argparse.Namespace) -> Interpretation:
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
         persist_db=ns.persist_db,
+        compaction_hard_tokens=ns.compaction_hard_tokens,
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
         tool_calling=ns.tool_calling,
@@ -273,13 +312,26 @@ def _build_harness(ns: argparse.Namespace) -> Interpretation:
 def main(argv: list[str] | None = None) -> None:
     litellm.drop_params = True
     ns, script_args = _parse_args(sys.argv[1:] if argv is None else argv)
+    if ns.module is not None:
+        try:
+            spec = importlib.util.find_spec(ns.module)
+        except ModuleNotFoundError:  # a missing parent package
+            spec = None
+        if spec is None or spec.origin is None:
+            raise SystemExit(f"No module named {ns.module}")
+        ns.script = spec.origin
+        run = functools.partial(
+            runpy.run_module, ns.module, run_name="__main__", alter_sys=True
+        )
+    else:
+        # Mirror `python <script>`: put the script's directory on sys.path so it can
+        # import sibling modules (e.g. a shared environment definition) by absolute
+        # name. `runpy.run_path` runs the file as `__main__` with no package, so
+        # relative imports can't work and this dir would otherwise be off the path.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
+        run = functools.partial(runpy.run_path, ns.script, run_name="__main__")
     # The script should see only its own flags, under its own name.
     sys.argv = [ns.script, *script_args]
-    # Mirror `python <script>`: put the script's directory on sys.path so it can
-    # import sibling modules (e.g. a shared environment definition) by absolute name.
-    # `runpy.run_path` runs the file as `__main__` with no package, so relative
-    # imports can't work and this dir would otherwise be off the path.
-    sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
     if ns.autoreload:
         # Before the first build, so the handler modules load through hmr.
         from effectful.handlers.llm.harness import autoreload
@@ -292,13 +344,13 @@ def main(argv: list[str] | None = None) -> None:
     with installed:
         if ns.pdb:
             try:
-                runpy.run_path(ns.script, run_name="__main__")
+                run()
             except BaseException:
                 # Post-mortem while the handler stack is still installed, so live
                 # handler/session state is inspectable at the debugger prompt.
                 pdb.post_mortem()
         else:
-            runpy.run_path(ns.script, run_name="__main__")
+            run()
 
 
 if __name__ == "__main__":

@@ -1,3 +1,29 @@
+"""Decode a generated function returned by a Skill.
+
+A Skill annotated to return ``Callable[[A], B]`` can receive Python source for
+a function. The decoder parses and compiles it, checks its arity, and runs any
+doctests in the generated function. When the Skill's source can be recovered
+and a type checker is installed, it also checks the function against the
+Skill's declared return type.
+
+The model writes those doctests itself. Put independent checks in caller-owned
+code when behavior matters. See :mod:`effectful.handlers.llm.examples.basics.lexical_scope`.
+
+Declare the function's type at the Skill boundary; call the result as ordinary
+Python::
+
+    from collections.abc import Callable
+    from effectful.handlers.llm import Skill
+
+    @Skill.define
+    def make_slugifier(separator: str) -> Callable[[str], str]:
+        \"\"\"Return a function that turns text into lowercase slugs joined by
+        {separator}, with representative doctests in its own docstring.\"\"\"
+
+    slugify = make_slugifier("-")
+    assert slugify("An Effectful Program") == "an-effectful-program"
+"""
+
 import ast
 import collections.abc
 import inspect
@@ -19,8 +45,8 @@ from effectful.handlers.llm.harness.serialization import (
     _serialize_callable,
 )
 
-# The shared output of the three splicers (`splice_into_source`,
-# `splice_skill_body`, `splice_repl_code_into_body`): the module ``source`` to
+# The shared output of the three splicers (`_splice_function`,
+# `_splice_body`, `_splice_snippet`): the module ``source`` to
 # type-check and the inclusive ``[lo, hi]`` line span within it to report
 # diagnostics from -- exactly the leading arguments of `type_check`. ``None`` (not
 # this type) is returned when the anchor's source can't be recovered.
@@ -141,10 +167,8 @@ def _splice_function(
     module source.
 
     Returns the modified module source and the ``[lo, hi]`` line span of the
-    spliced body within it, or ``None`` when the anchor's source can't be recovered
-    (the caller skips rather than guesses). Raises ``RuntimeError`` if the source is
-    recovered but the anchor's def can't be located in it (source drift) -- a real
-    error, not a silent pass.
+    spliced body within it. The caller skips the splice when the anchor's source
+    can't be recovered; `_recover_skill_def` raises on drift.
 
     The generated function -- and any helpers it defines alongside -- becomes the
     body of the Skill's own function at its real (possibly nested) position, so
@@ -173,7 +197,7 @@ def _splice_function(
             return adder
 
     so mypy checks that ``adder`` satisfies ``Callable[[int], int]`` and that its
-    body may reference the Skill's ``n``. Contrast `splice_skill_body`, which
+    body may reference the Skill's ``n``. Contrast `_splice_body`, which
     grafts the model's function *body* under the Skill's own header (for a
     Skill whose body -- not return value -- is synthesized). The returned
     ``[lo, hi]`` spans the generated statements only, not the ``def`` header.

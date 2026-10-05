@@ -1,7 +1,10 @@
-"""Expose MCP tools and their structured and multimodal results to the harness.
+"""Offer tools from MCP servers to every Skill.
 
-The interpretation connects the FastMCP client around skill calls, using the
-application's event loop from the synchronous harness's worker threads.
+:class:`MCPTools` discovers a FastMCP client's current tool catalog and
+forwards calls to the server. Construct it on a running event loop, or use
+:func:`background_loop` from synchronous code. Configure servers for the
+standard harness with ``mcp_config``. See :class:`MCPTools` for connection
+lifetime and argument and result conversion.
 """
 
 import asyncio

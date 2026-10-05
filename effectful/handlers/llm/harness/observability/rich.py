@@ -1,3 +1,10 @@
+"""Render model rounds and Tool results in the terminal.
+
+:class:`RichTerminalRenderer` streams a live view when the standard harness is
+created with ``render=True`` or launched with ``--render``. It changes a
+provider request to streaming; use Langfuse when a persistent trace is needed.
+"""
+
 import ast
 import codeop
 import collections.abc
@@ -588,7 +595,7 @@ class RichTerminalRenderer(ObjectInterpretation):
     cursor over it, the rewind is clamped at the top of the screen, and a frame
     taller than the screen therefore accumulates one full copy of the
     conversation per refresh. Measured on a three-turn run of
-    ``llm_examples/reasoning/countdown.py``, that came to 1.2 MB and 7,208 lines
+    ``examples/reasoning/countdown.py``, that came to 1.2 MB and 7,208 lines
     of output carrying 335 distinct ones, with the system and user panels
     reprinted 79 times each.
     """

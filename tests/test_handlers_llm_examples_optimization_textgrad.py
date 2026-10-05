@@ -1,4 +1,4 @@
-"""Tests for ``docs/source/llm_examples/optimization/textgrad.py`` and its demos.
+"""Tests for ``effectful/handlers/llm/examples/optimization/textgrad.py`` and its demos.
 
 Two mocking levels, mirroring the other example tests:
 
@@ -21,13 +21,13 @@ import json
 
 import pytest
 
-from docs.source.llm_examples.optimization.textgrad import (
+from effectful.handlers.llm import Skill
+from effectful.handlers.llm.examples.optimization.textgrad import (
     CallNode,
     Feedback,
     Parameter,
     TextGradOptimizer,
 )
-from effectful.handlers.llm import Skill
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
@@ -411,7 +411,7 @@ def test_exhausted_retries_raise():
 def ds1000():
     """The demo's data module, skipping (only) these tests without scipy."""
     pytest.importorskip("scipy")
-    from docs.source.llm_examples.optimization import ds1000_data
+    from effectful.handlers.llm.examples.optimization import ds1000_data
 
     return ds1000_data
 

@@ -923,7 +923,7 @@ def test_live_post_condition_is_repaired_on_retry():
 
 @requires_llm
 def test_live_precondition_guard_rejects_off_topic_input():
-    """The guardrail shape from ``docs/source/llm_examples/basics``: a
+    """The guardrail shape from ``effectful/handlers/llm/examples/basics``: a
     bool-returning skill, used as the predicate on another skill's parameter."""
 
     @Skill.define

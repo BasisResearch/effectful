@@ -1,4 +1,9 @@
-"""Bounds tool results before they enter the model's conversation history."""
+"""Limit the text retained from each Tool result.
+
+:class:`ToolOutputTruncator` keeps the beginning and end of long results and
+inserts a truncation notice. Set ``max_tool_output_chars`` in
+:func:`~effectful.handlers.llm.harness.harness` to configure it.
+"""
 
 import collections.abc
 import typing
@@ -96,12 +101,18 @@ class ToolOutputTruncator(ObjectInterpretation):
     """
 
     def __init__(self, max_chars: int = DEFAULT_TOOL_OUTPUT_MAX_CHARS):
+        """``max_chars`` bounds each tool message, notice included; zero or less is rejected."""
         if max_chars <= 0:
             raise ValueError("max_chars must be positive")
         self.max_chars = max_chars
 
     @implements(call_tool)
     def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
+        """Cut the tool message's text after the tool has run.
+
+        Only the message the model reads is cut; the returned Python value is
+        untouched, and a failed call's traceback never passes through here.
+        """
         message, result, is_final = fwd(tool_call)
         content = message.get("content")
         truncated = _truncate_content(content, self.max_chars)
