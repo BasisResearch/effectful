@@ -22,7 +22,6 @@ import dataclasses
 import functools
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -206,11 +205,12 @@ class TyTypeChecker(PromptInjectingInterpretation):
         panic) -- a tool failure, not a type error -- so raise `RuntimeError` rather
         than read a verdict out of output it never produced.
         """
-        tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
         # Read before the subprocess is handed `cwd=tmpdir`, which is set only so ty
         # cites the temp file by bare name in the report.
         cwd = os.getcwd()
-        try:
+        with tempfile.TemporaryDirectory(
+            prefix="effectful_typecheck_", ignore_cleanup_errors=True
+        ) as tmpdir:
             tf_path = os.path.join(tmpdir, "_synthesized.py")
             with open(tf_path, "w", encoding="utf-8") as f:
                 f.write(source)
@@ -253,8 +253,6 @@ class TyTypeChecker(PromptInjectingInterpretation):
                 text=True,
                 cwd=tmpdir,
             )
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
         if proc.returncode >= 2:
             raise RuntimeError(
                 f"ty could not check the source:\n{proc.stdout}{proc.stderr}"
@@ -287,22 +285,24 @@ class TyTypeChecker(PromptInjectingInterpretation):
         for error, found in zip(errors, candidates, strict=True):
             operation = next(
                 (
-                    (call, match)
+                    (call, signature)
                     for call in found
-                    if (match := _OPERATION_TYPE.fullmatch(revealed[call.func]))
+                    if (signature := operations.signature(revealed[call.func], "("))
+                    # Of `make()(1)` and `make()`, both operations, the one whose
+                    # signature declares the missing parameters owns the error.
+                    and operations.missing_parameters_declared(
+                        error.rendered, signature[0]
+                    )
                 ),
                 None,
             )
             if operation is None:
                 renamed.append(error.rendered)
                 continue
-            call, match = operation
+            call, (params, result) = operation
             renamed.append(
                 self._rename(
-                    error.rendered,
-                    operations.callee(source, call),
-                    match["params"],
-                    match["result"],
+                    error.rendered, operations.callee(source, call), params, result
                 )
             )
         return renamed
@@ -356,8 +356,6 @@ class TyTypeChecker(PromptInjectingInterpretation):
     def _rename(self, rendered: str, callee: str, params: str, result: str) -> str:
         """`rendered` naming operation `callee` and showing its signature
         ``callee(params) -> result``."""
-        if not operations.missing_parameters_declared(rendered, params):
-            return rendered
         header, *body = rendered.splitlines()
         header = header.replace(_OPERATION_CALL, f"operation `{callee}`")
         # ty counts the bound `self` of `Operation.__call__` among the positionals.
@@ -397,5 +395,4 @@ _REVEALED = re.compile(
     r"Revealed type: `(?P<type>.*)`$",
     re.M,
 )
-_OPERATION_TYPE = re.compile(r"Operation\[\((?P<params>.*)\), (?P<result>.*)\]")
 _POSITIONAL_COUNT = re.compile(r"expected (?P<expected>\d+), got (?P<got>\d+)")

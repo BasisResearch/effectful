@@ -142,6 +142,33 @@ def probed(
     return text, positions
 
 
+def signature(revealed: str, opening: str) -> tuple[str, str] | None:
+    """The parameters and result of an ``Operation`` type as a checker reveals it,
+    or ``None`` for any other type.
+
+    ty writes ``Operation[(params), result]`` and mypy
+    ``effectful.ops.types.Operation[[params], result]``; `opening` is the bracket
+    around the parameters. Either may nest (an operation returning an operation),
+    so the parameters end at their own closing bracket, not at the last one.
+    """
+    prefix = re.match(rf"(?:\w+\.)*Operation\[\{opening}", revealed)
+    if prefix is None or not revealed.endswith("]"):
+        return None
+    depth = 0
+    for index in range(prefix.end(), len(revealed)):
+        char = revealed[index]
+        if char in "([{":
+            depth += 1
+        elif char in ")]}":
+            if depth == 0:
+                rest = revealed[index + 1 : -1]
+                if not rest.startswith(", "):
+                    return None
+                return revealed[prefix.end() : index], rest[2:]
+            depth -= 1
+    return None
+
+
 def callee(source: str, call: ast.Call) -> str:
     """The callee expression as written."""
     return ast.get_source_segment(source, call.func) or ast.unparse(call.func)

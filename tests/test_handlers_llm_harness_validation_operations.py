@@ -44,6 +44,11 @@ def make_ops() -> type[Ops]:
     return Ops
 
 
+@defop
+def make(scale: int) -> Operation[[int], str]:
+    raise NotHandled
+
+
 """
 SIGNATURE = "refine(predicate: int, keyword: str) -> str"
 
@@ -130,6 +135,15 @@ def test_an_operation_sharing_its_start_with_another_call_is_named(
     message = failure(checker, f"value = {call}\n")
     assert names_operation(message, callee)
     assert f"is called as {callee}(" in message
+
+
+def test_a_missing_argument_is_blamed_on_the_operation_declaring_it(
+    checker: Callable[[], Any],
+):
+    # `make()(1)` starts two operation calls; only `make` declares `scale`.
+    message = failure(checker, "value = make()(1)\n")
+    assert names_operation(message, "make")
+    assert "make(scale: int)" in message
 
 
 @pytest.mark.parametrize(

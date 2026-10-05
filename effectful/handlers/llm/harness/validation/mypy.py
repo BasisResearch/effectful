@@ -19,7 +19,6 @@ import dataclasses
 import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -166,8 +165,9 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         tool failure, not a type error -- and it emits text rather than JSON, so
         raise `RuntimeError` rather than parse or silently pass.
         """
-        tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
-        try:
+        with tempfile.TemporaryDirectory(
+            prefix="effectful_typecheck_", ignore_cleanup_errors=True
+        ) as tmpdir:
             tf_path = os.path.join(tmpdir, "_synthesized.py")
             with open(tf_path, "w", encoding="utf-8") as f:
                 f.write(source)
@@ -198,8 +198,6 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                     capture_output=True,
                     text=True,
                 )
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
         if proc.returncode >= 2:
             raise RuntimeError(
                 f"mypy could not check the source:\n{proc.stdout}{proc.stderr}"
@@ -263,12 +261,17 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         for error, found in zip(errors, candidates, strict=True):
             operation = next(
                 (
-                    (call, match)
+                    (call, signature)
                     for call in found
                     if (
-                        match := _OPERATION_TYPE.fullmatch(
-                            reports[positions[call.func]]
+                        signature := operations.signature(
+                            reports[positions[call.func]], "["
                         )
+                    )
+                    # Of `make()(1)` and `make()`, both operations, the one whose
+                    # signature declares the missing parameters owns the error.
+                    and operations.missing_parameters_declared(
+                        error["message"], signature[0]
                     )
                 ),
                 None,
@@ -276,14 +279,9 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             if operation is None:
                 renamed.append(error)
                 continue
-            call, match = operation
+            call, (params, result) = operation
             renamed.append(
-                self._rename(
-                    error,
-                    operations.callee(source, call),
-                    match["params"],
-                    match["result"],
-                )
+                self._rename(error, operations.callee(source, call), params, result)
             )
         return renamed
 
@@ -295,8 +293,6 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         ``callee(params) -> result`` as the hint."""
         # mypy prints a parameter's default as a bare trailing ``=``.
         params = re.sub(r" =(?=,|$)", " = ...", params)
-        if not operations.missing_parameters_declared(error["message"], params):
-            return error
         return {
             **error,
             "message": error["message"].replace(
@@ -309,6 +305,3 @@ class MypyTypeChecker(PromptInjectingInterpretation):
 # mypy names a wrong operation call by the method it dispatches through.
 _OPERATION_CALL = '"__call__" of "Operation"'
 _REVEALED = re.compile(r'Revealed type is "(?P<type>.*)"')
-_OPERATION_TYPE = re.compile(
-    r"(?:\w+\.)*Operation\[\[(?P<params>.*)\], (?P<result>.*)\]"
-)
