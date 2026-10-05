@@ -36,6 +36,7 @@ import collections.abc
 import contextlib
 import io
 import linecache
+import sys
 import textwrap
 import types
 import typing
@@ -133,6 +134,17 @@ class ReplSession(code.InteractiveInterpreter):
         """Sources of the actual error-free executed snippets, in order -- the type-check
         context the `Encodable[CodeType]` decoder splices before the current snippet."""
         return self._prior_snippets
+
+    def showsyntaxerror(
+        self, filename: str | None = None, **kwargs: typing.Any
+    ) -> None:
+        # CPython 3.13.16 and 3.14.8 widened `runsource` to report any exception
+        # from compiling as a syntax error. Only the compile errors it reported
+        # before are about the source; anything else, such as a missing eval
+        # provider, propagates as it did.
+        if not isinstance(sys.exception(), (OverflowError, SyntaxError, ValueError)):
+            raise
+        super().showsyntaxerror(filename, **kwargs)
 
     def runcode(self, code: types.CodeType) -> None:
         # Mirrors `InteractiveInterpreter.runcode` closely; the only differences
