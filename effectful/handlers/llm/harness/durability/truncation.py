@@ -3,10 +3,7 @@
 import collections.abc
 import typing
 
-from effectful.handlers.llm.harness.hooks import (
-    ToolResult,
-    call_tool,
-)
+from effectful.handlers.llm.harness.hooks import ToolResult, call_tool
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
