@@ -845,7 +845,10 @@ def _default_marker(param: inspect.Parameter) -> typing.Any:
     return _NO_MARKER
 
 
-def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
+def _serialize_tool(
+    value: Tool, *, require_strict: bool = True
+) -> ChatCompletionToolParam:
+    """Advertise ``value``, non-strict if it cannot be strict and ``require_strict`` is off."""
     name, tool = value.__name__, value
     params = inspect.signature(tool).parameters
     for param_name, param in params.items():
@@ -886,19 +889,19 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
         __config__={"extra": extra},
         **fields,
     )
+    parameters = sig_model.model_json_schema()
     if unmarked:
-        raise TypeError(
-            f"tool {name!r} has no strict JSON schema: no argument can stand for "
-            f"the default of {', '.join(unmarked)}"
-        )
-    if _requires_non_strict(sig_model.model_json_schema()):
-        raise TypeError(
-            f"tool {name!r} has no strict JSON schema: it accepts arguments it does "
-            f"not name"
-        )
-    response_format = litellm.utils.type_to_response_format_param(sig_model)
-    assert response_format is not None
-    parameters = response_format["json_schema"]["schema"]
+        problem = f"no argument can stand for the default of {', '.join(unmarked)}"
+    elif _requires_non_strict(parameters):
+        problem = "it accepts arguments it does not name"
+    else:
+        problem = None
+    if problem is not None and require_strict:
+        raise TypeError(f"tool {name!r} has no strict JSON schema: {problem}")
+    if problem is None:
+        response_format = litellm.utils.type_to_response_format_param(sig_model)
+        assert response_format is not None
+        parameters = response_format["json_schema"]["schema"]
     description = _tool_description(tool)
     return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
         {
@@ -909,7 +912,7 @@ def _serialize_tool(value: Tool) -> ChatCompletionToolParam:
                 "name": name,
                 "description": description,
                 "parameters": parameters,
-                "strict": True,
+                "strict": problem is None,
             },
         }
     )
