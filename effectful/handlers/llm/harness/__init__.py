@@ -190,6 +190,8 @@ def harness(
 
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
+    if max_tool_output_chars is not None:
+        h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
     h = coproduct(h, HistoryBuilder())
 
     if render:
@@ -220,10 +222,6 @@ def harness(
 
     if num_retries > 0:
         h = coproduct(h, TenacityRetryer(stop=tenacity.stop_after_attempt(num_retries)))
-
-    # tool output truncation needs to happen after tool output is fully post-processed
-    if max_tool_output_chars is not None:
-        h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
 
     if persist_db is not None:
         h = coproduct(h, SQLitePersister(pathlib.Path(persist_db)))
