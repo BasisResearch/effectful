@@ -14,10 +14,11 @@ the same operation with the same contract and is substantially faster; that
 module's docstring compares the two.
 """
 
+import ast
 import dataclasses
 import json
 import os
-import shutil
+import re
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,7 @@ import typing
 import mypy.api  # noqa: F401
 
 from effectful.handlers.llm.harness.hooks import PromptInjectingInterpretation
+from effectful.handlers.llm.harness.validation import operations
 from effectful.handlers.llm.harness.validation.hooks import type_check
 from effectful.ops.syntax import implements
 
@@ -147,8 +149,25 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         Skill's declared type (``return``/``empty-body``). All normal for an
         incrementally-built REPL, not real errors.
         """
-        tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
-        try:
+        stdout = self._run(source, lenient)
+        errors = self._region_errors(stdout, lo, hi)
+        if errors:
+            # Not the source: it's large and the model already has the generated code.
+            report = "\n".join(
+                json.dumps(e) for e in self._name_operations(source, errors, lenient)
+            )
+            raise TypeError("mypy type check failed:\n" + report)
+
+    def _run(self, source: str, lenient: bool) -> str:
+        """Run mypy on `source` with the cache for its mode; return its JSON output.
+
+        Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
+        tool failure, not a type error -- and it emits text rather than JSON, so
+        raise `RuntimeError` rather than parse or silently pass.
+        """
+        with tempfile.TemporaryDirectory(
+            prefix="effectful_typecheck_", ignore_cleanup_errors=True
+        ) as tmpdir:
             tf_path = os.path.join(tmpdir, "_synthesized.py")
             with open(tf_path, "w", encoding="utf-8") as f:
                 f.write(source)
@@ -179,18 +198,110 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                     capture_output=True,
                     text=True,
                 )
-            stdout, stderr, status = proc.stdout, proc.stderr, proc.returncode
-        finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-        # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
-        # tool failure, not a type error -- and it emits text rather than JSON, so
-        # raise `RuntimeError` rather than parse or silently pass.
-        if status >= 2:
+        if proc.returncode >= 2:
             raise RuntimeError(
-                f"mypy could not check the source:\n{(stdout or '') + (stderr or '')}"
+                f"mypy could not check the source:\n{proc.stdout}{proc.stderr}"
             )
-        errors = self._region_errors(stdout or "", lo, hi)
-        if errors:
-            # Not the source: it's large and the model already has the generated code.
-            report = "\n".join(json.dumps(e) for e in errors)
-            raise TypeError("mypy type check failed:\n" + report)
+        return proc.stdout
+
+    def _name_operations(
+        self, source: str, errors: list[dict[str, typing.Any]], lenient: bool
+    ) -> list[dict[str, typing.Any]]:
+        """`errors` with each diagnostic about an operation call rewritten to name the
+        operation, with its signature as the hint.
+
+        mypy places ``arg-type`` at the argument, and ``call-arg`` (missing,
+        unexpected or too many arguments) and ``misc`` (a parameter given twice) at
+        the call. One more mypy run reveals each candidate callee's type, probed in
+        place (see `operations.probed`); an error none of whose candidates mypy
+        types as an ``Operation`` keeps mypy's wording. The source parses: mypy
+        exits with status 2 on a syntax error, which `_run` raises.
+        """
+        if not any(_OPERATION_CALL in error["message"] for error in errors):
+            return errors
+        tree = ast.parse(source)
+        # mypy's columns match character columns on ASCII lines only; past non-ASCII
+        # text they count neither characters nor bytes, so no candidate is found
+        # there and the error keeps mypy's wording.
+        candidates = [
+            operations.candidates(
+                tree,
+                source,
+                error["line"],
+                error["column"],
+                argument=error["code"] == "arg-type",
+            )
+            if _OPERATION_CALL in error["message"]
+            and error["code"] in {"arg-type", "call-arg", "misc"}
+            else []
+            for error in errors
+        ]
+        calls = [call for found in candidates for call in found]
+        if not calls:
+            return errors
+        copy, positions = operations.probed(source, tree, calls)
+        stdout = self._run(copy, lenient)
+        # A revealed type is its own note, or, when an error sits at the same
+        # position (a probe around a wrong call), folded into that error's hint.
+        reports = {
+            (diagnostic["line"], diagnostic["column"]): match["type"]
+            for diagnostic in (json.loads(line) for line in stdout.splitlines() if line)
+            for text in (
+                diagnostic["message"]
+                if diagnostic["severity"] == "note"
+                else diagnostic["hint"] or ""
+            ).splitlines()
+            if (match := _REVEALED.fullmatch(text))
+        }
+        # A probe without a report means the probe is wrong, not the code.
+        missing = [p for p in positions.values() if p not in reports]
+        if missing:
+            raise RuntimeError(f"mypy reported no type for the probes at {missing}")
+        renamed = []
+        for error, found in zip(errors, candidates, strict=True):
+            operation = next(
+                (
+                    (call, signature)
+                    for call in found
+                    if (
+                        signature := operations.signature(
+                            reports[positions[call.func]], "["
+                        )
+                    )
+                    # Of `make()(1)` and `make()`, both operations, the one whose
+                    # signature declares the missing parameters owns the error.
+                    and operations.missing_parameters_declared(
+                        error["message"], signature[0]
+                    )
+                ),
+                None,
+            )
+            if operation is None:
+                renamed.append(error)
+                continue
+            call, (params, result) = operation
+            renamed.append(
+                self._rename(error, operations.callee(source, call), params, result)
+            )
+        return renamed
+
+    @staticmethod
+    def _rename(
+        error: dict[str, typing.Any], callee: str, params: str, result: str
+    ) -> dict[str, typing.Any]:
+        """`error` naming operation `callee`, with its signature
+        ``callee(params) -> result`` as the hint."""
+        # mypy prints a parameter's default as a bare trailing ``=``.
+        params = re.sub(r" =(?=,|$)", " = ...", params)
+        return {
+            **error,
+            "message": error["message"].replace(
+                _OPERATION_CALL, f'operation "{callee}"'
+            ),
+            "hint": f'"{callee}" is called as {callee}({params}) -> {result}',
+        }
+
+
+# mypy names a wrong operation call by the method it dispatches through.
+_OPERATION_CALL = '"__call__" of "Operation"'
+_REVEALED = re.compile(r'Revealed type is "(?P<type>.*)"')

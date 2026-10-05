@@ -824,6 +824,9 @@ def test_repl_runsource_routes_through_ops():
         session = ReplSession({})
         assert session.runsource("kept = 7") is False  # complete: compiled + ran
         assert session.locals["kept"] == 7
+        # A syntax error is still reported, not raised.
+        assert session.runsource("broken = (") is False
+        assert "broken" not in session.locals
 
 
 # ----------------------------------------------------------------------------
