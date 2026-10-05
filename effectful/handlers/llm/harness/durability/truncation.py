@@ -4,7 +4,6 @@ import collections.abc
 import typing
 
 from effectful.handlers.llm.harness.hooks import (
-    ToolCallExecutionError,
     ToolResult,
     call_tool,
 )
