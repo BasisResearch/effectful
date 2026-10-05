@@ -1,3 +1,4 @@
+import abc
 import collections.abc
 import contextlib
 import dataclasses
@@ -41,6 +42,47 @@ def fwd(*args, **kwargs) -> typing.Any:
 
     """
     raise RuntimeError("fwd should only be called in the context of a handler")
+
+
+class LiveInterpretation(
+    collections.abc.Mapping[Operation, collections.abc.Callable[..., typing.Any]],
+):
+    """An interpretation whose handlers may change; a coproduct with one follows it."""
+
+    @abc.abstractmethod
+    def snapshot(self) -> Interpretation:
+        """The handlers as they are now, as a new object whenever they change."""
+
+    def __getitem__(self, op: Operation) -> collections.abc.Callable[..., typing.Any]:
+        return self.snapshot()[op]
+
+    def __iter__(self) -> collections.abc.Iterator[Operation]:
+        return iter(self.snapshot())
+
+    def __len__(self) -> int:
+        return len(self.snapshot())
+
+
+def _snapshot(intp: Interpretation) -> Interpretation:
+    return intp.snapshot() if isinstance(intp, LiveInterpretation) else intp
+
+
+class _LiveCoproduct(LiveInterpretation):
+    """`coproduct` of interpretations at least one of which is live, recomputed as they change."""
+
+    def __init__(self, intp: Interpretation, intp2: Interpretation) -> None:
+        self._intp, self._intp2 = intp, intp2
+        self._cached: tuple[Interpretation, Interpretation, Interpretation] | None = (
+            None
+        )
+
+    def snapshot(self) -> Interpretation:
+        left, right = _snapshot(self._intp), _snapshot(self._intp2)
+        # The snapshots are held, so a new one is never mistaken for an old one.
+        cached = self._cached
+        if cached is None or left is not cached[0] or right is not cached[1]:
+            self._cached = cached = (left, right, coproduct(left, right))
+        return cached[2]
 
 
 def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
@@ -93,6 +135,9 @@ def coproduct(intp: Interpretation, intp2: Interpretation) -> Interpretation:
         _save_then_restore_args,
         _set_prompt,
     )
+
+    if isinstance(intp, LiveInterpretation) or isinstance(intp2, LiveInterpretation):
+        return _LiveCoproduct(intp, intp2)
 
     res = dict(intp)
     for op, i2 in intp2.items():

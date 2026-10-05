@@ -135,3 +135,63 @@ def test_defop_generic_typeddict_type_inference():
     term = unwrap_outer({"inner": {"name": "a", "value": 1}})
 
     assert typeof(term) == int
+
+
+def test_define_reuses_an_operation_only_while_redefining():
+    """Under `REDEFINING`, redefining a name re-initialises the operation it binds."""
+    from effectful.ops.types import REDEFINING
+
+    source = (
+        "from effectful.ops.types import Operation\n"
+        "@Operation.define\n"
+        "def op() -> str:\n"
+        "    return {answer!r}\n"
+        "class Holder:\n"
+        "    @Operation.define\n"
+        "    def method(self) -> str:\n"
+        "        return {answer!r}\n"
+    )
+    namespace: dict = {}
+    exec(source.format(answer="one"), namespace)
+    first = namespace["op"]
+    exec(source.format(answer="two"), namespace)
+    second, method = namespace["op"], namespace["Holder"].__dict__["method"]
+    assert second is not first, "fresh, as documented"
+
+    token = REDEFINING.set(True)
+    try:
+        exec(source.format(answer="three"), namespace)
+    finally:
+        REDEFINING.reset(token)
+    assert namespace["op"] is second
+    assert namespace["op"]() == "three"
+    assert namespace["Holder"].__dict__["method"] is method
+    assert namespace["Holder"]().method() == "three"
+
+
+def test_an_instance_op_cached_before_a_redefinition_is_rebuilt():
+    from effectful.ops.types import REDEFINING
+
+    source = (
+        "from effectful.ops.types import Operation\n"
+        "class Holder:\n"
+        "    @Operation.define\n"
+        "    def method(self) -> str:\n"
+        "        '''{answer}'''\n"
+        "        return {answer!r}\n"
+    )
+    namespace: dict = {}
+    exec(source.format(answer="one"), namespace)
+    holder = namespace["Holder"]()
+    before = holder.method
+    assert (before(), before.__doc__) == ("one", "one")
+
+    token = REDEFINING.set(True)
+    try:
+        exec(source.format(answer="two"), namespace)
+    finally:
+        REDEFINING.reset(token)
+    after = holder.method
+    assert after is not before
+    assert (after(), after.__doc__) == ("two", "two")
+    assert holder.method is after, "cached again"
