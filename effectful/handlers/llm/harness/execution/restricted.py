@@ -1,20 +1,10 @@
-"""A safer eval provider built on RestrictedPython.
+"""Run model-authored Python under a restricted execution policy.
 
-RestrictedPython enforces a language subset at compile time and expects the
-caller to supply a constrained run-time environment; it is not a complete
-sandbox. `RestrictedPythonExecutor` supplies both halves and runs doctests under
-the same policy. The sandbox says nothing about types; that is
-:mod:`~effectful.handlers.llm.harness.validation`.
-
-- Compile time: `RestrictedPythonPolicy`, RestrictedPython's transformer relaxed
-  for modern Python, with `_is_allowed_name` and `_is_allowed_attribute` as its
-  name rules.
-- Run time: `RestrictedPythonExecutor._restricted_globals` builds the namespace
-  from `_EXTRA_SAFE_BUILTIN_NAMES`, `_UNSAFE_BUILTIN_NAMES` and the guarded
-  accessors `_guarded_getattr`, `_guarded_setattr`, `_guarded_delattr`,
-  `_guarded_hasattr`, `_guarded_import`, `_guarded_inplacevar`, `_guarded_apply`;
-  `_checked_module` gates every module against `_ALLOWED_MODULES`, and
-  `_checked_str_format` admits ``str.format`` when its template reaches nothing.
+:class:`RestrictedPythonExecutor` limits imports, builtins, and attribute
+access. It is useful for narrowing ordinary execution authority, but is not
+a complete process sandbox. Choose it with ``eval_provider="restricted"``.
+The policy and runtime guards are defined here; the model prompt lists the
+modules it may import.
 """
 
 import ast
@@ -754,36 +744,14 @@ def _guarded_apply(
 
 
 class RestrictedPythonExecutor(PromptInjectingInterpretation):
-    """Code you write runs in a restricted subset of Python, not the full
-    language. What is unavailable is unavailable by design, and no amount of
-    indirection will reach it, so write within the subset rather than testing
-    its edges -- a rejected program costs a turn and tells you only what you
-    already know from here.
+    """Model-authored code runs under a RestrictedPython policy. The allowed
+    imports are listed below; the policy also blocks selected builtins and
+    reflective attributes. Write within that subset, and use ordinary
+    ``Exception`` values to report failures. Doctests run under the same
+    policy.
 
-    The restrictions: no file, network or process access, and no `open`,
-    `input`, `eval`, `exec`, `compile`, `globals`, `locals`, `vars`, `dir` or
-    `breakpoint`. Imports are limited to the allowlist in the *Modules you may
-    import* section, and a module not on it stays out of reach however you get
-    to it -- naming it in an `import`,
-    or taking it off an allowed module that imported it. Introspection back into
-    the interpreter is closed: `__class__`, `__globals__`, `__code__`,
-    `__subclasses__`, `__dict__` and the rest raise, though the operator and
-    context-manager dunders you would implement on your own classes are fine.
-    Single-underscore names (`_helper`, `self._items`) are ordinary and allowed.
-    You also cannot exit the process: `SystemExit`, `KeyboardInterrupt` and the
-    other non-`Exception` classes are absent, so raise an ordinary `Exception`
-    to signal failure.
-
-    Everything else is Python as you know it. Classes, closures, comprehensions,
-    generators, decorators, dataclasses, `try`/`except`, `match`, f-strings,
-    augmented assignment and `print` all work normally, and the allowed modules
-    cover the arithmetic, collections, text and serialization work this
-    environment is for. Doctests you write in a docstring are run under exactly
-    this policy too, so they are subject to the same rules as the code around
-    them.
-
-    A violation is reported to you as an error naming the construct, and the
-    program does not run. Read it as a boundary, not a bug to work around.
+    This narrows direct code access but is not a process sandbox. An object
+    already in scope may still expose capabilities or side effects.
     """
 
     policy: type[RestrictingNodeTransformer] | None = None

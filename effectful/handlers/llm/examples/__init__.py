@@ -22,5 +22,7 @@ and the stack it runs under is whatever :func:`~effectful.handlers.llm.harness.h
 Each group's docstring says what every module in it demonstrates and which part
 of :mod:`effectful.handlers.llm.harness` it exercises. Examples adapted from papers have additional
 fidelity questions; see the source-derived example review guide in the
-documentation.
+documentation. In a Python REPL, import a group or module to inspect its docstring,
+definitions, and source (for example, with :mod:`inspect`). Importing is not the
+same as running its example program; review the code before executing one.
 """

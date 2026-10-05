@@ -1,13 +1,9 @@
-"""Writing the assembled system prompt to a file for inspection.
+"""Write each assembled system prompt to a Markdown file.
 
-`SystemPromptDumper` is the handler (`SystemPromptDumper.call_system` writes
-after forwarding); `_message_text` flattens message content to text.
-
-The file is a diagnostic, not a transcript: it holds only the latest *candidate*
-system prompt, is rewritten on every Skill call, and omits the per-call user
-message. A bound receiver keeps the system message of its first committed call,
-so on a later call the conversation the model sees can differ from the dump. How
-to read it: :mod:`effectful.handlers.llm.harness`, "Debugging what the model could know".
+:class:`SystemPromptDumper` is installed through ``dump_system_prompt=PATH``
+or ``--dump-system-prompt PATH``. It records the candidate prompt as each
+Skill call begins, not the whole conversation. A bound conversation can keep
+an earlier system message, so inspect its history as well.
 """
 
 import collections.abc

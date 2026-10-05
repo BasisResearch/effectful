@@ -44,10 +44,11 @@ turn::
                              -> checked reply]  ->  Python value
                             one conversation turn
 
-The Skill call supplies the request: its docstring, signature, arguments, lexical
-context, and, when it is a method, the prior conversation associated with its
-receiver (the ordinary object bound as ``self``). The eventual Python return
-value is the reply, decoded to the annotated return type. The model may make Tool
+The Skill call supplies the request: its docstring, signature, arguments, and
+lexical context (globals from its defining module and locals captured from any
+enclosing function). A Skill method also has its receiver (the ordinary object
+bound as ``self``) and that receiver's prior conversation. The eventual Python
+return value is the reply, decoded to the annotated return type. The model may make Tool
 calls, execute code, receive validation errors, and retry within the turn. Only
 crossing another Skill boundary creates another turn.
 
@@ -114,9 +115,10 @@ Python structure:
 - ordinary Python controls sequencing, branching, concurrency, and side effects.
 
 ``Tool`` and ``Encodable`` are optional refinements for publication and
-serialization. ``Agent`` names the protocol inferred for a Skill-owning object;
-subclass it explicitly only where a statically typed API requires it. None of
-these form a required application object model.
+serialization. Defining a Skill method gives an ordinary class ``Agent``
+behavior at runtime; subclass ``Agent`` explicitly only where a statically
+typed API requires it. These types do not form a required application object
+model.
 
 This is a complete minimal program::
 
@@ -247,13 +249,15 @@ and reply:
 Skill docstrings are Python format strings. Only values named by active fields
 such as ``{question}`` or ``{self.notes}`` are rendered into the turn's user
 message. All arguments are nevertheless bound in the turn's REPL when an
-executor-enabled harness is installed. Values render as their JSON encoding, not
-``str()``; images arrive as separate content blocks. A ``str`` return is taken as
+executor-enabled harness is installed. Strings render as plain text; other
+values use their ``Encodable`` JSON representation, with images as separate
+content blocks. A ``str`` return is taken as
 the model's prose; any other type is decoded from a JSON schema. Escape literal
 braces as ``{{`` and ``}}``, and keep doctest examples constant: a ``>>>``
-example cannot contain an active format field. The whole defining module's
-source and every sibling Skill's docstring are visible to the model, so nothing
-in the module is hidden.
+example cannot contain an active format field. The system message includes the
+defining module's source when recoverable, or its docstring as a fallback. A
+bound receiver's section also describes its sibling Skills. Runtime values are
+rendered into the request only when named by format fields.
 
 .. rubric:: Publish ordinary functions only when needed
 

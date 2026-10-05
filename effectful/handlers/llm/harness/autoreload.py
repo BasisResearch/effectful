@@ -1,31 +1,13 @@
-"""Re-run edited code while a script served by the launcher's ``--autoreload`` runs.
+"""Reload edited modules while a launched script runs.
 
-`Reloader` is the launcher's harness stack, rebuilt by `hmr
-<https://pypi.org/project/hmr/>`_ as the modules it and the script import
-change. The helpers keep class identity across a re-run: `_classes` and
-`_layout` describe a module's classes, `_update` and `_keep_classes` rebind the
-old class objects to the new definitions.
+Launch it with::
 
-.. rubric:: Editing a running program
+    python -m effectful.handlers.llm.harness script.py --autoreload
 
-::
-
-    python -m effectful.handlers.llm.harness assistant.py --autoreload
-
-An edit reaches any module imported from a ``sys.path`` directory, including the
-harness handler modules; ``effectful.ops`` and ``effectful.internals`` are never
-re-run. ``Skill.define``, ``Tool.define`` and ``Operation.define`` reuse the
-operation a name already binds (:mod:`effectful.ops.types`), so handlers
-installed before the edit still apply; a name an edit removes stays bound, as
-under ``importlib.reload``. What a re-run preserves and how the running script,
-written files and stale receivers are handled: `Reloader`.
-
-Opt a module out with ``__autoreload__ = False`` at its top level;
-:mod:`effectful.handlers.llm.examples.acp.server` does this for the module
-holding the live connection and offers a ``/restart`` command instead, and its
-library undoes module-level registrations in an hmr dispose hook. The reloader
-needs ``hmr`` from the ``llm`` extra, pinned to one minor version because it
-wraps hmr's private module loader.
+:class:`Reloader` rebuilds the handler stack when imported modules change. An
+edit can preserve an existing class's identity, but removed names may stay
+bound as with ``importlib.reload``. Set ``__autoreload__ = False`` in a module
+that owns a live resource and must not be reloaded.
 """
 
 import collections.abc

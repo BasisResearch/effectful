@@ -1,15 +1,64 @@
-"""Handlers that make a call survive failure.
+"""Control what survives a Skill turn.
 
-Message-history accumulation, transactional rollback, tool-output truncation,
-retrying on malformed model output, and checkpointing a persisted
-:class:`~effectful.handlers.llm.types.Agent` to SQLite.
+Successful top-level Skill method calls share conversation messages with later
+calls on the same receiver. A free Skill starts with fresh history each time.
+:mod:`~effectful.handlers.llm.harness.durability.transaction` controls which
+turns read and commit history; a failed turn does not commit its messages.
 
-.. rubric:: State and lifetime
+With a harness installed, use the same ordinary receiver object for cross-turn
+in-context learning and a
+new transient object, or a distinct stable id under persistence, for an
+independent conversation. A free Skill starts a fresh conversation on every
+top-level turn::
 
-Receiver identity links Skill turns into a conversation, but conversation text
-is only one kind of continuity. Several kinds of state have different lifetimes:
+    from effectful.handlers.llm import Skill
 
-.. list-table::
+
+    class Reviewer:
+        \"\"\"Review a sequence of related drafts and retain lessons between turns.\"\"\"
+
+        @Skill.define
+        def review(self, draft: str) -> str:
+            \"\"\"Review {draft}, applying lessons from your earlier reviews.\"\"\"
+
+
+    @Skill.define
+    def isolated_review(draft: str) -> str:
+        \"\"\"Review {draft} without a prior conversation.\"\"\"
+
+
+    reviewer = Reviewer()
+    first = reviewer.review("draft one")
+    second = reviewer.review("draft two")       # sees the successful first turn
+    independent = Reviewer().review("draft two")  # new transient object and conversation
+    fresh = isolated_review("draft two")          # fresh on every top-level turn
+
+.. list-table:: Which history a Skill call uses
+   :header-rows: 1
+
+   * - Call
+     - History the callee sees
+     - New messages
+   * - Top-level method on a reused receiver
+     - Its prior committed turns
+     - Committed on success
+   * - Nested method on the same receiver
+     - Prior committed turns, not the parent's current messages
+     - Discarded; its return goes to the parent as a Tool result
+   * - Nested method on a different receiver
+     - That receiver's prior committed turns
+     - Committed independently on success
+   * - Free Skill function
+     - Fresh history
+     - Discarded after the turn
+
+Conversation history is different from Python object state. Mutating ``self``
+or another reachable object can outlive a failed turn. A REPL keeps definitions
+within its current turn, but later turns do not automatically inherit them.
+:mod:`~effectful.handlers.llm.harness.durability.compaction` shortens message
+history without resetting Python objects.
+
+.. list-table:: State lifetime
    :header-rows: 1
 
    * - State
@@ -71,59 +120,19 @@ is only one kind of continuity. Several kinds of state have different lifetimes:
      - unavailable if the Skill never returns it
      - only if the program stores a restart-safe representation
 
-Three consequences are easy to miss:
+For an independent trial, create a new receiver and mutable dependencies. If
+persistence is enabled, use a fresh identity or database too; clearing one field
+on a reused receiver leaves its conversation and other state intact.
 
-1. A receiver's shared Skill history is already cross-turn in-context learning.
-   An explicit list of records on ``self`` is additional searchable memory, not
-   the only learning channel.
-2. Compaction rewrites message history and neither resets nor rolls back
-   Python state (:mod:`~effectful.handlers.llm.harness.durability.compaction`).
-3. Process persistence is narrower than in-process persistence: a checkpoint
-   holds history and declared dataclass fields, not dynamic attributes or live
-   functions (:mod:`~effectful.handlers.llm.harness.durability.persistence`).
+Use :mod:`~effectful.handlers.llm.harness.durability.persistence` to checkpoint
+history and declared dataclass fields to SQLite. Give a receiver a stable
+persistent identity to restore it in another process; dynamic attributes and
+live functions are not checkpointed. If a stored field should appear in every
+request, name it in the Skill docstring, such as ``{self.notes}``, or offer a
+Tool to retrieve it.
 
-.. rubric:: Choose history by choosing the receiver
-
-Use the same ordinary receiver object for cross-turn in-context learning and a
-new transient object, or a distinct stable id under persistence, for an
-independent conversation. A free Skill starts a fresh conversation on every
-top-level turn::
-
-    from effectful.handlers.llm import Skill
-
-
-    class Reviewer:
-        \"\"\"Review a sequence of related drafts and retain lessons between turns.\"\"\"
-
-        @Skill.define
-        def review(self, draft: str) -> str:
-            \"\"\"Review {draft}, applying lessons from your earlier reviews.\"\"\"
-
-
-    @Skill.define
-    def isolated_review(draft: str) -> str:
-        \"\"\"Review {draft} without a prior conversation.\"\"\"
-
-
-    reviewer = Reviewer()
-    first = reviewer.review("draft one")
-    second = reviewer.review("draft two")       # sees the successful first turn
-    independent = Reviewer().review("draft two")  # new transient object and conversation
-    fresh = isolated_review("draft two")          # fresh on every top-level turn
-
-Put searchable records or stable instructions in declared fields when Python,
-not only the model transcript, must inspect them. Merely assigning
-``self.notes`` preserves the value but does not render it into every later
-prompt. Interpolate ``{self.notes}`` when it should always be visible, or expose
-a catalog/search Tool for on-demand access. Study
-:mod:`effectful.handlers.llm.examples.basics.conversation` for sequential history,
-:mod:`effectful.handlers.llm.examples.basics.research_agent` for feedback across sibling Skills, and
-:mod:`effectful.handlers.llm.examples.reasoning.world_model_agent` for an ordinary object with explicit
-records and executable learned state.
-
-The mechanisms: :mod:`~effectful.handlers.llm.harness.durability.transaction` (which turns see and commit
-which history), :mod:`~effectful.handlers.llm.harness.durability.retrying` (what a rejected attempt leaves
-behind), :mod:`~effectful.handlers.llm.harness.durability.truncation` (bounding tool output),
-:mod:`~effectful.handlers.llm.harness.durability.compaction` (rewriting the transcript) and
-:mod:`~effectful.handlers.llm.harness.durability.persistence` (checkpoints).
+:mod:`~effectful.handlers.llm.harness.durability.retrying` feeds failed answers
+back for another round, and :mod:`~effectful.handlers.llm.harness.durability.truncation`
+limits Tool output kept in history. See
+:mod:`effectful.handlers.llm.examples.basics.conversation` for shared history.
 """

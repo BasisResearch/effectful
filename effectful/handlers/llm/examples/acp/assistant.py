@@ -5,8 +5,8 @@ Demonstrates:
 - Editor capabilities offered to the model as ordinary ``Tool``\\ s
 - The editor's MCP servers, whose tools are offered alongside them
 - Streaming model output and live tool-call status as ``session/update``
-- A prompt as typed parts -- prose, ``Attachment`` references, images -- rather
-  than one flattened string, so an attached file costs a line of context and a
+- A prompt as typed parts -- prose, ``Attachment`` references, images --
+  rather than one flattened string, so an attached file costs a line of context and a
   screenshot arrives as an image the model actually sees
 
 All the protocol machinery lives in ``library.py`` and ``server.py``; what is left
@@ -44,9 +44,14 @@ and replayed when the editor reopens the session.
 Set ``ACP_OFFER_MODELS`` to a comma-separated list to put a picker in the editor's
 UI, so the session can be switched without editing the editor's configuration.
 
-Add ``--autoreload`` to the launcher's flags to edit this file, the modules it
-imports, ``library.py`` or the harness while the server runs; ``server.py`` still
-needs ``/restart``.
+For ``--autoreload``, launch the file by path. From a source checkout::
+
+    python -m effectful.handlers.llm.harness effectful/handlers/llm/examples/acp/assistant.py \\
+        --persist-db /tmp/acp_sessions.db --autoreload
+
+This reloads edits to this file, its imports, ``library.py`` and the harness
+while the server runs; ``server.py`` still needs ``/restart``. The harness
+launcher does not currently support combining ``-m MODULE`` with ``--autoreload``.
 """
 
 import argparse

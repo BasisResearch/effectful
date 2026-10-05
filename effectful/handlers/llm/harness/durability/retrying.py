@@ -35,27 +35,11 @@ from effectful.ops.syntax import implements
 
 
 class TenacityRetryer(PromptInjectingInterpretation):
-    """A reply that cannot be decoded is not the end of the attempt. If your
-    answer or a tool call comes back malformed -- wrong shape for the return
-    type, a tool call whose arguments do not fit the signature -- you are shown
-    the decoding error and asked again, with the failed reply and the error
-    visible in the conversation. A malformed tool call is reported as that
-    call's result; a malformed *answer* has no call to report against, so it
-    comes back as a user message. That message is not a new question, and says
-    so: it is the same call, asked again.
-
-    That budget is finite — a handful of attempts, fixed by whoever configured
-    this harness — after which the error is raised to the caller and the call
-    fails. So a second attempt should not
-    resubmit the first one with cosmetic edits. If the same shape has already
-    been rejected once, the error is telling you the shape is wrong; change it.
-    None of these attempts leave a trace once one succeeds, so you will not see
-    the failed exchanges again in later turns.
-
-    A tool that *raises* is different, and not a failure of this kind. The
-    traceback comes back as that tool's result and the conversation continues
-    normally, without consuming a retry. Read it as data about the call you
-    made -- a wrong argument, a missing file -- and make the next call.
+    """When an answer or Tool call cannot be decoded, the error is fed back within
+    the same Skill turn. Use the diagnostic to change the invalid shape or
+    arguments. This retry budget is finite. A Tool that raises instead returns an
+    error as its Tool result, so the next model round can respond to it without
+    using a decode retry.
     """
 
     call_assistant_retryer: tenacity.Retrying
@@ -76,7 +60,7 @@ class TenacityRetryer(PromptInjectingInterpretation):
             stop: tenacity stop condition for retrying `call_assistant`. Defaults
                 to `tenacity.stop_after_attempt(4)`; ``stop_after_attempt(N)``
                 counts attempts, one try and ``N-1`` repairs.
-            **kwargs: Additional keyword arguments forwarded to
+            ``**kwargs``: Additional keyword arguments forwarded to
                 `tenacity.Retrying`.
         """
         self.catch_tool_errors = catch_tool_errors

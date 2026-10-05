@@ -30,19 +30,11 @@ from effectful.ops.syntax import implements
 
 @dataclasses.dataclass
 class TyTypeChecker(PromptInjectingInterpretation):
-    """Python you write is type-checked before it is run, by the ty type
-    checker. Code that fails the check does not execute at all: you get ty's
-    diagnostics back -- the message, the offending line, its hints -- and the
-    turn is yours again to fix them.
-
-    Treat that as a fast, free reviewer rather than an obstacle. Annotate what
-    you write, use the types the surrounding code declares, and read a
-    diagnostic as a claim about your code that is usually correct. Silencing
-    one with `typing.Any` or a blanket `# type: ignore` will pass the check and
-    then fail at runtime, where the error costs a whole turn instead of none.
-
-    Only the code you generate is checked; errors elsewhere in the module you
-    are working in are not yours to fix and will not block you.
+    """When generated source is available, ty checks it before execution. Errors
+    in the generated span block that code and return diagnostics for revision.
+    Use the declared types when writing code; a passing check does not
+    establish its behavior. If source cannot be recovered, synthesis skips
+    this static check.
     """
 
     #: Rules ignored under ``lenient=True``. Deliberately short: ty already

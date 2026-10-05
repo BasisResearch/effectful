@@ -1,17 +1,19 @@
-"""Decoding a model-written function as a Skill's typed ``Callable`` result.
+"""Decode a generated function returned by a Skill.
 
-`_pydantic_callable` is the codec: it holds the source to `_checked_source`,
-splices it into the Skill's recovered module with `_splice_function`
-(`_recover_skill_def` finds the Skill's ``def``; `_def_nodes` and
-`_find_def_at_lineno` locate it), type-checks the `SplicedRegion`, compiles,
-checks arity with `_reject_param_count_mismatch`, and runs the function's own
-doctests. `_synthesized_source_schema` and `_signature_str` write the schema
-description the model sees; `_COMMON_CONSTRAINTS` and `_FUNCTION_CONSTRAINTS`
-are the rules it states. Those doctests are model-authored evidence, not an
-independent oracle, and the static gate is strict only when recovered source and
-a checker are available.
+A Skill annotated to return ``Callable[[A], B]`` can receive Python source for
+a function. The decoder parses and compiles it, checks its arity, and runs any
+doctests in the generated function. When the Skill's source can be recovered
+and a type checker is installed, it also checks the function against the
+Skill's declared return type.
 
-Declare the contract at the Skill boundary and call the result normally::
+The model writes those doctests itself. Put independent checks in caller-owned
+code when behavior matters. See :mod:`effectful.handlers.llm.examples.basics.lexical_scope`.
+
+Declare the function's type at the Skill boundary; call the result as ordinary
+Python::
+
+    from collections.abc import Callable
+    from effectful.handlers.llm import Skill
 
     @Skill.define
     def make_slugifier(separator: str) -> Callable[[str], str]:
@@ -20,9 +22,6 @@ Declare the contract at the Skill boundary and call the result normally::
 
     slugify = make_slugifier("-")
     assert slugify("An Effectful Program") == "an-effectful-program"
-
-See :mod:`effectful.handlers.llm.examples.basics.lexical_scope` and
-:mod:`effectful.handlers.llm.examples.reasoning.world_model_agent`.
 """
 
 import ast

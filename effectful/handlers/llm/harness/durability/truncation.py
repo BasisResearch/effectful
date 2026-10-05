@@ -1,11 +1,8 @@
-"""Bounding each tool result before it enters the conversation.
+"""Limit the text retained from each Tool result.
 
-`ToolOutputTruncator` implements ``call_tool`` and cuts the tool message's text
-to ``max_chars``; `_truncate_content` spreads the budget across text blocks and
-`_budgets` sizes the head, tail and omission notice. ``DEFAULT_TOOL_OUTPUT_MAX_CHARS``
-is what ``harness()`` installs. The omitted text is not recoverable from history.
-Token-pressure elision of *stale* tool output is a separate mechanism in
-:mod:`~effectful.handlers.llm.harness.durability.compaction`.
+:class:`ToolOutputTruncator` keeps the beginning and end of long results and
+inserts a truncation notice. Set ``max_tool_output_chars`` in
+:func:`~effectful.handlers.llm.harness.harness` to configure it.
 """
 
 import collections.abc

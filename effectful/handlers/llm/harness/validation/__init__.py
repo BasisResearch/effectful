@@ -1,10 +1,17 @@
-"""Operations and handlers that type-check and doctest model-authored Python before it runs.
+"""Check Skill inputs and model-authored answers.
 
-.. rubric:: Validation is a feedback architecture
+The Skill's annotations define its input and return types. With
+``check_contracts=True`` (the default),
+:mod:`~effectful.handlers.llm.harness.validation.pydantic` applies constraints
+on Skill arguments before the model sees them. The decoder checks constraints
+on the return value before Python receives it.
 
-A Skill turn finishes only when its reply decodes and satisfies the installed
-contracts. With retries installed, a failed model answer becomes another
-observation in another round of that same turn::
+With retries enabled, a failed answer becomes feedback for another model round
+in the same Skill turn. Without retries, it raises an error. A Tool exposed to
+the model can evaluate work during the turn; an evaluator called by Python
+afterward can affect only a later Skill call.
+
+.. code-block:: text
 
     model round -> candidate reply -> installed decoding and checks
                                       |
@@ -16,64 +23,50 @@ observation in another round of that same turn::
                                                |
                                                +-> a later Skill turn, if passed back
 
-Feedback exists only because of the retryer: without `TenacityRetryer`
-(``num_retries=0``) a decode or Tool error fails the turn. Use this loop for formatting
-constraints, compiler feedback, smoke tests, and repair. Match each check to the
-defect it can actually detect: a type checker does not discover a wrong physical
-sign, and a coarse-grid finiteness predicate does not establish accuracy. Leave
-domain-quality failures to an appropriate evaluator and feed its diagnostics into
-a later Skill turn when revision is intended.
+For a Python-side evaluator, pass feedback into a new turn explicitly. Here
+``writer.write``, ``writer.revise``, and ``judge`` are Skills::
 
-An evaluator exposed as a Tool can run before acceptance, so its result can
-inform a later round of the current turn. An evaluator called by ordinary Python
-after the Skill returns is outside that turn and can influence only a later
-Skill turn.
+    draft = writer.write(request)
+    for _ in range(3):
+        review = judge(request, draft)
+        if review.accepted:
+            break
+        draft = writer.revise(request, draft, review.feedback)
 
-Preconditions on Skill arguments are enforced on every Skill call when contract
-checking is enabled, with a known gap for metadata on plain Tool parameters
-reached by expression calls: :mod:`~effectful.handlers.llm.harness.validation.pydantic`. A return
-predicate certifies the property it encodes before the caller receives the
-value; an evaluation metric describes what happened after acceptance.
+Reusing ``writer`` carries its successful history; a free ``judge`` starts
+fresh each time. Approval and side effects can be placed in the same ordinary
+Python control flow.
 
-Retries are part of the program's behavior: what the model sees of a rejected
-attempt and what joins committed history is in :mod:`~effectful.handlers.llm.harness.durability.retrying`,
-and how tool output is bounded before it enters history in
-:mod:`~effectful.handlers.llm.harness.durability.truncation`. Choose retry limits and error messages as
-deliberately as the Skill prompt; both affect the artifact returned to Python.
+For model-authored Python, :mod:`~effectful.handlers.llm.harness.validation.ty`
+and :mod:`~effectful.handlers.llm.harness.validation.mypy` provide static type
+checks. :mod:`~effectful.handlers.llm.harness.synthesis` explains which code
+paths use these checks and whose doctests they run. A passing type check or
+schema confirms only the property it tests; use domain-specific checks for
+behavior that types cannot establish.
 
-Put machine-checkable properties in the declared return contract::
+For a return contract, attach a predicate to the annotated type::
 
-    import dataclasses
+    from dataclasses import dataclass
     from typing import Annotated
-
-    import annotated_types
-
+    from annotated_types import Predicate
     from effectful.handlers.llm import Skill
 
-
-    @dataclasses.dataclass(frozen=True)
-    class GroundedAnswer:
+    @dataclass
+    class Answer:
         text: str
         sources: list[str]
 
-
-    def cites_a_source(answer: GroundedAnswer) -> bool:
+    def has_source(answer: Answer) -> bool:
         return bool(answer.sources)
 
-
     @Skill.define
-    def answer(question: str) -> Annotated[
-        GroundedAnswer, annotated_types.Predicate(cites_a_source)
-    ]:
-        \"\"\"Answer {question} and identify at least one source.\"\"\"
+    def answer(question: str) -> Annotated[Answer, Predicate(has_source)]:
+        \"\"\"Answer {question} and name a source.\"\"\"
 
-With retries enabled, a failed predicate is fed back within the same Skill turn.
-This guarantees only that ``sources`` is nonempty; it does not prove retrieval or
-semantic support. Same-module validators are visible to the model and therefore
-constitute pre-encoded knowledge as well as enforcement. See
-:mod:`effectful.handlers.llm.examples.basics.guardrails` for argument and return predicates,
-:mod:`effectful.handlers.llm.examples.basics.flight_booking` for a contextual postcondition, and
-:mod:`effectful.handlers.llm.examples.basics.error_recovery` for Tool and decode failures returning as
-repair feedback. For deterministic external verification, see
-:mod:`effectful.handlers.llm.examples.autoformalization.verification`.
+This checks that ``sources`` is nonempty; it does not prove the source supports
+the answer.
+
+See :mod:`effectful.handlers.llm.examples.basics.guardrails` for annotated
+contracts and :mod:`effectful.handlers.llm.examples.basics.error_recovery` for
+retry feedback.
 """

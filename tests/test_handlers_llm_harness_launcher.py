@@ -105,6 +105,13 @@ def test_parse_args_takes_a_module_instead_of_a_script():
             _parse_args(argv)
 
 
+def test_module_autoreload_reports_its_unsupported_combination(capsys):
+    with pytest.raises(SystemExit) as exc:
+        _parse_args(["-m", "pkg.mod", "--autoreload"])
+    assert exc.value.code == 2
+    assert "--autoreload currently requires a script path" in capsys.readouterr().err
+
+
 def test_reasoning_effort_is_unset_unless_asked_for():
     """No ``--reasoning-effort`` means the parameter is absent from the request.
 

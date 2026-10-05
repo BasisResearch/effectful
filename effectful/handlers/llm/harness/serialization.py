@@ -1,27 +1,15 @@
-"""Conversion between Python values and the model's wire format.
+"""Encode Skill inputs, answers, and Tool calls for the model.
 
-Prompt assembly: `PromptSection` is the nested-heading unit of the system and
-user messages, flattened by `_render_prompt_section`; `to_content_blocks` and
-`format_as_content_blocks` render values and format strings into content blocks.
+Application code can extend supported values through
+:meth:`~effectful.handlers.llm.types.Encodable.register`. The remaining types
+here chiefly serve handler authors: :class:`PromptSection` builds nested prompt
+headings; :func:`to_content_blocks` and :func:`format_as_content_blocks` render
+text and images; :class:`DecodedToolCall` carries decoded Tool arguments; and
+:class:`TypeToPydanticType` maps Python types to validation schemas.
 
-Codecs: `TypeToPydanticType` is the registry behind ``Encodable``
-(``Encodable.register`` writes to it). Registered here: ``complex``, finitary
-``tuple`` and ``NamedTuple`` (`_pydantic_type_tuple`), non-string-keyed mappings
-(`_pydantic_type_mapping`), PIL images, type values (`_pydantic_type_type`),
-serialize-only callables (`_serialize_callable`, `EncodedFunction`), and
-`_UndecodableReturn`, the refusing schema for a return no channel could
-instantiate; ``Term`` and ``Operation`` are refused.
-
-Tools: `_serialize_tool` and `_tool_description` build a tool's advertisement
-(`_default_marker` stands in for defaults under strict schemas);
-`_advertised_names` assigns the names a request's tools are called by;
-`_NameAndTool` pairs them; `DecodedToolCall` is a call bound to real arguments,
-decoded by `_validate_tool_call`. `_BoxedResponse` wraps a structured answer.
-The keys ``_NAME2TOOL_KEY``, ``_IS_FINAL_KEY`` and ``_TYPE_CHECK_ANCHOR_KEY``
-ride in the pydantic context; none is an identifier, so none can collide with a
-lexical name. Built-in multimodal encodings are exercised by
-:mod:`effectful.handlers.llm.examples.basics.image_input` and
-:mod:`effectful.handlers.llm.examples.basics.image_tool`.
+See :mod:`effectful.handlers.llm.examples.basics.image_input` and
+:mod:`effectful.handlers.llm.examples.basics.image_tool` for multimodal input
+and Tool output.
 """
 
 import abc

@@ -1,23 +1,19 @@
-"""Answering a `Skill` by synthesizing its body.
+"""Generate and run an implementation of the current Skill.
 
-`FinalBodySynthesizer` offers ``write_and_run_body`` alongside the Skill's
-direct answer (`FinalBodySynthesizer.call_agent` builds the per-call
-`_SubmitSolutionTool`; `FinalBodySynthesizer.call_tool` marks a successful
-submission final and applies its ``compact``). The submitted source is decoded
-as a `SkillBody` or `MethodSkillBody` by `_pydantic_skill_body` and
-`_pydantic_method_skill_body`, which splice it under the Skill's own header with
-`_splice_body`, type-check it, and run the Skill's doctests against it. Decoding
-needs an eval provider. To force the synthesis path, set the provider's
-``tool_choice="required"`` (the launcher's ``--tool-choice required``), which
-forbids a direct reply.
+:class:`FinalBodySynthesizer` offers the model ``write_and_run_body``. It checks
+a submitted function against the Skill's signature, runs fixed doctests from
+the caller's Skill docstring, then calls it on the current arguments. A
+successful submission ends this Skill turn; it does not install a permanent
+implementation. Use ``tool_choice="required"`` to require a Tool call instead
+of a direct answer only when a finalizing Tool such as ``write_and_run_body`` is
+available; otherwise the model cannot finish with a direct reply. See
+:mod:`~effectful.handlers.llm.harness.synthesis` for how
+this route differs from a generated ``Callable`` return.
 
-.. rubric:: Caller-authored checks
-
-Write fixed examples in the Skill docstring when the caller, not the model, must
-own the executable checks::
+Put fixed examples in the caller's Skill docstring when they must test the
+submitted implementation::
 
     from effectful.handlers.llm import Skill
-
 
     @Skill.define
     def gcd(a: int, b: int) -> int:
@@ -28,10 +24,6 @@ own the executable checks::
         >>> gcd(17, 13)
         1
         \"\"\"
-
-``write_and_run_body`` is a model-facing Tool; do not call it from application
-code. See :mod:`effectful.handlers.llm.examples.reasoning.countdown` and
-:mod:`effectful.handlers.llm.examples.reasoning.fix_typos`.
 """
 
 import ast
@@ -394,49 +386,17 @@ def _callable_type_from_signature(
 
 
 class FinalBodySynthesizer(PromptInjectingInterpretation):
-    """You can state a Skill's answer directly, or you can *compute* it by
-    writing an implementation and submitting it with the `write_and_run_body`
-    tool. This section is about the tool. Reach for it when
-    working the answer out by hand would be error-prone — a search, an
-    enumeration, a constraint to check against — or when the Skill's doctests are
-    the standard your answer has to meet.
+    """You may answer the Skill directly or compute its answer with
+    ``write_and_run_body``. Use that Tool when an implementation helps satisfy the
+    Skill's contract or its fixed doctests. Submit a function for the *current*
+    Skill call. The harness checks its source when possible, runs the Skill's
+    doctests, and applies the function to the current arguments. A successful
+    submission ends the turn and returns the computed value to Python.
 
-    A direct answer is also accepted, and is the right choice when you already
-    hold the value: do not wrap a value you have in hand inside a function that
-    ignores its arguments and returns a constant.
-
-    The tool's own description says what to submit and what the code must
-    satisfy; follow it rather than any recollection of how such a tool usually
-    works. Two things it does not tell you. Your function may reference names
-    from the lexical scope (see the *Lexical scope* table). And what your
-    submission is judged on is the Skill's doctests: the harness attaches the
-    Skill's docstring to your function and runs *its* examples, with recursive
-    calls to the Skill routed back to your implementation. A solution whose
-    doctests fail — or that raises when applied — is rejected and returned to you
-    to revise, so the answer only stands once those examples pass.
-
-    A Skill whose declared *return type* is itself a function is a different
-    thing, easily confused with this one: you answer it by writing the function
-    it returns, as an ordinary direct answer, and this tool is not involved.
-    Three rules invert there, and nothing else states them. The signature to
-    write is the *returned* function's, taken from the return type — not the
-    Skill's own, and with no `self` receiver even when the Skill is a method.
-    Every parameter and the return type must be annotated there, where for this
-    tool they are optional. And your docstring is kept rather than replaced, so
-    if the Skill asks for doctests certifying what you wrote, write them: they
-    are run, and they are what your answer is accepted on.
-
-    A successful `write_and_run_body` call ends the call immediately: no further
-    turn is taken, and the value of applying your function to the original
-    arguments is the Skill's answer. Because it ends the call, it must be the
-    *only* tool call in its turn — call any other tools you need on earlier
-    turns, and call `write_and_run_body` by itself once you are ready to answer.
-
-    This answers the *current* call only. A submission is not a standing answer:
-    if an earlier user message in this conversation was a previous call that you
-    answered this way, that answer has already been returned to the program and
-    has nothing to do with the question you are being asked now. To answer this
-    call by synthesis you must call `write_and_run_body` again.
+    Call any other Tools in earlier rounds, then call ``write_and_run_body`` alone.
+    Doctests in the Skill docstring are caller-authored checks. A Skill whose
+    *return type* is ``Callable`` instead expects a generated function as its
+    direct answer; that function has the returned signature and its own doctests.
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
@@ -494,18 +454,14 @@ class FinalBodySynthesizer(PromptInjectingInterpretation):
                 implementation: body_type,  # type: ignore
                 compact: CompactionScope = CompactionScope.NONE,
             ) -> return_type:  # type: ignore
-                """
-                Answer this Skill by submitting a Python function that implements
-                it (see the `FinalBodySynthesizer` section of the system prompt);
-                its return value on the original arguments becomes the answer.
+                """Submit a Python function implementing the current Skill. The harness
+                checks it against the Skill's signature when source and a checker are
+                available, runs fixed doctests from the Skill docstring, and applies it to
+                the current arguments. A successful call ends this turn with that value.
 
-                `compact` compacts the conversation as the answer lands; its own
-                schema below says what each scope drops. Whichever you pick,
-                this submission survives whole -- your message, the source you
-                submit and its result -- so anything you want your later self to
-                know, write as comments in the body you submit.
-
-                WHEN TOOL CALLS ARE REQUIRED, THIS MAY BE THE ONLY WAY TO END THE TURN!
+                Call other Tools first, then submit this Tool alone. ``compact`` may
+                shorten conversation history after a successful submission. If Tool calls
+                are required, this may be the way to finish the turn.
                 """
                 result = implementation(*args, **kwargs)  # type: ignore
                 return return_encoding.validate_python(result, context=env)

@@ -1,21 +1,13 @@
-"""Threshold-driven compaction of an agent transcript: lossy, by the harness, or
-forced on the model.
+"""Shorten conversation history when it grows too large.
 
-`compact_` is the primitive: it drops part of the ambient history for a
-`CompactionScope`, which documents what each scope keeps. ``exec_code`` and
-``write_and_run_body`` take a scope and call it from their ``call_tool`` rules on
-success (:mod:`~effectful.handlers.llm.harness.synthesis.snippet`, :mod:`~effectful.handlers.llm.harness.synthesis.body`). Two
-handlers compact without being asked: `ReplCompactor` forces the model to call
-``exec_code(compact=...)`` once a request is over budget
-(`ReplCompactor.call_assistant`), and `MiddleCompactor` truncates stale tool
-output and then summarizes older rounds itself
-(`MiddleCompactor.call_assistant`); they estimate request size differently,
-``litellm.token_counter`` against `_size`'s characters-over-four.
-
-Compaction rewrites messages and is not rollback: it neither resets nor rolls
-back Python state, the REPL namespace or ``self``, and the retained request is
-not re-rendered after ``self`` changes. Promote facts or capabilities that must
-outlive transcript deletion onto program-owned state before compacting.
+:class:`CompactionScope` chooses whether to remove earlier rounds in the
+current turn or earlier turns as well. :class:`MiddleCompactor` truncates old
+Tool output and summarizes older messages when token thresholds are reached.
+:class:`ReplCompactor` asks the model to compact through ``exec_code``.
+Compaction changes messages, not Python state or REPL bindings. Store facts
+that must survive transcript deletion on a program-owned object. The retained
+request keeps its original formatted values; it is not rendered again after
+``self`` changes.
 """
 
 import collections.abc
@@ -253,12 +245,13 @@ class MiddleCompactor(ObjectInterpretation):
 
 @dataclasses.dataclass
 class ReplCompactor(PromptInjectingInterpretation):
-    """
-    This conversation has a token budget. When a request would exceed it, you
-    are told so at the end of that request and must call `exec_code` with the
-    `compact` scope you are given; any other reply is rejected and you are asked
-    again. Use the snippet to promote anything you still need onto `self`;
-    your message with the call, the snippet and its output survive the compaction.
+    """This conversation has a token budget. If a request exceeds it, you will
+    be asked to call ``exec_code`` with the specified ``compact`` scope before
+    answering. Use that snippet to store facts on a program-owned object if
+    later Skill calls will need them. The current request, compaction call,
+    code, and output remain in the shortened conversation. The current request
+    keeps its original formatted values, even if ``self`` has changed since it
+    was rendered.
     """
 
     hard_tokens: int

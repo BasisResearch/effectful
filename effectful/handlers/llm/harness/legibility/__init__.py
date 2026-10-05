@@ -1,61 +1,25 @@
-"""Handlers that assemble what the model sees.
+"""Build the context and Tool list shown to a Skill's model.
 
-The framework documentation in the system prompt, and the tools and definitions
-drawn from a :class:`~effectful.handlers.llm.types.Skill`'s lexical scope.
+A Skill's *lexical scope* is its defining module's globals, any enclosing
+function's locals, and, for a method, its receiver (``self``). The harness uses
+that scope to describe available names and discover Tools. A ``{name}`` field
+in the Skill docstring inserts that value into the current request. The
+:mod:`~effectful.handlers.llm.harness.legibility.lexical` module implements
+scope and Tool discovery; :mod:`~effectful.handlers.llm.harness.legibility.framework`
+adds library API documentation to the system prompt.
 
-.. rubric:: Scope, visibility, and capability
+``tool_collection="explicit"`` advertises in-scope ``Tool`` and ``Skill``
+values, even when their Python names begin with an underscore. ``"auto"`` also
+advertises qualifying public, documented, annotated functions; it does not
+implicitly publish private plain functions.
+The Tool list is refreshed each model round, so a later round can discover a
+Tool added to a reachable receiver. :mod:`~effectful.handlers.llm.harness.legibility.mcp`
+adds Tools from configured MCP servers.
 
-Lexical scope supplies the environment for a Skill turn, and "in scope" means
-five different things at successive layers of that turn:
-
-1. **Python lexical context.** ``Skill.define`` captures module globals and true
-   enclosing-function locals; binding a Skill method adds ``self``
-   (:mod:`effectful.handlers.llm.types`).
-2. **Model-visible context.** The system message carries the defining module's
-   source, the receiver's class and Skill documentation, and tables of the
-   imports and other bindings in scope; the request interpolates only the
-   values its format fields name. The section builders are in
-   :mod:`~effectful.handlers.llm.harness.legibility.lexical`; the framework sections in
-   :mod:`~effectful.handlers.llm.harness.legibility.framework`.
-3. **REPL runtime context.** With an executor installed, each turn opens a
-   session over the captured context; what survives it is in
-   :mod:`~effectful.handlers.llm.harness.synthesis.snippet`.
-4. **Static synthesis context.** Generated code is checked spliced into the
-   defining module's recovered source: :mod:`~effectful.handlers.llm.harness.synthesis`.
-5. **Execution authority.** The executor decides what generated code can read or
-   invoke: :mod:`~effectful.handlers.llm.harness.execution`.
-
-    **Tool advertisement is an affordance, not an authority boundary.**
-
-Lexical separation makes intended information flow legible, and the builtin
-executor lets generated code reach anything in scope regardless of what was
-advertised. A claim that depends on adversarial confidentiality needs a process
-boundary, a service API, or externally held data (:mod:`~effectful.handlers.llm.harness.execution`).
-
-Use a true enclosing scope to give one Skill a deliberately small vocabulary::
-
-    from effectful.handlers.llm import Skill, Tool
-
-
-    def make_writer(style_guide: str):
-        @Tool.define
-        def approved_terms() -> list[str]:
-            \"\"\"Return vocabulary approved for this document.\"\"\"
-            return ["handler", "operation", "interpretation"]
-
-        @Skill.define
-        def write(topic: str) -> str:
-            \"\"\"Write about {topic} under this guide: {style_guide}.
-
-            Call `approved_terms` when choosing terminology.
-            \"\"\"
-
-        return write
-
-The Tool and captured guide are reachable only through this returned Skill's
-lexical context, subject to the authority caveat above. See
-:mod:`effectful.handlers.llm.examples.basics.lexical_scope` and
-:mod:`effectful.handlers.llm.examples.reasoning.hanoi`.
+An advertised Tool is a convenient call interface, not a limit on what
+model-authored Python can access. With the builtin executor, code can use
+reachable Python objects even if they were never advertised as Tools. See
+:mod:`~effectful.handlers.llm.harness.execution` for execution policy.
 
 .. list-table::
    :header-rows: 1
@@ -124,45 +88,66 @@ lexical context, subject to the authority caveat above. See
      - yes
      - available as the enclosing Skill parameter
 
-Discovery and invocation are separate stages. ``tool_collection`` chooses what
-the extractors in :mod:`~effectful.handlers.llm.harness.legibility.lexical` discover, and runs each model
-round, so offered Tools follow mutations of reachable Skill owners even when the
-retained system message is stale. ``tool_calling`` chooses how a discovered tool
-is invoked, by JSON arguments or a checked Python expression:
-:mod:`~effectful.handlers.llm.harness.synthesis.toolcall`.
+``tool_collection`` selects what is discovered; ``tool_calling`` selects how a
+discovered Tool is invoked (JSON arguments or a checked Python expression).
+Neither setting grants execution authority. A Tool added to a receiver at
+runtime may be advertised and callable through that object, but static checking
+cannot name an undeclared attribute; declare it when generated code must type
+check against the receiver's source.
 
-.. rubric:: Skill ownership and receiver identity
+For a small, explicit scope, define a Skill and its Tools inside a factory
+function::
 
-History sharing is determined by receiver identity, not by a base class: a class
-that declares a Skill method is registered as an ``Agent`` at class creation,
-and a free Skill assigned onto an object later stays free
-(:mod:`effectful.handlers.llm.types`). Declare the Skill method on the class
-when those semantics matter.
+    from effectful.handlers.llm import Skill, Tool
 
-.. rubric:: Growing the harness through ``self``
+    def make_writer(style_guide: str):
+        @Tool.define
+        def approved_terms() -> list[str]:
+            \"\"\"Return the approved vocabulary.\"\"\"
+            return ["handler", "operation"]
 
-A model can create a reusable capability in a REPL and attach it to its
-receiver. Inside a Skill on an object with a declared ``lessons: dict[str, str]``
-field, the following is **model-executed REPL code**, not an application-side
-API call::
+        @Skill.define
+        def write(topic: str) -> str:
+            \"\"\"Write about {topic} using {style_guide}.\"\"\"
+
+        return write
+
+The returned Skill can reach the captured guide and Tool. See
+:mod:`effectful.handlers.llm.examples.basics.lexical_scope`.
+
+For automatic collection, a plain function can be offered without
+``@Tool.define`` when it is public, documented, and fully annotated::
+
+    from effectful.handlers.llm import Skill
+
+    def lookup(topic: str) -> list[str]:
+        \"\"\"Return trusted notes matching a topic.\"\"\"
+        return ["A local note about " + topic]
+
+    @Skill.define
+    def answer(question: str) -> str:
+        \"\"\"Answer {question}; call `lookup` when notes may help.\"\"\"
+
+Run with ``harness(tool_collection="auto")``. With ``"explicit"`` (the
+default), decorate ``lookup`` with ``@Tool.define`` to advertise it directly.
+
+A model can add a Tool to a reachable receiver during a REPL turn. For a
+receiver with a declared ``lessons: dict[str, str]`` field, this is
+**model-executed REPL code**::
 
     from effectful.handlers.llm import Tool
 
-
     @Tool.define
     def remember_lesson(topic: str, lesson: str) -> str:
-        \"\"\"Record a reusable lesson under a topic and return it.\"\"\"
+        \"\"\"Store a lesson under a topic.\"\"\"
         self.lessons[topic] = lesson
         return lesson
 
     self.remember_lesson = remember_lesson
 
-Because discovery recursively inspects in-scope Skill owners, a later round or
-turn is offered ``self.remember_lesson``; rebinding it revises the capability
-and deleting it retires it. Keep two claims separate: **receiver capability
-growth**, which works through runtime reachability, and **typed artifact
-vocabulary growth**, which lets separately synthesized Python name and
-type-check against the new component and requires a declaration, stub, or
-module-visible source. See :mod:`effectful.handlers.llm.examples.reasoning.continual`,
-and treat its generated code as untrusted application code.
+The next discovery pass can advertise ``self.remember_lesson``. A Tool added
+this way is callable at runtime, but generated code cannot type-check an
+undeclared attribute. A Skill assigned to ``self`` this way also remains a
+free Skill: declare it as a class method when it must share receiver history.
+See :mod:`effectful.handlers.llm.examples.reasoning.continual`.
 """

@@ -1,16 +1,8 @@
-"""Live terminal rendering of the conversation as it streams.
+"""Render model rounds and Tool results in the terminal.
 
-`RichTerminalRenderer` implements ``completion``: `RichTerminalRenderer.completion`
-chooses between the live path (`_completion_live`, which forces streaming and
-folds deltas with `_accumulate` into a `_partial_panel` inside a
-:class:`rich.live.Live` region) and the settled path (`_completion_settled`).
-`_print_new` and `_print_settled` keep each message printed once, keyed by
-`_panel_key`. Rendering helpers: `_message_panel`, `_render_content`,
-`_render_tool_call` (synthesized code as Python via `_extract_code`/`_is_python`),
-`_syntax`, `_render_markdown`, `_render_reasoning`; `_Tail`, `_tail_lines` and
-`_live_height` bound the live panel to the screen; `_PrefillStatus` is the
-spinner before the first chunk. Enable with ``harness(render=True)`` or
-``--render``.
+:class:`RichTerminalRenderer` streams a live view when the standard harness is
+created with ``render=True`` or launched with ``--render``. It changes a
+provider request to streaming; use Langfuse when a persistent trace is needed.
 """
 
 import ast

@@ -1,13 +1,9 @@
-"""Routing the agent loop's model rounds through LiteLLM.
+"""Configure model requests through LiteLLM.
 
-`LiteLLMConfigurer` implements ``completion``. `LiteLLMConfigurer.completion`
-merges the configured ``model`` and litellm keywords into each request;
-`LiteLLMConfigurer._add_cache_control` and `_mark` set prompt-caching
-breakpoints on a transport-only copy; `_enforce_tool_choice` and
-`_enforce_tool_choice_on_stream` reject a response that disobeys the
-``tool_choice`` it was sent. Transport retries are litellm's own
-``num_retries``, bound here from ``harness(num_retries=...)`` and independent of
-the decoding retries in :mod:`~effectful.handlers.llm.harness.durability.retrying`.
+:class:`LiteLLMConfigurer` supplies ``model``, ``tool_choice``, retry settings,
+and other provider options to each completion. Install it through
+:func:`~effectful.handlers.llm.harness.harness` or scope a different instance
+to part of a program. The innermost model choice wins.
 """
 
 import collections
@@ -35,7 +31,10 @@ class LiteLLMConfigurer(ObjectInterpretation):
     Constructed directly the default model is ``gpt-4o``; the harness and
     launcher pass theirs. Values already on a request stand, so an inner
     configurer overrides an outer one and ``model=None`` defers to the enclosing
-    one, which is how a program scopes a different model to part of itself::
+    one. Inside a harness, with ``writer`` and ``request`` already defined::
+
+        from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+        from effectful.ops.semantics import handler
 
         with handler(LiteLLMConfigurer(model="openai/gpt-4.1-mini")):
             draft = writer.write(request)

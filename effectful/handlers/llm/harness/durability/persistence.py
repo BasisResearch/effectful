@@ -1,36 +1,22 @@
-"""Checkpointing of `Agent` history and state to a SQLite database.
+"""Checkpoint a Skill receiver's conversation and declared state to SQLite.
 
-`HistoryBuilder` is what opens the transaction a call's messages accumulate in,
-so a stack without it has no history for this handler to checkpoint.
-`~effectful.handlers.llm.harness.harness` assembles all of these; assemble them
-by hand only to leave one out::
+:class:`SQLitePersister` needs a stable ``__agent_id__`` on the receiver and
+``HistoryBuilder`` in the handler stack. The standard :func:`~effectful.handlers.llm.harness.harness`
+installs both when ``persist_db`` is set. Install it before the receiver's first
+``__history__`` access (usually its first Skill call): restoration is lazy and
+that first access is cached. Declare restart-safe dataclass fields for state that
+must survive a process restart; dynamic attributes and live closures are not
+saved. The database is trusted input because restoration uses pickle.
 
-    with (
-        handler(AgentLoop()),
-        handler(LiteLLMConfigurer()),
-        handler(HistoryBuilder()),
-        handler(TenacityRetryer()),
-        handler(SQLitePersister(Path("./state/checkpoints.db"))),
-    ):
-        bot.ask("question")
+After a successful top-level bound turn, the checkpoint stores its committed messages
+and declared dataclass fields. A nested turn can checkpoint before an enclosing
+turn later fails; the history transaction does not undo that earlier checkpoint.
+Fields marked ``metadata={"persist": False}`` and ``__agent_id__`` are excluded.
+Serialization or database errors can surface after the turn's messages have
+committed in memory; a checkpoint does not make that commit atomic with disk.
 
-There is deliberately no crash-recovery "handoff" note written on restore: the
-last successful checkpoint is already a complete, uncorrupted transcript, and
-the caller is expected to simply retry the request that didn't finish.
-
-.. rubric:: What a checkpoint holds
-
-Durability needs both ``persist_db=...`` in the harness and a stable
-``__agent_id__`` on the Skill-owning object. Install before the receiver's
-``__history__`` is first read (binding a Skill method reads it): restoration is
-lazy and cached, see `Agent.__history__`. A checkpoint holds the message history
-and the declared dataclass fields `SQLitePersister._checkpoint_state` selects;
-`SQLitePersister.call_agent` says when one is written and what a nested turn's
-checkpoint means. Treat the SQLite file as trusted input, because restoration
-unpickles it.
-
-Declare a stable id and restart-safe fields, then install persistence before the
-receiver's history is first accessed::
+For example, give a dataclass receiver a stable identity and install the
+database before its first Skill call::
 
     import dataclasses
 
@@ -38,27 +24,38 @@ receiver's history is first accessed::
     from effectful.handlers.llm.harness import harness
     from effectful.ops.semantics import handler
 
-
     @dataclasses.dataclass
     class DurableAssistant:
-        \"\"\"Answer questions using state restored for one stable user identity.\"\"\"
-
         __agent_id__: str
         notes: list[str] = dataclasses.field(default_factory=list)
 
         @Skill.define
         def answer(self, question: str) -> str:
-            \"\"\"Answer {question}, using prior conversation and {self.notes}.\"\"\"
-
+            \"\"\"Answer {question} using prior conversation and {self.notes}.\"\"\"
 
     with handler(harness(model="openai/gpt-5-mini", persist_db="agents.db")):
-        assistant = DurableAssistant(__agent_id__="assistant:eli")
+        assistant = DurableAssistant(__agent_id__="assistant:demo")
         print(assistant.answer("What did we decide last time?"))
 
-Use a namespaced identity whose meaning remains stable across restarts. Do not
-put live closures or untrusted values in persisted fields. See
-:mod:`effectful.handlers.llm.examples.acp.assistant` for session ids mapped to persistent Skill-owner
-identities in a full application.
+Handler authors assembling a stack directly must include ``HistoryBuilder``
+before ``SQLitePersister``. For a Skill that needs no Tools::
+
+    from pathlib import Path
+    from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
+    from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
+    from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
+    from effectful.handlers.llm.harness.hooks import AgentLoop
+    from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+    from effectful.ops.semantics import handler
+
+    with (
+        handler(AgentLoop()),
+        handler(LiteLLMConfigurer(model="openai/gpt-5-mini")),
+        handler(HistoryBuilder()),
+        handler(TenacityRetryer()),
+        handler(SQLitePersister(Path("agents.db"))),
+    ):
+        assistant.answer("What did we decide last time?")
 """
 
 import dataclasses
@@ -79,20 +76,16 @@ from effectful.ops.types import Operation
 
 
 class SQLitePersister(PromptInjectingInterpretation):
-    """This conversation outlives the process. When a call you are answering
-    returns, the whole exchange and the agent's declared fields are written to
-    disk, and the next time this agent runs -- in a later process, days from now
-    -- they are restored. The history you are reading may therefore begin long
-    before this run started.
+    """A successful turn on this receiver checkpoints its conversation and declared
+    dataclass fields. Later processes can restore them using the same persistent
+    identity. Read earlier messages as prior conversation, even if they were
+    recorded in another process.
 
-    So anything you set on the agent persists, and is worth setting
-    deliberately: notes, accumulated findings, a running summary. Conversely,
-    do not re-derive what an earlier turn already established and recorded; it
-    is in front of you because it was saved, not because it was just computed.
-
-    A call that raises saves nothing. If you are heading toward an error, an
-    intermediate result you want kept should be recorded before the failure,
-    not after it.
+    Only declared fields are saved. A dynamic attribute or live function attached
+    to ``self`` can survive in this process but will not be restored. A failed
+    turn does not write a checkpoint; Python object mutations made before the
+    failure are not rolled back in this process. A successful nested turn may
+    already have checkpointed before an enclosing turn fails.
     """
 
     db_path: pathlib.Path
@@ -199,13 +192,12 @@ class SQLitePersister(PromptInjectingInterpretation):
         never written to the database, even when nested inside a persisted
         agent's call under this same handler.
 
-        Nested calls -- a tool invoking another skill on the same agent -- run
-        this rule too, so each writes its own checkpoint on the way out. That is
-        harmless rather than intended: the agent's history is one shared object,
-        so the enclosing call's save overwrites the nested one with a superset,
-        and the row left behind is the state as of the outermost return. A nested
-        checkpoint can therefore outlive an enclosing turn that later fails:
-        history transactions are not a distributed transaction over checkpoints.
+        A successful nested call runs this rule too. On the same receiver, its
+        messages are discarded by `HistoryBuilder`, so that checkpoint stores
+        the previously committed history with any current declared field
+        mutations. An outer success overwrites it with the outer turn's history.
+        An outer failure leaves the nested checkpoint in place: message
+        transactions do not make several checkpoints atomic.
         """
         result = fwd()
         if hasattr(skill, "__history__") and skill.__self__.__is_persistent__:  # type: ignore

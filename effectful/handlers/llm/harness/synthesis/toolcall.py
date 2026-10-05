@@ -1,16 +1,13 @@
-"""Calling lexically scoped tools by writing Python expressions.
+"""Call Tools with checked Python expressions.
 
-`ExpressionToolCaller` replaces each lexical tool in a request with an
-`_ExpressionToolCallTool` wrapper whose single ``call`` argument is Python
-source (`ExpressionToolCaller.call_assistant`, which also substitutes the
-decoded call for the wrapper's on the way back). `_pydantic_type_call_expression`
-decodes that source into a `CallExpression`, a `DecodedToolCall` for the
-underlying tool with its arguments already evaluated (`_eval_node`;
-`_scan_escaping_walrus` rejects bindings that would escape).
-`MixedToolCaller` narrows wrapping to the tools a JSON schema cannot describe
-(`MixedToolCaller._should_wrap`). Install a caller above an extractor
-(:mod:`~effectful.handlers.llm.harness.legibility.lexical`) and below other tool contributors; the anchor
-Skill is excluded rather than wrapped. Decoding needs an eval provider.
+:class:`ExpressionToolCaller` lets the model write a Python call instead of
+JSON arguments. This supports Tool signatures a JSON schema cannot describe,
+including generic signatures. :class:`MixedToolCaller` uses expressions only
+for those Tools and keeps JSON calls for the others. Both need an eval provider.
+
+Choose the route with ``harness(tool_calling="code")`` or ``"auto"``. Tool
+collection is separate: it decides which Tools are offered in the first place.
+See :mod:`~effectful.handlers.llm.harness.legibility.lexical`.
 """
 
 import ast
@@ -293,19 +290,13 @@ def _pydantic_type_call_expression(ty):
 
 
 class ExpressionToolCaller(PromptInjectingInterpretation):
-    """The tools of this Skill's lexical scope are called by writing Python, not
-    by filling in JSON arguments. Each one takes a single `call` parameter, and
-    its own description gives the exact reference to invoke it by and the
-    signature to match -- read that description rather than guessing a name off
-    the *Lexical scope* table.
-
-    Two things those descriptions do not tell you. The arguments inside a `call`
-    may be arbitrary Python expressions over the names in the *Lexical scope*
-    table and any bindings you have made in the REPL session, so you can write
-    `extend_sequence(examples, make_example())` rather than only literals. And
-    the expression must be a single call to the advertised tool -- no
-    statements, no assignments, no `:=` bindings (bind names with `exec_code`
-    first if you need them).
+    """Some advertised Tools take a ``call`` field containing one Python call
+    expression instead of JSON arguments. The Tool description gives the
+    exact callable name and signature. Arguments may use in-scope names and
+    REPL bindings. Submit one call expression, with no statements or
+    assignments. For example, ``extend_sequence(examples, make_example())``
+    passes an in-scope value and the result of a helper call. Use ``exec_code``
+    first when you need to create a binding.
     """
 
     # The docstring above is model-facing: it is the `Harness` section this
@@ -463,24 +454,13 @@ class ExpressionToolCaller(PromptInjectingInterpretation):
 
 
 class MixedToolCaller(ExpressionToolCaller):
-    """Most tools in this Skill's lexical scope are ordinary tools: call them by
-    name with JSON arguments matching their schema. Tools whose signatures a
-    JSON schema cannot capture -- generic (type-variable) parameters, variadic
-    `*args`/`**kwargs`, or parameter types with no JSON encoding -- are instead
-    called by writing Python, and take a single `call` parameter holding one
-    Python expression that invokes them.
-
-    Which mode a tool uses is fixed by its signature, not by your preference,
-    and its own description tells you which it is and what to write -- read that
-    rather than guessing from the *Lexical scope* table.
-
-    One thing those descriptions do not tell you: the arguments inside a `call`
-    may be arbitrary Python expressions over the names in the *Lexical scope*
-    table and any bindings you have made in the REPL session, so you can write
-    `extend_sequence(examples, make_example())` rather than only literals. The
-    expression must still be a single call to the advertised tool -- no
-    statements, no assignments, no `:=` bindings (bind names with `exec_code`
-    first if you need them).
+    """Call most advertised Tools with JSON arguments matching their schemas.
+    Tools whose signatures need Python expressions instead take one ``call``
+    field. Each Tool's description says which form it uses and gives its
+    callable name. An expression may use in-scope names and REPL bindings,
+    but must contain a single call with no statements or assignments. For
+    example, ``extend_sequence(examples, make_example())`` passes an in-scope
+    value and the result of a helper call.
     """
 
     # The docstring above is model-facing (see `ExpressionToolCaller`).

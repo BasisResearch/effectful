@@ -1,23 +1,15 @@
-"""A persistent, stateful Python REPL offered to the model as a tool.
+"""Run model-authored Python in a REPL for one Skill turn.
 
-`StatefulReplSynthesizer` is the handler: `StatefulReplSynthesizer.call_agent`
-opens a `ReplSession` seeded from the call's arguments over the Skill's lexical
-context and binds `exec_code`, `repl_history` and `repl_env` to it for the
-call; `StatefulReplSynthesizer.call_assistant` offers the tool and the session's
-bindings; `StatefulReplSynthesizer.call_user` tells each request which session
-it opens; `StatefulReplSynthesizer.call_tool` compacts after a successful
-``exec_code(compact=...)``. `_pydantic_type_code` decodes a snippet to a code
-object, type-checking it with `_splice_snippet` after the session's prior
-snippets (`_scan_non_nestable` rejects what a function body cannot hold).
-Execution goes through the `parse`/`compile`/`exec` operations, so it works
-under whichever eval provider is installed. What a snippet certifies and what
-survives it, by executor, is on `ReplSession.exec_code`.
+:class:`StatefulReplSynthesizer` offers the model an ``exec_code`` Tool. Its
+session starts with the Skill's arguments and lexical scope. Imports and
+bindings from one snippet remain available to later snippets in that turn;
+they are not automatically copied into later Skill turns. The installed eval
+provider controls execution. See :class:`ReplSession` for what each call keeps
+and returns.
 
-``exec_code`` is model-facing; application code declares a Skill and lets the
-model choose it. The ``compact`` parameter is described in
-:mod:`~effectful.handlers.llm.harness.durability.compaction`.
-:mod:`effectful.handlers.llm.examples.reasoning.continual` is the most complete
-model-driven workflow.
+``exec_code`` is a model-facing Tool, not an application entry point. See
+:mod:`effectful.handlers.llm.examples.reasoning.continual` for a workflow that
+uses it.
 """
 
 import ast
@@ -349,31 +341,27 @@ def _pydantic_type_code(ty):
 
 
 class StatefulReplSynthesizer(PromptInjectingInterpretation):
-    """You may run arbitrary Python code in a persistent session, through the
-    `exec_code` tool. Its own description states how it behaves — the namespace
-    it runs in, what it returns, what it will reject — and that description is
-    authoritative; follow it rather than any recollection of how such a tool
-    usually works. To see the value of anything in scope, `print` it.
+    """A REPL is a temporary Python session for the current Skill turn. Use
+    ``exec_code`` to inspect values or run code in that session; print values
+    you want to see. Imports and bindings survive between snippets in this
+    turn. They do not automatically appear in a later Skill call. Store a
+    result on ``self`` or another program-owned object when it must outlive
+    this session. For a receiver with a declared ``codes: dict[str, str]``
+    field, a snippet can save data and an explicit Tool::
 
-    ## Writing onto `self`
+        from effectful.handlers.llm import Tool
 
-    The REPL session itself lasts one call, so anything you want to keep has to go
-    somewhere the program owns rather than somewhere the session owns — `self`
-    is the usual place, and any other in-scope object works the same way. A
-    value, a note, or a function you define here:
+        @Tool.define
+        def next_guess(prefix: str) -> str:
+            \"\"\"Append a trial letter to a prefix.\"\"\"
+            return prefix + "A"
 
-    ```python
-    # this call
-    def next_guess(prefix: str) -> str:
-        return prefix + "A"
-    self.next_guess = next_guess       # a bound function is offered as a tool later
-    self.codes["room0"] = "BBA"        # and a plain value is just there
-    ```
+        self.next_guess = next_guess
+        self.codes["room0"] = "BBA"
 
-    ```python
-    # a later call, new session, `next_guess` and `codes` still on self
-    print(self.codes["room0"])
-    ```
+    In a later Skill turn, a new REPL session can read the saved data::
+
+        print(self.codes["room0"])
     """
 
     @typing.final
@@ -382,42 +370,25 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
     def exec_code(
         cls, code: types.CodeType, compact: CompactionScope = CompactionScope.NONE
     ) -> str:
-        """Run Python in a stateful session and return its output.
+        """Run Python in the current Skill turn's REPL and return its output.
 
-        This is a REPL, not a one-shot sandbox: every call within THIS Skill
-        call runs in the SAME namespace, so imports, definitions and
-        assignments accumulate across your turns.  The namespace is seeded from
-        the surrounding scope -- this call's arguments and the *Lexical scope*
-        table -- which you may read and rebind.  The session ends when you
-        answer; the next request gets an empty one.  Only `self` and the
-        surrounding scope outlive it.
+        The session starts with the Skill's arguments and lexical scope. Imports,
+        definitions, and assignments remain available to later snippets in this
+        turn, but not automatically to later Skill calls. Print a value to see it;
+        a bare expression produces no output::
 
-        Your code is run, and type-checked, as if it were the body of the
-        function you are answering for, so read the names already in scope
-        instead of re-importing modules or retyping values the request gave you.
+            print(1 + 1)  # returns "2\\n"
 
-        Output: returns this call's output -- its stdout (what `print` wrote)
-        followed by anything written to stderr.  There is NO automatic echoing
-        of results -- a bare expression on its own line (e.g. `1 + 1`) displays
-        nothing, so call `print(...)` for anything you want to see.
+        The result contains stdout followed by stderr.
 
-        A snippet that raises comes back as a failed call carrying the
-        traceback.  The session and every binding made before the raise
-        survive, so read the error, fix the code, and continue in the next
-        call -- but output printed before the error is not returned, so print
-        again once it works.
+        If code raises, the Tool reports the traceback and output printed before
+        the error is lost. With the builtin executor, bindings made before the
+        error remain in this session; the restricted executor keeps bindings
+        only after a successful snippet. Where source and a type checker are
+        available, the snippet is checked before it runs.
 
-        `compact` compacts the conversation -- see its own schema below for what
-        each scope drops -- but only if the snippet raises no exception: a
-        snippet that raises compacts NOTHING.
-
-        Whichever scope you pick, the current request and THIS call of yours
-        survive: your
-        message, the snippet you wrote and its output.  So the snippet and the
-        message you send it with are your note to your later self, and you do
-        not have to route everything through `print(...)` to keep it.  What a
-        compaction cannot save is what you never wrote down at all -- and only `self`
-        survives the *next* one, so anything that must last belongs there.
+        ``compact`` shortens conversation history after a successful snippet. The
+        current request, snippet, and result remain; Python objects are not reset.
         """
         raise NotImplementedError("No handler")
 
@@ -495,8 +466,9 @@ class StatefulReplSynthesizer(PromptInjectingInterpretation):
         The parameters of the signature heading this request are bound in that session,
         under those names and with those types -- their values are already written out
         above, so read the names rather than retyping what you were given. The rest of
-        the namespace is the *Lexical scope* and *Imported modules* tables of the system
-        message.
+        the namespace is in the system message's *Modules already in scope that do
+        not need to be re-imported* and *Variables already in scope that do not
+        need to be re-defined* tables.
         """)
         return fwd(
             PromptSection(

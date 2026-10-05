@@ -29,17 +29,10 @@ from effectful.ops.syntax import implements
 
 
 class BuiltinExecutor(PromptInjectingInterpretation):
-    """Code you write runs as ordinary Python in this process, with nothing
-    restricting it. The whole standard library is available, any installed
-    third-party package is importable, and the filesystem, the network and the
-    process itself are all reachable. If an import would work in a normal Python
-    session, it works here.
-
-    So write straightforward code and import what you need instead of working
-    around a sandbox that is not there. The corresponding responsibility is
-    yours: the same lack of restriction means a stray `open(..., "w")` or a
-    `subprocess` call really does touch the machine. Do the work the request
-    asks for and nothing else with side effects beyond it.
+    """Model-authored code runs as ordinary Python in this process. It can import
+    installed packages and use the filesystem, network, and other process
+    capabilities. Treat its side effects like those of application code and
+    perform only the work this Skill requires.
     """
 
     @implements(parse)

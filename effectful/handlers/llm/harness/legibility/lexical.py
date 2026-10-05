@@ -1,21 +1,10 @@
-"""Making a `Skill`'s lexical scope legible to the model.
+"""Describe a Skill's lexical scope and discover reachable Tools.
 
-Discovery: `LexicalToolExtractor` offers the `Tool`/`Skill` values bound in the
-Skill's context and those its in-scope `Agent`\\ s hold
-(`LexicalToolExtractor.call_assistant`); `ImplicitToolExtractor` also wraps
-ordinary functions and methods that pass
-`ImplicitToolExtractor._implicit_tool_candidate`. `_tool_paths` is the shared
-reachability walk, mapping each tool to the expression that names it;
-`_readable_attrs` is how an `Agent`'s class attributes are read safely.
-
-Description: `_module_section`, `_agent_section`, `_skill_section`,
-`_imports_section` and `_vars_section` build the task half of the system
-message (`_binding_type` names a binding's type).
-
-Install exactly one extractor per stack, beneath any tool caller, with
-``json_only=False`` when a caller is above (`LexicalToolExtractor.__init__`).
-How discovered tools are invoked, and why polymorphic tools need the expression
-pathway: :mod:`~effectful.handlers.llm.harness.synthesis.toolcall`.
+:class:`LexicalToolExtractor` advertises explicit ``Tool`` and ``Skill`` values.
+:class:`ImplicitToolExtractor` also offers qualifying ordinary functions and
+methods. The same scope supplies the module, receiver, import, and binding
+sections of the system prompt. See :mod:`~effectful.handlers.llm.harness.legibility`
+for what visibility and Tool advertisement mean.
 """
 
 import builtins
@@ -51,21 +40,13 @@ logger = logging.getLogger(__name__)
 
 
 class LexicalToolExtractor(PromptInjectingInterpretation):
-    """The tools you are offered are the ones this Skill can actually reach:
-    the `Tool` and `Skill` values bound in its lexical scope, plus those held by
-    any `Agent` in that scope. Nobody chose them for you by hand -- they are
-    what the surrounding code has in view -- so the set is worth reading as
-    evidence of what the caller expects this task to need.
-
-    That has a practical consequence: a capability you might expect is missing
-    from the list because it is not in scope here, not because it is forbidden.
-    Do not try to name or invoke a tool that is not offered. If the work seems
-    to require one, do what you can with what is offered and say plainly what
-    was missing.
-
-    The *Lexical scope* and *Imported modules* tables list the same scope's
-    non-callable bindings, so the tools and those tables describe one
-    environment together.
+    """The Tools offered for this Skill come from its lexical scope: explicit
+    ``Tool`` and ``Skill`` values, including methods on reachable Skill owners.
+    A leading underscore does not hide an explicitly defined Tool or Skill.
+    The imported-module and binding sections describe that same scope. Use the
+    advertised Tool interface when it fits the task. If code execution is
+    available, other reachable Python values may also be used without being
+    advertised as Tools.
     """
 
     def __init__(self, json_only: bool = True):
@@ -138,25 +119,12 @@ class LexicalToolExtractor(PromptInjectingInterpretation):
 
 
 class ImplicitToolExtractor(LexicalToolExtractor):
-    """The tools you are offered are the ones this Skill can actually reach in
-    the surrounding code: the `Tool` and `Skill` values bound in its lexical
-    scope, those held by any `Agent` in that scope -- and, beyond the ones
-    declared as tools, the ordinary functions and methods of that scope that
-    are public, documented, and fully type-annotated, wrapped and offered as
-    tools automatically. Nobody chose them by hand: the set is what the
-    surrounding code has in view, so read it as evidence of what the caller
-    expects this task to need, and read each tool's own docstring as its
-    contract.
-
-    That has a practical consequence: a capability you might expect is missing
-    from the list because it is not in scope here (or is private, undocumented,
-    or unannotated), not because it is forbidden. Do not try to name or invoke
-    a tool that is not offered. If the work seems to require one, do what you
-    can with what is offered and say plainly what was missing.
-
-    The *Lexical scope* and *Imported modules* tables list the same scope's
-    non-callable bindings, so the tools and those tables describe one
-    environment together.
+    """In addition to explicit ``Tool`` and ``Skill`` values, this handler offers
+    ordinary synchronous functions and methods that are public, documented,
+    fully annotated, and have no variadic parameters. Read an advertised Tool's
+    description for its signature and
+    purpose. The Tool list is a calling interface; with code execution, other
+    reachable Python values may still be usable in the REPL.
     """
 
     def __init__(

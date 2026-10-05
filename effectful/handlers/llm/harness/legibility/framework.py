@@ -1,14 +1,9 @@
-"""Putting the library's own type docstrings into the system prompt.
+"""Put the LLM type references and example pointers into the model's system prompt.
 
-Two `PromptInjectingInterpretation` handlers contribute fixed sections to the
-``# Harness`` half of the system message, read from
-:mod:`effectful.handlers.llm.types` so the model and the reader see one text.
-`FrameworkDocumenter` contributes `Skill`'s docstring under "The effectful LLM
-framework" (`FrameworkDocumenter.call_system`); it has no docstring of its own,
-so it adds no section about itself. `ApiReferenceDocumenter` contributes `Tool`,
-`Agent` and `Encodable` under "The effectful API, for code you write"
-(`ApiReferenceDocumenter.call_system`); ``harness()`` installs it only with an
-eval provider.
+`FrameworkDocumenter` reads the docstrings in :mod:`effectful.handlers.llm.types`
+and :mod:`effectful.handlers.llm.examples`. It always describes `Skill`; when
+code execution is enabled, it also describes `Tool`, `Agent`, and `Encodable`
+for model-authored Python.
 """
 
 import inspect
@@ -23,6 +18,7 @@ from effectful.handlers.llm.harness.serialization import (
     to_content_blocks,
 )
 from effectful.handlers.llm.types import Agent, Encodable, Skill, Tool
+from effectful.ops.semantics import fwd
 from effectful.ops.syntax import implements
 
 
@@ -35,61 +31,45 @@ def _concept(name: str, typ: object) -> PromptSection:
 
 
 class FrameworkDocumenter(PromptInjectingInterpretation):
-    # No docstring of its own: the section it contributes is `Skill`'s, which
-    # states what the model is answering and where the rest of the package is.
+    """Put the LLM type references first in the model's Harness section.
+
+    The class docstring is for Python readers. `call_system` forwards directly
+    so it is not added to the model's prompt alongside the type references.
+    """
 
     #: Title of the section `call_system` contributes.
     title: typing.ClassVar[str] = "The effectful LLM framework"
 
+    def __init__(self, *, include_code_api: bool = True) -> None:
+        self.include_code_api = include_code_api
+
     @implements(call_system)
     def call_system(
         self, harness_prompt: PromptSection, agent_prompt: PromptSection
     ) -> typing.Any:
-        """Prepend `Skill`'s docstring, which holds still while the handler stack
-        around it varies, so its position is independent of composition order."""
+        """Prepend the type references independently of handler order."""
+        import effectful.handlers.llm.examples as examples
+
+        concepts = [_concept("Skill", Skill)]
+        if self.include_code_api:
+            concepts.extend(
+                (
+                    _concept("Tool", Tool),
+                    _concept("Agent", Agent),
+                    _concept("Encodable", Encodable),
+                )
+            )
+        concepts.append(_concept("Bundled examples", examples))
         section = PromptSection(
             type="prompt_section",
             title=self.title,
-            content=to_content_blocks(inspect.getdoc(Skill) or ""),
+            content=concepts,
         )
-        return super().call_system(
+        return fwd(
             PromptSection(
                 type="prompt_section",
                 title=harness_prompt["title"],
                 content=[section, *harness_prompt["content"]],
-            ),
-            agent_prompt,
-        )
-
-
-class ApiReferenceDocumenter(PromptInjectingInterpretation):
-    """Code you write in the REPL or submit as a body may define Skills, Tools,
-    receivers, and encodings with the API below, which is the library's own
-    documentation of those types.
-    """
-
-    #: Title of the section `call_system` contributes.
-    title: typing.ClassVar[str] = "The effectful API, for code you write"
-
-    @implements(call_system)
-    def call_system(
-        self, harness_prompt: PromptSection, agent_prompt: PromptSection
-    ) -> typing.Any:
-        """Append one subsection per type, in a fixed order, then the docstring above."""
-        section = PromptSection(
-            type="prompt_section",
-            title=self.title,
-            content=[
-                _concept("Tool", Tool),
-                _concept("Agent", Agent),
-                _concept("Encodable", Encodable),
-            ],
-        )
-        return super().call_system(
-            PromptSection(
-                type="prompt_section",
-                title=harness_prompt["title"],
-                content=[*harness_prompt["content"], section],
             ),
             agent_prompt,
         )

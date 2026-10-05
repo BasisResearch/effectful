@@ -1,16 +1,38 @@
-"""Handlers that give the types in :mod:`effectful.handlers.llm.types` their meaning.
+"""Run Skill calls with a configurable stack of handlers.
 
-The :func:`harness` function assembles the standard stack; its constituents are
-documented in the submodules and may be recombined or replaced individually:
-:mod:`~effectful.handlers.llm.harness.hooks` (the operations and `AgentLoop`), :mod:`~effectful.handlers.llm.harness.legibility` (what
-the model sees and may call), :mod:`~effectful.handlers.llm.harness.synthesis` (answering with code),
-:mod:`~effectful.handlers.llm.harness.validation` (type checks and doctests), :mod:`~effectful.handlers.llm.harness.execution`
-(running model-authored Python), :mod:`~effectful.handlers.llm.harness.durability` (history, retries,
-compaction, persistence), :mod:`~effectful.handlers.llm.harness.provision` (the model backend),
-:mod:`~effectful.handlers.llm.harness.observability` (rendering, dumps, tracing), :mod:`~effectful.handlers.llm.harness.serialization`
-(the wire format), :mod:`~effectful.handlers.llm.harness.autoreload` and :mod:`~effectful.handlers.llm.harness.__main__` (the launcher).
+:func:`harness` assembles the standard stack. Install it around ordinary Python
+code::
 
-.. rubric:: One Skill call, one conversation turn
+    from effectful.handlers.llm.harness import harness
+    from effectful.ops.semantics import handler
+
+    with handler(harness(model="openai/gpt-5-mini")):
+        main()
+
+Or launch a script with ``python -m effectful.handlers.llm.harness script.py``.
+See :mod:`~effectful.handlers.llm.harness.__main__` for flags.
+
+Choose Tool discovery, Tool calls, and execution separately::
+
+    with handler(
+        harness(
+            model="openai/gpt-5-mini",
+            tool_collection="auto",  # include qualifying ordinary functions
+            tool_calling="auto",    # JSON where faithful, Python expressions otherwise
+            tool_choice="auto",     # provider may call a Tool or answer directly
+            eval_provider="builtin",  # authority for model-authored Python
+            type_checker="ty",
+            num_retries=5,
+        )
+    ):
+        main()
+
+One Skill call opens one conversation *turn*. The harness builds its request
+from the Skill signature, formatted docstring, defining module, lexical scope,
+and, for a method, its receiver's committed history. A model response is one
+*round*; a Tool result or validation error can start another round in the same
+turn. A successful answer is decoded to the Skill's return type. A failed turn
+does not commit its messages to the receiver's history.
 
 The standard call path::
 
@@ -18,87 +40,68 @@ The standard call path::
     bind arguments over the Skill's captured lexical context
     open a transaction over the receiver's committed history (bound Skill),
       or over a fresh history (free Skill)
-    render a candidate system message: installed-handler sections, the defining
-      module's source, receiver-class and sibling-Skill documentation, and the
-      scope tables; a bound conversation retains the first one it committed
-    append one user message: Skill name and signature, the formatted docstring,
-      and a REPL-session notice when an executor is installed
-    model round <-> tool result or validation feedback, repeated
-    decode to the declared return type; type-check, execute, run doctests as required
-    invalid: feed back and retry within this turn, when a retryer is installed
+    render a candidate system message: installed-handler sections, defining
+      module source, receiver and sibling-Skill docs, and scope tables;
+      a bound conversation retains its first committed system message
+    append one user message: current Skill signature and formatted docstring
+    model round <-> Tool result or validation feedback, repeated as needed
+    decode to the declared return type; type-check, execute, run doctests
+      where this synthesis route requires them
+    invalid: feed back and retry within this turn, if a retryer is installed
     accepted: return the value; a committable bound turn records its history,
       then may checkpoint
-    exhausted: raise, leaving the turn uncommitted
+    exhausted: raise, leaving this turn's messages uncommitted
 
-A *turn* is one Python invocation of a Skill; the model's several responses
-within it are *rounds*. The model-facing prompt text says "call" and "turn" for
-the same two things.
+.. code-block:: text
 
-Which turns see and commit which history is a transaction over the receiver's
-messages: :mod:`~effectful.handlers.llm.harness.durability.transaction`.
+    Skill call -> build request -> model round <-> Tool result / retry feedback
+                                      |
+                                      v
+                              check returned value
+                              /                  \
+                       success                failure
+                       return value           raise; do not commit history
 
-.. rubric:: Configure the harness deliberately
+Only a bound, committable turn adds its successful messages to its receiver's
+history. See :mod:`~effectful.handlers.llm.harness.durability.transaction` for
+nested calls and other history rules.
 
-Handlers implement the mechanics surrounding each Skill turn. These settings
-control different layers and should not be conflated::
+Choose the relevant layer from here:
 
-    from effectful.handlers.llm.harness import harness
-    from effectful.ops.semantics import handler
+- :mod:`~effectful.handlers.llm.harness.hooks`: operations and handler extension.
+- :mod:`~effectful.handlers.llm.harness.legibility`: what the model sees and which
+  Tools are advertised.
+- :mod:`~effectful.handlers.llm.harness.synthesis`: model-authored Python.
+- :mod:`~effectful.handlers.llm.harness.validation`: contracts and type checks.
+- :mod:`~effectful.handlers.llm.harness.execution`: authority to run code.
+- :mod:`~effectful.handlers.llm.harness.durability`: history, retries, and
+  persistence.
+- :mod:`~effectful.handlers.llm.harness.provision`: model requests.
+- :mod:`~effectful.handlers.llm.harness.observability`: rendering and traces.
 
-
-    with handler(
-        harness(
-            model="openai/gpt-5-mini",
-            tool_collection="auto",      # also publish qualifying ordinary callables
-            tool_calling="auto",          # JSON when faithful, code otherwise
-            tool_choice="auto",           # provider may call a tool or answer directly
-            eval_provider="builtin",      # authority for model-authored Python
-            type_checker="ty",
-            num_retries=5,
-        )
-    ):
-        main()
-
-Every knob is documented on :func:`harness`, including what each value installs
-and what it refuses; the launcher's flags on :mod:`effectful.handlers.llm.harness.__main__`. Forcing body
-synthesis with ``tool_choice="required"``: :mod:`~effectful.handlers.llm.harness.synthesis.body`.
-
-.. rubric:: Debugging what the model could know
-
-Debug a Skill turn by reconstructing its exact request and environment, not by
-guessing what the model "must have known"::
+For a confusing model response, start with ``--dump-system-prompt PATH`` and
+``--langfuse``. The dump contains the assembled prompt, while Langfuse records
+rounds and Tool calls. A bound conversation may retain an earlier system
+message; inspect its recorded history when the dump differs from what it saw.
+For example::
 
     python -m effectful.handlers.llm.harness path/to/example.py \\
-      --dump-system-prompt /tmp/effectful-prompt.md
+      --dump-system-prompt /tmp/effectful-prompt.md --langfuse
 
-The dump is the latest candidate system prompt, not a transcript; what it omits
-is in :mod:`~effectful.handlers.llm.harness.observability.dump`. Inspect recorded messages as well when a
-bound receiver's retained system message may differ from the candidate.
+Check the request in this order:
 
-Then ask, in order:
-
-1. Is the relevant handler installed and described under ``# Harness``? Only
-   `PromptInjectingInterpretation` subclasses appear there; `MCPTools` does not.
-2. Is the defining module source present?
-3. Is the value a current argument, a captured lexical binding, or reachable
-   through an in-scope Skill-owning object?
-4. Is it a ``Tool``/``Skill``, or does it require ``tool_collection="auto"``?
-5. Was the capability discovered, and is the chosen tool-calling pathway able
-   to encode its signature?
-6. Does the REPL have the runtime object even if the static source checker
-   lacks a declaration for it?
-7. Is a stale system message being confused with the tool set recomputed for a
-   later turn?
-8. Is a restriction enforced by the executor, or merely absent from the
-   advertised Tool list?
-
-Questions the dump cannot answer -- what a failed turn rolled back, which
-receiver's history a turn joined, which synthesis route ran and whose tests it
-used, whether feedback arrived before commitment -- are answered in
-:mod:`~effectful.handlers.llm.harness.durability`, :mod:`~effectful.handlers.llm.harness.legibility` and :mod:`~effectful.handlers.llm.harness.synthesis`.
-
-Extending the stack with handlers of your own:
-:mod:`effectful.handlers.llm.harness.hooks`.
+1. Was the relevant handler installed under ``# Harness``?
+2. Was the Skill's module source recovered, and which named values were
+   interpolated into the current user message?
+3. Was a capability reachable in lexical scope, advertised as a Tool, and
+   encodable by the selected ``tool_calling`` route? These are separate checks.
+4. Could runtime code reach it even if static checking could not name it?
+5. Did a bound receiver retain an earlier system message while Tool discovery
+   refreshed for a later round?
+6. Did a failed turn discard messages but leave Python side effects or a nested
+   checkpoint?
+7. Which synthesis route ran, whose tests did it use, and did validation
+   feedback reach the model before the Skill returned?
 """
 
 import collections.abc
@@ -137,124 +140,66 @@ def harness(
     | None = None,
     **provider_config,
 ) -> Interpretation:
-    """
-    Instantiate the standard `effectful.handlers.llm` handler stack.
-    Install it with :func:`~effectful.ops.semantics.handler`::
+    """Assemble the standard handlers for Skill calls.
 
-        with handler(harness(...)):
-            ...
+    Install the result around ordinary Python code::
 
-    Constructing a `harness` records the configuration; entering it (as a
-    context manager, decorator, or via the module CLI) installs the handlers and
-    exiting removes them. The handlers, in installation order, are:
+        from effectful.handlers.llm.harness import harness
+        from effectful.ops.semantics import handler
 
-    1. `AgentLoop`, the tool pipeline (an extractor chosen by
-       ``tool_collection``, a caller chosen by ``tool_calling``) and
-       `LiteLLMConfigurer`, the model backend it drives.
-    2. `FrameworkDocumenter` -- describe the framework's concepts in the system
-       prompt.
-    3. `ToolOutputTruncator` -- bound each textual tool result before it enters
-       history (unless ``max_tool_output_chars=None``).
-    4. `HistoryBuilder` -- accumulate the message history of a call, with
-       `ReplCompactor` just inside it or `MiddleCompactor` above it, per the
-       ``compaction_*`` thresholds.
-    5. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
-    6. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
-    7. The ``type_checker`` and the ``eval_provider`` -- check and run
-       model-authored Python (each omitted for ``"none"``).
-    8. `StatefulReplSynthesizer`, `FinalBodySynthesizer` and
-       `ApiReferenceDocumenter` -- answer a call by running a snippet, and by
-       synthesizing a function and calling it; and document the `Tool`,
-       `Agent` and `Encodable` API that code written there may use. All three
-       are omitted when ``eval_provider="none"``: the synthesizers advertise
-       tools (``exec_code``, ``write_and_run_body``) that only an executor can
-       decode, and without them the model writes no code.
-    9. `PydanticSkillArgValidator` -- enforce the pre-conditions a caller
-       wrote into a `Skill`'s parameter annotations (if ``check_contracts``).
-    10. `TenacityRetryer` -- retry malformed/failing model output (if
-        ``num_retries``).
-    11. `MCPTools` -- offer the tools of MCP servers (if ``mcp_config``), above
-        the tool callers and the retryer, so a request's retries see one catalog.
-    12. `SQLitePersister` -- checkpoint a persisted `Agent`'s state/history to
-        SQLite after each successful call (if ``persist_db``).
-    13. `LangfuseTracer` -- log calls to Langfuse (if ``langfuse``).
+        with handler(harness(model="openai/gpt-5-mini")):
+            main()
 
-    Args:
-        num_retries: Attempts for malformed/failing model output (via
-            `TenacityRetryer`, which is left out of the stack altogether when
-            this is ``0``) and, independently, for transport-level failures
-            (via litellm's own ``num_retries``, bound into the request).
-        langfuse: Log LLM calls and metadata to Langfuse.
-        render: Live-render the streaming message history in the terminal.
-        dump_system_prompt: If set, dump the assembled system prompt to this
-            Markdown file.
-        persist_db: If set, path to a SQLite database used to checkpoint a
-            persisted `~effectful.handlers.llm.types.Agent`'s (one with a
-            stable ``__agent_id__``) state and history via
-            `~effectful.handlers.llm.harness.durability.persistence.SQLitePersister`.
-        eval_provider: Which provider runs model-authored Python:
-            ``"builtin"`` (`BuiltinExecutor`, the default), ``"restricted"``
-            (`RestrictedPythonExecutor`), or ``"none"`` for no executor --
-            which also takes both synthesizers out of the stack, so nothing is
-            offered that the stack could not then run.
-        type_checker: Which handler type-checks model-authored Python before it
-            runs: ``"ty"`` (`TyTypeChecker`, the default), ``"mypy"``
-            (`MypyTypeChecker`), or ``"none"`` to run generated code unchecked.
-        tool_calling: How the model calls the tools in a `Skill`'s lexical
-            scope. ``"auto"`` (the default) installs `MixedToolCaller`, which
-            picks per tool: schema-constrained JSON arguments for every tool a
-            JSON schema can describe faithfully, and the code pathway for the
-            rest (generic, variadic, or unadvertisable signatures). ``"code"``
-            installs `ExpressionToolCaller`: uniformly, the model writes a
-            Python call expression which is type-checked in the Skill's scope
-            and evaluated. ``"json"`` is the classic JSON-only pathway with no
-            caller at all (polymorphic tools degrade to untyped argument
-            schemas there, and unadvertisable ones are skipped with a
-            warning). ``"auto"`` and ``"code"`` require an eval provider:
-            combining either with ``eval_provider="none"`` raises `ValueError`
-            rather than silently degrading.
-        tool_collection: Which tools are *collected* from a `Skill`'s lexical
-            scope, as opposed to how they are called. ``"explicit"`` (the
-            default) installs `LexicalToolExtractor`: the `Tool`/`Skill`
-            values in scope, and those held by in-scope `Agent`\\ s. ``"auto"``
-            installs `ImplicitToolExtractor` instead, which additionally wraps
-            ordinary functions and methods that look deliberately published (see
-            `ImplicitToolExtractor._implicit_tool_candidate`) with no
-            ``Tool.define`` decorator; it makes naming conventions
-            load-bearing (prefix orchestration helpers with ``_`` to keep them
-            out of the model's hands). ``"none"`` installs no extractor at
-            all: the model sees only the tools the harness itself injects
-            (``exec_code``, ``write_and_run_body``), never the surrounding
-            scope's.
-        check_contracts: Install `PydanticSkillArgValidator`, so a `Skill`'s
-            arguments are validated against the pydantic metadata its parameter
-            annotations carry. On by default, which makes such an annotation
-            mean the same thing whether a person or a model supplied the
-            argument. Turning it off leaves a direct Python call unchecked; a
-            model-supplied argument is still validated as the tool call is
-            decoded, and metadata on a *return* annotation is enforced by the
-            decoder either way.
-        max_tool_output_chars: Maximum text characters retained in each tool
-            result, including the truncation notice. The beginning and end are
-            kept. Pass ``None`` to disable truncation.
-        compaction_soft_tokens: Approximate token threshold for stale tool-output
-            elision. ``None`` (default) disables middle-region compaction.
-        compaction_hard_tokens: Token threshold for compaction. With
-            ``compaction_soft_tokens``, it is the threshold at which
-            `MiddleCompactor` summarizes, and must exceed the soft one. Alone,
-            with an eval provider, a request at least this large is nudged and
-            forced to call ``exec_code`` with ``compact`` set (`ReplCompactor`).
-        compaction_recent_tokens: Approximate size of the recent window, in
-            addition to keeping at least the last two rounds. Defaults to a
-            quarter of the hard threshold.
-        mcp_config: MCP servers whose tools are offered to every `Skill`, as a
-            standard ``{"mcpServers": {name: server}}`` configuration mapping or
-            a path to a JSON file holding one. Connection lifetime, naming and
-            failure handling: :mod:`~effectful.handlers.llm.harness.legibility.mcp`.
+    The package docstring explains how a Skill call runs. The subpackages
+    describe individual handlers and their boundaries. Options below select
+    which handlers are installed; extra provider options go to LiteLLM.
 
-    Raises:
-        ValueError: If ``tool_calling`` is ``"auto"`` or ``"code"`` and
-            ``eval_provider`` is ``"none"``.
+    :param num_retries: Maximum attempts for an invalid model answer. The same
+        value also configures LiteLLM's transport retries. ``0`` omits the
+        answer retry handler.
+    :param langfuse: Record Skill, Tool, and model calls in Langfuse.
+    :param render: Stream a live terminal view of the conversation.
+    :param dump_system_prompt: Write each assembled system prompt to this path.
+        This is a prompt dump, not a transcript.
+    :param persist_db: SQLite path for checkpointing receivers with a stable
+        ``__agent_id__``. See :mod:`~effectful.handlers.llm.harness.durability.persistence`.
+    :param eval_provider: ``"builtin"`` runs model-authored Python with normal
+        process authority; ``"restricted"`` narrows it; ``"none"`` disables
+        code execution and the tools that need it.
+    :param type_checker: ``"ty"`` or ``"mypy"`` checks model-authored Python
+        when source is recoverable; ``"none"`` skips static checks.
+    :param tool_calling: ``"auto"`` uses JSON arguments when a Tool's signature
+        fits a schema and checked Python expressions otherwise. ``"code"``
+        always uses expressions; ``"json"`` uses JSON only and may omit Tools
+        whose signatures cannot be encoded faithfully. ``"auto"`` and
+        ``"code"`` require an eval provider.
+    :param tool_collection: ``"explicit"`` offers in-scope ``Tool`` and
+        ``Skill`` values. ``"auto"`` also offers qualifying ordinary functions
+        and methods. ``"none"`` collects none from lexical scope. This
+        controls discovery, independently of ``tool_calling``.
+    :param check_contracts: Apply Pydantic annotation constraints to Skill
+        arguments before each call. Return constraints are checked by decoding
+        regardless of this setting.
+    :param max_tool_output_chars: Maximum text retained from each Tool result,
+        including its truncation notice. ``None`` disables truncation.
+    :param compaction_soft_tokens: Approximate threshold for removing stale
+        Tool output. ``None`` disables middle-region compaction.
+    :param compaction_hard_tokens: Threshold for summarizing older messages
+        when a soft threshold is set; it must exceed that threshold. Without a
+        soft threshold, an executor-enabled harness instead asks the model to
+        compact through its REPL.
+    :param compaction_recent_tokens: Approximate recent window to keep during
+        middle-region compaction. By default it is a quarter of the hard limit.
+    :param mcp_config: An MCP server configuration mapping or a path to a JSON
+        file containing one. Its Tools are offered to every Skill.
+    :param provider_config: Additional LiteLLM settings, including ``model``
+        and ``tool_choice``. ``tool_choice="required"`` forbids a direct answer;
+        completion then needs a finalizing Tool such as ``write_and_run_body``.
+        With ``"auto"``, an offered Tool may be skipped. ``"required"`` demands
+        some Tool, not a particular one; enforce task-specific call requirements
+        in application code.
+    :raises ValueError: If expression-based Tool calling is selected with
+        ``eval_provider="none"``.
     """
     # Imported here rather than at the top, so that importing this package loads no
     # handler, and a stack rebuilt after a handler module is re-imported uses it.
@@ -275,7 +220,6 @@ def harness(
     )
     from effectful.handlers.llm.harness.hooks import AgentLoop
     from effectful.handlers.llm.harness.legibility.framework import (
-        ApiReferenceDocumenter,
         FrameworkDocumenter,
     )
     from effectful.handlers.llm.harness.legibility.lexical import (
@@ -324,7 +268,7 @@ def harness(
         h = coproduct(h, ImplicitToolExtractor(json_only=json_only))
 
     h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
-    h = coproduct(h, FrameworkDocumenter())
+    h = coproduct(h, FrameworkDocumenter(include_code_api=eval_provider != "none"))
     if max_tool_output_chars is not None:
         h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
     # Inside `HistoryBuilder`, so a reply it rejects is recorded with its feedback.
@@ -370,7 +314,6 @@ def harness(
     if eval_provider != "none":
         h = coproduct(h, StatefulReplSynthesizer())
         h = coproduct(h, FinalBodySynthesizer())
-        h = coproduct(h, ApiReferenceDocumenter())
 
     if check_contracts:
         h = coproduct(h, PydanticSkillArgValidator())

@@ -4,10 +4,16 @@
 ``lenient`` mode for REPL snippets; its default rule accepts everything, and
 :mod:`~effectful.handlers.llm.harness.validation.ty` or :mod:`~effectful.handlers.llm.harness.validation.mypy` make it real.
 `run_doctests` runs a synthesized object's ``>>>`` examples through the
-``compile``/``exec`` operations of :mod:`~effectful.handlers.llm.harness.execution.hooks`. Either checker is
-independent of the executor and is installed alongside it::
+``compile``/``exec`` operations of :mod:`~effectful.handlers.llm.harness.execution.hooks`.
+The standard harness can install a checker and executor together. For an
+application with ``main()`` defined::
 
-    handler(TyTypeChecker()), handler(BuiltinExecutor())
+    from effectful.handlers.llm.harness import harness
+    from effectful.ops.semantics import handler
+
+    with handler(harness(model="openai/gpt-5-mini", type_checker="ty",
+                         eval_provider="builtin")):
+        main()
 """
 
 import collections.abc

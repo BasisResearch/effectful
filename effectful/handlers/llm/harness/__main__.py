@@ -1,21 +1,11 @@
-"""Run a script or module under the standard effectful LLM handler stack.
+"""Launch a script or installed module under the standard LLM harness.
 
-Usage: python -m effectful.handlers.llm.harness SCRIPT.py [harness flags]
-[script flags], or -m MODULE in place of the path. Harness flags are consumed
-here (_parse_args) and build the stack with harness() (_build_harness);
-everything else is passed through in sys.argv under the script's own name. A
-script runs as __main__ with its directory on sys.path; a module runs via
-runpy.run_module.
-
-The model is --model or the EFFECTFUL_LLM_MODEL environment variable;
-_provider_config assembles it with --tool-choice and --reasoning-effort into the
-LiteLLMConfigurer settings, rewriting an OpenAI GPT-5.4+ model onto the Responses
-API when no effort is given. Provider parameters a model rejects are dropped
-(litellm.drop_params).
-
-Launcher-only flags: --pdb enters post-mortem with the stack still installed;
---autoreload re-runs edited modules, including the harness, and rebuilds the
-stack (effectful.handlers.llm.harness.autoreload.Reloader).
+Use ``python -m effectful.handlers.llm.harness SCRIPT.py [flags]`` or replace
+the script path with ``-m MODULE``. ``--model`` selects a model; by default
+the launcher reads ``EFFECTFUL_LLM_MODEL``. Use ``--langfuse`` to record traces,
+``--dump-system-prompt PATH`` to inspect prompts, and ``--help`` for all flags.
+Unrecognized flags are passed to the script or module. ``--autoreload`` currently
+requires a script path.
 """
 
 import argparse
@@ -196,7 +186,7 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help=(
             "Re-run edited code imported from sys.path directories, including the "
-            "harness, while the script runs"
+            "harness, while the script runs (requires a script path)"
         ),
     )
     parser.add_argument(
@@ -207,6 +197,16 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         help=(
             "Checkpoint persisted Agent state/history to this SQLite database "
             "(installs SQLitePersister)"
+        ),
+    )
+    parser.add_argument(
+        "--compaction-hard-tokens",
+        type=int,
+        default=None,
+        metavar="TOKENS",
+        help=(
+            "Request REPL compaction when the approximate conversation token "
+            "count reaches this threshold"
         ),
     )
     parser.add_argument(
@@ -224,6 +224,10 @@ def _parse_args(argv: list[str]) -> tuple[argparse.Namespace, list[str]]:
         if not module or ns.module is not None:
             parser.error("-m takes one module name")
         ns.module, ns.script = module, None
+        if ns.autoreload:
+            parser.error(
+                "--autoreload currently requires a script path instead of -m MODULE"
+            )
     return ns, rest
 
 
@@ -294,6 +298,7 @@ def _build_harness(ns: argparse.Namespace) -> Interpretation:
         render=ns.render,
         dump_system_prompt=ns.dump_system_prompt,
         persist_db=ns.persist_db,
+        compaction_hard_tokens=ns.compaction_hard_tokens,
         eval_provider=ns.eval_provider,
         type_checker=ns.type_checker,
         tool_calling=ns.tool_calling,
@@ -315,14 +320,16 @@ def main(argv: list[str] | None = None) -> None:
         if spec is None or spec.origin is None:
             raise SystemExit(f"No module named {ns.module}")
         ns.script = spec.origin
-        run = functools.partial(runpy.run_module, ns.module, alter_sys=True)
+        run = functools.partial(
+            runpy.run_module, ns.module, run_name="__main__", alter_sys=True
+        )
     else:
         # Mirror `python <script>`: put the script's directory on sys.path so it can
         # import sibling modules (e.g. a shared environment definition) by absolute
         # name. `runpy.run_path` runs the file as `__main__` with no package, so
         # relative imports can't work and this dir would otherwise be off the path.
         sys.path.insert(0, os.path.dirname(os.path.abspath(ns.script)))
-        run = functools.partial(runpy.run_path, ns.script)
+        run = functools.partial(runpy.run_path, ns.script, run_name="__main__")
     # The script should see only its own flags, under its own name.
     sys.argv = [ns.script, *script_args]
     if ns.autoreload:
@@ -337,13 +344,13 @@ def main(argv: list[str] | None = None) -> None:
     with installed:
         if ns.pdb:
             try:
-                run(run_name="__main__")
+                run()
             except BaseException:
                 # Post-mortem while the handler stack is still installed, so live
                 # handler/session state is inspectable at the debugger prompt.
                 pdb.post_mortem()
         else:
-            run(run_name="__main__")
+            run()
 
 
 if __name__ == "__main__":
