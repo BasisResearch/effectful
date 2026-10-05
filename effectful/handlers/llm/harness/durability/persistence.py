@@ -1,22 +1,9 @@
 """Checkpointing of `Agent` history and state to a SQLite database.
 
-Install `SQLitePersister` alongside `AgentLoop`, `LiteLLMConfigurer` and
-`HistoryBuilder`::
-
-    with (
-        handler(AgentLoop()),
-        handler(LiteLLMConfigurer()),
-        handler(HistoryBuilder()),
-        handler(SQLitePersister(Path("./state/checkpoints.db"))),
-    ):
-        bot.ask("question")
-
 `HistoryBuilder` is what opens the transaction a call's messages accumulate in,
 so a stack without it has no history for this handler to checkpoint.
 `~effectful.handlers.llm.harness.harness` assembles all of these; assemble them
-by hand only to leave one out.
-
-It composes with `~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`::
+by hand only to leave one out::
 
     with (
         handler(AgentLoop()),
@@ -30,6 +17,48 @@ It composes with `~effectful.handlers.llm.harness.durability.retrying.TenacityRe
 There is deliberately no crash-recovery "handoff" note written on restore: the
 last successful checkpoint is already a complete, uncorrupted transcript, and
 the caller is expected to simply retry the request that didn't finish.
+
+.. rubric:: What a checkpoint holds
+
+Durability needs both ``persist_db=...`` in the harness and a stable
+``__agent_id__`` on the Skill-owning object. Install before the receiver's
+``__history__`` is first read (binding a Skill method reads it): restoration is
+lazy and cached, see `Agent.__history__`. A checkpoint holds the message history
+and the declared dataclass fields `SQLitePersister._checkpoint_state` selects;
+`SQLitePersister.call_agent` says when one is written and what a nested turn's
+checkpoint means. Treat the SQLite file as trusted input, because restoration
+unpickles it.
+
+Declare a stable id and restart-safe fields, then install persistence before the
+receiver's history is first accessed::
+
+    import dataclasses
+
+    from effectful.handlers.llm import Skill
+    from effectful.handlers.llm.harness import harness
+    from effectful.ops.semantics import handler
+
+
+    @dataclasses.dataclass
+    class DurableAssistant:
+        \"\"\"Answer questions using state restored for one stable user identity.\"\"\"
+
+        __agent_id__: str
+        notes: list[str] = dataclasses.field(default_factory=list)
+
+        @Skill.define
+        def answer(self, question: str) -> str:
+            \"\"\"Answer {question}, using prior conversation and {self.notes}.\"\"\"
+
+
+    with handler(harness(model="openai/gpt-5-mini", persist_db="agents.db")):
+        assistant = DurableAssistant(__agent_id__="assistant:eli")
+        print(assistant.answer("What did we decide last time?"))
+
+Use a namespaced identity whose meaning remains stable across restarts. Do not
+put live closures or untrusted values in persisted fields. See
+:mod:`effectful.handlers.llm.examples.acp.assistant` for session ids mapped to persistent Skill-owner
+identities in a full application.
 """
 
 import dataclasses
@@ -134,7 +163,7 @@ class SQLitePersister(PromptInjectingInterpretation):
         `dataclasses.field(metadata={"persist": False})`, which is required
         for any field that is itself an independently checkpointed `Agent`
         (otherwise it would be embedded as a duplicate, divergent copy inside
-        this agent's own checkpoint). `agent_id` (if a `@dataclass` subclass
+        this agent's own checkpoint). ``__agent_id__`` (if a `@dataclass` subclass
         redeclares it -- see `Agent`) is always excluded: it's already the
         row's primary key, fixed at construction time, with nothing to
         restore.
@@ -159,14 +188,14 @@ class SQLitePersister(PromptInjectingInterpretation):
         The save happens *after* `fwd`, so nothing is written when the call
         raises: a `Skill` call's work happens against a private copy of the
         agent's history that is only written back on success (see
-        `AgentLoop.call_agent`), so an interrupted call's partial exchange --
+        `HistoryBuilder.call_agent`), so an interrupted call's partial exchange --
         and any other in-process state not captured by `__history__`, such as a
-        `PythonRepl` session -- is unrecoverable regardless of what this handler
+        REPL session -- is unrecoverable regardless of what this handler
         does.
 
         Two gates decide whether anything is written. The skill must be bound
         to an agent (``__history__``), and that agent must have been given an
-        explicit ``agent_id`` (see `Agent`): a transient agent, the default, is
+        stable ``__agent_id__`` (see `Agent`): a transient agent, the default, is
         never written to the database, even when nested inside a persisted
         agent's call under this same handler.
 
@@ -174,7 +203,9 @@ class SQLitePersister(PromptInjectingInterpretation):
         this rule too, so each writes its own checkpoint on the way out. That is
         harmless rather than intended: the agent's history is one shared object,
         so the enclosing call's save overwrites the nested one with a superset,
-        and the row left behind is the state as of the outermost return.
+        and the row left behind is the state as of the outermost return. A nested
+        checkpoint can therefore outlive an enclosing turn that later fails:
+        history transactions are not a distributed transaction over checkpoints.
         """
         result = fwd()
         if hasattr(skill, "__history__") and skill.__self__.__is_persistent__:  # type: ignore

@@ -1,4 +1,4 @@
-"""Offline tests for the ACP example under ``docs/source/llm_examples/acp``.
+"""Offline tests for the ACP example under ``effectful/handlers/llm/examples/acp``.
 
 This is the example's only coverage, and the reason it needs its own file. Every
 other example is run for real by `test_handlers_llm_examples.py`, which launches it
@@ -66,31 +66,22 @@ from tests.conftest import (
     make_tool_call_response,
 )
 
-# The example is a script rather than an installed package, so it is imported the way
-# the launcher makes it importable: with its own directory on the path.
-EXAMPLE_DIR = (
-    pathlib.Path(__file__).resolve().parent.parent
-    / "docs"
-    / "source"
-    / "llm_examples"
-    / "acp"
-)
-sys.path.insert(0, str(EXAMPLE_DIR))
-
 # Skip the module rather than fail collection where the optional dependency is
 # absent, then import for real -- `importorskip`'s return value is opaque to a type
 # checker, and these names are used as base classes and in annotations below.
 pytest.importorskip("acp", reason="the ACP example needs agent-client-protocol")
 
 import acp  # noqa: E402
-import assistant  # noqa: E402
-import library  # noqa: E402
-import server as acp_server  # noqa: E402
 from acp import schema  # noqa: E402
+
+from effectful.handlers.llm.examples.acp import assistant, library  # noqa: E402
+from effectful.handlers.llm.examples.acp import server as acp_server  # noqa: E402
+
+EXAMPLE_DIR = pathlib.Path(assistant.__file__).resolve().parent
 
 # Bound here for the same reason `assistant.py` binds them: a `Skill` finds its tools
 # in its own lexical scope, so the skills defined in this module see these three.
-from library import (  # noqa: E402
+from effectful.handlers.llm.examples.acp.library import (  # noqa: E402
     acp_ask_user,
     acp_read_text_file,
     acp_run_terminal_command,
@@ -827,7 +818,7 @@ def test_the_assistant_offers_every_tool_it_imports():
     imported = {
         alias.name
         for node in ast.walk(ast.parse((EXAMPLE_DIR / "assistant.py").read_text()))
-        if isinstance(node, ast.ImportFrom) and node.module == "library"
+        if isinstance(node, ast.ImportFrom) and node.module == library.__name__
         for alias in node.names
         if alias.name.startswith("acp_")
     }

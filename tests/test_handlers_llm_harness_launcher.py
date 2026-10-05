@@ -92,6 +92,19 @@ def test_parse_args_requires_a_script():
         _parse_args(["--model", "gpt-4o-mini"])
 
 
+def test_parse_args_takes_a_module_instead_of_a_script():
+    """With ``-m`` there is no script positional, so a bare value among the
+    script's own flags (``--budget 20``) passes through instead of being taken
+    for the script."""
+    ns, rest = _parse_args(["-m", "pkg.mod", "--model", "x", "--budget", "20"])
+    assert (ns.script, ns.module, ns.model) == (None, "pkg.mod", "x")
+    assert rest == ["--budget", "20"]
+    assert _parse_args(["s.py", "-m", "pkg.mod"])[1] == ["s.py"]
+    for argv in (["-m"], ["-m", "a", "-m", "b"]):
+        with pytest.raises(SystemExit):
+            _parse_args(argv)
+
+
 def test_reasoning_effort_is_unset_unless_asked_for():
     """No ``--reasoning-effort`` means the parameter is absent from the request.
 
@@ -112,11 +125,19 @@ def test_reasoning_effort_is_forwarded_when_asked_for():
 
 
 @pytest.mark.parametrize(
-    "model", ["gpt-5-mini", "gpt-5", "gpt-4o-mini", "claude-sonnet-5", "not-a-model"]
+    "model",
+    [
+        "gpt-5-mini",
+        "gpt-5",
+        "gpt-4o-mini",
+        "claude-sonnet-5",
+        "not-a-model",
+        "openrouter/openai/gpt-5.6-terra",
+    ],
 )
 def test_provider_config_leaves_other_models_alone(model):
-    """Only the models that need the Responses API are rewritten. An unknown
-    name is left alone rather than rewritten on a guess."""
+    """Only OpenAI's own models that need the Responses API are rewritten. An
+    unknown name, or the same model through another provider, is left alone."""
     ns, _ = _parse_args(["s.py", "--model", model])
     assert _provider_config(ns)["model"] == model
 
@@ -131,10 +152,11 @@ def test_gpt_5_4_plus_is_routed_to_the_responses_api():
     ``reasoning_effort`` is not None, so omitting the parameter (correct in
     itself) also opts the model out of the endpoint its tool calls require.
     """
-    ns, _ = _parse_args(["s.py", "--model", "gpt-5.6-terra"])
-    config = _provider_config(ns)
-    assert config["model"] == "openai/responses/gpt-5.6-terra"
-    assert "reasoning_effort" not in config
+    for model in ("gpt-5.6-terra", "openai/gpt-5.6-terra"):
+        ns, _ = _parse_args(["s.py", "--model", model])
+        config = _provider_config(ns)
+        assert config["model"] == "openai/responses/gpt-5.6-terra"
+        assert "reasoning_effort" not in config
 
 
 def test_an_explicit_reasoning_effort_routes_itself():

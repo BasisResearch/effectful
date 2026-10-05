@@ -1,7 +1,15 @@
 """Expose MCP tools and their structured and multimodal results to the harness.
 
-The interpretation connects the FastMCP client around skill calls, using the
-application's event loop from the synchronous harness's worker threads.
+`MCPTools` is the handler: `MCPTools.call_agent` holds the FastMCP client's
+connection across an outermost Skill call and `MCPTools.call_assistant` offers
+the server's current catalog as `_MCPTool`\\ s, whose results are `_MCPResult`
+values built by `_content_blocks`. `_call_on_loop` runs client coroutines on the
+client's loop from the harness's worker threads; `background_loop` supplies a
+loop to applications that have none. ``harness(mcp_config=...)`` and the
+launcher's ``--mcp-config`` install it from a ``{"mcpServers": ...}`` mapping.
+MCP tools have no ``# Harness`` section and are not suppressed by
+``tool_collection="none"``. :mod:`effectful.handlers.llm.examples.acp.assistant`
+forwards an editor's MCP servers this way.
 """
 
 import asyncio

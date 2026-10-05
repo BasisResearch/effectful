@@ -1,5 +1,22 @@
 """Threshold-driven compaction of an agent transcript: lossy, by the harness, or
-forced on the model."""
+forced on the model.
+
+`compact_` is the primitive: it drops part of the ambient history for a
+`CompactionScope`, which documents what each scope keeps. ``exec_code`` and
+``write_and_run_body`` take a scope and call it from their ``call_tool`` rules on
+success (:mod:`~effectful.handlers.llm.harness.synthesis.snippet`, :mod:`~effectful.handlers.llm.harness.synthesis.body`). Two
+handlers compact without being asked: `ReplCompactor` forces the model to call
+``exec_code(compact=...)`` once a request is over budget
+(`ReplCompactor.call_assistant`), and `MiddleCompactor` truncates stale tool
+output and then summarizes older rounds itself
+(`MiddleCompactor.call_assistant`); they estimate request size differently,
+``litellm.token_counter`` against `_size`'s characters-over-four.
+
+Compaction rewrites messages and is not rollback: it neither resets nor rolls
+back Python state, the REPL namespace or ``self``, and the retained request is
+not re-rendered after ``self`` changes. Promote facts or capabilities that must
+outlive transcript deletion onto program-owned state before compacting.
+"""
 
 import collections.abc
 import dataclasses
@@ -46,7 +63,7 @@ def compact_(
     tool_call_id: ToolCallID,
     scope: CompactionScope,
 ) -> None:
-    """Compact a history in-place, keeping the request and the asking round.
+    """Compact `history` in place for `scope` (see `CompactionScope`).
 
     `tool_call_id` identifies the call that asked, and so the round to keep: the
     assistant message advertising it, and everything after (which is exactly the
@@ -219,8 +236,12 @@ class MiddleCompactor(ObjectInterpretation):
 
     @implements(call_assistant)
     def call_assistant(self, messages, response_type, env, tools=frozenset()):
-        # The loop passes a snapshot, but changes must reach the transaction's
-        # buffer so subsequent requests and persisted agent history agree.
+        """Rewrite the ambient `HistoryBuilder` buffer, then send the compacted history.
+
+        Under `TenacityRetryer` the ambient buffer is the attempt's scratch copy,
+        so committed history is untouched and the summary is recomputed each
+        round; without a retryer it is the committed history itself.
+        """
         history = HistoryBuilder.get_history()
         compact_history = self._compact_history(history)
         if compact_history is history:

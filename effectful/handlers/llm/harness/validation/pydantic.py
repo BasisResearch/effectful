@@ -41,6 +41,8 @@ rejection there is a decoding failure, which
 `~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer` feeds back
 to the model as the instruction for its next attempt. So this handler governs
 the way in; the way out is contracted whether or not it is installed.
+
+`PydanticSkillArgValidator.call_agent` is the one rule.
 """
 
 import collections.abc

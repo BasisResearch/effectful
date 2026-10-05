@@ -1,7 +1,27 @@
 """Conversion between Python values and the model's wire format.
 
-Python values are converted to the content blocks, tool schemas and JSON
-payloads exchanged with the model, and the model's output is converted back.
+Prompt assembly: `PromptSection` is the nested-heading unit of the system and
+user messages, flattened by `_render_prompt_section`; `to_content_blocks` and
+`format_as_content_blocks` render values and format strings into content blocks.
+
+Codecs: `TypeToPydanticType` is the registry behind ``Encodable``
+(``Encodable.register`` writes to it). Registered here: ``complex``, finitary
+``tuple`` and ``NamedTuple`` (`_pydantic_type_tuple`), non-string-keyed mappings
+(`_pydantic_type_mapping`), PIL images, type values (`_pydantic_type_type`),
+serialize-only callables (`_serialize_callable`, `EncodedFunction`), and
+`_UndecodableReturn`, the refusing schema for a return no channel could
+instantiate; ``Term`` and ``Operation`` are refused.
+
+Tools: `_serialize_tool` and `_tool_description` build a tool's advertisement
+(`_default_marker` stands in for defaults under strict schemas);
+`_advertised_names` assigns the names a request's tools are called by;
+`_NameAndTool` pairs them; `DecodedToolCall` is a call bound to real arguments,
+decoded by `_validate_tool_call`. `_BoxedResponse` wraps a structured answer.
+The keys ``_NAME2TOOL_KEY``, ``_IS_FINAL_KEY`` and ``_TYPE_CHECK_ANCHOR_KEY``
+ride in the pydantic context; none is an identifier, so none can collide with a
+lexical name. Built-in multimodal encodings are exercised by
+:mod:`effectful.handlers.llm.examples.basics.image_input` and
+:mod:`effectful.handlers.llm.examples.basics.image_tool`.
 """
 
 import abc
@@ -87,9 +107,6 @@ def to_content_blocks(
     Inside JSON structures, separators match ``json.dumps`` defaults so that
     the linearization law holds for non-string encoded values:
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
-
-    Every text block goes through `_text_blocks`, so none of them is empty;
-    Anthropic rejects a request containing one.
     """
     if isinstance(value, str):
         return _text_blocks(value)
@@ -228,10 +245,6 @@ def _shift_headings(md: str, by: int) -> str:
 def _rebase_headings(md: str, top: int) -> str:
     """Renumber the headings in `md` so its shallowest one sits at level `top`,
     preserving relative nesting; text with no headings is returned unchanged.
-
-    Applied to every text block as a prompt is rendered, so a docstring written
-    with its own heading hierarchy nests beneath the section that carries it and
-    the assembled document has a single coherent outline.
     """
     if not md:
         return md
@@ -333,19 +346,9 @@ class DecodedToolCall[T]:
 
 
 class _NameAndTool(typing.NamedTuple):
-    """A `Tool` together with the name it is advertised to the model under.
-
-    A name is a property of the advertisement, not of the tool: the same `Tool`
-    can be offered to two different requests under two different names, and two
-    tools sharing a ``__name__`` (an `Agent` method bound to two instances, say)
-    must still be told apart.  `call_assistant` assigns the names and pairs each
-    one with its tool here, immediately before encoding; nothing else constructs
-    or consumes a `_NameAndTool`.
-
-    This exists so that the `ChatCompletionToolParam` encoding below can hang off
-    a type that actually *is* a tool advertisement, leaving `Tool` itself free to
-    encode as what it is -- a callable.
-    """
+    """A `Tool` paired with the name `_advertised_names` assigned it, so the
+    advertisement codec can hang off a type that *is* an advertisement and
+    `Tool` itself encodes as a callable."""
 
     name: str
     tool: Tool
@@ -355,7 +358,7 @@ class TypeToPydanticType(TypeEvaluator):
     """Substitute custom types with their Pydantic Annotated equivalents.
 
     Recursively walks a type annotation tree, replacing leaf types that have
-    registered Pydantic annotations (e.g., Image.Image -> PydanticImage) and
+    registered Pydantic annotations (e.g., Image.Image -> _pydantic_type_image) and
     reconstructing the full generic type.
 
     The result can be passed to pydantic.TypeAdapter() for automatic

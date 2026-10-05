@@ -8,10 +8,8 @@ where the code being run is trusted for some other reason;
 `~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`
 is the provider for anything else.
 
-It runs whatever it is given: type checking is a separate handler
-(`~effectful.handlers.llm.harness.validation.mypy.MypyTypeChecker` or
-`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker`), installed
-alongside this one when generated code should be checked before it runs.
+It runs whatever it is given; type checking is a separate layer,
+:mod:`~effectful.handlers.llm.harness.validation`.
 """
 
 import ast
@@ -96,14 +94,8 @@ class BuiltinExecutor(PromptInjectingInterpretation):
         bytecode: types.CodeType,
         env: dict[str, typing.Any],
     ) -> typing.Any:
-        """Evaluate `bytecode` for its value, discarding its binding effects.
-
-        The evaluation happens in a *copy* of `env`, because the operation's
-        contract is that `eval` yields a value and changes nothing: a walrus in
-        the expression -- or the ``__builtins__`` entry seeded here, which the
-        caller never asked for -- must not leak back into the caller's
-        environment. `exec` is the operation that does bind.
-        """
+        """Evaluate `bytecode` in a *copy* of `env`, so neither a walrus nor the
+        seeded ``__builtins__`` leaks back; the contract is `hooks.eval`'s."""
         g = dict(env)
         g.setdefault("__builtins__", __builtins__)
         return builtins.eval(bytecode, g, g)
@@ -114,13 +106,7 @@ class BuiltinExecutor(PromptInjectingInterpretation):
         bytecode: types.CodeType,
         env: dict[str, typing.Any],
     ) -> None:
-        """Execute `bytecode` in `env`, keeping whatever it binds.
-
-        Unlike `eval`, this runs against `env` itself, and passes it as both
-        globals and locals so execution is module-style: a top-level ``def`` or
-        assignment lands in `env` and is visible to the next statement executed
-        there, which is what makes a sequence of snippets behave like a session
-        rather than a series of unrelated fragments.
-        """
+        """Execute `bytecode` against `env` itself as globals and locals, module-style,
+        so a top-level ``def`` or assignment lands in `env`; the contract is `hooks.exec`'s."""
         env.setdefault("__builtins__", __builtins__)
         builtins.exec(bytecode, env, env)

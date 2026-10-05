@@ -1,41 +1,21 @@
-"""LLM-implemented functions via algebraic effects.
+"""The API types: `Skill`, `Tool`, `Agent`, `Encodable` and `Template`.
 
-`effectful.handlers.llm` lets you write Python functions whose bodies are
-implemented by a large language model, and call them like ordinary code.
+The class docstrings here are model-facing: `Skill`'s opens every system prompt,
+and `Tool`, `Agent` and `Encodable`'s are appended when code execution is enabled
+(:mod:`~effectful.handlers.llm.harness.legibility.framework`). Write them for the model. The programmer's
+guide is :mod:`effectful.handlers.llm`; the runtime is :mod:`effectful.handlers.llm.harness`.
 
-## Core concepts
-
-- **`Skill`** — a fully type-annotated Python function whose body is `raise
-  NotHandled` and whose docstring is a [format
-  string](https://docs.python.org/3/library/string.html#format-string-syntax)
-  prompt. Calling a skill (under a provider) formats its arguments into the
-  prompt, invokes the model, and decodes the response to the skill's declared
-  return type. Define one with the `Skill.define` decorator.
-
-- **`Tool`** — a normal Python callable exposed to the model. Its signature and
-  docstring become the schema the model sees; the model calls it by name with
-  JSON arguments and receives the encoded result. Tools in a skill's lexical
-  scope are offered to the model automatically; because scope is ordinary Python
-  scope, an `Agent` (or an enclosing function) naturally partitions tools and
-  skills into disjoint sets. Define one with `Tool.define`.
-
-- **`Agent`** — a class mixin giving each instance a persistent message history,
-  so its `Skill` methods accumulate conversation context across calls.
-  Instance attributes are available in prompts via `{self.attr}`.
-  Any class defining a `Skill` method acquires this behavior automatically
-  (see `Skill.__set_name__`); inheriting `Agent` explicitly is optional, and
-  remains the spelling static type checkers understand.
-
-- **`Encodable`** — the type-driven JSON bridge used internally to encode Python
-  values into the model's context and decode the model's output (structured
-  return values and tool-call arguments) back into typed Python objects.
-
-## Tool calling and structured output
-
-A skill call is a multi-turn loop, and how it runs -- how the two messages are
-assembled, when the model may call a tool, how its answer is decoded -- belongs
-to the handler implementing it: see
-`effectful.handlers.llm.harness.hooks.AgentLoop`.
+- `Tool`: a typed callable the model may call; `Tool.define` binds its type
+  parameters from the decorated function.
+- `Skill`: a Tool answered by the model. `Skill.define` captures the lexical
+  context and validates the prompt (`Skill._validate_prompt`,
+  `Skill._validate_doctests_constant`); `Skill.__set_name__` makes the owning
+  class an `Agent`; `Skill.__get__` binds a receiver and its history.
+- `Template`: deprecated alias of `Skill`.
+- `Agent`: the receiver whose `Agent.__history__` a bound Skill extends;
+  `Agent.__is_persistent__` decides whether a persistence handler is consulted.
+- `Encodable`: the type-driven codec; `Encodable.register` adds a type, and the
+  registry it writes to is `~effectful.handlers.llm.harness.serialization.TypeToPydanticType`.
 """
 
 import abc
@@ -61,38 +41,31 @@ __all__ = ["Agent", "Skill", "Template", "Tool", "Encodable"]
 
 
 class Tool[**P, T](effectful.ops.types.Operation[P, T]):
-    """A `Tool` is a function that may be called by a `Skill`.
+    """A Tool is a typed Python callable the model may call during a Skill's call.
 
-    A `Tool` wraps a normal Python callable; its signature (parameter types
-    and return type) and docstring define the schema the model sees, and the
-    model invokes it by name with JSON arguments.
+    Its signature and docstring are the schema the model sees: the docstring says
+    when and what for, the parameter annotations what to pass, the return
+    annotation what comes back. How a tool is invoked -- JSON arguments or a Python
+    call expression -- is fixed by its signature and stated in the tool's own
+    description. Arguments and results cross the model boundary through
+    `Encodable`.
 
-    ## Example usage
+    Define one with `Tool.define` on a documented, fully annotated function or
+    method. Tools are offered by lexical scope: module globals, enclosing-function
+    locals, and sibling methods on the receiver of a method Skill. A Skill is a
+    Tool, so one Skill may call another::
 
-    Skills may call any tool that is in their lexical scope. In the
-    following example, the LLM suggests a vacation destination using the
-    `cities` and `weather` tools:
+        @Tool.define
+        def weather(city: str) -> str:
+            \"\"\"Return a one-line weather report for `city`.\"\"\"
+            return {"Chicago": "cold", "Barcelona": "sunny"}.get(city, "unknown")
 
-    ```python
-    @Tool.define
-    def cities() -> list[str]:
-        \"\"\"Return a list of cities that can be passed to `weather`.\"\"\"
-        return ["Chicago", "New York", "Barcelona"]
+        @Skill.define
+        def pack(city: str) -> list[str]:
+            \"\"\"List what to pack for {city}, after checking `weather`.\"\"\"
 
-    @Tool.define
-    def weather(city: str) -> str:
-        \"\"\"Given a city name, return a description of the weather in that city.\"\"\"
-        status = {"Chicago": "cold", "New York": "wet", "Barcelona": "sunny"}
-        return status.get(city, "unknown")
-
-    @Skill.define  # cities and weather auto-captured from lexical scope
-    def vacation() -> str:
-        \"\"\"Use the `cities` and `weather` tools to suggest a city that has good weather.\"\"\"
-    ```
-
-    Class methods may be used as skills, in which case any other methods
-    decorated with `Tool.define` will be provided as tools.
-
+    A tool enforces its own preconditions. Being offered is an affordance, not an
+    authority boundary: code the model writes can reach anything in scope.
     """
 
     def __init__(
@@ -179,77 +152,64 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
 
 
 class Skill[**P, T](Tool[P, T]):
-    """A `Skill` is a function that is implemented by a large language model.
+    """A Skill is a typed Python function whose result is a language model's answer
+    to one call. Its signature is the contract: the parameters are the call's inputs
+    and the return annotation is the type the answer is decoded to. Its docstring is
+    the request, a format string whose `{...}` fields are filled from the call's
+    arguments and lexical scope when the call is made; values are rendered as the
+    JSON encoding of their type, and images as image blocks.
 
-    ## Constructing Skills
+    A `str` answer is taken verbatim. Any other return type is decoded from the
+    model's structured output and validated against the annotation, including
+    `Annotated` validators, before the caller sees it; an answer that fails is
+    rejected::
 
-    Apply `Skill.define` as a decorator to a fully type-annotated function or
-    method whose body is either empty or `raise NotHandled`. The docstring is a
-    [format string](https://docs.python.org/3/library/string.html#format-string-syntax)
-    prompt: its `{...}` fields are filled at call time (see
-    `effectful.handlers.llm.harness.hooks.AgentLoop`, which assembles the
-    messages) and the LLM's response is decoded to the return type.
+        @dataclasses.dataclass
+        class Verdict:
+            accepted: bool
+            reasons: list[str]
 
-    `Skill.define` validates the definition and raises if:
+        @Skill.define
+        def review(draft: str) -> Verdict:
+            \"\"\"Review {draft} for clarity and give reasons.\"\"\"
 
-    - the function has no docstring (every `Tool` needs one);
-    - a `{...}` field names something that is neither a parameter nor a name in
-      lexical scope — every field must resolve at call time;
-    - a doctest example (`>>>`) in the docstring contains an active `{...}` field:
-      doctests must be constant, since the whole docstring is formatted into the
-      prompt at call time; escape any literal braces as `{{` and `}}`.
+    A Skill defined as a method is called on a receiver, `self`: an ordinary object
+    whose attributes the request may interpolate, whose earlier calls precede the
+    current one in the conversation, and whose mutations outlive the call. The Tools
+    and Skills in a Skill's lexical scope, including sibling methods on `self`, are
+    the capabilities offered during its call; a Skill is itself a Tool, so Skills
+    compose::
 
-    See `effectful.ops.types.Operation.define` for more on `Skill.define`.
+        @dataclasses.dataclass
+        class Librarian:
+            notes: dict[str, str]
 
-    The following skill writes limericks on a given theme:
+            @Tool.define
+            def lookup(self, topic: str) -> str:
+                \"\"\"Return the note filed under `topic`.\"\"\"
+                return self.notes.get(topic, "no note")
 
-    ```python
-    @Skill.define
-    def limerick(theme: str) -> str:
-        \"\"\"Write a limerick on the theme of {theme}. Do not use any tools.\"\"\"
-    ```
+            @Skill.define
+            def answer(self, question: str) -> str:
+                \"\"\"Answer {question} from the notes, calling `lookup` as needed.\"\"\"
 
-    ## Structured output
+    A Skill assigned onto an object after its class was created stays a free Skill:
+    it binds no receiver and joins no history.
 
-    Skills may return types that are not strings.
-    The output from the LLM is then decoded before being returned to the user.
+    Define one with `Skill.define` on a fully annotated function or method whose
+    body is empty or `raise NotHandled`. The definition is rejected if it has no
+    docstring, if a field names something that is neither a parameter nor in
+    lexical scope, or if a `>>>` example contains an active field; write literal
+    braces as `{{` and `}}`.
 
-    For example, this skill returns integers:
+    ## Learning more, from Python
 
-    ```python
-    @Skill.define
-    def primes(first_digit: int) -> int:
-        \"\"\"Give a prime number with {first_digit} as the first digit. Do not use any tools.\"\"\"
-    ```
-
-    Structured generation is used to constrain the LLM to return values that can be decoded without error.
-
-    Skills can return complex data structures, such as dataclasses:
-
-    ```python
-    @dataclass
-    class KnockKnockJoke:
-        whos_there: str
-        punchline: str
-
-    @Skill.define
-    def write_joke(theme: str) -> KnockKnockJoke:
-        \"\"\"Write a knock-knock joke on the theme of {theme}. Do not use any tools.\"\"\"
-    ```
-
-    Many common Python data types are decodable without additional effort.
-    To register a decoder for a custom type, see `effectful.handlers.llm.encoding.type_to_encodable_type`.
-
-    ## Using tools
-
-    Instances of `Tool` in a `Skill`'s lexical scope may be called by the LLM
-    during completion, and are offered automatically. Scope follows ordinary
-    Python rules: enclosing-function locals, module globals, and — for a method
-    skill — sibling `Tool`/`Skill` methods on the same class. A skill
-    cannot call a tool it cannot lexically see, so it should use only tools that
-    are in scope and relevant to the task. Skills are themselves tools,
-    enabling composition into agent workflows.
-
+    - `print(effectful.handlers.llm.__doc__)`: the programming model, and how to
+      choose what becomes a Skill, a Tool, or a receiver.
+    - `print(effectful.handlers.llm.harness.__doc__)`: how a call runs, what is kept
+      between calls, and what each installed handler adds.
+    - `effectful.handlers.llm.examples`: complete runnable programs, one per
+      pattern; read one with `inspect.getsource(module)`.
     """
 
     __context__: collections.ChainMap[str, typing.Any]
@@ -442,12 +402,13 @@ class Skill[**P, T](Tool[P, T]):
     def define(cls, default: typing.Any, *args, **kwargs) -> typing.Any:
         """Define a skill.
 
-        `define` takes a function and can be used as a decorator.
-        The function's docstring should be a prompt, which may be templated in the function arguments.
-        The prompt will be provided with any instances of `Tool` that exist in the lexical context as callable tools.
+        Captures the defining module's globals and true enclosing-function locals
+        as ``__context__`` (enclosers are found by matching ``__qualname__``
+        segments before ``<locals>`` against the frame stack; class bodies are
+        skipped), records the module source for ``_recover_skill_def``, then
+        validates the prompt (`_validate_prompt`, `_validate_doctests_constant`).
 
-        See `effectful.ops.types.Operation.define` for more information on the use of `Skill.define`.
-
+        See `effectful.ops.types.Operation.define` for the decorator forms.
         """
         frame = inspect.currentframe()
         assert frame is not None
@@ -517,98 +478,41 @@ class Skill[**P, T](Tool[P, T]):
 Template = Skill
 
 
+# Not a dataclass: `dataclasses.is_dataclass` is inherited, so every subclass with
+# a hand-written `__init__` would look like one to the generic dataclass-replace
+# machinery. Nothing here depends on construction order: `__agent_id__` and
+# `__is_persistent__` are read lazily, on first use.
 class Agent(abc.ABC):
-    """Mixin that gives each instance a persistent LLM message history.
+    """An Agent is an object that owns the conversation its Skill methods extend.
 
-    Decorate methods with `Skill.define`. Each instance accumulates messages
-    across calls so the LLM sees prior conversation context.
+    Any class that defines a Skill method is an Agent: each instance keeps a message
+    history, a successful call on it adds that call's messages, and later calls read
+    them, so a reused receiver carries context across calls. Instance attributes are
+    available to its Skills' docstrings as `{self.attr}` and to code the model
+    writes as `self`. Mutating the object is ordinary Python and is not undone when
+    a call fails.
 
-    Subclassing `Agent` is optional: any class that defines a `Skill` method
-    in its body acquires this behavior automatically -- `Skill.__set_name__`
-    copies `Agent`'s attributes onto the class and registers it as a virtual
-    subclass, so ``isinstance(obj, Agent)`` holds for its instances. Explicit
-    inheritance remains supported and is what static type checkers understand
-    (an auto-agentified class's ``__agent_id__``/``__history__`` are invisible
-    to them). Skills attached to a class after creation via ``setattr``,
-    classes containing only `Tool` methods, and fully ``__slots__``-ed classes
-    (whose instances have no ``__dict__`` to hold the history) are not
-    auto-agentified.
+    Set `self.__agent_id__` to a stable string to persist the history and declared
+    dataclass fields across processes when a persistence handler is installed;
+    leave it unset for a transient instance. It is read on first use, so install
+    persistence before the instance's first Skill call.
 
-    Agents compose freely with `dataclasses.dataclass` and other
-    base classes.  Instance attributes are available in skill
-    docstrings via `{self.attr}`.
+    Agents compose with `dataclasses.dataclass` and other bases. Subclassing
+    `Agent` explicitly is optional at runtime and is what static type checkers
+    understand::
 
-    Set `self.__agent_id__` (a plain attribute, read lazily -- see below) to make
-    this instance's history and declared dataclass fields persist across
-    process restarts when a persistence handler (see
-    `effectful.handlers.llm.harness.durability.persistence.SQLitePersister`) is installed.
-    Leave it unset (the default) for a normal, transient instance -- it still
-    gets a private history, just not backed by any database, and it is never
-    checkpointed even if a persistence handler happens to be active.
+        @dataclasses.dataclass
+        class Reviewer(Agent):
+            __agent_id__: str = ""
+            lessons: list[str] = dataclasses.field(default_factory=list)
 
-    `Agent` itself is deliberately *not* a dataclass (making it one would
-    make every subclass, even ones with a hand-written `__init__`, look like
-    a dataclass too -- `dataclasses.is_dataclass()` is inherited -- which
-    breaks any such subclass under `effectful`'s generic dataclass-replace
-    evaluation machinery). Nothing here depends on constructor timing, so
-    there's no chaining requirement of any kind: `__agent_id__` and
-    `__persistent__` are derived lazily, on first access, from whatever
-    `self.__agent_id__` happens to be at that point -- a subclass just needs
-    `self.__agent_id__` to end up set to a stable string, however it prefers to
-    do that (a `@dataclass` field, a custom `__init__`, or nothing at all,
-    for a transient instance).
+            @Skill.define
+            def review(self, draft: str) -> str:
+                \"\"\"Review {draft}, applying {self.lessons} from earlier reviews.\"\"\"
 
-    Don't force access to `__history__` from within your own `__init__` --
-    it's meant to load lazily, on first real use, not at construction time.
-
-    Example:
-
-    ```python
-    @dataclass
-    class ChatBot(Agent):
-        bot_name: str
-
-        @Skill.define
-        def send(self, user_input: str) -> str:
-            \"""Friendly bot named {self.bot_name}. User writes: {user_input}\"""
-
-    def main():
-        chatbot = ChatBot()
-        chatbot.send("Hi! How are you? I am in France.")
-        chatbot.send("Remind me again, where am I?")  # sees prior context
-    ```
-
-    ## Encapsulation via lexical scope
-
-    Since scope is ordinary Python scope, defining agents inside a function
-    partitions their `Skill`s and `Tool`s into disjoint sets:
-
-    ```python
-    class Chatbot(Agent):
-        @Skill.define
-        def respond(self, user_query: str) -> str: ...
-
-    class TravelAdvisor(Agent):
-        @Skill.define
-        def recommend(self, user_query: str) -> str: ...
-        @Tool.define
-        def search_weather(self, city: str) -> str: ...
-
-    def main():
-        chatbot, advisor = Chatbot(), TravelAdvisor()
-
-        @Skill.define
-        def simulate(chatbot, advisor) -> str:
-            \"""Use {chatbot} and {advisor} to simulate a conversation.\"""
-            ...
-    ```
-
-    `chatbot.respond` sees only its own methods (plus module-level definitions),
-    not `advisor`'s; `simulate` sees `chatbot` and `advisor`, but they cannot see
-    `simulate`. Inlining these definitions into module scope instead would let
-    every skill see every other. Agents that need overlapping toolsets should
-    share tools through a common base class or mixin rather than redefining them.
-
+    Defining agents inside a function partitions their Skills and Tools by lexical
+    scope: a Skill sees its receiver's methods and whatever its definition could
+    see, and nothing else.
     """
 
     def __init__(self, __agent_id__: str | None = None):
@@ -620,6 +524,7 @@ class Agent(abc.ABC):
     @property
     @typing.final
     def __is_persistent__(self) -> bool:
+        """Whether a persistence handler should checkpoint this instance: false for an unset or ``EPHEMERAL-`` id."""
         if not hasattr(self, "__agent_id__"):
             self.__agent_id__ = f"EPHEMERAL-{uuid.uuid4()}"
         return len(self.__agent_id__) > 0 and not self.__agent_id__.startswith(
@@ -630,6 +535,7 @@ class Agent(abc.ABC):
     def __history__(
         self,
     ) -> collections.abc.MutableSequence[collections.abc.Mapping[str, typing.Any]]:
+        """This instance's messages; cached on first access, which is when an active persistence handler restores it."""
         history: collections.abc.MutableSequence[
             collections.abc.Mapping[str, typing.Any]
         ] = []
@@ -662,27 +568,27 @@ if typing.TYPE_CHECKING:
 else:
 
     class Encodable:
-        """The type-driven JSON bridge between Python values and the LLM.
+        """`Encodable[T]` is the type-driven bridge between Python values of type `T` and
+        the model.
 
-        `Encodable[T]` maps a Python type `T` to a Pydantic-compatible type
-        whose JSON schema and (de)serialization the harness uses to move
-        values across the model boundary in both directions:
+        Values going to the model -- interpolated arguments, tool results -- are
+        rendered as the JSON encoding of their type, with images and other media as
+        content blocks. Values coming back -- a Skill's structured answer, a tool
+        call's arguments -- are validated and decoded through the same schema, so
+        Python code receives the declared type.
 
-        - **Encoding (Python -> model):** argument and tool-result *values*
-            spliced into prompts are serialized to JSON via `Encodable[type]`,
-            so the model sees a faithful, schema-shaped rendering of each value
-            (including non-text values such as images, emitted as content
-            blocks).
-        - **Decoding (model -> Python):** a `Skill`'s structured return
-            value and the arguments of every tool call are validated and
-            decoded from the model's JSON back into real Python objects through
-            the same `Encodable[type]` schema, so the value handed to your code
-            already has the declared type.
+        Pydantic-compatible types need nothing. Register a representation for any other
+        type with `Encodable.register`; it fixes both the schema the model sees and the
+        validation applied to what the model returns::
 
-        Custom types register their JSON representation with
-        `Encodable.register`. Because the encoding is derived from the *type*,
-        it is the single source of truth for both the schema shown to the model
-        and the validation applied to its output.
+            @Encodable.register(Money)
+            def encode_money(typ):
+                return Annotated[
+                    typ,
+                    pydantic.BeforeValidator(lambda v: v if isinstance(v, Money) else Money(v)),
+                    pydantic.PlainSerializer(lambda m: m.cents),
+                    pydantic.WithJsonSchema({"type": "integer"}),
+                ]
         """
 
         def __class_getitem__(cls, item):

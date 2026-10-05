@@ -1,3 +1,15 @@
+"""The four operations an eval provider implements: `parse`, `compile`, `eval`, `exec`.
+
+Every piece of model-authored Python the harness runs -- REPL snippets,
+synthesized bodies and returned callables, tool-call expressions, and the
+doctests of all of these -- goes through these operations rather than the
+builtins, so one installed provider decides how all of it is parsed, compiled
+and run. They have no default rule: each raises ``NotImplementedError`` until
+:mod:`~effectful.handlers.llm.harness.execution.builtin` or :mod:`~effectful.handlers.llm.harness.execution.restricted` is installed.
+Each operation's docstring states its signature contract; `compile` explains why
+it alone mirrors its builtin.
+"""
+
 import ast
 import types
 import typing
@@ -69,9 +81,8 @@ def eval(
 
     Deliberately ``(bytecode, env)``, symmetric with the sibling `exec`
     operation, rather than `builtins.eval`'s ``(source, globals, locals)``.
-    Only `compile` mirrors its builtin, and only because `run_doctests` rebinds
-    ``doctest.compile`` to it positionally; nothing stands this operation in
-    for the builtin, ``globals=None`` ("use the caller's frame") is meaningless
+    Nothing stands this operation in for the builtin (`compile` explains why it
+    alone mirrors one), ``globals=None`` ("use the caller's frame") is meaningless
     as an effect operation, and accepting ``str`` source would collapse the
     parse -> compile -> eval separation the operations are built on.
     """

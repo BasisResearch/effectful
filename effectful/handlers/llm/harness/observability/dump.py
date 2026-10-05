@@ -1,3 +1,15 @@
+"""Writing the assembled system prompt to a file for inspection.
+
+`SystemPromptDumper` is the handler (`SystemPromptDumper.call_system` writes
+after forwarding); `_message_text` flattens message content to text.
+
+The file is a diagnostic, not a transcript: it holds only the latest *candidate*
+system prompt, is rewritten on every Skill call, and omits the per-call user
+message. A bound receiver keeps the system message of its first committed call,
+so on a later call the conversation the model sees can differ from the dump. How
+to read it: :mod:`effectful.handlers.llm.harness`, "Debugging what the model could know".
+"""
+
 import collections.abc
 import dataclasses
 import pathlib
@@ -13,7 +25,7 @@ def _message_text(content: None | str | collections.abc.Iterable[typing.Any]) ->
 
     ``content`` may be a plain string or a list of content blocks (dicts with a
     ``type`` discriminator, e.g. ``{"type": "text", "text": ...}``, as produced
-    by :func:`~effectful.handlers.llm.encoding.to_content_blocks`). Text blocks
+    by :func:`~effectful.handlers.llm.harness.serialization.to_content_blocks`). Text blocks
     contribute their text; other block types show a ``[type]`` placeholder.
     """
     if content is None:
@@ -34,11 +46,9 @@ def _message_text(content: None | str | collections.abc.Iterable[typing.Any]) ->
 
 @dataclasses.dataclass(frozen=True)
 class SystemPromptDumper(ObjectInterpretation):
-    """Dump the system prompt produced by `call_system` to a Markdown file.
+    """Opt-in debugging handler that writes each assembled system prompt to `path`.
 
-    Opt-in debugging handler: intercepts `call_system`, forwards to let the
-    prompt be assembled and installed as usual, then writes the resulting
-    system message content to `path`, overwriting the whole file each time.
+    Install with ``harness(dump_system_prompt=PATH)`` or ``--dump-system-prompt``.
     """
 
     path: pathlib.Path

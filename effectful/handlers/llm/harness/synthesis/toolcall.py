@@ -1,38 +1,16 @@
 """Calling lexically scoped tools by writing Python expressions.
 
-`ExpressionToolCaller` is the code-generation *transformation stage* over the
-lexical tools an extractor
-(`~effectful.handlers.llm.harness.legibility.lexical.LexicalToolExtractor` or
-``ImplicitToolExtractor``) discovered (issues #489/#505): instead of leaving
-each lexical tool advertised with a JSON ``parameters`` schema -- degenerate
-for a polymorphic tool, whose parameter types carry TypeVars -- every lexical
-tool arriving in the request's ``tools`` is replaced by a wrapper so the model
-must write a call *expression*. Decoding the expression does all the work up
-to the call itself (type check, callee check, argument evaluation; see
-`_pydantic_type_call_expression`), so a bad expression is a
-`ToolCallDecodingError` the retry loop feeds back. The decoded `CallExpression`
-IS a `DecodedToolCall` for the underlying tool; `call_assistant` substitutes it
-for the wrapper's call, so `call_tool` and every handler of it see the real tool
-bound to real argument values.
-
-`MixedToolCaller` is the default lexical tool caller, and narrows this to the
-tools that need it: schema-constrained JSON arguments where a schema can
-describe the tool faithfully, the expression pathway where it cannot. Everything
-but the partition predicate (`MixedToolCaller._should_wrap`) is inherited. A
-model that prefers writing code can still call any JSON tool from the REPL
-(``exec_code``) where
-`~effectful.handlers.llm.harness.synthesis.snippet.StatefulReplSynthesizer` is
-installed.
-
-Install either caller *above* an extractor -- the extractor is the sole source
-of lexical tools, so a caller without one beneath it has nothing to wrap --
-and below anything else that contributes tools: tools arriving from other
-handlers pass through untouched, and the anchor Skill must not be wrapped (the
-default `call_assistant` rule subtracts it by identity, which cannot see
-through a wrapper), so it is excluded rather than wrapped. An eval provider
-(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
-`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
-must be installed for the `parse`/`compile`/`eval` operations.
+`ExpressionToolCaller` replaces each lexical tool in a request with an
+`_ExpressionToolCallTool` wrapper whose single ``call`` argument is Python
+source (`ExpressionToolCaller.call_assistant`, which also substitutes the
+decoded call for the wrapper's on the way back). `_pydantic_type_call_expression`
+decodes that source into a `CallExpression`, a `DecodedToolCall` for the
+underlying tool with its arguments already evaluated (`_eval_node`;
+`_scan_escaping_walrus` rejects bindings that would escape).
+`MixedToolCaller` narrows wrapping to the tools a JSON schema cannot describe
+(`MixedToolCaller._should_wrap`). Install a caller above an extractor
+(:mod:`~effectful.handlers.llm.harness.legibility.lexical`) and below other tool contributors; the anchor
+Skill is excluded rather than wrapped. Decoding needs an eval provider.
 """
 
 import ast
@@ -117,7 +95,7 @@ def _scan_escaping_walrus(root: ast.expr) -> None:
     """Reject a walrus assignment that would bind a name in the enclosing scope.
 
     An expression must be pure with respect to the session it evaluates in: its
-    bindings are discarded (the `eval` operation propagates none), it is not
+    bindings are discarded (`hooks.eval`'s contract), it is not
     recorded in `StatefulReplSynthesizer.repl_history`, and later snippets are
     type-checked without it -- so a walrus that *escapes* would produce a name
     the model can see succeed and then silently lose.  Rejecting it here turns

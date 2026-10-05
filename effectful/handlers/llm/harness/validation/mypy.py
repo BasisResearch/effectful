@@ -1,17 +1,9 @@
 """Type checking of generated code by shelling out to mypy.
 
-`MypyTypeChecker` is independent of any executor: it says how generated code is
-*checked*, not how it is parsed, compiled or run, so it is installed alongside
-whichever of those handlers a stack uses::
-
-    handler(MypyTypeChecker()), handler(BuiltinExecutor())
-
-rather than being part of one.
-
-It is interchangeable with
-`~effectful.handlers.llm.harness.validation.ty.TyTypeChecker`, which implements
-the same operation with the same contract and is substantially faster; that
-module's docstring compares the two.
+`MypyTypeChecker` implements ``type_check`` (:mod:`~effectful.handlers.llm.harness.validation.hooks`) with
+the same contract as :mod:`~effectful.handlers.llm.harness.validation.ty`'s `TyTypeChecker`, which is
+substantially faster; that module's docstring compares the two. Prefer ty unless
+a stack specifically needs mypy's analysis.
 """
 
 import dataclasses

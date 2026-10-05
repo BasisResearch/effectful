@@ -8,13 +8,8 @@ check costs milliseconds where mypy's costs seconds, and on the failure path it
 reports the offending line with ty's own hints rather than a line of JSON. Prefer
 it unless a stack specifically needs mypy's analysis.
 
-Either checker is independent of any executor: it says how generated code is
-*checked*, not how it is parsed, compiled or run, so it is installed alongside
-whichever of those handlers a stack uses::
-
-    handler(TyTypeChecker()), handler(BuiltinExecutor())
-
-rather than being part of one.
+The operation's contract, and how a checker composes with an executor, is in
+:mod:`~effectful.handlers.llm.harness.validation.hooks`.
 """
 
 import dataclasses

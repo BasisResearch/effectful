@@ -1,37 +1,37 @@
 """Answering a `Skill` by synthesizing its body.
 
-This is the declarative "CodeAdapt" workflow: the LLM writes code implementing
-the body of the Skill rather than reasoning out the answer itself.
-`FinalBodySynthesizer` offers the synthesis tool *alongside* the Skill's normal
-completion paths rather than replacing them -- across turns the model may freely
-call any other tool in scope (their results are fed back as usual), and it may
-still answer the return type directly via structured output. The loop terminates
-when it either answers directly or calls ``write_and_run_body``. To force the
-synthesis path, pass ``tool_choice="required"``; handler config is forwarded to
-the model request.
+`FinalBodySynthesizer` offers ``write_and_run_body`` alongside the Skill's
+direct answer (`FinalBodySynthesizer.call_agent` builds the per-call
+`_SubmitSolutionTool`; `FinalBodySynthesizer.call_tool` marks a successful
+submission final and applies its ``compact``). The submitted source is decoded
+as a `SkillBody` or `MethodSkillBody` by `_pydantic_skill_body` and
+`_pydantic_method_skill_body`, which splice it under the Skill's own header with
+`_splice_body`, type-check it, and run the Skill's doctests against it. Decoding
+needs an eval provider. To force the synthesis path, set the provider's
+``tool_choice="required"`` (the launcher's ``--tool-choice required``), which
+forbids a direct reply.
 
-The function is synthesized by reusing the existing ``Callable`` synthesis
-machinery: the tool's argument is typed as ``Callable[[params], ret]``, so
-`call_assistant`'s tool-call decoding parses, type-checks, compiles and executes
-the model's code into a real function before it is applied. An eval provider
-(`~effectful.handlers.llm.harness.execution.builtin.BuiltinExecutor` or
-`~effectful.handlers.llm.harness.execution.restricted.RestrictedPythonExecutor`)
-must therefore be installed.
+.. rubric:: Caller-authored checks
 
-Failures compose with
-`~effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`: a function
-that fails to synthesize surfaces as a `ToolCallDecodingError`, and one that
-raises when applied to the inputs as a `ToolCallExecutionError`; both are fed
-back to the model as a tool message and the loop continues so it can revise::
+Write fixed examples in the Skill docstring when the caller, not the model, must
+own the executable checks::
 
-    with (
-        handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="gpt-5-mini")),
-        handler(HistoryBuilder()),
-        handler(FinalBodySynthesizer()),
-        handler(TenacityRetryer()),
-    ):
-        ...
+    from effectful.handlers.llm import Skill
+
+
+    @Skill.define
+    def gcd(a: int, b: int) -> int:
+        \"\"\"Return the greatest common divisor of {a} and {b}.
+
+        >>> gcd(54, 24)
+        6
+        >>> gcd(17, 13)
+        1
+        \"\"\"
+
+``write_and_run_body`` is a model-facing Tool; do not call it from application
+code. See :mod:`effectful.handlers.llm.examples.reasoning.countdown` and
+:mod:`effectful.handlers.llm.examples.reasoning.fix_typos`.
 """
 
 import ast
@@ -86,7 +86,7 @@ def _splice_body(
 ) -> SplicedRegion:
     """Splice a synthesized function in as the anchor Skill's *own body*.
 
-    Unlike `splice_into_source` (which appends ``return <fn>`` and checks that the
+    Unlike `_splice_function` (which appends ``return <fn>`` and checks that the
     Skill returns the synthesized *function*), this treats the synthesized
     function as the Skill's implementation: the Skill keeps its own
     authoritative signature and its body becomes ``[<helpers/imports the model
@@ -131,9 +131,8 @@ def _splice_body(
     *body* is taken, under the Skill's own header.
 
     Returns the modified module source and the ``[lo, hi]`` line span from the
-    ``def`` line through the last body line, or ``None`` when the anchor's source
-    can't be recovered (REPL/notebook skill -- the caller skips rather than
-    guesses). Raises ``RuntimeError`` on source drift, via `_recover_skill_def`.
+    ``def`` line through the last body line. The caller skips the splice when the
+    anchor's source can't be recovered; `_recover_skill_def` raises on drift.
     """
     last = generated.body[-1]
     assert isinstance(last, ast.FunctionDef | ast.AsyncFunctionDef)
@@ -144,7 +143,7 @@ def _splice_body(
     # enforced. Any docstring/doctests in the recovered source are dropped.
     skill_def.body = [*generated.body[:-1], *last.body]
 
-    # Report the def line through the end of the body. Unlike `splice_into_source`,
+    # Report the def line through the end of the body. Unlike `_splice_function`,
     # the region starts at the `def` line (not the first body statement): mypy
     # anchors "Missing return statement"/"empty-body" there, and a body that doesn't
     # return the Skill's declared type is a real defect we want to catch. The
@@ -162,17 +161,9 @@ def _splice_body(
 
 
 class SkillBody:
-    """The synthesized *body* of a `Skill`, as opposed to a general `Callable`.
-
-    Used only as the type of `write_and_run_body`'s ``implementation`` parameter (see
-    `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`).  A `SkillBody[[P],
-    R]` carries the Skill's parameter and return types exactly like a
-    `Callable`, but gets its own `TypeToPydanticType` case (`_pydantic_skill_body`)
-    so the synthesized function is type-checked against the enclosing Skill's
-    source and its doctests run with self/recursive calls routed to the synthesized
-    implementation.  The enclosing `Skill` is recovered from the decode context
-    (the ``anchor``), so no state rides on the type itself.
-    """
+    """Marker type of ``write_and_run_body``'s ``implementation`` parameter, carrying
+    the Skill's parameter and return types like a `Callable`; its codec is
+    `_pydantic_skill_body`."""
 
     def __class_getitem__(cls, item):
         return types.GenericAlias(cls, item)
@@ -269,15 +260,8 @@ def _pydantic_skill_body(ty: typing.Any) -> typing.Any:
 
 
 class MethodSkillBody(SkillBody):
-    """A `SkillBody` for an *instance-method* Skill.
-
-    Carries the method/free distinction on the type's origin (context-free schema
-    generation reads it) so `write_and_run_body`'s description names the leading
-    receiver ``self`` and the receiver is exempt from the annotation requirement --
-    the model no longer has to reverse-engineer that the first parameter is ``self``.
-    The Skill's real signature (which includes the receiver) remains the
-    type-check contract; see `splice_skill_body`.
-    """
+    """`SkillBody` for an instance-method Skill, so the schema names the leading
+    ``self`` and exempts it from annotation; its codec is `_pydantic_method_skill_body`."""
 
 
 def _class_skill_of(op: typing.Any) -> typing.Any | None:

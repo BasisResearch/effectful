@@ -37,7 +37,11 @@ requires_vision = pytest.mark.skipif(
 # ============================================================================
 
 EXAMPLES_DIR = (
-    pathlib.Path(__file__).resolve().parent.parent / "docs" / "source" / "llm_examples"
+    pathlib.Path(__file__).resolve().parent.parent
+    / "effectful"
+    / "handlers"
+    / "llm"
+    / "examples"
 )
 
 

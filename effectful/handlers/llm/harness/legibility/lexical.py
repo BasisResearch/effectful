@@ -1,35 +1,21 @@
 """Making a `Skill`'s lexical scope legible to the model.
 
-`LexicalToolExtractor` unions `_tools_in_scope(env)` into a request's `tools`
-and forwards, so a `Skill` is offered the `Tool`/`Skill` values bound in its
-context (and those its in-scope `Agent`\\ s hold) without naming them itself.
-`ImplicitToolExtractor` widens that discovery: ordinary functions and methods
-in scope that look deliberately published -- public name, docstring, complete
-annotations (see `ImplicitToolExtractor._implicit_tool_candidate`) -- are
-wrapped with `Tool.define` and offered too, no decorator required. The section
-builders this module shares with the rest of the harness render the
-surrounding scope as prompt tables.
+Discovery: `LexicalToolExtractor` offers the `Tool`/`Skill` values bound in the
+Skill's context and those its in-scope `Agent`\\ s hold
+(`LexicalToolExtractor.call_assistant`); `ImplicitToolExtractor` also wraps
+ordinary functions and methods that pass
+`ImplicitToolExtractor._implicit_tool_candidate`. `_tool_paths` is the shared
+reachability walk, mapping each tool to the expression that names it;
+`_readable_attrs` is how an `Agent`'s class attributes are read safely.
 
-The extractors are the *discovery* stage of the tool pipeline, and the only
-one: the tool callers in
-`~effectful.handlers.llm.harness.synthesis.toolcall` *transform* the tools an
-extractor discovered (replacing lexical tools with expression wrappers) rather
-than re-walking the scope themselves. Install exactly one extractor per stack,
-below the tool caller and anything else that contributes tools, passing
-``json_only=False`` whenever a caller is installed above (see
-`LexicalToolExtractor.__init__`): the anchor `Skill` is dropped from the set
-by `call_assistant`'s default rule, and a tool caller without an extractor
-beneath it has no lexical tools to offer -- the request is well-formed either
-way, so the omission surfaces only as a model that never calls a tool it was
-supposed to have.
+Description: `_module_section`, `_agent_section`, `_skill_section`,
+`_imports_section` and `_vars_section` build the task half of the system
+message (`_binding_type` names a binding's type).
 
-A *polymorphic* tool advertises in degraded form under the JSON pathway: its
-TypeVar-carrying parameters render as untyped ``{}`` schemas and its JSON
-arguments cannot be decoded to typed values (issues #489/#505). Polymorphic
-tools, and tools whose advertisement cannot be encoded at all, are both fully
-supported by the code-generation pathway
-(`~effectful.handlers.llm.harness.synthesis.toolcall.ExpressionToolCaller`),
-which composes above either extractor.
+Install exactly one extractor per stack, beneath any tool caller, with
+``json_only=False`` when a caller is above (`LexicalToolExtractor.__init__`).
+How discovered tools are invoked, and why polymorphic tools need the expression
+pathway: :mod:`~effectful.handlers.llm.harness.synthesis.toolcall`.
 """
 
 import builtins
@@ -523,29 +509,7 @@ def _tools_in_scope(
     wrap: collections.abc.Callable[[typing.Any], Tool | None] | None = None,
     seen: frozenset[int] = frozenset(),
 ) -> collections.abc.Set[Tool]:
-    """
-    Return the tools available to a Skill given its lexical context.
-
-    Default rule: `Tool` and `Skill` values bound directly in `env`, plus
-    those reachable through any `Agent` instance in `env` -- whatever is bound
-    on the instance or declared on its class, and, recursively, the tools of any
-    `Agent` those in turn hold.  `seen` guards that recursion against reference
-    cycles; it is internal, and callers pass only `env`.
-
-    ``wrap``, if given, widens discovery: it is offered every binding that is
-    not already a tool or an `Agent` (including, through the `Agent`
-    recursion, bound methods), and may return an implicitly wrapped `Tool` for
-    it (see `ImplicitToolExtractor`) or ``None`` to pass.
-
-    Reaching through a nested `Agent` flattens its whole toolset into the result.
-    That is what makes holding one as an attribute a way to compose tools, and it
-    is why a specialised sub-agent is better left a bare `Skill`, whose own
-    scope stays its own.
-
-    Tools are identified by object, so the same `Tool` visible under several
-    bindings appears once.  The name each one is offered under is assigned by
-    :func:`_advertised_names`, not taken from the binding name.
-    """
+    """The tools of `_tool_paths` as a set; ``wrap`` and ``seen`` are passed through."""
     return frozenset(_tool_paths(env, wrap=wrap, seen=seen))
 
 
@@ -587,8 +551,10 @@ def _tool_paths(
 ) -> dict[Tool, str]:
     """The tools of `_tools_in_scope`, each mapped to the expression that names it.
 
-    Same reachability rule as `_tools_in_scope` (which is defined in terms of
-    this), but remembering *how* each tool was reached: ``name`` for a `Tool`
+    `Tool` and `Skill` values bound directly in ``env``, plus those reachable
+    through any `Agent` instance in ``env`` -- bound on the instance or declared
+    on its class, and recursively the tools of any `Agent` those hold (``seen``
+    guards cycles) -- remembering *how* each tool was reached: ``name`` for a `Tool`
     bound directly in ``env``, ``name.attr`` (recursively) for one held by an
     in-scope `Agent`. This is the reference a code-writing model must use to
     call the tool -- ``self.retrieve(...)`` for a method tool of the Skill's
@@ -597,8 +563,15 @@ def _tool_paths(
     puts it in each wrapper's advertisement so the model need not discover the
     distinction by trial and error.
 
-    A tool visible under several bindings keeps the first path found, in
-    ``env`` order -- so for a Skill call, whose env lists bound arguments
+    ``wrap``, if given, widens discovery: it is offered every binding that is
+    not already a tool or an `Agent`, including bound methods reached through
+    the `Agent` recursion, and may return an implicitly wrapped `Tool` or
+    ``None``. Reaching through a nested `Agent` flattens its whole toolset into
+    the result, which is what makes holding one as an attribute a way to compose
+    tools. Tools are identified by object, so one visible under several
+    bindings appears once; the name it is offered under is assigned by
+    `_advertised_names`, not taken from the binding. A tool visible under several
+    bindings keeps the first path found, in ``env`` order -- so for a Skill call, whose env lists bound arguments
     before the enclosing context, a tool on the receiver is named through
     ``self`` rather than through some outer alias.
     """

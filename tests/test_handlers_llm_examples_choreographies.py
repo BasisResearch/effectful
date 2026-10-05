@@ -1,4 +1,4 @@
-"""Tests for ``docs/source/llm_examples/choreographies/library.py`` -- choreographic
+"""Tests for ``effectful/handlers/llm/examples/choreographies/library.py`` -- choreographic
 endpoint projection.
 
 No real LLM is involved: `MockLLM` and friends implement `call_agent`
@@ -19,7 +19,8 @@ from typing import Any
 
 import pytest
 
-from docs.source.llm_examples.choreographies.library import (
+from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm.examples.choreographies.library import (
     Choreography,
     ChoreographyError,
     EndpointProjection,
@@ -27,7 +28,6 @@ from docs.source.llm_examples.choreographies.library import (
     scatter,
     step,
 )
-from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.hooks import call_agent
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements

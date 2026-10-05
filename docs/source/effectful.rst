@@ -204,6 +204,14 @@ Durability
    :members:
    :undoc-members:
 
+.. automodule:: effectful.handlers.llm.harness.durability.compaction
+   :members:
+   :undoc-members:
+
+.. automodule:: effectful.handlers.llm.harness.durability.truncation
+   :members:
+   :undoc-members:
+
 Observability
 ~~~~~~~~~~~~~
 
@@ -222,6 +230,117 @@ Observability
 .. automodule:: effectful.handlers.llm.harness.observability.langfuse
    :members:
    :undoc-members:
+
+Examples
+""""""""
+
+.. automodule:: effectful.handlers.llm.examples
+
+.. automodule:: effectful.handlers.llm.examples.acp
+
+.. automodule:: effectful.handlers.llm.examples.acp.assistant
+
+.. automodule:: effectful.handlers.llm.examples.acp.client
+
+.. automodule:: effectful.handlers.llm.examples.acp.library
+
+.. automodule:: effectful.handlers.llm.examples.acp.server
+
+.. automodule:: effectful.handlers.llm.examples.autoformalization
+
+.. automodule:: effectful.handlers.llm.examples.autoformalization.informalization
+
+.. automodule:: effectful.handlers.llm.examples.autoformalization.library
+
+.. automodule:: effectful.handlers.llm.examples.autoformalization.verification
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch.illustration
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch.implementation
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch.investigation
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch.review
+
+.. automodule:: effectful.handlers.llm.examples.autoresearch.writing
+
+.. automodule:: effectful.handlers.llm.examples.basics
+
+.. automodule:: effectful.handlers.llm.examples.basics.conversation
+
+.. automodule:: effectful.handlers.llm.examples.basics.error_recovery
+
+.. automodule:: effectful.handlers.llm.examples.basics.flight_booking
+
+.. automodule:: effectful.handlers.llm.examples.basics.guardrails
+
+.. automodule:: effectful.handlers.llm.examples.basics.hitl
+
+.. automodule:: effectful.handlers.llm.examples.basics.image_input
+
+.. automodule:: effectful.handlers.llm.examples.basics.image_tool
+
+.. automodule:: effectful.handlers.llm.examples.basics.lexical_scope
+
+.. automodule:: effectful.handlers.llm.examples.basics.map_reduce
+
+.. automodule:: effectful.handlers.llm.examples.basics.rag
+
+.. automodule:: effectful.handlers.llm.examples.basics.research_agent
+
+.. automodule:: effectful.handlers.llm.examples.basics.text2sql
+
+.. automodule:: effectful.handlers.llm.examples.choreographies
+
+.. automodule:: effectful.handlers.llm.examples.choreographies.library
+
+.. automodule:: effectful.handlers.llm.examples.choreographies.multi_agent_choreography
+
+.. automodule:: effectful.handlers.llm.examples.optimization
+
+.. automodule:: effectful.handlers.llm.examples.optimization.avo
+
+.. automodule:: effectful.handlers.llm.examples.optimization.ds1000
+
+.. automodule:: effectful.handlers.llm.examples.optimization.ds1000_data
+
+.. automodule:: effectful.handlers.llm.examples.optimization.guidelines
+
+.. automodule:: effectful.handlers.llm.examples.optimization.kernels
+
+.. automodule:: effectful.handlers.llm.examples.optimization.library
+
+.. automodule:: effectful.handlers.llm.examples.optimization.packing
+
+.. automodule:: effectful.handlers.llm.examples.optimization.prompting
+
+.. automodule:: effectful.handlers.llm.examples.optimization.textgrad
+
+.. automodule:: effectful.handlers.llm.examples.reasoning
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.aime2024
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.constrained_paragraph
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.continual
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.countdown
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.fix_typos
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.gridworlds
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.hanoi
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.lineup
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.taboo
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.theory_of_mind
+
+.. automodule:: effectful.handlers.llm.examples.reasoning.world_model_agent
 
 
 Jax

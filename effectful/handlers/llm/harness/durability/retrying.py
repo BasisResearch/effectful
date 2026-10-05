@@ -1,3 +1,13 @@
+"""Retrying a model round whose reply cannot be decoded, and surviving tools that raise.
+
+`TenacityRetryer` is the handler. Its `TenacityRetryer.call_assistant` rule
+retries `ToolCallDecodingError` and `ResultDecodingError` in a scratch
+`transaction`; its `TenacityRetryer.call_tool` rule turns a tool's exception into
+that call's result so the loop continues. `TenacityRetryer.__init__` documents
+the ``stop`` and ``catch_tool_errors`` knobs; ``harness(num_retries=N)`` passes
+``stop_after_attempt(N)`` and omits the handler for ``N == 0``.
+"""
+
 import collections.abc
 import typing
 
@@ -64,7 +74,8 @@ class TenacityRetryer(PromptInjectingInterpretation):
                 Can be a single exception class or a tuple of exception classes.
                 Defaults to Exception (catches all exceptions).
             stop: tenacity stop condition for retrying `call_assistant`. Defaults
-                to `tenacity.stop_after_attempt(4)`, which stops after 4 attempts.
+                to `tenacity.stop_after_attempt(4)`; ``stop_after_attempt(N)``
+                counts attempts, one try and ``N-1`` repairs.
             **kwargs: Additional keyword arguments forwarded to
                 `tenacity.Retrying`.
         """
@@ -123,7 +134,8 @@ class TenacityRetryer(PromptInjectingInterpretation):
         that the call failed and decline to finalize on it -- see
         `effectful.handlers.llm.harness.synthesis.body.FinalBodySynthesizer`. The
         completion loop therefore continues: the model sees the error message and
-        gets another turn to retry.
+        gets another turn to retry. A raising tool consumes no retry, and
+        ``BaseException`` subclasses propagate under the default.
         """
         try:
             return fwd(tool_call)

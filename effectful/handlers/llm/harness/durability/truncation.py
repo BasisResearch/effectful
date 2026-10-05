@@ -1,4 +1,12 @@
-"""Bounds tool results before they enter the model's conversation history."""
+"""Bounding each tool result before it enters the conversation.
+
+`ToolOutputTruncator` implements ``call_tool`` and cuts the tool message's text
+to ``max_chars``; `_truncate_content` spreads the budget across text blocks and
+`_budgets` sizes the head, tail and omission notice. ``DEFAULT_TOOL_OUTPUT_MAX_CHARS``
+is what ``harness()`` installs. The omitted text is not recoverable from history.
+Token-pressure elision of *stale* tool output is a separate mechanism in
+:mod:`~effectful.handlers.llm.harness.durability.compaction`.
+"""
 
 import collections.abc
 import typing
@@ -96,12 +104,18 @@ class ToolOutputTruncator(ObjectInterpretation):
     """
 
     def __init__(self, max_chars: int = DEFAULT_TOOL_OUTPUT_MAX_CHARS):
+        """``max_chars`` bounds each tool message, notice included; zero or less is rejected."""
         if max_chars <= 0:
             raise ValueError("max_chars must be positive")
         self.max_chars = max_chars
 
     @implements(call_tool)
     def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
+        """Cut the tool message's text after the tool has run.
+
+        Only the message the model reads is cut; the returned Python value is
+        untouched, and a failed call's traceback never passes through here.
+        """
         message, result, is_final = fwd(tool_call)
         content = message.get("content")
         truncated = _truncate_content(content, self.max_chars)

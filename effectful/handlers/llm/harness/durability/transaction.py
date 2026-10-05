@@ -1,3 +1,17 @@
+"""Message-history transactions around a Skill turn.
+
+`HistoryBuilder` is the handler: its `HistoryBuilder.call_agent` rule opens a
+`transaction` over the receiver's ``__history__`` (or a fresh list) and commits
+on success, and its message rules record each message through
+`HistoryBuilder.append_message`, which asserts the message is legal where it
+lands. `HistoryBuilder.get_history` and `HistoryBuilder.agents_called` are the
+ambient operations other handlers read. `transaction` is also opened directly by
+:mod:`~effectful.handlers.llm.harness.durability.retrying` with ``write_back=False``.
+
+The transaction covers messages only. Side effects on ``self``, files, services,
+or other objects need their own rollback if atomicity matters.
+"""
+
 import collections.abc
 import contextlib
 
@@ -19,21 +33,34 @@ from effectful.ops.types import Operation
 
 
 class HistoryBuilder(ObjectInterpretation):
-    """Ensures that the message history does not end up in a malformed state"""
+    """Accumulate a call's messages in a transaction over the receiver's history.
+
+    An outer bound turn works on a copy and writes back on success; nested and
+    cross-receiver cases are on `call_agent`. Every message is recorded through
+    `append_message`, which rejects one that would leave the history malformed.
+    """
 
     @Operation.define
     @classmethod
     def agents_called(cls) -> frozenset[int]:
+        """Ids of the histories with an open transaction, so a nested same-receiver call is recognized."""
         return frozenset()
 
     @Operation.define
     @classmethod
     def get_history(cls) -> collections.abc.MutableSequence[Message]:
+        """The ambient message buffer: the open transaction's, or a fresh list outside any call."""
         return []
 
     @classmethod
     def append_message(cls, message: Message) -> None:
-        """Append `message` to the ambient history, if it is legal where it lands."""
+        """Append `message` to the ambient history, if it is legal where it lands.
+
+        Three checks: no empty text block (`_carries_no_empty_block`); a tool
+        message answers an outstanding call of the nearest assistant message; and
+        no assistant message directly follows another
+        (`_assistant_speaks_in_turn`). A violation raises ``ValueError``.
+        """
         history = cls.get_history()
         assert cls._carries_no_empty_block(message), (
             f"a message may not carry an empty text block: {message}"
@@ -192,8 +219,8 @@ class HistoryBuilder(ObjectInterpretation):
         history as it found it. ``write_back`` is keyed on the identity of that
         history: the outermost call for a given agent commits, while a nested
         call on the *same* agent -- a tool invoking another of its skills --
-        contributes to the same buffer instead of committing a second time.
-        Being inside some other agent's transaction does not count, which is
+        starts from the committed history and discards its own messages when it
+        returns, rather than committing a second time. Being inside some other agent's transaction does not count, which is
         what keeps a cross-agent nested call from being mistaken for a
         same-agent one.
         """

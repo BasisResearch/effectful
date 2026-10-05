@@ -1,7 +1,32 @@
-"""The operations of the agent loop.
+"""The operations of the agent loop, and the terminal handler that runs it.
 
-These are the extension points that every other handler in
-:mod:`effectful.handlers.llm.harness` implements or intercepts.
+Every other handler in :mod:`effectful.handlers.llm.harness` implements or intercepts one of these
+operations.
+
+- `call_agent` (alias of ``Skill.__apply__``): one Skill turn.
+- `call_system`, `call_user`: assemble the two prompts from `PromptSection` trees.
+- `call_assistant`: one model round; decodes the reply and its tool calls.
+  `_instantiate_return_type` fixes the response schema of a generic Skill.
+- `call_tool`: apply a `DecodedToolCall`; its result reports whether it finalizes.
+- `completion`: the provider request beneath every round.
+- `DecodingError` and its subclasses `ToolCallDecodingError`,
+  `ResultDecodingError`, `ToolCallExecutionError`: what a round raises, each with
+  ``to_feedback_message`` for the retry loop.
+- `PromptInjectingInterpretation`: base class whose subclasses describe
+  themselves to the model; `AgentLoop`: the bottom of the stack.
+- `Message`, `AssistantResult`, `ToolResult`: the message and result types.
+
+.. rubric:: Extending the harness
+
+Implement an operation with :class:`~effectful.ops.syntax.ObjectInterpretation`
+and ``@implements``, install it with :func:`~effectful.ops.semantics.handler`,
+and reach the handler beneath with :func:`~effectful.ops.semantics.fwd`; the
+later term of a :func:`~effectful.ops.semantics.coproduct` takes precedence.
+Scoping a model: :mod:`~effectful.handlers.llm.harness.provision`. Worked examples:
+:mod:`effectful.handlers.llm.examples.optimization.textgrad` records a call graph
+in `call_agent`, :mod:`effectful.handlers.llm.examples.choreographies.library`
+implements `call_tool`, `call_system` and `call_user`, and
+:mod:`effectful.handlers.llm.examples.acp.library` streams `completion`.
 """
 
 import abc
@@ -144,12 +169,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 @Operation.define
 @functools.wraps(litellm.completion, assigned=(), updated=())
 def completion(*args, **kwargs) -> typing.Any:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
-
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
-
-    """
+    """Low-level LLM request; handlers intercept it to log or modify the request and delegate via fwd()."""
     return litellm.completion(*args, **kwargs)
 
 
@@ -183,10 +203,10 @@ def call_assistant[T](
     env: collections.abc.Mapping[str, typing.Any],
     tools: collections.abc.Set[Tool] = frozenset(),
 ) -> AssistantResult[T]:
-    """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
+    """One model round: send `messages` and decode the reply and its tool calls.
 
-    This effect is emitted for model request/response rounds so handlers can
-    observe/log requests.
+    Handlers intercept it to add tools, rewrite the request, retry, or observe;
+    the provider request itself is the `completion` operation beneath.
 
     The request is fully determined by the arguments: `messages` is the
     conversation sent to the model, so the rule reads no ambient history and a
@@ -296,9 +316,7 @@ type ToolResult[T] = tuple[
 
 @Operation.define
 def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
-    """Implements a roundtrip call to a python function. Input is a json
-    string representing an LLM tool call request parameters. The output is
-    the serialised response to the model.
+    """Apply a decoded tool call and encode its result as a tool message.
 
     Returns the appended tool message, the tool's return value, and whether the
     call finalizes the Skill -- always ``False`` here. Finalization is a policy
@@ -310,7 +328,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
 
     The returned value is a :class:`ToolCallExecutionError` rather than the tool's
     result when a handler captured a failed call (see
-    `effectful.handlers.llm.harness.durability.TenacityRetryer`); this rule itself
+    `effectful.handlers.llm.harness.durability.retrying.TenacityRetryer`); this rule itself
     raises instead.
     """
     # call tool with python types
@@ -340,11 +358,8 @@ def call_user(user_prompt: PromptSection) -> litellm.ChatCompletionUserMessage:
     """
     Format a `Skill`'s prompt applied to arguments into a user message.
 
-    `user_prompt` is wrapped in an enclosing document for the same reason
-    `call_system` assembles one: `_render_prompt_section` treats level 0 as the
-    document itself and does not render its title, so a section handed straight
-    to it would lose its heading.  Wrapped, `user_prompt` is a child and its
-    title becomes the message's ``#`` heading.
+    `user_prompt` is wrapped in an enclosing document so its title renders as the
+    message's ``#`` heading (see `_render_prompt_section`).
     """
     document = PromptSection(
         type="prompt_section",
@@ -672,9 +687,8 @@ class AgentLoop(PromptInjectingInterpretation):
 
         Assembles the two prompts, then alternates `call_assistant` and
         `call_tool` until a turn produces no tool calls (the model answered) or
-        a tool call reports itself final. Everything else in the harness is a
-        handler layered over the operations this loop invokes, which is why this
-        rule forwards to nothing: it is the bottom of the stack.
+        a tool call reports itself final. Forwards to nothing: this is the bottom
+        of the stack.
         """
         from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 

@@ -1,6 +1,6 @@
 name: Nightly Examples
 
-# Every example in docs/source/llm_examples, run against a live model with its
+# Every example in effectful/handlers/llm/examples, run against a live model with its
 # own default arguments.
 #
 # Pull requests get two cheaper checks: the Test workflow proves every example
