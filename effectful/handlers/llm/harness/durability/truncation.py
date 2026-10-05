@@ -3,7 +3,11 @@
 import collections.abc
 import typing
 
-from effectful.handlers.llm.harness.hooks import ToolResult, call_tool
+from effectful.handlers.llm.harness.hooks import (
+    ToolCallExecutionError,
+    ToolResult,
+    call_tool,
+)
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
@@ -86,6 +90,14 @@ def _truncate_content(content: typing.Any, max_chars: int) -> typing.Any:
     return truncated
 
 
+def _truncate_message(message, max_chars: int):
+    content = message.get("content")
+    truncated = _truncate_content(content, max_chars)
+    if truncated is not content:
+        message = typing.cast(typing.Any, {**message, "content": truncated})
+    return message
+
+
 class ToolOutputTruncator(ObjectInterpretation):
     """Keep any one tool result from consuming the model's context window.
 
@@ -103,8 +115,11 @@ class ToolOutputTruncator(ObjectInterpretation):
     @implements(call_tool)
     def call_tool[T](self, tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         message, result, is_final = fwd(tool_call)
-        content = message.get("content")
-        truncated = _truncate_content(content, self.max_chars)
-        if truncated is not content:
-            message = typing.cast(typing.Any, {**message, "content": truncated})
+        message = _truncate_message(message, self.max_chars)
         return message, result, is_final
+
+    @implements(ToolCallExecutionError.to_feedback_message)
+    def to_feedback_message(self, *args, **kwargs):
+        message = fwd()
+        message = _truncate_message(message, self.max_chars)
+        return message

@@ -5,11 +5,12 @@ import pytest
 
 from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness import harness
+from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.truncation import (
     ToolOutputTruncator,
     _truncate_content,
 )
-from effectful.handlers.llm.harness.hooks import call_tool
+from effectful.handlers.llm.harness.hooks import ToolCallExecutionError, call_tool
 from effectful.handlers.llm.harness.serialization import DecodedToolCall
 from effectful.ops.semantics import handler
 
@@ -45,6 +46,30 @@ def test_truncates_tool_output_and_preserves_python_result():
     assert not is_final
     assert len(text) == 100
     assert text.startswith("H") and text.endswith("T")
+    assert "tool output truncated" in text
+    assert "characters omitted" in text
+
+
+def test_truncates_exception_output():
+    output = "H" * 150 + "T" * 150
+
+    @Tool.define
+    def verbose() -> str:
+        """Return a verbose result."""
+        raise RuntimeError(output)
+
+    tool_call = DecodedToolCall(
+        verbose, inspect.signature(verbose).bind(), "call_1", "verbose"
+    )
+
+    with handler(TenacityRetryer()), handler(ToolOutputTruncator(max_chars=100)):
+        message, result, is_final = call_tool(tool_call)
+
+    text = _text(message["content"])
+    assert isinstance(result, ToolCallExecutionError)
+    assert not is_final
+    assert len(text) == 100
+    assert text.startswith("Tool execution failed")
     assert "tool output truncated" in text
     assert "characters omitted" in text
 
