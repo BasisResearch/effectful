@@ -267,8 +267,11 @@ def call_assistant[T](
     result = None
     if not tool_calls:
         serialized_result = message.get("content") or message.get("reasoning_content")
-        assert isinstance(serialized_result, str)
         try:
+            assert isinstance(serialized_result, str), (
+                f"the model replied with neither content nor a tool call "
+                f"(finish_reason={choice.finish_reason!r})"
+            )
             # A text answer is the model's own prose, and anything else is JSON
             # shaped like the response format. Both are boxed and validated
             # through the same model, so whatever the return annotation carries
