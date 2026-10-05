@@ -36,6 +36,14 @@ def plain(predicate: int, keyword: str) -> str:
     return keyword
 
 
+class Ops:
+    refine = refine
+
+
+def make_ops() -> type[Ops]:
+    return Ops
+
+
 """
 SIGNATURE = "refine(predicate: int, keyword: str) -> str"
 
@@ -102,6 +110,26 @@ def test_a_wrong_nested_result_blames_the_operation_receiving_it(
     message = failure(checker, "value = refine(other(1), 'a')\n")
     assert names_operation(message) and SIGNATURE in message
     assert "other(x: int)" not in message
+
+
+@pytest.mark.parametrize(
+    ("call", "callee"),
+    [
+        ("refine(1).upper()", "refine"),
+        ("refine('one', 'a').upper()", "refine"),
+        ("Ops.refine(1)", "Ops.refine"),
+        ("make_ops().refine(1)", "make_ops().refine"),
+    ],
+    ids=["chained", "chained-argument", "attribute", "attribute-of-a-call"],
+)
+def test_an_operation_sharing_its_start_with_another_call_is_named(
+    checker: Callable[[], Any], call: str, callee: str
+):
+    # The signature is the checker's view of the call: mypy binds the first
+    # parameter of an operation reached as a class attribute, as it does a method.
+    message = failure(checker, f"value = {call}\n")
+    assert names_operation(message, callee)
+    assert f"is called as {callee}(" in message
 
 
 @pytest.mark.parametrize(

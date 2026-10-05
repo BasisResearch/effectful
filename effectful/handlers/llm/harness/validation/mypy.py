@@ -150,15 +150,8 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         Skill's declared type (``return``/``empty-body``). All normal for an
         incrementally-built REPL, not real errors.
         """
-        stdout, stderr, status = self._run(source, lenient)
-        # Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
-        # tool failure, not a type error -- and it emits text rather than JSON, so
-        # raise `RuntimeError` rather than parse or silently pass.
-        if status >= 2:
-            raise RuntimeError(
-                f"mypy could not check the source:\n{(stdout or '') + (stderr or '')}"
-            )
-        errors = self._region_errors(stdout or "", lo, hi)
+        stdout = self._run(source, lenient)
+        errors = self._region_errors(stdout, lo, hi)
         if errors:
             # Not the source: it's large and the model already has the generated code.
             report = "\n".join(
@@ -166,9 +159,13 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             )
             raise TypeError("mypy type check failed:\n" + report)
 
-    def _run(self, source: str, lenient: bool) -> tuple[str, str, int]:
-        """Run mypy on `source` with the cache for its mode; return its stdout, stderr
-        and exit status."""
+    def _run(self, source: str, lenient: bool) -> str:
+        """Run mypy on `source` with the cache for its mode; return its JSON output.
+
+        Exit status >= 2 means mypy itself failed (fatal/usage/internal/syntax) -- a
+        tool failure, not a type error -- and it emits text rather than JSON, so
+        raise `RuntimeError` rather than parse or silently pass.
+        """
         tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
         try:
             tf_path = os.path.join(tmpdir, "_synthesized.py")
@@ -203,7 +200,11 @@ class MypyTypeChecker(PromptInjectingInterpretation):
                 )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-        return proc.stdout, proc.stderr, proc.returncode
+        if proc.returncode >= 2:
+            raise RuntimeError(
+                f"mypy could not check the source:\n{proc.stdout}{proc.stderr}"
+            )
+        return proc.stdout
 
     def _name_operations(
         self, source: str, errors: list[dict[str, typing.Any]], lenient: bool
@@ -211,26 +212,21 @@ class MypyTypeChecker(PromptInjectingInterpretation):
         """`errors` with each diagnostic about an operation call rewritten to name the
         operation, with its signature as the hint.
 
-        mypy's span identifies the owner: ``arg-type`` is reported at the argument,
-        ``call-arg`` (missing, unexpected or too many arguments) and ``misc`` (a
-        parameter given twice) at the call. One more
-        mypy run reveals each callee's type, probed in place (see
-        `operations.probed`). A callee mypy does not type as an ``Operation``, or a
-        module that does not parse, keeps mypy's wording.
+        mypy places ``arg-type`` at the argument, and ``call-arg`` (missing,
+        unexpected or too many arguments) and ``misc`` (a parameter given twice) at
+        the call. One more mypy run reveals each candidate callee's type, probed in
+        place (see `operations.probed`); an error none of whose candidates mypy
+        types as an ``Operation`` keeps mypy's wording. The source parses: mypy
+        exits with status 2 on a syntax error, which `_run` raises.
         """
         if not any(_OPERATION_CALL in error["message"] for error in errors):
             return errors
-        try:
-            tree = ast.parse(source)
-        except SyntaxError:
-            # A syntax error outside the checked region; without a tree there is no
-            # call to name.
-            return errors
+        tree = ast.parse(source)
         # mypy's columns match character columns on ASCII lines only; past non-ASCII
-        # text they count neither characters nor bytes, so no owner is found there
-        # and the error keeps mypy's wording.
-        owners = [
-            operations.owner(
+        # text they count neither characters nor bytes, so no candidate is found
+        # there and the error keeps mypy's wording.
+        candidates = [
+            operations.candidates(
                 tree,
                 source,
                 error["line"],
@@ -239,49 +235,66 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             )
             if _OPERATION_CALL in error["message"]
             and error["code"] in {"arg-type", "call-arg", "misc"}
-            else None
+            else []
             for error in errors
         ]
-        calls = [call for call in owners if call is not None]
+        calls = [call for found in candidates for call in found]
         if not calls:
             return errors
         copy, positions = operations.probed(source, tree, calls)
-        stdout, stderr, status = self._run(copy, lenient)
-        if status >= 2:
-            raise RuntimeError(
-                f"mypy could not check the probed source:\n{stdout}{stderr}"
-            )
+        stdout = self._run(copy, lenient)
+        # A revealed type is its own note, or, when an error sits at the same
+        # position (a probe around a wrong call), folded into that error's hint.
         reports = {
-            (note["line"], note["column"]): match["type"]
-            for note in (json.loads(line) for line in stdout.splitlines() if line)
-            if note["severity"] == "note"
-            and (match := _REVEALED.fullmatch(note["message"]))
+            (diagnostic["line"], diagnostic["column"]): match["type"]
+            for diagnostic in (json.loads(line) for line in stdout.splitlines() if line)
+            for text in (
+                diagnostic["message"]
+                if diagnostic["severity"] == "note"
+                else diagnostic["hint"] or ""
+            ).splitlines()
+            if (match := _REVEALED.fullmatch(text))
         }
+        # A probe without a report means the probe is wrong, not the code.
+        missing = [p for p in positions.values() if p not in reports]
+        if missing:
+            raise RuntimeError(f"mypy reported no type for the probes at {missing}")
         renamed = []
-        for error, call in zip(errors, owners, strict=True):
-            if call is None:
+        for error, found in zip(errors, candidates, strict=True):
+            operation = next(
+                (
+                    (call, match)
+                    for call in found
+                    if (
+                        match := _OPERATION_TYPE.fullmatch(
+                            reports[positions[call.func]]
+                        )
+                    )
+                ),
+                None,
+            )
+            if operation is None:
                 renamed.append(error)
                 continue
-            position = positions[(call.func.lineno, call.func.col_offset)]
-            # A probe without a report means the probe is wrong, not the code.
-            if position not in reports:
-                raise RuntimeError(f"mypy reported no type for the probe at {position}")
+            call, match = operation
             renamed.append(
-                self._rename(error, operations.callee(source, call), reports[position])
+                self._rename(
+                    error,
+                    operations.callee(source, call),
+                    match["params"],
+                    match["result"],
+                )
             )
         return renamed
 
     @staticmethod
     def _rename(
-        error: dict[str, typing.Any], callee: str, revealed: str
+        error: dict[str, typing.Any], callee: str, params: str, result: str
     ) -> dict[str, typing.Any]:
-        """`error` naming operation `callee`, with its signature as the hint, if
-        `revealed` is an ``Operation`` type; otherwise unchanged."""
-        operation = _OPERATION_TYPE.fullmatch(revealed)
-        if operation is None:
-            return error
+        """`error` naming operation `callee`, with its signature
+        ``callee(params) -> result`` as the hint."""
         # mypy prints a parameter's default as a bare trailing ``=``.
-        params = re.sub(r" =(?=,|$)", " = ...", operation["params"])
+        params = re.sub(r" =(?=,|$)", " = ...", params)
         if not operations.missing_parameters_declared(error["message"], params):
             return error
         return {
@@ -289,8 +302,7 @@ class MypyTypeChecker(PromptInjectingInterpretation):
             "message": error["message"].replace(
                 _OPERATION_CALL, f'operation "{callee}"'
             ),
-            "hint": f'"{callee}" is called as {callee}({params}) -> '
-            f"{operation['result']}",
+            "hint": f'"{callee}" is called as {callee}({params}) -> {result}',
         }
 
 

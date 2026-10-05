@@ -14,7 +14,7 @@ import re
 
 # The module alias the probe reaches `typing.reveal_type` through; lengthened until
 # it appears nowhere in the source, so no binding there can intercept the probe.
-PROBE_ALIAS = "_effectful_type_probe"
+_PROBE_ALIAS = "_effectful_type_probe"
 
 
 def character_column(lines: list[str], line: int, byte_column: int) -> int:
@@ -23,15 +23,18 @@ def character_column(lines: list[str], line: int, byte_column: int) -> int:
     return len(lines[line - 1].encode()[:byte_column].decode())
 
 
-def owner(
+def candidates(
     tree: ast.Module, source: str, line: int, column: int, *, argument: bool
-) -> ast.Call | None:
-    """The call an error at `line` and 0-based character `column` is about.
+) -> list[ast.Call]:
+    """The calls an error at `line` and 0-based character `column` may be about.
 
     `argument` says the checker placed the error at an argument of the call, as
     both do for a wrongly typed argument, rather than at the call itself. The
     innermost call around the position is not the owner: a wrong nested call
-    ``op(other(x))`` is reported at ``other(x)``, which belongs to ``op``.
+    ``op(other(x))`` is reported at ``other(x)``, which belongs to ``op``. A
+    call-level position does not pick one call either: ``op(1).upper()`` and
+    ``make().op(1)`` each start two calls there. The checker settles it by which
+    candidate's callee it types as an ``Operation``.
     """
     lines = source.splitlines()
 
@@ -52,46 +55,56 @@ def owner(
 
     calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)]
     if argument:
-        return next(
-            (call for call in calls for arg in arguments(call) if starts_at(arg)),
-            None,
-        )
-    return max(
-        (call for call in calls if starts_at(call)),
-        key=lambda call: (call.end_lineno or 0, call.end_col_offset or 0),
-        default=None,
-    )
+        return [
+            call for call in calls if any(starts_at(arg) for arg in arguments(call))
+        ]
+    return [call for call in calls if starts_at(call)]
 
 
 def probed(
     source: str, tree: ast.Module, calls: list[ast.Call]
-) -> tuple[str, dict[tuple[int, int], tuple[int, int]]]:
+) -> tuple[str, dict[ast.expr, tuple[int, int]]]:
     """`source` with each call's callee ``f`` replaced by ``<alias>.reveal_type(f)``,
-    and where each callee now starts, keyed by its original position.
+    and where each callee now starts, keyed by the callee's node: nested callees
+    (``op`` inside ``op(1).upper``) start at the same position.
 
     `reveal_type` returns its argument, so the copy binds and evaluates exactly as
-    the original, including names bound by a comprehension or a parameter. The
-    ``import typing as <alias>`` line goes after any docstring and ``__future__``
-    imports, which must stay first. Positions are 1-based lines and 0-based
-    character columns in the copy.
+    the original, including names bound by a comprehension or a parameter. Callees
+    may nest (``make`` inside ``make().op``); the outer probe then encloses the
+    inner one. The ``import typing as <alias>`` line goes after any docstring and
+    ``__future__`` imports, which must stay first. Positions are where each probe's
+    argument starts in the copy, as both checkers report a revealed type: 1-based
+    lines and 0-based character columns.
     """
-    alias = PROBE_ALIAS
+    alias = _PROBE_ALIAS
     while alias in source:
         alias += "_"
-    funcs = {(call.func.lineno, call.func.col_offset): call.func for call in calls}
-    probe = f"{alias}.reveal_type(".encode()
-    # (line, byte column, text) of every insertion, in original coordinates.
-    insertions = [
-        insertion
-        for func in funcs.values()
-        for insertion in (
-            (func.lineno, func.col_offset, probe),
-            (func.end_lineno or func.lineno, func.end_col_offset or 0, b")"),
+
+    def extent(func: ast.expr) -> tuple[int, int, int, int]:
+        return (
+            func.lineno,
+            func.col_offset,
+            func.end_lineno or func.lineno,
+            func.end_col_offset or func.col_offset,
         )
-    ]
+
+    # Outer before inner: by start, then the larger extent first.
+    funcs = sorted(
+        {extent(call.func): call.func for call in calls}.items(),
+        key=lambda item: (item[0][0], item[0][1], -item[0][2], -item[0][3]),
+    )
+    probe = f"{alias}.reveal_type(".encode()
+    # (line, byte column, order, text): at one column, a `)` closing an earlier
+    # expression comes first, then the probes from outer to inner.
+    insertions: list[tuple[int, int, int, bytes]] = []
+    for rank, ((line, col, end_line, end_col), _) in enumerate(funcs):
+        insertions.append((line, col, 1 + rank, probe))
+        insertions.append((end_line, end_col, 0, b")"))
     lines = [line.encode() for line in source.splitlines(keepends=True)]
-    for line, col, text in sorted(insertions, reverse=True):
-        lines[line - 1] = lines[line - 1][:col] + text + lines[line - 1][col:]
+    # Inserting right to left keeps every earlier column valid; at one column the
+    # last insertion ends up leftmost.
+    for line, col, _, inserted in sorted(insertions, reverse=True):
+        lines[line - 1] = lines[line - 1][:col] + inserted + lines[line - 1][col:]
     header = 0
     for index, statement in enumerate(tree.body):
         docstring = (
@@ -106,19 +119,27 @@ def probed(
         if not (docstring or future):
             break
         header = statement.end_lineno or statement.lineno
-    positions = {}
-    for key, func in funcs.items():
-        shift = sum(
-            len(text)
-            for line, col, text in insertions
-            if line == func.lineno and col <= func.col_offset
-        )
-        prefix = lines[func.lineno - 1][: func.col_offset + shift]
-        # The alias import adds one line above every probe.
-        positions[key] = (func.lineno + 1, len(prefix.decode()))
     copy = [line.decode() for line in lines]
     copy.insert(header, f"import typing as {alias}\n")
-    return "".join(copy), positions
+    text = "".join(copy)
+    # The probes, in the copy's order, match `funcs` outer before inner.
+    copy_lines = text.splitlines()
+    arguments = sorted(
+        (
+            node.args[0].lineno,
+            character_column(copy_lines, node.args[0].lineno, node.args[0].col_offset),
+        )
+        for node in ast.walk(ast.parse(text))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "reveal_type"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == alias
+    )
+    positions = {
+        func: position for (_, func), position in zip(funcs, arguments, strict=True)
+    }
+    return text, positions
 
 
 def callee(source: str, call: ast.Call) -> str:

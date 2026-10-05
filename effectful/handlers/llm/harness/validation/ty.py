@@ -35,6 +35,22 @@ from effectful.handlers.llm.harness.validation.hooks import type_check
 from effectful.ops.syntax import implements
 
 
+@dataclasses.dataclass(frozen=True)
+class _Diagnostic:
+    """One diagnostic in ty's full output: its header fields, its primary location
+    (``None`` when it carries no ``-->`` marker), and ty's own text for it.
+
+    `rendered` is kept verbatim so the report carries the source excerpt, carets and
+    ``info:`` notes that make it worth handing back to a model.
+    """
+
+    severity: str
+    rule: str
+    line: int | None
+    column: int | None
+    rendered: str
+
+
 @dataclasses.dataclass
 class TyTypeChecker(PromptInjectingInterpretation):
     """Python you write is type-checked before it is run, by the ty type
@@ -88,40 +104,41 @@ class TyTypeChecker(PromptInjectingInterpretation):
             and (hi is None or line <= hi)
         )
 
-    def _diagnostics(self, stdout: str) -> list[tuple[str, int | None, str]]:
-        """ty's diagnostics as ``(severity, line, rendered)``, in reported order.
+    def _diagnostics(self, stdout: str) -> list[_Diagnostic]:
+        """ty's diagnostics, in reported order.
 
-        A diagnostic runs from one header to the next, and its ``line`` is the *first*
+        A diagnostic runs from one header to the next, and its location is the *first*
         ``-->`` marker it carries -- the primary location -- since a diagnostic may
         carry further markers for secondary annotations (``info: Method defined here``)
-        pointing elsewhere in the file. ``None`` when it carries no marker at all.
-
-        `rendered` is ty's own text for the diagnostic, kept verbatim so the report
-        raised below carries the source excerpt, carets and ``info:`` notes that make
-        it worth handing back to a model.
+        pointing elsewhere in the file.
         """
-        diagnostics: list[tuple[str, int | None, str]] = []
+        diagnostics: list[_Diagnostic] = []
         current: list[str] = []
-        severity: str | None = None
-        line: int | None = None
+        header: re.Match[str] | None = None
+        location: re.Match[str] | None = None
 
         def flush() -> None:
-            if current and severity is not None:
-                diagnostics.append((severity, line, "\n".join(current).rstrip()))
+            if current and header is not None:
+                diagnostics.append(
+                    _Diagnostic(
+                        severity=header["severity"],
+                        rule=header["rule"],
+                        line=int(location["line"]) if location else None,
+                        column=int(location["col"]) - 1 if location else None,
+                        rendered="\n".join(current).rstrip(),
+                    )
+                )
 
         for text in stdout.splitlines():
-            header = self._header.match(text)
-            if header is not None:
+            if (match := self._header.match(text)) is not None:
                 flush()
-                current, severity, line = [text], header["severity"], None
+                current, header, location = [text], match, None
                 continue
             if not current or self._summary.match(text):
                 continue
             current.append(text)
-            if line is None:
+            if location is None:
                 location = self._location.match(text)
-                if location is not None:
-                    line = int(location["line"])
         flush()
         return diagnostics
 
@@ -153,7 +170,7 @@ class TyTypeChecker(PromptInjectingInterpretation):
         faithfulness to ty's own mapping though it fires on none of the redefinition
         shapes a REPL produces.
         """
-        stdout, stderr, status = self._run(
+        stdout, status = self._run(
             source,
             "full",
             *(
@@ -162,12 +179,6 @@ class TyTypeChecker(PromptInjectingInterpretation):
                 for arg in ("--ignore", rule)
             ),
         )
-        # Exit status >= 2 means ty itself failed (2: usage/config/IO, 101: internal
-        # panic) -- a tool failure, not a type error -- so raise `RuntimeError` rather
-        # than read a verdict out of output it never produced. Status 1 is the ordinary
-        # "found diagnostics" case, filtered below; 0 is clean.
-        if status >= 2:
-            raise RuntimeError(f"ty could not check the source:\n{stdout}{stderr}")
         diagnostics = self._diagnostics(stdout)
         # ty says it found something but none of it parsed: its rendering has moved
         # under us. Say so, rather than read the silence as an empty region and let
@@ -175,9 +186,10 @@ class TyTypeChecker(PromptInjectingInterpretation):
         if status == 1 and not diagnostics:
             raise RuntimeError(f"ty reported unparseable diagnostics:\n{stdout}")
         errors = [
-            rendered
-            for severity, line, rendered in diagnostics
-            if severity == "error" and self._in_region(line, lo, hi)
+            diagnostic
+            for diagnostic in diagnostics
+            if diagnostic.severity == "error"
+            and self._in_region(diagnostic.line, lo, hi)
         ]
         if errors:
             # Not the source: it's large and the model already has the generated code.
@@ -186,11 +198,14 @@ class TyTypeChecker(PromptInjectingInterpretation):
                 + "\n\n".join(self._name_operations(source, errors))
             )
 
-    def _run(
-        self, source: str, output_format: str, *extra: str
-    ) -> tuple[str, str, int]:
-        """Run ty on `source` in an isolated temp project; return its stdout, stderr
-        and exit status."""
+    def _run(self, source: str, output_format: str, *extra: str) -> tuple[str, int]:
+        """Run ty on `source` in an isolated temp project; return its stdout and exit
+        status, which is 0 when clean and 1 when it found diagnostics.
+
+        Exit status >= 2 means ty itself failed (2: usage/config/IO, 101: internal
+        panic) -- a tool failure, not a type error -- so raise `RuntimeError` rather
+        than read a verdict out of output it never produced.
+        """
         tmpdir = tempfile.mkdtemp(prefix="effectful_typecheck_")
         # Read before the subprocess is handed `cwd=tmpdir`, which is set only so ty
         # cites the temp file by bare name in the report.
@@ -240,9 +255,13 @@ class TyTypeChecker(PromptInjectingInterpretation):
             )
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
-        return proc.stdout, proc.stderr, proc.returncode
+        if proc.returncode >= 2:
+            raise RuntimeError(
+                f"ty could not check the source:\n{proc.stdout}{proc.stderr}"
+            )
+        return proc.stdout, proc.returncode
 
-    def _name_operations(self, source: str, errors: list[str]) -> list[str]:
+    def _name_operations(self, source: str, errors: list[_Diagnostic]) -> list[str]:
         """`errors` with each diagnostic about an operation call rewritten to name the
         operation and show its signature.
 
@@ -250,90 +269,93 @@ class TyTypeChecker(PromptInjectingInterpretation):
         (see `operations.probed`). A callee ty does not type as an ``Operation``, or
         a module that does not parse, keeps ty's wording.
         """
-        if not any(_OPERATION_CALL in rendered for rendered in errors):
-            return errors
+        rendered = [error.rendered for error in errors]
+        if not any(_OPERATION_CALL in text for text in rendered):
+            return rendered
         try:
             tree = ast.parse(source)
         except SyntaxError:
             # ty recovers from a syntax error outside the checked region and still
             # reports the region's errors; without a tree there is no call to name.
-            return errors
-        owners = [self._owner(tree, source, rendered) for rendered in errors]
-        calls = [call for call in owners if call is not None]
+            return rendered
+        candidates = [self._candidates(tree, source, error) for error in errors]
+        calls = [call for found in candidates for call in found]
         if not calls:
-            return errors
+            return rendered
         revealed = self._revealed(source, tree, calls)
-        return [
-            rendered
-            if call is None
-            else self._rename(
-                rendered,
-                operations.callee(source, call),
-                revealed[(call.func.lineno, call.func.col_offset)],
+        renamed = []
+        for error, found in zip(errors, candidates, strict=True):
+            operation = next(
+                (
+                    (call, match)
+                    for call in found
+                    if (match := _OPERATION_TYPE.fullmatch(revealed[call.func]))
+                ),
+                None,
             )
-            for rendered, call in zip(errors, owners)
-        ]
+            if operation is None:
+                renamed.append(error.rendered)
+                continue
+            call, match = operation
+            renamed.append(
+                self._rename(
+                    error.rendered,
+                    operations.callee(source, call),
+                    match["params"],
+                    match["result"],
+                )
+            )
+        return renamed
 
-    def _owner(self, tree: ast.Module, source: str, rendered: str) -> ast.Call | None:
-        """The call a diagnostic about ``Operation.__call__`` is about, or ``None``.
+    def _candidates(
+        self, tree: ast.Module, source: str, error: _Diagnostic
+    ) -> list[ast.Call]:
+        """The calls a diagnostic about ``Operation.__call__`` may be about.
 
         ty places argument errors (a wrong type, an unknown keyword, one positional
-        too many) at the offending argument, and a missing argument at the call.
+        too many, a parameter given twice) at the offending argument, and a missing
+        argument at the call. Errors in the checked region are always located.
         """
-        header = self._header.match(rendered)
-        location = next(
-            (
-                match
-                for text in rendered.splitlines()
-                if (match := self._location.match(text))
-            ),
-            None,
-        )
-        if header is None or location is None or _OPERATION_CALL not in rendered:
-            return None
-        if header["rule"] not in _ARGUMENT_RULES | _CALL_RULES:
-            return None
-        return operations.owner(
+        if (
+            _OPERATION_CALL not in error.rendered
+            or error.rule not in _ARGUMENT_RULES | _CALL_RULES
+            or error.line is None
+            or error.column is None
+        ):
+            return []
+        return operations.candidates(
             tree,
             source,
-            int(location["line"]),
-            int(location["col"]) - 1,
-            argument=header["rule"] in _ARGUMENT_RULES,
+            error.line,
+            error.column,
+            argument=error.rule in _ARGUMENT_RULES,
         )
 
     def _revealed(
         self, source: str, tree: ast.Module, calls: list[ast.Call]
-    ) -> dict[tuple[int, int], str]:
-        """ty's revealed type for each call's callee, keyed by the callee's position.
+    ) -> dict[ast.expr, str]:
+        """ty's revealed type for each call's callee, keyed by the callee's node.
 
         Reports at other positions come from the module's own ``reveal_type`` calls;
         a probe without a report means the probe is wrong, not the code, and a
         guessed signature would mislead.
         """
         copy, positions = operations.probed(source, tree, calls)
-        stdout, stderr, status = self._run(copy, "concise")
-        if status >= 2:
-            raise RuntimeError(
-                f"ty could not check the probed source:\n{stdout}{stderr}"
-            )
+        stdout, _ = self._run(copy, "concise")
         reports = {
             (int(match["line"]), int(match["col"]) - 1): match["type"]
             for match in _REVEALED.finditer(stdout)
         }
         revealed = {}
-        for key, position in positions.items():
+        for func, position in positions.items():
             if position not in reports:
                 raise RuntimeError(f"ty reported no type for the probe at {position}")
-            revealed[key] = reports[position]
+            revealed[func] = reports[position]
         return revealed
 
-    def _rename(self, rendered: str, callee: str, revealed: str) -> str:
-        """`rendered` naming operation `callee` and showing its signature, if
-        `revealed` is an ``Operation`` type; otherwise unchanged."""
-        operation = _OPERATION_TYPE.fullmatch(revealed)
-        if operation is None:
-            return rendered
-        params, result = operation["params"], operation["result"]
+    def _rename(self, rendered: str, callee: str, params: str, result: str) -> str:
+        """`rendered` naming operation `callee` and showing its signature
+        ``callee(params) -> result``."""
         if not operations.missing_parameters_declared(rendered, params):
             return rendered
         header, *body = rendered.splitlines()
