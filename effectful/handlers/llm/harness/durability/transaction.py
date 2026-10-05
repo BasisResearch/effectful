@@ -1,6 +1,5 @@
 import collections.abc
 import contextlib
-import enum
 
 from effectful.handlers.llm.harness.hooks import (
     Message,
@@ -13,7 +12,6 @@ from effectful.handlers.llm.harness.hooks import (
     call_tool,
     call_user,
 )
-from effectful.handlers.llm.harness.serialization import ToolCallID
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
@@ -220,7 +218,7 @@ def transaction(
       that grew by some other route meanwhile still receives exactly this
       transaction's messages.
     * *Rewritten.* A compaction (see
-      `~effectful.handlers.llm.harness.durability.compaction.compact`) drops
+      `~effectful.handlers.llm.harness.durability.compaction.compact_`) drops
       messages the transaction inherited, so the buffer no longer extends its
       seed -- it may even be shorter than it. There is no tail to hand over then;
       the buffer *is* the new history, and appending ``buffer[start:]`` would
@@ -246,60 +244,3 @@ def transaction(
             prefix.extend(buffer[start:])
         else:
             prefix[:] = [*buffer, *prefix[start:]]
-
-
-class CompactionScope(enum.StrEnum):
-    """How much of the conversation a compacting tool call drops.
-
-    ``"none"`` compacts nothing. ``"turn"`` drops the current call's earlier rounds,
-    keeping every previous call. ``"conversation"`` additionally drops those previous
-    calls, leaving the system message, the request and the asking round.
-    """
-
-    NONE = "none"
-    TURN = "turn"
-    CONVERSATION = "conversation"
-
-
-def compact_(
-    history: collections.abc.MutableSequence[Message],
-    tool_call_id: ToolCallID,
-    scope: CompactionScope,
-) -> None:
-    """Compact a history in-place, keeping the request and the asking round.
-
-    `tool_call_id` identifies the call that asked, and so the round to keep: the
-    assistant message advertising it, and everything after (which is exactly the
-    tool messages answering it and its siblings, whether they were appended
-    before this one or are still to come -- truncation only ever removes messages
-    *ahead* of that assistant message, so no tool message is ever orphaned from
-    the call it answers).
-
-    The request kept is the last user message before that round -- the one this
-    call opened -- carried over untouched.
-
-    A no-op for ``scope="none"``, and whenever the shape this reads off the
-    history is not the one it expects: no assistant message advertising
-    `tool_call_id`, or no user message ahead of it. Declining is the right
-    failure here; a compaction is a courtesy, and a wrong guess about the shape
-    would corrupt the history the call still has to finish over. A conversation
-    that opens with something other than a system message simply has no head to
-    keep, which is not a failure.
-    """
-    asking, request = None, None
-    for i, message in reversed(list(enumerate(history))):
-        if message["role"] == "assistant" and any(
-            call["id"] == tool_call_id for call in message.get("tool_calls") or []
-        ):
-            for j in reversed(range(i)):
-                if history[j]["role"] == "user":
-                    asking, request = i, j
-                    break
-            break
-
-    if scope == CompactionScope.NONE or asking is None or request is None:
-        return
-    elif scope == CompactionScope.CONVERSATION:
-        history[:] = [history[0], history[request], *history[asking:]]
-    elif scope == CompactionScope.TURN:
-        history[:] = [*history[:request], history[request], *history[asking:]]

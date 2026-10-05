@@ -11,7 +11,11 @@ import typing
 
 import tenacity
 
-from effectful.handlers.llm.harness.durability.compaction import MiddleCompactor
+from effectful.handlers.llm.harness.durability.compaction import (
+    CompactionScope,
+    MiddleCompactor,
+    ReplCompactor,
+)
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
@@ -92,9 +96,11 @@ def harness(
        prompt.
     3. `ToolOutputTruncator` -- bound each textual tool result before it enters
        history (unless ``max_tool_output_chars=None``).
-    4. `HistoryBuilder` -- accumulate the message history of a call, with optional
-       `MiddleCompactor` -- truncate stale middle-region tool output and summarize
-       older rounds at configurable thresholds.
+    4. `HistoryBuilder` -- accumulate the message history of a call, with one
+       optional compactor: `MiddleCompactor` (if both compaction thresholds) to
+       truncate stale middle-region tool output and summarize older rounds, or,
+       just inside it, `ReplCompactor` (if only ``compaction_hard_tokens``, with
+       an eval provider) to make the model compact through ``exec_code``.
     5. `RichTerminalRenderer` -- live-render the streaming history (if ``render``).
     6. `SystemPromptDumper` -- dump the system prompt (if ``dump_system_prompt``).
     7. The ``type_checker`` and the ``eval_provider`` -- check and run
@@ -172,8 +178,11 @@ def harness(
             kept. Pass ``None`` to disable truncation.
         compaction_soft_tokens: Approximate token threshold for stale tool-output
             elision. ``None`` (default) disables middle-region compaction.
-        compaction_hard_tokens: Approximate token threshold for summarization,
-            required and greater than the soft threshold when enabled.
+        compaction_hard_tokens: Token threshold for compaction. With
+            ``compaction_soft_tokens``, it is the threshold at which
+            `MiddleCompactor` summarizes, and must exceed the soft one. Alone,
+            with an eval provider, a request at least this large is nudged and
+            forced to call ``exec_code`` with ``compact`` set (`ReplCompactor`).
         compaction_recent_tokens: Approximate size of the recent window, in
             addition to keeping at least the last two rounds. Defaults to a
             quarter of the hard threshold.
@@ -205,6 +214,16 @@ def harness(
     h = coproduct(h, FrameworkDocumenter())
     if max_tool_output_chars is not None:
         h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))
+    # Inside `HistoryBuilder`, so a reply it rejects is recorded with its feedback.
+    # It compacts through the REPL, which needs an eval provider.
+    if (
+        compaction_soft_tokens is None
+        and compaction_hard_tokens is not None
+        and eval_provider != "none"
+    ):
+        h = coproduct(
+            h, ReplCompactor(compaction_hard_tokens, CompactionScope.CONVERSATION)
+        )
     h = coproduct(h, HistoryBuilder())
     if compaction_soft_tokens is not None and compaction_hard_tokens is not None:
         h = coproduct(
