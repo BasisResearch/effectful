@@ -12,3 +12,6 @@ from ._handlers import jax_getitem as jax_getitem
 from ._handlers import jit as jit
 from ._handlers import sizesof as sizesof
 from ._handlers import unbind_dims as unbind_dims
+from ._intercept import ValueAdapter as ValueAdapter
+from ._intercept import intercept as intercept
+from ._intercept import primitive_op as primitive_op

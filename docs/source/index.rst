@@ -30,6 +30,7 @@ Table of Contents
    :caption: Documentation
 
    effectful
+   jax_interception
 
 Indices and Tables
 ==================
