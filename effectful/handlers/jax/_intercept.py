@@ -26,6 +26,7 @@ from ._compat import (
 )
 
 _active_dispatch = ContextVar("effectful_jax_dispatch")
+_active_interpretation = ContextVar("effectful_jax_interpretation", default=None)
 
 
 class ValueAdapter(Protocol):
@@ -208,6 +209,14 @@ class _InterceptTrace(core.Trace):
         token = _active_dispatch.set(self)
         try:
             with core.set_current_trace(self.parent):
+                if _active_interpretation.get() is not self.interpretation:
+                    # Crossing nested interception wrappers must select this
+                    # trace's semantics, rather than the innermost wrapper's.
+                    def original(*values, **kw):
+                        return self.default(primitive, values, kw)
+
+                    with handler({op: original}), handler(self.interpretation):
+                        return op(*args, **params)
                 if op in self.interpretation:
                     return op(*args, **params)
 
@@ -388,15 +397,17 @@ def intercept(
     adapter = value_adapter or _ArrayAdapter()
     interpretation = {op: _signature_snapshot(fn) for op, fn in interpretation.items()}
 
-    defaults = {}
-    for operation in interpretation:
-        primitive = getattr(operation, "_jax_primitive", None)
-        if primitive is not None:
+    def default_for(primitive):
+        def original(*values, **params):
+            return _active_dispatch.get().default(primitive, values, params)
 
-            def original(*values, _primitive=primitive, **params):
-                return _active_dispatch.get().default(_primitive, values, params)
+        return original
 
-            defaults[operation] = original
+    defaults = {
+        op: default_for(op._jax_primitive)
+        for op in interpretation
+        if hasattr(op, "_jax_primitive")
+    }
 
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
@@ -412,6 +423,7 @@ def intercept(
 
             inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=adapter.is_value)
             token = _active_dispatch.set(trace)
+            interpretation_token = _active_interpretation.set(interpretation)
             try:
                 # Compose the complete interpretation once per trace. Handler
                 # implementations may still invoke other effectful operations.
@@ -422,6 +434,7 @@ def intercept(
                 ):
                     out = fn(*inputs[0], **inputs[1])
             finally:
+                _active_interpretation.reset(interpretation_token)
                 _active_dispatch.reset(token)
             out = jax.tree.map(
                 trace.unwrap,

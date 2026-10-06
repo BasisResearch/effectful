@@ -215,3 +215,30 @@ def test_handlers_can_invoke_other_primitive_operations():
         )
     )
     np.testing.assert_allclose(fn(jnp.eye(2), jnp.ones(2)), 4)
+
+
+def test_primitive_keyword_parameters_are_not_shadowed():
+    from effectful.handlers.jax._compat import core
+
+    primitive = core.Primitive("keyword_parameter")
+    primitive.def_impl(lambda x, *, _primitive: x + _primitive)
+    primitive.def_abstract_eval(lambda x, *, _primitive: x)
+
+    def observe(*args, **params):
+        return fwd()
+
+    fn = intercept(
+        lambda x: primitive.bind(x, _primitive=3),
+        interpretation={primitive_op(primitive): observe},
+    )
+    np.testing.assert_allclose(fn(jnp.array(2.0)), 5.0)
+
+
+def test_nested_interceptions_select_each_traces_interpretation():
+    op = primitive_op(jax.lax.add_p)
+    inner = intercept(lambda x: x + 1, interpretation={op: lambda *a, **k: fwd() * 2})
+    outer = intercept(inner, interpretation={op: lambda *a, **k: fwd() + 3})
+    for fn in (outer, jax.jit(outer)):
+        np.testing.assert_allclose(fn(jnp.array(0.0)), 8)
+        np.testing.assert_allclose(fn(jnp.array(2.0)), 12)
+        np.testing.assert_allclose(jax.grad(fn)(jnp.array(2.0)), 2)
