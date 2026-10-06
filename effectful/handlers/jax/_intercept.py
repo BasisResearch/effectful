@@ -6,7 +6,9 @@ compile, batch, and differentiate the numerical buffers in those representations
 """
 
 import functools
+import inspect
 from collections.abc import Callable, Mapping
+from contextvars import ContextVar
 from typing import Any, Protocol
 
 import jax
@@ -14,7 +16,16 @@ import jax
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
 
-from ._compat import bind_custom, bind_primitive, check_version, core
+from ._compat import (
+    bind_custom,
+    bind_primitive,
+    check_version,
+    core,
+    eval_program,
+    with_constants,
+)
+
+_active_dispatch = ContextVar("effectful_jax_dispatch")
 
 
 class ValueAdapter(Protocol):
@@ -68,6 +79,7 @@ def primitive_op(primitive):
         return bind_primitive(primitive, args, params)
 
     operation.__name__ = f"jax_{primitive.name}"
+    operation._jax_primitive = primitive
     return operation
 
 
@@ -90,11 +102,13 @@ def represented_value(value):
 
 
 class _InterceptTrace(core.Trace):
-    def __init__(self, parent, interpretation, adapter):
+    def __init__(self, parent, interpretation, adapter, specializations=None):
         super().__init__()
         self.parent = parent
         self.interpretation = interpretation
         self.adapter = adapter
+        # Scoped to one interception trace: no stale handlers or retained tracers.
+        self.specializations = {} if specializations is None else specializations
 
     def unwrap(self, value):
         if isinstance(value, _InterceptTracer) and value._trace is self:
@@ -132,12 +146,36 @@ class _InterceptTrace(core.Trace):
         return [read(var) for var in jaxpr.outvars]
 
     def eval_child(self, closed, args):
-        # eval_shape/scan/cond introduce a fresh staging trace. Bind numerical
-        # operations there, rather than to the parent's now-outer trace.
-        with core.take_current_trace() as parent:
-            child = _InterceptTrace(parent, self.interpretation, self.adapter)
-            with core.set_current_trace(parent):
-                return child.eval_jaxpr(closed, args)
+        """Reuse buffer programs during abstract joins and control-flow staging.
+
+        Captured source constants are explicit dynamic inputs, so changing a
+        captured value does not change the cached specialization's semantics.
+        The cache is shared only by children of the current interception trace.
+        """
+        source = closed.jaxpr if hasattr(closed, "jaxpr") else closed
+        constants = closed.consts if hasattr(closed, "consts") else ()
+        leaves, inputs = jax.tree.flatten((constants, args))
+        signature = tuple(core.typeof(x) for x in leaves)
+        key = (source, inputs, signature)
+        cached = self.specializations.get(key)
+        if cached is None:
+
+            def stage(*buffers):
+                consts, operands = jax.tree.unflatten(inputs, buffers)
+                with core.take_current_trace() as parent:
+                    child = _InterceptTrace(
+                        parent, self.interpretation, self.adapter, self.specializations
+                    )
+                    with core.set_current_trace(parent):
+                        return child.eval_jaxpr(
+                            with_constants(source, consts), operands
+                        )
+
+            program, output = jax.make_jaxpr(stage, return_shape=True)(*leaves)
+            cached = (program, jax.tree.structure(output))
+            self.specializations[key] = cached
+        program, output = cached
+        return jax.tree.unflatten(output, eval_program(program, leaves))
 
     def default(self, primitive, args, params):
         name = primitive.name
@@ -167,13 +205,21 @@ class _InterceptTrace(core.Trace):
 
     def dispatch(self, primitive, args, params):
         op = primitive_op(primitive)
+        token = _active_dispatch.set(self)
+        try:
+            with core.set_current_trace(self.parent):
+                if op in self.interpretation:
+                    return op(*args, **params)
 
-        def original(*values, **kw):
-            return self.default(primitive, values, kw)
+                # Unhandled primitives still need adapter fallback or recursive
+                # interpretation, and remain observable to enclosing handlers.
+                def original(*values, **kw):
+                    return self.default(primitive, values, kw)
 
-        with core.set_current_trace(self.parent):
-            with handler({op: original}), handler(self.interpretation):
-                return op(*args, **params)
+                with handler({op: original}):
+                    return op(*args, **params)
+        finally:
+            _active_dispatch.reset(token)
 
     def process_primitive(self, primitive, tracers, params, /):
         args = [self.unwrap(x) for x in tracers]
@@ -316,6 +362,18 @@ class _InterceptTrace(core.Trace):
             )
 
 
+def _signature_snapshot(fn):
+    # Handler composition repeatedly consults callable signatures. In
+    # particular, inspecting a functools.partial reconstructs its signature.
+    # Snapshot on a bridge-owned wrapper, without mutating user callables.
+    @functools.wraps(fn)
+    def wrapped(*args, **kwargs):
+        return fn(*args, **kwargs)
+
+    wrapped.__signature__ = inspect.signature(fn)
+    return wrapped
+
+
 def intercept(
     fn: Callable, *, interpretation: Mapping, value_adapter: ValueAdapter | None = None
 ):
@@ -328,7 +386,17 @@ def intercept(
     """
     check_version()
     adapter = value_adapter or _ArrayAdapter()
-    interpretation = dict(interpretation)
+    interpretation = {op: _signature_snapshot(fn) for op, fn in interpretation.items()}
+
+    defaults = {}
+    for operation in interpretation:
+        primitive = getattr(operation, "_jax_primitive", None)
+        if primitive is not None:
+
+            def original(*values, _primitive=primitive, **params):
+                return _active_dispatch.get().default(_primitive, values, params)
+
+            defaults[operation] = original
 
     @functools.wraps(fn)
     def wrapped(*args, **kwargs):
@@ -343,8 +411,18 @@ def intercept(
                 return value
 
             inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=adapter.is_value)
-            with core.set_current_trace(trace):
-                out = fn(*inputs[0], **inputs[1])
+            token = _active_dispatch.set(trace)
+            try:
+                # Compose the complete interpretation once per trace. Handler
+                # implementations may still invoke other effectful operations.
+                with (
+                    core.set_current_trace(trace),
+                    handler(defaults),
+                    handler(interpretation),
+                ):
+                    out = fn(*inputs[0], **inputs[1])
+            finally:
+                _active_dispatch.reset(token)
             out = jax.tree.map(
                 trace.unwrap,
                 out,

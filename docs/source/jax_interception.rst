@@ -24,7 +24,15 @@ original parent-trace binding. Multiple-result primitives return lists.
 Interpretations are snapshotted when the callable is constructed. Reuse the
 resulting callable: ordinary ``jax.jit`` caching keys on this callable identity,
 static arguments, logical argument avals and representation pytree layouts;
-numerical buffer values stay dynamic.
+numerical buffer values stay dynamic. Handler composition and signature
+inspection are performed once per interception trace. Handlers can invoke
+other interpreted operations and use ``fwd`` normally.
+
+Child programs have a trace-local buffer-program cache, keyed by the source
+program, representation pytree and abstract buffer signature. Source constants
+are explicit dynamic inputs. Abstract joins and final control-flow staging
+reuse the same transformed child program; cached recipes do not survive the
+interception trace or retain tracers across calls.
 
 Nested JIT programs (including previously compiled ones) are recursively
 interpreted. Scan, while and conditional programs are restaged over buffer

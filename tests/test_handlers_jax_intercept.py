@@ -169,3 +169,49 @@ def test_represented_custom_derivative_materializes_on_parent_trace():
     transformed = intercept(fn, interpretation={}, value_adapter=Adapter())
     x = jnp.array([2.0, 3.0])
     np.testing.assert_allclose(jax.grad(lambda x: transformed(Box(x)))(x), 16 * x)
+
+
+def test_child_program_reuse_and_captured_constants_are_dynamic():
+    seen = []
+
+    def observe(*args, **params):
+        seen.append(params["dimension_numbers"])
+        return fwd()
+
+    def original(xs, weights):
+        def body(c, x):
+            new = c + weights @ x
+            return new, new
+
+        return jax.lax.scan(body, jnp.zeros(2), xs)[1]
+
+    fn = jax.jit(
+        intercept(
+            original, interpretation={primitive_op(jax.lax.dot_general_p): observe}
+        )
+    )
+    xs = jnp.arange(8.0, dtype=float).reshape(4, 2)
+    with jax.check_tracer_leaks():
+        for weights in (jnp.eye(2), jnp.eye(2) * 2):
+            np.testing.assert_allclose(fn(xs, weights), original(xs, weights))
+    assert len(seen) == 1
+    assert fn._cache_size() == 1
+
+
+def test_handlers_can_invoke_other_primitive_operations():
+    dot = primitive_op(jax.lax.dot_general_p)
+    add = primitive_op(jax.lax.add_p)
+
+    def dot_handler(*args, **params):
+        value = fwd()
+        return add(value, jnp.ones_like(value))
+
+    def add_handler(*args, **params):
+        return fwd() * 2
+
+    fn = jax.jit(
+        intercept(
+            lambda a, x: a @ x, interpretation={dot: dot_handler, add: add_handler}
+        )
+    )
+    np.testing.assert_allclose(fn(jnp.eye(2), jnp.ones(2)), 4)

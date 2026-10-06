@@ -31,4 +31,20 @@ def bind_custom(primitive, args, subfuns, params):
     return primitive.bind(*args, subfuns=subfuns, **params)
 
 
-__all__ = ["core", "check_version", "bind_primitive", "bind_custom", "TypedNdArray"]
+__all__ = [
+    "core",
+    "check_version",
+    "bind_primitive",
+    "bind_custom",
+    "TypedNdArray",
+    "with_constants",
+    "eval_program",
+]
+
+
+def with_constants(jaxpr, constants):
+    return core.ClosedJaxpr(jaxpr, constants)
+
+
+def eval_program(program, values):
+    return core.eval_jaxpr(program.jaxpr, program.consts, *values)
