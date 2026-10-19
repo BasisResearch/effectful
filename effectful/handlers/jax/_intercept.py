@@ -15,6 +15,7 @@ import jax
 
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import defop
+from effectful.ops.types import Operation
 
 from ._compat import (
     bind_custom,
@@ -66,6 +67,14 @@ class _ArrayAdapter:
         return value
 
 
+class JaxPrimitiveOperation(Operation):
+    @classmethod
+    def define(cls, primitive):
+        return super().define(
+            functools.partial(bind_primitive, primitive), name=primitive.name
+        )
+
+
 @functools.cache
 def primitive_op(primitive):
     """Return the unique effectful Operation for a JAX Primitive.
@@ -75,13 +84,7 @@ def primitive_op(primitive):
     ``fwd`` delegates to the next handler or the original primitive binding.
     """
 
-    @defop
-    def operation(*args, **params) -> Any:
-        return bind_primitive(primitive, args, params)
-
-    operation.__name__ = f"jax_{primitive.name}"
-    operation._jax_primitive = primitive
-    return operation
+    return JaxPrimitiveOperation.define(primitive)
 
 
 class _InterceptTracer(core.Tracer):
@@ -111,18 +114,18 @@ class _InterceptTrace(core.Trace):
         # Scoped to one interception trace: no stale handlers or retained tracers.
         self.specializations = {} if specializations is None else specializations
 
-    def unwrap(self, value):
+    def _unwrap(self, value):
         if isinstance(value, _InterceptTracer) and value._trace is self:
             return value.value
         return value
 
-    def wrap(self, value):
+    def _wrap(self, value):
         return _InterceptTracer(self, value)
 
-    def normalize(self, value):
+    def _normalize(self, value):
         return self.adapter.normalize(value)
 
-    def eval_jaxpr(self, closed, args):
+    def _eval_jaxpr(self, closed, args):
         """Interpret a program without flattening represented operands."""
         jaxpr = closed.jaxpr if hasattr(closed, "jaxpr") else closed
         consts = closed.consts if hasattr(closed, "consts") else ()
@@ -133,7 +136,7 @@ class _InterceptTrace(core.Trace):
             return var.val if isinstance(var, core.Literal) else env[var]
 
         for eqn in jaxpr.eqns:
-            result = self.dispatch(
+            result = self._dispatch(
                 eqn.primitive, [read(v) for v in eqn.invars], eqn.params
             )
             results = result if eqn.primitive.multiple_results else [result]
@@ -146,7 +149,7 @@ class _InterceptTrace(core.Trace):
             )
         return [read(var) for var in jaxpr.outvars]
 
-    def eval_child(self, closed, args):
+    def _eval_child(self, closed, args):
         """Reuse buffer programs during abstract joins and control-flow staging.
 
         Captured source constants are explicit dynamic inputs, so changing a
@@ -168,7 +171,7 @@ class _InterceptTrace(core.Trace):
                         parent, self.interpretation, self.adapter, self.specializations
                     )
                     with core.set_current_trace(parent):
-                        return child.eval_jaxpr(
+                        return child._eval_jaxpr(
                             with_constants(source, consts), operands
                         )
 
@@ -178,7 +181,7 @@ class _InterceptTrace(core.Trace):
         program, output = cached
         return jax.tree.unflatten(output, eval_program(program, leaves))
 
-    def default(self, primitive, args, params):
+    def _default(self, primitive, args, params):
         name = primitive.name
         if name == "jit":
             if any(params.get("donated_invars", ())):
@@ -193,18 +196,18 @@ class _InterceptTrace(core.Trace):
                 raise NotImplementedError(
                     "effectful interception does not support distributed sharding"
                 )
-            return self.eval_jaxpr(params["jaxpr"], args)
+            return self._eval_jaxpr(params["jaxpr"], args)
         if name == "scan":
-            return self.scan(args, params)
+            return self._scan(args, params)
         if name == "cond":
-            return self.cond(args, params)
+            return self._cond(args, params)
         if name == "while":
-            return self.while_loop(args, params)
+            return self._while_loop(args, params)
         return bind_primitive(
             primitive, [self.adapter.materialize(v) for v in args], params
         )
 
-    def dispatch(self, primitive, args, params):
+    def _dispatch(self, primitive, args, params):
         op = primitive_op(primitive)
         token = _active_dispatch.set(self)
         try:
@@ -213,7 +216,7 @@ class _InterceptTrace(core.Trace):
                     # Crossing nested interception wrappers must select this
                     # trace's semantics, rather than the innermost wrapper's.
                     def original(*values, **kw):
-                        return self.default(primitive, values, kw)
+                        return self._default(primitive, values, kw)
 
                     with handler({op: original}), handler(self.interpretation):
                         return op(*args, **params)
@@ -223,53 +226,53 @@ class _InterceptTrace(core.Trace):
                 # Unhandled primitives still need adapter fallback or recursive
                 # interpretation, and remain observable to enclosing handlers.
                 def original(*values, **kw):
-                    return self.default(primitive, values, kw)
+                    return self._default(primitive, values, kw)
 
                 with handler({op: original}):
                     return op(*args, **params)
         finally:
             _active_dispatch.reset(token)
 
-    def process_primitive(self, primitive, tracers, params, /):
-        args = [self.unwrap(x) for x in tracers]
+    def _process_primitive(self, primitive, tracers, params, /):
+        args = [self._unwrap(x) for x in tracers]
         with core.set_current_trace(self.parent):
-            result = self.dispatch(primitive, args, params)
+            result = self._dispatch(primitive, args, params)
         return (
-            [self.wrap(v) for v in result]
+            [self._wrap(v) for v in result]
             if primitive.multiple_results
-            else self.wrap(result)
+            else self._wrap(result)
         )
 
     def process_call(self, primitive, fun, tracers, params, /):
         # Ordinary JIT is handled by its closed jaxpr above. Keep opaque calls
         # and their transformation rules intact, rather than tracing their primal.
         with core.set_current_trace(self.parent):
-            args = [self.adapter.materialize(self.unwrap(x)) for x in tracers]
+            args = [self.adapter.materialize(self._unwrap(x)) for x in tracers]
             out = primitive.bind(fun, *args, **params)
-        return [self.wrap(v) for v in out]
+        return [self._wrap(v) for v in out]
 
     def process_custom_jvp_call(
         self, primitive, fun, jvp, tracers, /, *, symbolic_zeros
     ):
         with core.set_current_trace(self.parent):
-            args = [self.adapter.materialize(self.unwrap(x)) for x in tracers]
+            args = [self.adapter.materialize(self._unwrap(x)) for x in tracers]
             out = bind_custom(
                 primitive, args, (fun, jvp), dict(symbolic_zeros=symbolic_zeros)
             )
-        return [self.wrap(v) for v in out]
+        return [self._wrap(v) for v in out]
 
     def process_custom_vjp_call(
         self, primitive, fun, fwd, bwd, tracers, /, *, out_trees, symbolic_zeros
     ):
         with core.set_current_trace(self.parent):
-            args = [self.adapter.materialize(self.unwrap(x)) for x in tracers]
+            args = [self.adapter.materialize(self._unwrap(x)) for x in tracers]
             out = bind_custom(
                 primitive,
                 args,
                 (fun, fwd, bwd),
                 dict(out_trees=out_trees, symbolic_zeros=symbolic_zeros),
             )
-        return [self.wrap(v) for v in out]
+        return [self._wrap(v) for v in out]
 
     def _join_lists(self, left, right):
         return [self.adapter.join(a, b) for a, b in zip(left, right, strict=True)]
@@ -279,20 +282,20 @@ class _InterceptTrace(core.Trace):
             self.adapter.coerce(a, b) for a, b in zip(values, templates, strict=True)
         ]
 
-    def scan(self, args, params):
-        args = [self.normalize(v) for v in args]
+    def _scan(self, args, params):
+        args = [self._normalize(v) for v in args]
         nc, nk = params["num_consts"], params["num_carry"]
         consts = args[:nc]
-        carry = [self.normalize(v) for v in args[nc : nc + nk]]
+        carry = [self._normalize(v) for v in args[nc : nc + nk]]
         xs = args[nc + nk :]
         if hasattr(self.adapter, "mapped"):
             xs = [self.adapter.mapped(v) for v in xs]
 
         # Operate on buffer pytrees, not on logical dense array placeholders.
         def run(c, x):
-            out = self.eval_child(params["jaxpr"], [*consts, *c, *x])
-            return [self.normalize(v) for v in out[:nk]], [
-                self.normalize(v) for v in out[nk:]
+            out = self._eval_child(params["jaxpr"], [*consts, *c, *x])
+            return [self._normalize(v) for v in out[:nk]], [
+                self._normalize(v) for v in out[nk:]
             ]
 
         sample_xs = jax.tree.map(
@@ -326,30 +329,30 @@ class _InterceptTrace(core.Trace):
             out_y = [self.adapter.stacked(v, params["length"]) for v in out_y]
         return [*out_c, *out_y]
 
-    def cond(self, args, params):
+    def _cond(self, args, params):
         index, *operands = args
         branches = params["branches"]
         outputs = [
-            jax.eval_shape(lambda *xs, b=b: self.eval_child(b, xs), *operands)
+            jax.eval_shape(lambda *xs, b=b: self._eval_child(b, xs), *operands)
             for b in branches
         ]
         templates = functools.reduce(self._join_lists, outputs)
 
         def branch(b):
-            return lambda *xs: self._coerce_list(self.eval_child(b, xs), templates)
+            return lambda *xs: self._coerce_list(self._eval_child(b, xs), templates)
 
         with core.set_current_trace(self.parent):
             return jax.lax.switch(index, tuple(branch(b) for b in branches), *operands)
 
-    def while_loop(self, args, params):
+    def _while_loop(self, args, params):
         nc, nb = params["cond_nconsts"], params["body_nconsts"]
         cond_consts, body_consts, init = args[:nc], args[nc : nc + nb], args[nc + nb :]
-        init = [self.normalize(v) for v in init]
+        init = [self._normalize(v) for v in init]
 
         def run_body(xs):
             return [
-                self.normalize(v)
-                for v in self.eval_child(params["body_jaxpr"], [*body_consts, *xs])
+                self._normalize(v)
+                for v in self._eval_child(params["body_jaxpr"], [*body_consts, *xs])
             ]
 
         for _ in range(8):
@@ -363,7 +366,7 @@ class _InterceptTrace(core.Trace):
             raise RuntimeError("while representation join did not converge")
 
         def cond(xs):
-            return self.eval_child(params["cond_jaxpr"], [*cond_consts, *xs])[0]
+            return self._eval_child(params["cond_jaxpr"], [*cond_consts, *xs])[0]
 
         with core.set_current_trace(self.parent):
             return jax.lax.while_loop(
@@ -418,7 +421,7 @@ def intercept(
                 if adapter.is_value(value) or isinstance(
                     value, (jax.Array, core.Tracer)
                 ):
-                    return trace.wrap(value)
+                    return trace._wrap(value)
                 return value
 
             inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=adapter.is_value)
@@ -437,7 +440,7 @@ def intercept(
                 _active_interpretation.reset(interpretation_token)
                 _active_dispatch.reset(token)
             out = jax.tree.map(
-                trace.unwrap,
+                trace._unwrap,
                 out,
                 is_leaf=lambda x: (
                     isinstance(x, _InterceptTracer) or adapter.is_value(x)
