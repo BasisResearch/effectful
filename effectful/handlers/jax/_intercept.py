@@ -292,11 +292,12 @@ class _InterceptTrace(core.Trace):
         pprint((primitive, tracers, params))
         args = [self._unwrap(x) for x in tracers]
         op = primitive_op(primitive)
-        result = op(*args, **params)
+        with core.set_current_trace(self):
+            result = op(*args, **params)
         return (
-            [self._wrap(v) for v in result]
+            [self._wrap(self._unwrap(v)) for v in result]
             if primitive.multiple_results
-            else self._wrap(result)
+            else self._wrap(self._unwrap(result))
         )
 
     def process_custom_jvp_call(

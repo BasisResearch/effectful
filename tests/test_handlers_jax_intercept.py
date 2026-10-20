@@ -45,7 +45,13 @@ def test_interception_in_handler():
         primitive_op(jax.lax.add_p): _add,
     }
     with handler(intp):
-        np.testing.assert_allclose(fn(a, b), (b + 1) * 2)
+        actual = fn(a, b)
+        np.testing.assert_allclose(actual, (b + 1) * 2)
+
+
+################################################################################
+# Slop tests
+################################################################################
 
 
 def test_nested_warmed_jit_and_handler_composition():
