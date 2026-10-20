@@ -6,6 +6,48 @@ from effectful.handlers.jax import intercept, primitive_op
 from effectful.ops.semantics import fwd, handler
 
 
+def test_interception_simple():
+    """Annotating a function with `intercept` causes its calls to jax primitives
+    to raise effects.
+
+    """
+
+    @intercept
+    def fn(a, b):
+        return a @ b
+
+    a, b = jnp.eye(3), jnp.arange(3.0)
+
+    np.testing.assert_allclose(fn(a, b), b)
+    with handler({primitive_op(jax.lax.dot_general_p): lambda *a, **k: fwd() + 1}):
+        np.testing.assert_allclose(fn(a, b), b + 1)
+
+
+def test_interception_in_handler():
+    """Handlers for primitive operations run in interception context."""
+
+    @intercept
+    def fn(a, b):
+        return a @ b
+
+    a, b = jnp.eye(3), jnp.arange(3.0)
+
+    np.testing.assert_allclose(fn(a, b), b)
+
+    def _dot_general(*args, **kwargs):
+        return fwd() + 1
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    intp = {
+        primitive_op(jax.lax.dot_general_p): _dot_general,
+        primitive_op(jax.lax.add_p): _add,
+    }
+    with handler(intp):
+        np.testing.assert_allclose(fn(a, b), (b + 1) * 2)
+
+
 def test_nested_warmed_jit_and_handler_composition():
     seen = []
 

@@ -12,10 +12,11 @@ from contextvars import ContextVar
 from typing import Any, Protocol
 
 import jax
+from prettyprinter import pprint
 
 from effectful.internals.runtime import get_interpretation
 from effectful.ops.semantics import fwd, handler
-from effectful.ops.syntax import ObjectInterpretation, defop, implements
+from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation
 
 from ._compat import (
@@ -67,12 +68,42 @@ def upcast[U, V, T](u: U, v: V) -> tuple[Callable[[U], T], Callable[[V], T]]:
     raise NotImplementedError
 
 
+@defop
+def _parent_trace() -> core.Trace:
+    raise RuntimeError("BUG: _parent_trace is not set.")
+
+
+class _JaxInnerPrimitiveOperation(Operation):
+    @classmethod
+    def define_primitive(cls, primitive):
+        def default(*args, **kwargs):
+            with core.set_current_trace(_parent_trace()):
+                return bind_primitive(primitive, *args, **kwargs)
+
+        return super().define(default, name=primitive.name)
+
+
+@functools.cache
+def _inner_primop(primitive):
+    """Return the unique effectful Operation for a JAX Primitive.
+
+    Handlers receive primitive operands positionally and primitive parameters
+    as keyword arguments. Multiple-result primitives return a list of values.
+    ``fwd`` delegates to the next handler or the original primitive binding.
+    """
+
+    return _JaxInnerPrimitiveOperation.define_primitive(primitive)
+
+
 class JaxPrimitiveOperation(Operation):
     @classmethod
-    def define(cls, primitive):
-        return super().define(
-            functools.partial(bind_primitive, primitive), name=primitive.name
-        )
+    def define_primitive(cls, primitive):
+        inner_op = _inner_primop(primitive)
+
+        def default(*args, **kwargs):
+            return inner_op(*args, **kwargs)
+
+        return super().define(default, name=primitive.name)
 
 
 @functools.cache
@@ -84,7 +115,112 @@ def primitive_op(primitive):
     ``fwd`` delegates to the next handler or the original primitive binding.
     """
 
-    return JaxPrimitiveOperation.define(primitive)
+    return JaxPrimitiveOperation.define_primitive(primitive)
+
+
+class DefaultIntp(ObjectInterpretation):
+    @implements(_inner_primop(jax._src.pjit.jit_p))
+    def _jit_p_default(self, *args, **kwargs):
+        if any(kwargs.get("donated_invars", ())):
+            raise NotImplementedError(
+                "effectful interception does not support buffer donation"
+            )
+        shardings = (*kwargs.get("in_shardings", ()), *kwargs.get("out_shardings", ()))
+        if any(getattr(s, "is_fully_replicated", True) is False for s in shardings):
+            raise NotImplementedError(
+                "effectful interception does not support distributed sharding"
+            )
+        return _eval_jaxpr(kwargs["jaxpr"], *args)
+
+    @implements(_inner_primop(jax.lax.scan_p))
+    def _scan_p_default(*args, **params):
+        args = [normalize(v) for v in args]
+        nc, nk = params["num_consts"], params["num_carry"]
+        consts = args[:nc]
+        carry = [normalize(v) for v in args[nc : nc + nk]]
+        xs = args[nc + nk :]
+
+        # if hasattr(self.adapter, "mapped"):
+        #     xs = [self.adapter.mapped(v) for v in xs]  # ??
+
+        # Operate on buffer pytrees, not on logical dense array placeholders.
+        def run(c, x):
+            out = _eval_jaxpr(params["jaxpr"], [*consts, *c, *x])
+            return [normalize(v) for v in out[:nk]], [normalize(v) for v in out[nk:]]
+
+        sample_xs = jax.tree.map(
+            lambda a: jax.ShapeDtypeStruct(a.shape[1:], a.dtype), xs
+        )
+        for _ in range(8):
+            out_c, _ = jax.eval_shape(run, carry, sample_xs)
+            templates = _join_lists(carry, out_c)
+            joined = _coerce_list(carry, templates)
+            if jax.tree.structure(joined) == jax.tree.structure(carry):
+                carry = joined
+                break
+            carry = joined
+        else:
+            raise RuntimeError("scan representation join did not converge")
+
+        def body(c, x):
+            out_c, out_y = run(c, x)
+            return _coerce_list(out_c, carry), out_y
+
+        out_c, out_y = fwd(
+            body,
+            carry,
+            xs,
+            length=params["length"],
+            reverse=params["reverse"],
+            unroll=params["unroll"],
+        )
+
+        # if hasattr(self.adapter, "stacked"):  # ??
+        #     out_y = [self.adapter.stacked(v, params["length"]) for v in out_y]
+
+        return [*out_c, *out_y]
+
+    @implements(_inner_primop(jax.lax.cond_p))
+    def _cond_p_default(*args, **params):
+        index, *operands = args
+        branches = params["branches"]
+        outputs = [
+            jax.eval_shape(lambda *xs, b=b: _eval_jaxpr(b, xs), *operands)
+            for b in branches
+        ]
+        templates = functools.reduce(_join_lists, outputs)
+
+        def branch(b):
+            return lambda *xs: _coerce_list(_eval_jaxpr(b, xs), templates)
+
+        return jax.lax.switch(index, tuple(branch(b) for b in branches), *operands)
+
+    @implements(_inner_primop(jax.lax.while_p))
+    def _while_p_default(*args, **params):
+        nc, nb = params["cond_nconsts"], params["body_nconsts"]
+        cond_consts, body_consts, init = args[:nc], args[nc : nc + nb], args[nc + nb :]
+        init = [normalize(v) for v in init]
+
+        def run_body(xs):
+            return [
+                normalize(v)
+                for v in _eval_jaxpr(params["body_jaxpr"], [*body_consts, *xs])
+            ]
+
+        for _ in range(8):
+            out = jax.eval_shape(run_body, init)
+            new = _coerce_list(init, _join_lists(init, out))
+            if jax.tree.structure(new) == jax.tree.structure(init):
+                init = new
+                break
+            init = new
+        else:
+            raise RuntimeError("while representation join did not converge")
+
+        def cond(xs):
+            return _eval_jaxpr(params["cond_jaxpr"], [*cond_consts, *xs])[0]
+
+        return fwd(cond, lambda xs: _coerce_list(run_body(xs), init), init)
 
 
 class _InterceptTracer(core.Tracer):
@@ -138,115 +274,9 @@ def _coerce_list(values, templates):
     return [coerce(a, b) for a, b in zip(values, templates, strict=True)]
 
 
-class HigherOrderJaxIntp(ObjectInterpretation):
-    @implements(primitive_op(jax._src.pjit.jit_p))
-    def jit(self, *args, **kwargs):
-        if any(kwargs.get("donated_invars", ())):
-            raise NotImplementedError(
-                "effectful interception does not support buffer donation"
-            )
-        shardings = (*kwargs.get("in_shardings", ()), *kwargs.get("out_shardings", ()))
-        if any(getattr(s, "is_fully_replicated", True) is False for s in shardings):
-            raise NotImplementedError(
-                "effectful interception does not support distributed sharding"
-            )
-        return _eval_jaxpr(kwargs["jaxpr"], *args)
-
-    @implements(primitive_op(jax.lax.scan_p))
-    def scan(self, *args, **params):
-        args = [normalize(v) for v in args]
-        nc, nk = params["num_consts"], params["num_carry"]
-        consts = args[:nc]
-        carry = [normalize(v) for v in args[nc : nc + nk]]
-        xs = args[nc + nk :]
-
-        # if hasattr(self.adapter, "mapped"):
-        #     xs = [self.adapter.mapped(v) for v in xs]  # ??
-
-        # Operate on buffer pytrees, not on logical dense array placeholders.
-        def run(c, x):
-            out = _eval_jaxpr(params["jaxpr"], [*consts, *c, *x])
-            return [normalize(v) for v in out[:nk]], [normalize(v) for v in out[nk:]]
-
-        sample_xs = jax.tree.map(
-            lambda a: jax.ShapeDtypeStruct(a.shape[1:], a.dtype), xs
-        )
-        for _ in range(8):
-            out_c, _ = jax.eval_shape(run, carry, sample_xs)
-            templates = _join_lists(carry, out_c)
-            joined = _coerce_list(carry, templates)
-            if jax.tree.structure(joined) == jax.tree.structure(carry):
-                carry = joined
-                break
-            carry = joined
-        else:
-            raise RuntimeError("scan representation join did not converge")
-
-        def body(c, x):
-            out_c, out_y = run(c, x)
-            return _coerce_list(out_c, carry), out_y
-
-        out_c, out_y = fwd(
-            body,
-            carry,
-            xs,
-            length=params["length"],
-            reverse=params["reverse"],
-            unroll=params["unroll"],
-        )
-
-        # if hasattr(self.adapter, "stacked"):  # ??
-        #     out_y = [self.adapter.stacked(v, params["length"]) for v in out_y]
-
-        return [*out_c, *out_y]
-
-    @implements(primitive_op(jax.lax.cond_p))
-    def cond(self, args, params):
-        index, *operands = args
-        branches = params["branches"]
-        outputs = [
-            jax.eval_shape(lambda *xs, b=b: _eval_jaxpr(b, xs), *operands)
-            for b in branches
-        ]
-        templates = functools.reduce(_join_lists, outputs)
-
-        def branch(b):
-            return lambda *xs: _coerce_list(_eval_jaxpr(b, xs), templates)
-
-        return jax.lax.switch(index, tuple(branch(b) for b in branches), *operands)
-
-    @implements(primitive_op(jax.lax.while_p))
-    def while_loop(self, args, params):
-        nc, nb = params["cond_nconsts"], params["body_nconsts"]
-        cond_consts, body_consts, init = args[:nc], args[nc : nc + nb], args[nc + nb :]
-        init = [normalize(v) for v in init]
-
-        def run_body(xs):
-            return [
-                normalize(v)
-                for v in _eval_jaxpr(params["body_jaxpr"], [*body_consts, *xs])
-            ]
-
-        for _ in range(8):
-            out = jax.eval_shape(run_body, init)
-            new = _coerce_list(init, _join_lists(init, out))
-            if jax.tree.structure(new) == jax.tree.structure(init):
-                init = new
-                break
-            init = new
-        else:
-            raise RuntimeError("while representation join did not converge")
-
-        def cond(xs):
-            return _eval_jaxpr(params["cond_jaxpr"], [*cond_consts, *xs])[0]
-
-        return fwd(cond, lambda xs: _coerce_list(run_body(xs), init), init)
-
-
 class _InterceptTrace(core.Trace):
-    def __init__(self, parent, specializations=None):
+    def __init__(self, specializations=None):
         super().__init__()
-        self.parent = parent
         # Scoped to one interception trace: no stale handlers or retained tracers.
         self.specializations = {} if specializations is None else specializations
 
@@ -259,28 +289,20 @@ class _InterceptTrace(core.Trace):
         return _InterceptTracer(self, value)
 
     def process_primitive(self, primitive, tracers, params, /):
+        pprint((primitive, tracers, params))
         args = [self._unwrap(x) for x in tracers]
-        with core.set_current_trace(self.parent):
-            op = primitive_op(primitive)
-            result = op(*args, **params)
+        op = primitive_op(primitive)
+        result = op(*args, **params)
         return (
             [self._wrap(v) for v in result]
             if primitive.multiple_results
             else self._wrap(result)
         )
 
-    def process_call(self, primitive, fun, tracers, params, /):
-        # Ordinary JIT is handled by its closed jaxpr above. Keep opaque calls
-        # and their transformation rules intact, rather than tracing their primal.
-        with core.set_current_trace(self.parent):
-            args = [materialize(self._unwrap(x)) for x in tracers]
-            out = primitive.bind(fun, *args, **params)
-        return [self._wrap(v) for v in out]
-
     def process_custom_jvp_call(
         self, primitive, fun, jvp, tracers, /, *, symbolic_zeros
     ):
-        with core.set_current_trace(self.parent):
+        with core.set_current_trace(_parent_trace()):
             args = [materialize(self._unwrap(x)) for x in tracers]
             out = bind_custom(
                 primitive, args, (fun, jvp), dict(symbolic_zeros=symbolic_zeros)
@@ -290,7 +312,7 @@ class _InterceptTrace(core.Trace):
     def process_custom_vjp_call(
         self, primitive, fun, fwd, bwd, tracers, /, *, out_trees, symbolic_zeros
     ):
-        with core.set_current_trace(self.parent):
+        with core.set_current_trace(_parent_trace()):
             args = [materialize(self._unwrap(x)) for x in tracers]
             out = bind_custom(
                 primitive,
@@ -304,36 +326,42 @@ class _InterceptTrace(core.Trace):
 def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     """Transform ``fn`` so ordinary JAX primitives dispatch through effectful."""
     check_version()
-    interpretation = get_interpretation()
 
     @functools.wraps(fn)
-    @handler(HigherOrderJaxIntp())
-    @handler(interpretation)
+    @handler(DefaultIntp())
     def wrapped(*args, **kwargs):
+        trace = _InterceptTrace()
+
+        def wrap(value):
+            if is_value(value) or isinstance(value, (jax.Array, core.Tracer)):
+                return trace._wrap(value)
+            return value
+
         with core.take_current_trace() as parent:
-            trace = _InterceptTrace(parent)
+            with handler({_parent_trace: deffn(parent)}):
+                inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=is_value)
+                # Compose the complete interpretation once per trace. Handler
+                # implementations may still invoke other effectful operations.
+                with core.set_current_trace(trace):
+                    out = fn(*inputs[0], **inputs[1])
 
-            def wrap(value):
-                if is_value(value) or isinstance(value, (jax.Array, core.Tracer)):
-                    return trace._wrap(value)
-                return value
-
-            inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=is_value)
-            # Compose the complete interpretation once per trace. Handler
-            # implementations may still invoke other effectful operations.
-            with core.set_current_trace(trace):
-                out = fn(*inputs[0], **inputs[1])
-
-            out = jax.tree.map(
-                trace._unwrap,
-                out,
-                is_leaf=lambda x: isinstance(x, _InterceptTracer) or is_value(x),
-            )
-
-            with core.set_current_trace(parent):
+                out = jax.tree.map(
+                    trace._unwrap,
+                    out,
+                    is_leaf=lambda x: isinstance(x, _InterceptTracer) or is_value(x),
+                )
                 return jax.tree.map(normalize, out, is_leaf=is_value)
 
     return wrapped
+
+
+def intercept_jit[**P, T](fn: Callable[P, T], *args, **kwargs) -> Callable[P, T]:
+    """Compile `fn` using `jax.jit`, passing the current interpretation as a
+    static argument so that the function re-jits when called in a different
+    interpretation.
+
+    """
+    raise NotImplementedError
 
 
 __all__ = ["intercept", "primitive_op", "represented_value"]
