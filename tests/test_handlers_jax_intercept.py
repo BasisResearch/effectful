@@ -49,6 +49,32 @@ def test_interception_in_handler():
         np.testing.assert_allclose(actual, (b + 1) * 2)
 
 
+def test_interception_interpretation_change():
+    """Changing the interpretation context changes behavior."""
+
+    @intercept
+    def fn(a, b):
+        return a @ b
+
+    a, b = jnp.eye(3), jnp.arange(3.0)
+
+    np.testing.assert_allclose(fn(a, b), b)
+
+    def _dot_general_1(*args, **kwargs):
+        return fwd() + 1
+
+    def _dot_general_2(*args, **kwargs):
+        return fwd() + 2
+
+    with handler({primitive_op(jax.lax.dot_general_p): _dot_general_1}):
+        actual = fn(a, b)
+        np.testing.assert_allclose(actual, b + 1)
+
+    with handler({primitive_op(jax.lax.dot_general_p): _dot_general_2}):
+        actual = fn(a, b)
+        np.testing.assert_allclose(actual, b + 2)
+
+
 ################################################################################
 # Slop tests
 ################################################################################
