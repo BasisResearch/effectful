@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from effectful.handlers.jax import intercept, primitive_op
-from effectful.ops.semantics import fwd
+from effectful.ops.semantics import fwd, handler
 
 
 def test_nested_warmed_jit_and_handler_composition():
@@ -16,9 +16,9 @@ def test_nested_warmed_jit_and_handler_composition():
     original = jax.jit(lambda a, b: a @ b)
     a, b = jnp.eye(3), jnp.arange(3.0)
     original(a, b).block_until_ready()
-    transformed = intercept(
-        original, interpretation={primitive_op(jax.lax.dot_general_p): observe}
-    )
+
+    with handler({primitive_op(jax.lax.dot_general_p): observe}):
+        transformed = intercept(original)
     np.testing.assert_allclose(jax.jit(transformed)(a, b), b + 1)
     assert seen
     np.testing.assert_allclose(original(a, b), b)

@@ -17,8 +17,8 @@ def check_version():
         )
 
 
-def bind_primitive(primitive, args, params):
-    binding = primitive.get_bind_params(params)
+def bind_primitive(primitive, *args, **kwargs):
+    binding = primitive.get_bind_params(kwargs)
     if isinstance(binding, tuple):  # 0.9.1: positional subfunctions
         subfuns, keywords = binding
         return primitive.bind(*subfuns, *args, **keywords)
