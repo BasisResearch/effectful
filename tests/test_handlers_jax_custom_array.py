@@ -307,7 +307,9 @@ def test_interception_while(custom_array, densifications):
     assert not densifications
 
 
-def test_interception_while_upcast(custom_array, densifications):
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("limit", [0, 2])
+def test_interception_while_upcast(custom_array, densifications, jit, limit):
     """The initial custom carry widens to the dense body-output layout."""
 
     @custom_array.custom_arrays
@@ -318,10 +320,15 @@ def test_interception_while_upcast(custom_array, densifications):
             (0, a),
         )[1]
 
+    if jit:
+        fn = jax.jit(fn)
     a = Diagonal(jnp.array([2.0, 3.0]))
-    result = fn(a, jnp.array(2))
+    result = fn(a, jnp.array(limit))
     assert isinstance(result, jax.Array)
-    np.testing.assert_allclose(result, jnp.sin(jnp.sin(jnp.diag(a.diag))))
+    expected = jnp.diag(a.diag)
+    for _ in range(limit):
+        expected = jnp.sin(expected)
+    np.testing.assert_allclose(result, expected)
     assert densifications
 
 

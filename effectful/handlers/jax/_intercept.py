@@ -236,7 +236,18 @@ class DefaultIntp(ObjectInterpretation):
             )
 
         with core.set_current_trace(_parent_trace()):
-            return list(jax.lax.while_loop(cond, body, init))
+            initial = jax.eval_shape(_id, init)
+            outputs = jax.eval_shape(body, init)
+            pairs = [upcast(a, b) for a, b in zip(initial, outputs, strict=True)]
+            init = tuple(_apply_conversions([a for a, _ in pairs], init))
+            conversions = [b for _, b in pairs]
+
+            def converted(xs):
+                return tuple(_apply_conversions(conversions, body(xs)))
+
+            # Retracing on the widened carry must produce the same physical
+            # layout; while_loop validates this after the single widening step.
+            return list(jax.lax.while_loop(cond, converted, init))
 
 
 class _InterceptTracer(core.Tracer):
