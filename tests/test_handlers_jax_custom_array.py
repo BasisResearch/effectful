@@ -530,6 +530,144 @@ def test_interception_grad_scan(custom_array):
     np.testing.assert_allclose(grad(jnp.array([2.0, 3.0])), 14 * b)
 
 
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_jvp_rejects_custom_array(custom_array, jit):
+    """A logical custom JVP cannot yet transport a custom operand's buffers."""
+
+    @jax.custom_jvp
+    def custom(x):
+        return x + x
+
+    @custom.defjvp
+    def rule(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(x), 3 * t
+
+    data = jnp.array([2.0, 3.0])
+    dense_grad = jax.grad(lambda x: custom(x).sum())(jnp.diag(data))
+    np.testing.assert_allclose(dense_grad, jnp.full((2, 2), 3.0))
+
+    fn = custom_array.custom_arrays(jax.jit(custom) if jit else custom)
+    with pytest.raises(TypeError, match="argument to custom_jvp_call as a JAX value"):
+        jax.grad(lambda d: fn(Diagonal(d)).sum())(data)
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_vjp_rejects_custom_array(custom_array, jit):
+    """A logical custom VJP cannot yet transport a custom operand's buffers."""
+
+    @jax.custom_vjp
+    def custom(x):
+        return x + x
+
+    def forward(x):
+        return custom(x), ()
+
+    def backward(residuals, g):
+        return (3 * g,)
+
+    custom.defvjp(forward, backward)
+    data = jnp.array([2.0, 3.0])
+    dense_grad = jax.grad(lambda x: custom(x).sum())(jnp.diag(data))
+    np.testing.assert_allclose(dense_grad, jnp.full((2, 2), 3.0))
+
+    fn = custom_array.custom_arrays(jax.jit(custom) if jit else custom)
+    with pytest.raises(TypeError, match="argument to custom_vjp_call as a JAX value"):
+        jax.grad(lambda d: fn(Diagonal(d)).sum())(data)
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_jvp_on_handler(custom_array, densifications, jit):
+    """A handler's custom rule receives structured primals and buffer tangents."""
+
+    @jax.custom_jvp
+    def dot(a, b):
+        assert isinstance(a, Diagonal)
+        return a.diag * b
+
+    @dot.defjvp
+    def rule(primals, tangents):
+        a, b = primals
+        da, db = tangents
+        assert isinstance(a, Diagonal)
+        assert isinstance(da, Diagonal)
+        # Deliberately differ from the ordinary derivative to prove the custom
+        # rule survives interception, JIT staging, and reverse-mode transposition.
+        return dot(a, b), 3 * da.diag * b + a.diag * db
+
+    fn = custom_array.custom_arrays(lambda a, b: a @ b)
+
+    def run(data, b):
+        return fn(Diagonal(data), b)
+
+    if jit:
+        run = jax.jit(run)
+    data, b = jnp.array([2.0, 3.0]), jnp.array([4.0, 5.0])
+    da, db = jnp.array([0.5, 1.5]), jnp.array([1.0, 2.0])
+    with handler(
+        {primitive_op(jax.lax.dot_general_p): lambda a, b, **params: dot(a, b)}
+    ):
+        np.testing.assert_allclose(run(data, b), data * b)
+        value, tangent = jax.jvp(run, (data, b), (da, db))
+        grad_a, grad_b = jax.grad(lambda a, b: run(a, b).sum(), argnums=(0, 1))(data, b)
+
+    np.testing.assert_allclose(value, data * b)
+    np.testing.assert_allclose(tangent, 3 * da * b + data * db)
+    np.testing.assert_allclose(grad_a, 3 * b)
+    np.testing.assert_allclose(grad_b, data)
+    assert not densifications
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_jvp_sparse_primal(custom_array, densifications, jit):
+    """A representation-aware handler preserves sparse primal and tangent outputs."""
+
+    @jax.custom_jvp
+    def add(a, b):
+        assert isinstance(a, Diagonal)
+        assert isinstance(b, Diagonal)
+        return Diagonal(a.diag + b.diag)
+
+    @add.defjvp
+    def rule(primals, tangents):
+        a, b = primals
+        da, db = tangents
+        assert isinstance(da, Diagonal)
+        assert isinstance(db, Diagonal)
+        return add(a, b), Diagonal(3 * da.diag + 5 * db.diag)
+
+    def add_handler(a, b, **params):
+        if isinstance(a, Diagonal) and isinstance(b, Diagonal):
+            return add(a, b)
+        return fwd()
+
+    fn = custom_array.custom_arrays(lambda a, b: a + b)
+
+    def run(a, b):
+        return fn(Diagonal(a), Diagonal(b))
+
+    if jit:
+        run = jax.jit(run)
+    a, b = jnp.array([2.0, 3.0]), jnp.array([4.0, 5.0])
+    da, db = jnp.array([0.5, 1.5]), jnp.array([1.0, 2.0])
+    with handler({primitive_op(jax.lax.add_p): add_handler}):
+        result = run(a, b)
+        value, tangent = jax.jvp(run, (a, b), (da, db))
+        grad_a, grad_b = jax.grad(lambda a, b: run(a, b).diag.sum(), argnums=(0, 1))(
+            a, b
+        )
+
+    assert isinstance(result, Diagonal)
+    assert isinstance(value, Diagonal)
+    assert isinstance(tangent, Diagonal)
+    np.testing.assert_allclose(result.diag, a + b)
+    np.testing.assert_allclose(value.diag, a + b)
+    np.testing.assert_allclose(tangent.diag, 3 * da + 5 * db)
+    np.testing.assert_allclose(grad_a, jnp.full_like(a, 3))
+    np.testing.assert_allclose(grad_b, jnp.full_like(b, 5))
+    assert not densifications
+
+
 def test_interception_densification(custom_array, densifications):
     """An unhandled operation gets a dense matrix, not the storage buffer."""
     fn = custom_array.custom_arrays(jnp.exp)
