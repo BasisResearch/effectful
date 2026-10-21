@@ -145,6 +145,40 @@ def test_interception_scan():
         np.testing.assert_allclose(total, 22)
 
 
+def test_interception_cond():
+    """Conditional branches are interceptable."""
+
+    @intercept
+    def fn(a):
+        return jax.lax.cond(a > 0, lambda x: x + 1, lambda x: x + 2, a)
+
+    np.testing.assert_allclose(fn(jnp.array(2)), 3)
+    np.testing.assert_allclose(fn(jnp.array(-3)), -1)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        np.testing.assert_allclose(fn(jnp.array(2)), 6)
+        np.testing.assert_allclose(fn(jnp.array(-3)), -2)
+
+
+def test_interception_while():
+    """While loop bodies are interceptable."""
+
+    @intercept
+    def fn(a, limit):
+        return jax.lax.while_loop(lambda c: c < limit, lambda c: c + a, 0)
+
+    np.testing.assert_allclose(fn(jnp.array(1), jnp.array(5)), 5)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        np.testing.assert_allclose(fn(jnp.array(1), jnp.array(5)), 6)
+
+
 # def test_interception_custom_array():
 #     """Changing the interpretation context changes behavior."""
 

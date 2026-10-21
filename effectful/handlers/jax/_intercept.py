@@ -15,7 +15,7 @@ import jax
 from prettyprinter import pprint
 
 from effectful.internals.runtime import get_interpretation
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation
 
@@ -130,7 +130,13 @@ class DefaultIntp(ObjectInterpretation):
             raise NotImplementedError(
                 "effectful interception does not support distributed sharding"
             )
-        return _eval_jaxpr(kwargs["jaxpr"], *args)
+
+        @intercept
+        def run(*xs):
+            return _eval_jaxpr(kwargs["jaxpr"], *map(represented_value, xs))
+
+        with core.set_current_trace(_parent_trace()):
+            return jax.jit(run)(*args)
 
     @implements(_inner_primop(jax.lax.scan_p))
     def _scan_p_default(self, *args, **params):
@@ -163,44 +169,40 @@ class DefaultIntp(ObjectInterpretation):
     @implements(_inner_primop(jax.lax.cond_p))
     def _cond_p_default(self, *args, **params):
         index, *operands = args
-        branches = params["branches"]
-        outputs = [
-            jax.eval_shape(lambda *xs, b=b: _eval_jaxpr(b, xs), *operands)
-            for b in branches
-        ]
-        templates = functools.reduce(_join_lists, outputs)
 
-        def branch(b):
-            return lambda *xs: _coerce_list(_eval_jaxpr(b, xs), templates)
+        def branch(jaxpr):
+            @intercept
+            def run(*xs):
+                return _eval_jaxpr(jaxpr, *map(represented_value, xs))
 
-        return jax.lax.switch(index, tuple(branch(b) for b in branches), *operands)
+            return run
+
+        with core.set_current_trace(_parent_trace()):
+            return jax.lax.switch(
+                index, tuple(branch(b) for b in params["branches"]), *operands
+            )
 
     @implements(_inner_primop(jax.lax.while_p))
     def _while_p_default(self, *args, **params):
         nc, nb = params["cond_nconsts"], params["body_nconsts"]
         cond_consts, body_consts, init = args[:nc], args[nc : nc + nb], args[nc + nb :]
-        init = [normalize(v) for v in init]
 
-        def run_body(xs):
-            return [
-                normalize(v)
-                for v in _eval_jaxpr(params["body_jaxpr"], [*body_consts, *xs])
-            ]
-
-        for _ in range(8):
-            out = jax.eval_shape(run_body, init)
-            new = _coerce_list(init, _join_lists(init, out))
-            if jax.tree.structure(new) == jax.tree.structure(init):
-                init = new
-                break
-            init = new
-        else:
-            raise RuntimeError("while representation join did not converge")
-
+        @intercept
         def cond(xs):
-            return _eval_jaxpr(params["cond_jaxpr"], [*cond_consts, *xs])[0]
+            return _eval_jaxpr(
+                params["cond_jaxpr"], *cond_consts, *map(represented_value, xs)
+            )[0]
 
-        return fwd(cond, lambda xs: _coerce_list(run_body(xs), init), init)
+        @intercept
+        def body(xs):
+            return tuple(
+                _eval_jaxpr(
+                    params["body_jaxpr"], *body_consts, *map(represented_value, xs)
+                )
+            )
+
+        with core.set_current_trace(_parent_trace()):
+            return list(jax.lax.while_loop(cond, body, init))
 
 
 class _InterceptTracer(core.Tracer):
@@ -244,14 +246,6 @@ def _eval_jaxpr(closed, *args):
             }
         )
     return [read(var) for var in jaxpr.outvars]
-
-
-def _join_lists(left, right):
-    return [join(a, b) for a, b in zip(left, right, strict=True)]
-
-
-def _coerce_list(values, templates):
-    return [coerce(a, b) for a, b in zip(values, templates, strict=True)]
 
 
 class _InterceptTrace(core.Trace):
