@@ -39,15 +39,16 @@ def _compose(outer, inner):
 
 
 @defop
-def upcast[S, T](left: S, right: T) -> tuple[Callable[[S], Any], Callable[[T], Any]]:
-    """Choose value-preserving conversions using abstract representation witnesses.
+def upcast[S, T](left: S, right: T) -> Callable[[S | T], Any]:
+    """Choose one smart constructor for both abstract representation witnesses.
 
-    Inputs are outputs of ``jax.eval_shape``; conversions must also accept real
-    or tracer-backed values and must not capture the other operand's buffers.
+    Inputs are outputs of ``jax.eval_shape``. The returned function must accept
+    either source representation with real or tracer-backed buffers, preserve
+    meaning, and produce a shared layout without capturing either input's buffers.
     JAX validates the resulting physical layouts at the control-flow boundary.
     """
     if type(left) is type(right):
-        return _id, _id
+        return _id
     raise NotImplementedError(
         f"No upcast for {type(left).__name__} and {type(right).__name__}"
     )
@@ -60,10 +61,10 @@ def upcast_many(*values):
     common = values[0]
     conversions = [_id]
     for other in values[1:]:
-        widen, convert = upcast(common, other)
-        conversions = [_compose(widen, previous) for previous in conversions]
+        convert = upcast(common, other)
+        conversions = [_compose(convert, previous) for previous in conversions]
         conversions.append(convert)
-        common = jax.eval_shape(lambda x: widen(x), common)
+        common = jax.eval_shape(lambda x: convert(x), common)
     return tuple(conversions)
 
 
@@ -238,9 +239,8 @@ class DefaultIntp(ObjectInterpretation):
         with core.set_current_trace(_parent_trace()):
             initial = jax.eval_shape(_id, init)
             outputs = jax.eval_shape(body, init)
-            pairs = [upcast(a, b) for a, b in zip(initial, outputs, strict=True)]
-            init = tuple(_apply_conversions([a for a, _ in pairs], init))
-            conversions = [b for _, b in pairs]
+            conversions = [upcast(a, b) for a, b in zip(initial, outputs, strict=True)]
+            init = tuple(_apply_conversions(conversions, init))
 
             def converted(xs):
                 return tuple(_apply_conversions(conversions, body(xs)))

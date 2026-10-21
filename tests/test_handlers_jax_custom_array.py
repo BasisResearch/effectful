@@ -1,6 +1,7 @@
 """Specification tests for the planned custom-array interception extension."""
 
 from dataclasses import dataclass
+from functools import partial, singledispatchmethod
 
 import jax
 import jax.numpy as jnp
@@ -13,12 +14,46 @@ from effectful.handlers.jax._intercept import upcast
 from effectful.ops.semantics import fwd, handler
 
 
+@partial(
+    jax.tree_util.register_dataclass,
+    data_fields=("value",),
+    meta_fields=("index", "size"),
+)
+@dataclass
+class SingleNonzero:
+    """A square matrix with just one nonzero, at (index, index)."""
+
+    value: jax.Array
+    index: int
+    size: int
+
+    @property
+    def shape(self):
+        return (self.size, self.size)
+
+    @property
+    def dtype(self):
+        return self.value.dtype
+
+
 @jax.tree_util.register_dataclass
 @dataclass
 class Diagonal:
     """A logical square matrix with only its diagonal stored as a buffer."""
 
     diag: jax.Array
+
+    @singledispatchmethod
+    @classmethod
+    def from_array(cls, value):
+        if isinstance(value, cls):
+            return value
+        raise NotImplementedError(f"Cannot convert {type(value).__name__} to Diagonal")
+
+    @from_array.register(SingleNonzero)
+    @classmethod
+    def _from_single_nonzero(cls, value: SingleNonzero):
+        return cls(jnp.where(jnp.arange(value.size) == value.index, value.value, 0))
 
     @property
     def shape(self):
@@ -39,35 +74,35 @@ def custom_array(densifications):
     api = _custom_array
 
     def is_custom_array(value):
-        return isinstance(value, Diagonal) or fwd()
+        return isinstance(value, (Diagonal, SingleNonzero)) or fwd()
 
     def aval(value):
-        if isinstance(value, Diagonal):
+        if isinstance(value, (Diagonal, SingleNonzero)):
             return core.ShapedArray(value.shape, value.dtype)
         return fwd()
 
     def to_jax_array(value):
-        if isinstance(value, Diagonal):
+        if isinstance(value, (Diagonal, SingleNonzero)):
             # Record no buffers/tracers: this is a benign observation of policy.
             densifications.append(value.shape)
-            return jnp.diag(value.diag)
+            return jnp.diag(Diagonal.from_array(value).diag)
         return fwd()
 
     def diagonal_upcast(left, right):
-        if isinstance(left, Diagonal) and isinstance(right, Diagonal):
-            if left.shape == right.shape and left.dtype == right.dtype:
-                return lambda x: x, lambda x: x
-        elif isinstance(left, Diagonal):
-            if left.shape == right.shape and left.dtype == right.dtype:
-                return api.to_jax_array, lambda x: x
-        elif isinstance(right, Diagonal):
-            if left.shape == right.shape and left.dtype == right.dtype:
-                return lambda x: x, api.to_jax_array
+        if (isinstance(left, Diagonal) and isinstance(right, SingleNonzero)) or (
+            isinstance(left, SingleNonzero) and isinstance(right, Diagonal)
+        ):
+            return Diagonal.from_array
+        custom_types = (Diagonal, SingleNonzero)
+        if isinstance(left, custom_types) != isinstance(right, custom_types):
+            return api.to_jax_array
         return fwd()
 
     def add(a, b, **params):
-        if isinstance(a, Diagonal) and isinstance(b, Diagonal):
-            return Diagonal(a.diag + b.diag)
+        if isinstance(a, (Diagonal, SingleNonzero)) and isinstance(
+            b, (Diagonal, SingleNonzero)
+        ):
+            return Diagonal(Diagonal.from_array(a).diag + Diagonal.from_array(b).diag)
         return fwd()
 
     def dot_general(a, b, **params):
@@ -279,6 +314,29 @@ def test_interception_cond(custom_array, densifications, jit, pred):
     assert not densifications
 
 
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("pred", [False, True])
+@pytest.mark.parametrize("single_first", [False, True])
+def test_interception_cond_custom_upcast(
+    custom_array, densifications, jit, pred, single_first
+):
+    """Different compact branch outputs join as Diagonal, without densifying."""
+
+    @custom_array.custom_arrays
+    def fn(a, b, pred):
+        return jax.lax.cond(pred, lambda: a, lambda: b)
+
+    if jit:
+        fn = jax.jit(fn)
+    single = SingleNonzero(jnp.array(4.0), index=1, size=3)
+    diagonal = Diagonal(jnp.array([2.0, 3.0, 5.0]))
+    a, b = (single, diagonal) if single_first else (diagonal, single)
+    result = fn(a, b, jnp.array(pred))
+    assert isinstance(result, Diagonal)
+    np.testing.assert_allclose(result.diag, Diagonal.from_array(a if pred else b).diag)
+    assert not densifications
+
+
 @pytest.mark.parametrize("pred", [False, True])
 def test_interception_cond_upcast(custom_array, densifications, pred):
     """Diagonal and dense branch outputs join using upcast conversions."""
@@ -335,6 +393,31 @@ def test_interception_while(custom_array, densifications):
     result = jax.jit(fn)(a, jnp.array(3))
     assert isinstance(result, Diagonal)
     np.testing.assert_allclose(result.diag, a.diag * 8)
+    assert not densifications
+
+
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("limit", [0, 2])
+def test_interception_while_custom_upcast(custom_array, densifications, jit, limit):
+    """A single-nonzero carry widens to Diagonal after adding a diagonal matrix."""
+
+    @custom_array.custom_arrays
+    def fn(a, increment, limit):
+        return jax.lax.while_loop(
+            lambda state: state[0] < limit,
+            lambda state: (state[0] + 1, state[1] + increment),
+            (0, a),
+        )[1]
+
+    if jit:
+        fn = jax.jit(fn)
+    a = SingleNonzero(jnp.array(4.0), index=1, size=3)
+    increment = Diagonal(jnp.array([1.0, 2.0, 3.0]))
+    result = fn(a, increment, jnp.array(limit))
+    assert isinstance(result, Diagonal)
+    np.testing.assert_allclose(
+        result.diag, jnp.array([0.0, 4.0, 0.0]) + limit * increment.diag
+    )
     assert not densifications
 
 
