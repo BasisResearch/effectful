@@ -10,6 +10,7 @@ from . import _terms as _terms
 from . import lax as lax
 from . import numpy as numpy
 from . import scipy as scipy
+from ._custom_array import CustomArrayControlFlow as CustomArrayControlFlow
 from ._custom_array import is_custom_array as is_custom_array
 from ._custom_array import to_jax_array as to_jax_array
 from ._custom_array import upcast as upcast

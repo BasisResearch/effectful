@@ -109,14 +109,17 @@ def custom_array(densifications):
             return enp.multiply(a.diag, b)
         return fwd()
 
-    with handler(
-        {
-            api.is_custom_array: is_custom_array,
-            api.to_jax_array: to_jax_array,
-            upcast: diagonal_upcast,
-            enp.add: add,
-            enp.matmul: dot_general,
-        }
+    with (
+        handler(api.CustomArrayControlFlow()),
+        handler(
+            {
+                api.is_custom_array: is_custom_array,
+                api.to_jax_array: to_jax_array,
+                upcast: diagonal_upcast,
+                enp.add: add,
+                enp.matmul: dot_general,
+            }
+        ),
     ):
         yield api
 

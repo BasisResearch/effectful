@@ -25,8 +25,6 @@ from effectful.ops.syntax import (
 )
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
-from ._custom_array import dense_arguments, is_custom_array
-
 # + An element of an array index expression.
 IndexElement = None | int | slice | Sequence[int] | EllipsisType | jax.Array
 
@@ -180,6 +178,8 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
 
     @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
+        from ._custom_array import dense_arguments, is_custom_array
+
         if any(
             is_custom_array(x)
             for x in jax.tree.leaves((args, kwargs), is_leaf=is_custom_array)
@@ -226,6 +226,8 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
                 jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
             )[0]
         ):
+            from ._custom_array import dense_arguments
+
             dense_args, dense_kwargs = dense_arguments(args, kwargs)
             return typing.cast(jax.Array, jax_fn(*dense_args, **dense_kwargs))
         else:
