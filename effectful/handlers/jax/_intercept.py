@@ -26,6 +26,7 @@ from ._compat import (
     core,
     custom_bind_params,
     custom_jvp_call_p,
+    custom_vjp_call_p,
     eval_program,
     lu,
     with_constants,
@@ -98,6 +99,11 @@ class DefaultIntp(ObjectInterpretation):
     def _custom_jvp_call_default(self, *args, **params):
         subfuns, keywords = custom_bind_params(custom_jvp_call_p, params)
         return _bind_intercepted_custom(custom_jvp_call_p, args, subfuns, keywords)
+
+    @implements(_inner_primop(custom_vjp_call_p))
+    def _custom_vjp_call_default(self, *args, **params):
+        subfuns, keywords = custom_bind_params(custom_vjp_call_p, params)
+        return _bind_intercepted_custom(custom_vjp_call_p, args, subfuns, keywords)
 
     @implements(_inner_primop(jax._src.pjit.jit_p))
     def _jit_p_default(self, *args, **kwargs):
@@ -260,14 +266,13 @@ class _InterceptTrace(core.Trace):
     def process_custom_vjp_call(
         self, primitive, fun, fwd, bwd, tracers, /, *, out_trees, symbolic_zeros
     ):
-        with core.set_current_trace(_parent_trace()):
-            args = [self._unwrap(x) for x in tracers]
-            out = bind_custom(
-                primitive,
-                args,
-                tuple(_intercept_fun(f) for f in (fun, fwd, bwd)),
-                dict(out_trees=out_trees, symbolic_zeros=symbolic_zeros),
-            )
+        args = [self._unwrap(x) for x in tracers]
+        out = _bind_intercepted_custom(
+            primitive,
+            args,
+            (fun, fwd, bwd),
+            dict(out_trees=out_trees, symbolic_zeros=symbolic_zeros),
+        )
         return [self._wrap(v) for v in out]
 
 

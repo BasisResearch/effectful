@@ -7,7 +7,7 @@ upgrading the interpreter independent of effectful's existing array handlers.
 import jax
 from jax._src import core
 from jax._src import linear_util as lu
-from jax._src.custom_derivatives import custom_jvp_call_p
+from jax._src.custom_derivatives import custom_jvp_call_p, custom_vjp_call_p
 from jax._src.literals import TypedNdArray
 
 
@@ -46,6 +46,7 @@ __all__ = [
     "core",
     "lu",
     "custom_jvp_call_p",
+    "custom_vjp_call_p",
     "check_version",
     "bind_primitive",
     "bind_custom",

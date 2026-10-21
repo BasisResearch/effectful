@@ -268,7 +268,8 @@ def test_interception_custom_jvp_call_outer_jvp(jit):
         np.testing.assert_allclose(tangent, 6)
 
 
-def test_interception_custom_vjp_call_outer_grad():
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_vjp_call_outer_grad(jit):
     """Custom VJP rules remain interceptable when differentiation is outside."""
 
     @jax.custom_vjp
@@ -282,7 +283,7 @@ def test_interception_custom_vjp_call_outer_grad():
         return ((x + 1) * g,)
 
     custom.defvjp(forward, backward)
-    fn = jax.value_and_grad(intercept(custom))
+    fn = jax.value_and_grad(intercept(jax.jit(custom) if jit else custom))
 
     value, gradient = fn(jnp.array(2.0))
     np.testing.assert_allclose(value, 4)
