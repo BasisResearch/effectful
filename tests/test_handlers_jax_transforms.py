@@ -1,13 +1,15 @@
-"""Mirrored operations and interpretation-aware JAX transforms."""
+"""JIT, differentiation, and transform wrappers in jax._transforms."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from effectful.handlers import jax as ejax
-from effectful.handlers.jax import lax
+from effectful.handlers.jax import bind_dims, jax_getitem, jit, lax
 from effectful.handlers.jax import numpy as enp
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import cache, fwd, handler
+from effectful.ops.syntax import defop
 
 
 def test_jit_retraces_source_and_warmed_nested_jit():
@@ -106,68 +108,6 @@ def test_source_transform_policy_change(transform):
     assert result.shape == (2,)
 
 
-def test_mirrored_dtype_configuration():
-    assert enp.float32 is jnp.float32
-    assert enp.int32 is jnp.int32
-    np.testing.assert_array_equal(enp.asarray([1, 2], dtype=enp.int32), [1, 2])
-
-
-def test_interception_simple():
-    """Mirrored operations dispatch through handlers without a custom trace."""
-
-    def fn(a, b):
-        return enp.matmul(a, b)
-
-    a, b = (jnp.eye(3), jnp.arange(3.0))
-    np.testing.assert_allclose(fn(a, b), b)
-    with handler({enp.matmul: lambda *a, **k: fwd() + 1}):
-        np.testing.assert_allclose(fn(a, b), b + 1)
-
-
-def test_interception_in_handler():
-    """Handlers for primitive operations run in interception context."""
-
-    def fn(a, b):
-        return enp.matmul(a, b)
-
-    a, b = (jnp.eye(3), jnp.arange(3.0))
-    np.testing.assert_allclose(fn(a, b), b)
-
-    def _dot_general(*args, **kwargs):
-        return enp.add(fwd(), 1)
-
-    def _add(*args, **kwargs):
-        return enp.multiply(fwd(), 2)
-
-    intp = {enp.matmul: _dot_general, enp.add: _add}
-    with handler(intp):
-        actual = fn(a, b)
-        np.testing.assert_allclose(actual, (b + 1) * 2)
-
-
-def test_interception_interpretation_change():
-    """Changing the interpretation context changes behavior."""
-
-    def fn(a, b):
-        return enp.matmul(a, b)
-
-    a, b = (jnp.eye(3), jnp.arange(3.0))
-    np.testing.assert_allclose(fn(a, b), b)
-
-    def _dot_general_1(*args, **kwargs):
-        return enp.add(fwd(), 1)
-
-    def _dot_general_2(*args, **kwargs):
-        return enp.add(fwd(), 2)
-
-    with handler({enp.matmul: _dot_general_1}):
-        actual = fn(a, b)
-        np.testing.assert_allclose(actual, b + 1)
-    with handler({enp.matmul: _dot_general_2}):
-        actual = fn(a, b)
-        np.testing.assert_allclose(actual, b + 2)
-
-
 def test_interception_jit_inner():
     """Jitted functions are interceptable."""
 
@@ -206,46 +146,6 @@ def test_interception_jit_outer():
     np.testing.assert_allclose(fn(a, b), a + b)
 
 
-def test_interception_scan():
-    """Jitted functions are interceptable."""
-
-    def cumsum(cumsum, el):
-        cumsum = enp.add(cumsum, el)
-        return (cumsum, cumsum)
-
-    def fn(a):
-        return lax.scan(cumsum, 0, a)
-
-    total, arr = fn(jnp.arange(1, 4))
-    np.testing.assert_allclose(arr, jnp.array([1, 3, 6]))
-    np.testing.assert_allclose(total, 6)
-
-    def _add(*args, **kwargs):
-        return enp.multiply(fwd(), 2)
-
-    with handler({enp.add: _add}):
-        total, arr = fn(jnp.arange(1, 4))
-        np.testing.assert_allclose(arr, jnp.array([2, 8, 22]))
-        np.testing.assert_allclose(total, 22)
-
-
-def test_interception_cond():
-    """Conditional branches are interceptable."""
-
-    def fn(a):
-        return lax.cond(a > 0, lambda x: enp.add(x, 1), lambda x: enp.add(x, 2), a)
-
-    np.testing.assert_allclose(fn(jnp.array(2)), 3)
-    np.testing.assert_allclose(fn(jnp.array(-3)), -1)
-
-    def _add(*args, **kwargs):
-        return enp.multiply(fwd(), 2)
-
-    with handler({enp.add: _add}):
-        np.testing.assert_allclose(fn(jnp.array(2)), 6)
-        np.testing.assert_allclose(fn(jnp.array(-3)), -2)
-
-
 def test_interception_checkpoint():
     """Checkpoint bodies retain their mirrored effects during source tracing."""
 
@@ -259,21 +159,6 @@ def test_interception_checkpoint():
     with handler({enp.add: _add}):
         result = fn(jnp.array(2))
     np.testing.assert_allclose(result, 6)
-
-
-def test_interception_while():
-    """While loop bodies are interceptable."""
-
-    def fn(a, limit):
-        return lax.while_loop(lambda c: c < limit, lambda c: enp.add(c, a), 0)
-
-    np.testing.assert_allclose(fn(jnp.array(1), jnp.array(5)), 5)
-
-    def _add(*args, **kwargs):
-        return enp.multiply(fwd(), 2)
-
-    with handler({enp.add: _add}):
-        np.testing.assert_allclose(fn(jnp.array(1), jnp.array(5)), 6)
 
 
 def test_interception_custom_jvp_call():
@@ -390,3 +275,95 @@ def test_interception_custom_vjp_call_outer_grad(jit):
         value, gradient = fn(jnp.array(2.0))
         np.testing.assert_allclose(value, 4)
         np.testing.assert_allclose(gradient, 6)
+
+
+def test_jax_jit_1():
+    @jit
+    def f(x, y):
+        bound = bind_dims(jax_getitem(x, (i(), j())) + jax_getitem(y, (j(),)), i, j)
+        return bound
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    z = f(x, y)
+    assert (z == x + y).all()
+
+
+def test_jax_jit_2():
+    @jit
+    def f(x, y):
+        return jax_getitem(x, (i(), j())) + jax_getitem(y, (j(),))
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    assert (bind_dims(f(x, y), i, j) == x + y).all()
+
+
+def test_jax_jit_3():
+    @jit
+    def f(x, y):
+        return jax_getitem(x, (i(), j())) + jax_getitem(y, (j(),))
+
+    i, j = defop(jax.Array, name="i"), defop(jax.Array, name="j")
+    x, y = jnp.ones((5, 4)), jnp.ones((4,))
+
+    assert (bind_dims(f(x, y), i, j) == x + y).all()
+
+
+def test_jit_retraces_shared_callback_under_new_interpretation():
+    traces = []
+
+    def branch(x):
+        traces.append("branch")
+        return enp.add(x, 1)
+
+    @ejax.jit
+    def compiled(x):
+        return lax.cond(True, branch, branch, x)
+
+    with cache():
+        np.testing.assert_allclose(compiled(jnp.array(2)), 3)
+        np.testing.assert_allclose(compiled(jnp.array(4)), 5)
+        assert traces == ["branch"]
+        assert compiled._cache_size() == 1
+        with handler({enp.add: lambda *a, **k: fwd() * 2}):
+            np.testing.assert_allclose(compiled(jnp.array(2)), 6)
+            np.testing.assert_allclose(compiled(jnp.array(4)), 10)
+            assert traces == ["branch", "branch"]
+            assert compiled._cache_size() == 2
+        np.testing.assert_allclose(compiled(jnp.array(6)), 7)
+        assert traces == ["branch", "branch"]
+        assert compiled._cache_size() == 2
+
+
+@pytest.mark.parametrize("api", ["checkpoint", "eval_shape"])
+def test_cached_callbacks_trace_once_per_interpretation(api):
+    traces = []
+
+    def step(x):
+        traces.append("trace")
+        return enp.add(x, 1)
+
+    checkpointed = ejax.checkpoint(step)
+
+    def check(value, expected):
+        if api == "eval_shape":
+            assert ejax.eval_shape(step, jnp.array(value)).shape == ()
+        else:
+            np.testing.assert_allclose(checkpointed(jnp.array(value)), expected)
+
+    with cache() as store:
+        check(2, 3)
+        check(4, 5)
+        assert traces == ["trace"]
+        with handler({enp.add: lambda *a, **k: fwd() * 2}):
+            check(2, 6)
+            check(4, 10)
+            assert traces == ["trace", "trace"]
+        check(6, 7)
+        assert traces == ["trace", "trace"]
+    with cache(store):
+        check(8, 9)
+        assert traces == ["trace", "trace"]
