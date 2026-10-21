@@ -1,6 +1,9 @@
+from dataclasses import dataclass
+
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from effectful.handlers.jax import intercept, primitive_op
 from effectful.ops.semantics import fwd, handler
@@ -73,6 +76,100 @@ def test_interception_interpretation_change():
     with handler({primitive_op(jax.lax.dot_general_p): _dot_general_2}):
         actual = fn(a, b)
         np.testing.assert_allclose(actual, b + 2)
+
+
+def test_interception_jit_inner():
+    """Jitted functions are interceptable."""
+
+    @intercept
+    @jax.jit
+    def fn(a, b):
+        return a + b
+
+    a, b = 1, 2
+
+    np.testing.assert_allclose(fn(a, b), a + b)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        actual = fn(a, b)
+        np.testing.assert_allclose(actual, (a + b) * 2)
+
+    with handler({primitive_op(jax.lax.add_p): lambda *a, **k: fwd() * 3}):
+        actual = fn(a, b)
+        np.testing.assert_allclose(actual, (a + b) * 3)
+
+
+def test_interception_jit_outer():
+    """Jitting an intercepted function stages in the handlers."""
+
+    @jax.jit
+    @intercept
+    def fn(a, b):
+        return a + b
+
+    a, b = 1, 2
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        np.testing.assert_allclose(fn(a, b), (a + b) * 2)
+
+    np.testing.assert_allclose(fn(a, b), (a + b) * 2)
+
+
+def test_interception_scan():
+    """Jitted functions are interceptable."""
+
+    def cumsum(cumsum, el):
+        cumsum += el
+        return cumsum, cumsum  # ('carryover', 'accumulated')
+
+    @intercept
+    def fn(a):
+        return jax.lax.scan(cumsum, 0, a)
+
+    total, arr = fn(jnp.arange(1, 4))
+    np.testing.assert_allclose(arr, jnp.array([1, 3, 6]))
+    np.testing.assert_allclose(total, 6)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        total, arr = fn(jnp.arange(1, 4))
+        np.testing.assert_allclose(arr, jnp.array([2, 8, 22]))
+        np.testing.assert_allclose(total, 22)
+
+
+# def test_interception_custom_array():
+#     """Changing the interpretation context changes behavior."""
+
+#     @jax.tree_util.register_dataclass
+#     @dataclass
+#     class Diagonal:
+#         diag: jax.Array
+
+#     def _dot_general_diag(d, a, *args, **kwargs):
+#         breakpoint()
+#         if not isinstance(d, Diagonal):
+#             return fwd()
+#         return d.diag * a
+
+#     @intercept
+#     def fn(a, b):
+#         return a @ b
+
+#     a, b = jnp.eye(3), jnp.arange(3.0)
+
+#     np.testing.assert_allclose(fn(a, b), b)
+
+#     with handler({primitive_op(jax.lax.dot_general_p): _dot_general_diag}):
+#         actual = fn(Diagonal(jnp.array([1, 2, 3])), b)
+#         np.testing.assert_allclose(actual, b + 1)
 
 
 ################################################################################

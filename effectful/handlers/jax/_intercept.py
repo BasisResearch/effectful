@@ -133,55 +133,35 @@ class DefaultIntp(ObjectInterpretation):
         return _eval_jaxpr(kwargs["jaxpr"], *args)
 
     @implements(_inner_primop(jax.lax.scan_p))
-    def _scan_p_default(*args, **params):
-        args = [normalize(v) for v in args]
+    def _scan_p_default(self, *args, **params):
         nc, nk = params["num_consts"], params["num_carry"]
         consts = args[:nc]
-        carry = [normalize(v) for v in args[nc : nc + nk]]
+        carry = args[nc : nc + nk]
         xs = args[nc + nk :]
 
-        # if hasattr(self.adapter, "mapped"):
-        #     xs = [self.adapter.mapped(v) for v in xs]  # ??
-
-        # Operate on buffer pytrees, not on logical dense array placeholders.
-        def run(c, x):
-            out = _eval_jaxpr(params["jaxpr"], [*consts, *c, *x])
-            return [normalize(v) for v in out[:nk]], [normalize(v) for v in out[nk:]]
-
-        sample_xs = jax.tree.map(
-            lambda a: jax.ShapeDtypeStruct(a.shape[1:], a.dtype), xs
-        )
-        for _ in range(8):
-            out_c, _ = jax.eval_shape(run, carry, sample_xs)
-            templates = _join_lists(carry, out_c)
-            joined = _coerce_list(carry, templates)
-            if jax.tree.structure(joined) == jax.tree.structure(carry):
-                carry = joined
-                break
-            carry = joined
-        else:
-            raise RuntimeError("scan representation join did not converge")
-
+        @intercept
         def body(c, x):
-            out_c, out_y = run(c, x)
-            return _coerce_list(out_c, carry), out_y
+            out = _eval_jaxpr(
+                params["jaxpr"],
+                *consts,
+                *map(represented_value, c),
+                *map(represented_value, x),
+            )
+            return tuple(out[:nk]), tuple(out[nk:])
 
-        out_c, out_y = fwd(
-            body,
-            carry,
-            xs,
-            length=params["length"],
-            reverse=params["reverse"],
-            unroll=params["unroll"],
-        )
-
-        # if hasattr(self.adapter, "stacked"):  # ??
-        #     out_y = [self.adapter.stacked(v, params["length"]) for v in out_y]
-
-        return [*out_c, *out_y]
+        with core.set_current_trace(_parent_trace()):
+            carry, ys = jax.lax.scan(
+                body,
+                carry,
+                xs,
+                length=params["length"],
+                reverse=params["reverse"],
+                unroll=params["unroll"],
+            )
+        return [*carry, *ys]
 
     @implements(_inner_primop(jax.lax.cond_p))
-    def _cond_p_default(*args, **params):
+    def _cond_p_default(self, *args, **params):
         index, *operands = args
         branches = params["branches"]
         outputs = [
@@ -196,7 +176,7 @@ class DefaultIntp(ObjectInterpretation):
         return jax.lax.switch(index, tuple(branch(b) for b in branches), *operands)
 
     @implements(_inner_primop(jax.lax.while_p))
-    def _while_p_default(*args, **params):
+    def _while_p_default(self, *args, **params):
         nc, nb = params["cond_nconsts"], params["body_nconsts"]
         cond_consts, body_consts, init = args[:nc], args[nc : nc + nb], args[nc + nb :]
         init = [normalize(v) for v in init]
@@ -275,11 +255,6 @@ def _coerce_list(values, templates):
 
 
 class _InterceptTrace(core.Trace):
-    def __init__(self, specializations=None):
-        super().__init__()
-        # Scoped to one interception trace: no stale handlers or retained tracers.
-        self.specializations = {} if specializations is None else specializations
-
     def _unwrap(self, value):
         if isinstance(value, _InterceptTracer) and value._trace is self:
             return value.value
@@ -289,7 +264,6 @@ class _InterceptTrace(core.Trace):
         return _InterceptTracer(self, value)
 
     def process_primitive(self, primitive, tracers, params, /):
-        pprint((primitive, tracers, params))
         args = [self._unwrap(x) for x in tracers]
         op = primitive_op(primitive)
         with core.set_current_trace(self):
