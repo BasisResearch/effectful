@@ -40,12 +40,12 @@ def custom_array(densifications):
     def is_custom_array(value):
         return isinstance(value, Diagonal) or fwd()
 
-    def array_aval(value):
+    def aval(value):
         if isinstance(value, Diagonal):
             return core.ShapedArray(value.shape, value.dtype)
         return fwd()
 
-    def densify(value):
+    def to_jax_array(value):
         if isinstance(value, Diagonal):
             # Record no buffers/tracers: this is a benign observation of policy.
             densifications.append(value.shape)
@@ -58,10 +58,10 @@ def custom_array(densifications):
                 return lambda x: x, lambda x: x
         elif isinstance(left, Diagonal):
             if left.shape == right.shape and left.dtype == right.dtype:
-                return api.densify, lambda x: x
+                return api.to_jax_array, lambda x: x
         elif isinstance(right, Diagonal):
             if left.shape == right.shape and left.dtype == right.dtype:
-                return lambda x: x, api.densify
+                return lambda x: x, api.to_jax_array
         return fwd()
 
     def add(a, b, **params):
@@ -78,14 +78,27 @@ def custom_array(densifications):
     with handler(
         {
             api.is_custom_array: is_custom_array,
-            api.array_aval: array_aval,
-            api.densify: densify,
+            api.aval: aval,
+            api.to_jax_array: to_jax_array,
             api.upcast: upcast,
             primitive_op(jax.lax.add_p): add,
             primitive_op(jax.lax.dot_general_p): dot_general,
         }
     ):
         yield api
+
+
+def test_to_jax_array_ordinary_operands():
+    for value in (1, 2.0, True, jnp.arange(3.0)):
+        assert _custom_array.to_jax_array(value) is value
+    result = jax.jit(lambda x: _custom_array.to_jax_array(x) + 1)(jnp.array(2.0))
+    np.testing.assert_allclose(result, 3)
+
+
+def test_to_jax_array_missing_conversion():
+    with handler({_custom_array.is_custom_array: lambda x: isinstance(x, Diagonal)}):
+        with pytest.raises(NotImplementedError, match="No conversion from Diagonal"):
+            _custom_array.to_jax_array(Diagonal(jnp.ones(2)))
 
 
 def test_interception_simple(custom_array, densifications):

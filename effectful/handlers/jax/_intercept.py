@@ -30,17 +30,6 @@ from ._compat import (
 )
 
 
-def _id(x):
-    return x
-
-
-@defop
-def upcast[U, V, T](u: U, v: V) -> tuple[Callable[[U], T], Callable[[V], T]]:
-    if type(u) == type(v):
-        return (_id, _id)
-    raise NotImplementedError
-
-
 @defop
 def _parent_trace() -> core.Trace:
     raise RuntimeError("BUG: _parent_trace is not set.")
@@ -241,6 +230,14 @@ def _eval_jaxpr(closed, *args):
 
 
 class _InterceptTrace(core.Trace):
+    def _wrap_inputs(self, args, kwargs):
+        def wrap(value):
+            if isinstance(value, (jax.Array, core.Tracer)):
+                return self._wrap(value)
+            return value
+
+        return jax.tree.map(wrap, (args, kwargs))
+
     def _unwrap(self, value):
         if isinstance(value, _InterceptTracer) and value._trace is self:
             return value.value
@@ -301,6 +298,12 @@ def _intercept_fun(fun):
     return lu.wrap_init(intercept(fun.call_wrapped), debug_info=fun.debug_info)
 
 
+@defop
+def _new_trace() -> _InterceptTrace:
+    """Construct the trace used by this interception, including nested bodies."""
+    return _InterceptTrace()
+
+
 def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     """Transform ``fn`` so ordinary JAX primitives dispatch through effectful."""
     check_version()
@@ -308,16 +311,11 @@ def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     @functools.wraps(fn)
     @handler(coproduct(_unsupported_intp, DefaultIntp()))
     def wrapped(*args, **kwargs):
-        trace = _InterceptTrace()
-
-        def wrap(value):
-            if isinstance(value, (jax.Array, core.Tracer)):
-                return trace._wrap(value)
-            return value
+        trace = _new_trace()
 
         with core.take_current_trace() as parent:
             with handler({_parent_trace: deffn(parent)}):
-                inputs = jax.tree.map(wrap, (args, kwargs))
+                inputs = trace._wrap_inputs(args, kwargs)
                 # Compose the complete interpretation once per trace. Handler
                 # implementations may still invoke other effectful operations.
                 with core.set_current_trace(trace):
