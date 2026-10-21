@@ -77,6 +77,15 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     return result
 
 
+def _call_jax(jax_fn, /, *args, **kwargs):
+    from ._callables import wrap_arguments
+    from ._custom_array import dense_arguments
+
+    args, kwargs = dense_arguments(args, kwargs)
+    args, kwargs = wrap_arguments(args, kwargs)
+    return jax_fn(*args, **kwargs)
+
+
 @functools.cache
 def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
@@ -84,14 +93,13 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
 
     @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
-        from ._custom_array import dense_arguments, is_custom_array
+        from ._custom_array import is_custom_array
 
         if any(
             is_custom_array(x)
             for x in jax.tree.leaves((args, kwargs), is_leaf=is_custom_array)
         ):
-            dense_args, dense_kwargs = dense_arguments(args, kwargs)
-            return typing.cast(jax.Array, jax_fn(*dense_args, **dense_kwargs))
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
@@ -113,7 +121,7 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
                 jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
             )[0]
         ):
-            return typing.cast(jax.Array, jax_fn(*args, **kwargs))
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:
             raise NotHandled
 
@@ -132,10 +140,7 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
                 jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
             )[0]
         ):
-            from ._custom_array import dense_arguments
-
-            dense_args, dense_kwargs = dense_arguments(args, kwargs)
-            return typing.cast(jax.Array, jax_fn(*dense_args, **dense_kwargs))
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:
             raise NotHandled
 

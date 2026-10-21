@@ -12,6 +12,8 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 
+from ._callables import wrap_callable
+
 _POLICY = "_effectful_interpretation"
 
 
@@ -88,7 +90,8 @@ def jit(fun=None, **options):
     elif isinstance(static_names, str):
         static_names = (static_names,)
     compiled = jax.jit(
-        staged, **{**options, "static_argnames": (*static_names, _POLICY)}
+        wrap_callable(staged),
+        **{**options, "static_argnames": (*static_names, _POLICY)},
     )
     policies = {}
 
@@ -117,59 +120,48 @@ def jit(fun=None, **options):
     return wrapped
 
 
+def _callable_api(original):
+    """Wrap a callable at an immediately executing JAX API boundary."""
+
+    @functools.wraps(original)
+    def default(fun, *args, **kwargs):
+        return original(wrap_callable(fun), *args, **kwargs)
+
+    return defop(default)
+
+
+def _transform(original):
+    """Defer wrapping until invocation, when the active interpretation is known."""
+
+    @functools.wraps(original)
+    def default(fun, *transform_args, **transform_options):
+        @functools.wraps(fun)
+        def transformed(*args, **kwargs):
+            return original(wrap_callable(fun), *transform_args, **transform_options)(
+                *args, **kwargs
+            )
+
+        return transformed
+
+    return defop(default)
+
+
 # These APIs act on callables/pytrees, not numerical operands. In particular,
 # custom derivative implementations on handlers must not be densified here.
-grad = defop(jax.grad)
-value_and_grad = defop(jax.value_and_grad)
-jvp = defop(jax.jvp)
-vjp = defop(jax.vjp)
-jacfwd = defop(jax.jacfwd)
-jacrev = defop(jax.jacrev)
-hessian = defop(jax.hessian)
-linearize = defop(jax.linearize)
-linear_transpose = defop(jax.linear_transpose)
-
-
-@defop
-def custom_jvp(fun, nondiff_argnums=(), nondiff_argnames=()):
-    return jax.custom_jvp(
-        fun, nondiff_argnums=nondiff_argnums, nondiff_argnames=nondiff_argnames
-    )
-
-
-@defop
-def custom_vjp(fun, nondiff_argnums=(), nondiff_argnames=()):
-    return jax.custom_vjp(
-        fun, nondiff_argnums=nondiff_argnums, nondiff_argnames=nondiff_argnames
-    )
-
-
-@defop
-def checkpoint(fun, **options):
-    @functools.wraps(fun)
-    def wrapped(*args, **kwargs):
-        # Remat caches source traces too. A fresh body prevents an eager call
-        # under a new interpretation from reusing another policy's jaxpr.
-        return jax.checkpoint(lambda *a, **k: fun(*a, **k), **options)(*args, **kwargs)
-
-    return wrapped
-
-
+grad = _transform(jax.grad)
+value_and_grad = _transform(jax.value_and_grad)
+jacfwd = _transform(jax.jacfwd)
+jacrev = _transform(jax.jacrev)
+hessian = _transform(jax.hessian)
+vmap = _transform(jax.vmap)
+checkpoint = _transform(jax.checkpoint)
 remat = checkpoint
+make_jaxpr = _transform(jax.make_jaxpr)
 
-
-@defop
-def eval_shape(fun, *args, **kwargs):
-    return jax.eval_shape(lambda *a, **k: fun(*a, **k), *args, **kwargs)
-
-
-@defop
-def make_jaxpr(fun, **options):
-    @functools.wraps(fun)
-    def wrapped(*args, **kwargs):
-        return jax.make_jaxpr(lambda *a, **k: fun(*a, **k), **options)(*args, **kwargs)
-
-    return wrapped
-
-
-vmap = defop(jax.vmap)
+jvp = _callable_api(jax.jvp)
+vjp = _callable_api(jax.vjp)
+linearize = _callable_api(jax.linearize)
+linear_transpose = _callable_api(jax.linear_transpose)
+eval_shape = _callable_api(jax.eval_shape)
+custom_jvp = _callable_api(jax.custom_jvp)
+custom_vjp = _callable_api(jax.custom_vjp)
