@@ -7,8 +7,51 @@ upgrading the interpreter independent of effectful's existing array handlers.
 import jax
 from jax._src import core
 from jax._src import linear_util as lu
-from jax._src.custom_derivatives import custom_jvp_call_p, custom_vjp_call_p
+from jax._src.ad_checkpoint import remat_p
+from jax._src.custom_batching import custom_vmap_p
+from jax._src.custom_dce import custom_dce_p
+from jax._src.custom_derivatives import (
+    custom_jvp_call_p,
+    custom_vjp_call_p,
+    linear_call_p,
+    remat_opt_p,
+)
+from jax._src.custom_transpose import custom_transpose_p
+from jax._src.export._export import call_exported_p
+from jax._src.interpreters.pxla import xla_pmap_p
+from jax._src.lax.control_flow.loops import eval_jaxpr_p
+from jax._src.lax.control_flow.solves import linear_solve_p
 from jax._src.literals import TypedNdArray
+from jax._src.shard_map import shard_map_p
+from jax._src.state.discharge import run_state_p
+
+# No recursive interception defaults are provided for these boundaries.
+# Keep supported primitives out of this list so their defaults can forward freely.
+UNSUPPORTED_HIGHER_ORDER_PRIMITIVES = (
+    core.call_p,
+    core.closed_call_p,
+    remat_p,
+    remat_opt_p,
+    custom_vmap_p,
+    custom_dce_p,
+    custom_transpose_p,
+    linear_call_p,
+    linear_solve_p,
+    shard_map_p,
+    xla_pmap_p,
+    run_state_p,
+    eval_jaxpr_p,
+    call_exported_p,
+    jax.lax.reduce_p,
+    jax.lax.reduce_window_p,
+    jax.lax.select_and_scatter_p,
+    jax.lax.scatter_p,
+    jax.lax.scatter_add_p,
+    jax.lax.scatter_sub_p,
+    jax.lax.scatter_mul_p,
+    jax.lax.scatter_min_p,
+    jax.lax.scatter_max_p,
+)
 
 
 def check_version():
@@ -43,6 +86,7 @@ def bind_custom(primitive, args, subfuns, params):
 
 
 __all__ = [
+    "UNSUPPORTED_HIGHER_ORDER_PRIMITIVES",
     "core",
     "lu",
     "custom_jvp_call_p",

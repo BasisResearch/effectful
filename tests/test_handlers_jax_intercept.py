@@ -163,6 +163,23 @@ def test_interception_cond():
         np.testing.assert_allclose(fn(jnp.array(-3)), -2)
 
 
+def test_interception_unsupported_higher_order_warning():
+    """Unsupported nested programs warn rather than silently skip interception."""
+
+    @intercept
+    @jax.checkpoint
+    def fn(a):
+        return a + 1
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        with pytest.warns(RuntimeWarning, match="remat2.*will not be intercepted"):
+            result = fn(jnp.array(2))
+    np.testing.assert_allclose(result, 3)
+
+
 def test_interception_while():
     """While loop bodies are interceptable."""
 

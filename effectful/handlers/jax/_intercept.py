@@ -2,6 +2,7 @@
 
 import functools
 import inspect
+import warnings
 from collections.abc import Callable, Mapping
 from contextvars import ContextVar
 from typing import Any, Protocol
@@ -10,11 +11,12 @@ import jax
 from prettyprinter import pprint
 
 from effectful.internals.runtime import get_interpretation
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import coproduct, fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, deffn, defop, implements
 from effectful.ops.types import Operation
 
 from ._compat import (
+    UNSUPPORTED_HIGHER_ORDER_PRIMITIVES,
     bind_custom,
     bind_primitive,
     check_version,
@@ -80,6 +82,22 @@ def primitive_op(primitive):
     """
 
     return JaxPrimitiveOperation.define_primitive(primitive)
+
+
+def _warn_unsupported(primitive, *args, **params):
+    warnings.warn(
+        f"effectful interception does not support higher-order primitive "
+        f"{primitive.name!r}; operations inside its subprograms will not be intercepted",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    return fwd(*args, **params)
+
+
+_unsupported_intp = {
+    _inner_primop(p): functools.partial(_warn_unsupported, p)
+    for p in UNSUPPORTED_HIGHER_ORDER_PRIMITIVES
+}
 
 
 class DefaultIntp(ObjectInterpretation):
@@ -288,7 +306,7 @@ def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
     check_version()
 
     @functools.wraps(fn)
-    @handler(DefaultIntp())
+    @handler(coproduct(_unsupported_intp, DefaultIntp()))
     def wrapped(*args, **kwargs):
         trace = _InterceptTrace()
 
