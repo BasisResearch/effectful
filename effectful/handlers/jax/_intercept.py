@@ -1,9 +1,4 @@
-"""Experimental interpretation of ordinary JAX primitive calls.
-
-The adapter is deliberately independent of tensors, sparsity, and linear algebra.
-It supplies logical avals and bounded pytree representations. JAX continues to
-compile, batch, and differentiate the numerical buffers in those representations.
-"""
+"""Experimental interpretation of ordinary JAX primitive calls."""
 
 import functools
 import inspect
@@ -61,13 +56,6 @@ class _JaxInnerPrimitiveOperation(Operation):
 
 @functools.cache
 def _inner_primop(primitive):
-    """Return the unique effectful Operation for a JAX Primitive.
-
-    Handlers receive primitive operands positionally and primitive parameters
-    as keyword arguments. Multiple-result primitives return a list of values.
-    ``fwd`` delegates to the next handler or the original primitive binding.
-    """
-
     return _JaxInnerPrimitiveOperation.define_primitive(primitive)
 
 
