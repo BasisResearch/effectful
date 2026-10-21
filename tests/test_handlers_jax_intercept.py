@@ -179,6 +179,123 @@ def test_interception_while():
         np.testing.assert_allclose(fn(jnp.array(1), jnp.array(5)), 6)
 
 
+def test_interception_custom_jvp_call():
+    """Operations in a custom JVP rule are interceptable."""
+
+    @jax.custom_jvp
+    def custom(x):
+        return x * x
+
+    @custom.defjvp
+    def custom_jvp(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(x), (x + 1) * t
+
+    @intercept
+    def fn(a):
+        return jax.jvp(custom, (a,), (jnp.ones_like(a),))
+
+    value, tangent = fn(jnp.array(2.0))
+    np.testing.assert_allclose(value, 4)
+    np.testing.assert_allclose(tangent, 3)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        value, tangent = fn(jnp.array(2.0))
+        np.testing.assert_allclose(value, 4)
+        np.testing.assert_allclose(tangent, 6)
+
+
+def test_interception_custom_vjp_call():
+    """Operations in a custom VJP rule are interceptable."""
+
+    @jax.custom_vjp
+    def custom(x):
+        return x * x
+
+    def forward(x):
+        return custom(x), x
+
+    def backward(x, g):
+        return ((x + 1) * g,)
+
+    custom.defvjp(forward, backward)
+
+    @intercept
+    def fn(a):
+        return jax.value_and_grad(custom)(a)
+
+    value, gradient = fn(jnp.array(2.0))
+    np.testing.assert_allclose(value, 4)
+    np.testing.assert_allclose(gradient, 3)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        value, gradient = fn(jnp.array(2.0))
+        np.testing.assert_allclose(value, 4)
+        np.testing.assert_allclose(gradient, 6)
+
+
+def test_interception_custom_jvp_call_outer_jvp():
+    """Custom JVP rules remain interceptable when differentiation is outside."""
+
+    @jax.custom_jvp
+    def custom(x):
+        return x * x
+
+    @custom.defjvp
+    def custom_jvp(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(x), (x + 1) * t
+
+    fn = intercept(custom)
+    a, t = jnp.array(2.0), jnp.array(1.0)
+    value, tangent = jax.jvp(fn, (a,), (t,))
+    np.testing.assert_allclose(value, 4)
+    np.testing.assert_allclose(tangent, 3)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        value, tangent = jax.jvp(fn, (a,), (t,))
+        np.testing.assert_allclose(value, 4)
+        np.testing.assert_allclose(tangent, 6)
+
+
+def test_interception_custom_vjp_call_outer_grad():
+    """Custom VJP rules remain interceptable when differentiation is outside."""
+
+    @jax.custom_vjp
+    def custom(x):
+        return x * x
+
+    def forward(x):
+        return custom(x), x
+
+    def backward(x, g):
+        return ((x + 1) * g,)
+
+    custom.defvjp(forward, backward)
+    fn = jax.value_and_grad(intercept(custom))
+
+    value, gradient = fn(jnp.array(2.0))
+    np.testing.assert_allclose(value, 4)
+    np.testing.assert_allclose(gradient, 3)
+
+    def _add(*args, **kwargs):
+        return fwd() * 2
+
+    with handler({primitive_op(jax.lax.add_p): _add}):
+        value, gradient = fn(jnp.array(2.0))
+        np.testing.assert_allclose(value, 4)
+        np.testing.assert_allclose(gradient, 6)
+
+
 # def test_interception_custom_array():
 #     """Changing the interpretation context changes behavior."""
 

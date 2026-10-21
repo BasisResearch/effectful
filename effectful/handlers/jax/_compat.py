@@ -6,6 +6,7 @@ upgrading the interpreter independent of effectful's existing array handlers.
 
 import jax
 from jax._src import core
+from jax._src import linear_util as lu
 from jax._src.literals import TypedNdArray
 
 
@@ -33,6 +34,7 @@ def bind_custom(primitive, args, subfuns, params):
 
 __all__ = [
     "core",
+    "lu",
     "check_version",
     "bind_primitive",
     "bind_custom",

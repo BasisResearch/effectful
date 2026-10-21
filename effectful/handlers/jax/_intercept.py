@@ -25,36 +25,9 @@ from ._compat import (
     check_version,
     core,
     eval_program,
+    lu,
     with_constants,
 )
-
-"""Contract for values with a logical aval different from their buffers.
-
-Values must be registered JAX pytrees. ``normalize`` bounds expression
-growth. ``join`` returns a representation template valid for both values;
-``coerce`` changes a value to that template without changing its meaning.
-Templates may contain ShapeDtypeStruct leaves, rather than concrete arrays.
-"""
-
-
-@defop
-def is_value(value) -> bool:
-    return False
-
-
-@defop
-def aval(value) -> bool:
-    return core.typeof(value)
-
-
-@defop
-def materialize(value):
-    return value
-
-
-@defop
-def normalize(value):
-    return value
 
 
 def _id(x):
@@ -212,7 +185,7 @@ class _InterceptTracer(core.Tracer):
 
     @property
     def aval(self):
-        return aval(self.value)
+        return core.typeof(self.value)
 
     def full_lower(self):
         return self
@@ -272,9 +245,12 @@ class _InterceptTrace(core.Trace):
         self, primitive, fun, jvp, tracers, /, *, symbolic_zeros
     ):
         with core.set_current_trace(_parent_trace()):
-            args = [materialize(self._unwrap(x)) for x in tracers]
+            args = [self._unwrap(x) for x in tracers]
             out = bind_custom(
-                primitive, args, (fun, jvp), dict(symbolic_zeros=symbolic_zeros)
+                primitive,
+                args,
+                tuple(_intercept_fun(f) for f in (fun, jvp)),
+                dict(symbolic_zeros=symbolic_zeros),
             )
         return [self._wrap(v) for v in out]
 
@@ -282,14 +258,19 @@ class _InterceptTrace(core.Trace):
         self, primitive, fun, fwd, bwd, tracers, /, *, out_trees, symbolic_zeros
     ):
         with core.set_current_trace(_parent_trace()):
-            args = [materialize(self._unwrap(x)) for x in tracers]
+            args = [self._unwrap(x) for x in tracers]
             out = bind_custom(
                 primitive,
                 args,
-                (fun, fwd, bwd),
+                tuple(_intercept_fun(f) for f in (fun, fwd, bwd)),
                 dict(out_trees=out_trees, symbolic_zeros=symbolic_zeros),
             )
         return [self._wrap(v) for v in out]
+
+
+def _intercept_fun(fun):
+    """Intercept a JAX subfunction while preserving its transformation stores."""
+    return lu.wrap_init(intercept(fun.call_wrapped), debug_info=fun.debug_info)
 
 
 def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
@@ -302,24 +283,23 @@ def intercept[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
         trace = _InterceptTrace()
 
         def wrap(value):
-            if is_value(value) or isinstance(value, (jax.Array, core.Tracer)):
+            if isinstance(value, (jax.Array, core.Tracer)):
                 return trace._wrap(value)
             return value
 
         with core.take_current_trace() as parent:
             with handler({_parent_trace: deffn(parent)}):
-                inputs = jax.tree.map(wrap, (args, kwargs), is_leaf=is_value)
+                inputs = jax.tree.map(wrap, (args, kwargs))
                 # Compose the complete interpretation once per trace. Handler
                 # implementations may still invoke other effectful operations.
                 with core.set_current_trace(trace):
                     out = fn(*inputs[0], **inputs[1])
 
-                out = jax.tree.map(
+                return jax.tree.map(
                     trace._unwrap,
                     out,
-                    is_leaf=lambda x: isinstance(x, _InterceptTracer) or is_value(x),
+                    is_leaf=lambda x: isinstance(x, _InterceptTracer),
                 )
-                return jax.tree.map(normalize, out, is_leaf=is_value)
 
     return wrapped
 
