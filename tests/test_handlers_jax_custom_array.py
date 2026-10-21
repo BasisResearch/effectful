@@ -277,6 +277,40 @@ def test_interception_scan(custom_array, densifications, length, reverse):
     assert not densifications
 
 
+@pytest.mark.parametrize("jit", [False, True])
+@pytest.mark.parametrize("length", [0, 3])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_interception_scan_custom_upcast(
+    custom_array, densifications, jit, length, reverse
+):
+    """A single-nonzero carry joins with Diagonal body outputs without densifying."""
+
+    @custom_array.custom_arrays
+    def fn(a, increment, b, xs):
+        def body(c, x):
+            c = c + increment
+            return c, c @ b + x
+
+        return jax.lax.scan(body, a, xs, reverse=reverse)
+
+    if jit:
+        fn = jax.jit(fn)
+    a = SingleNonzero(jnp.array(4.0), index=1, size=3)
+    increment = Diagonal(jnp.array([1.0, 2.0, 3.0]))
+    b, xs = jnp.array([2.0, 3.0, 5.0]), jnp.arange(length, dtype=float)
+    carry, ys = fn(a, increment, b, xs)
+
+    initial = jnp.array([0.0, 4.0, 0.0])
+    assert isinstance(carry, Diagonal)
+    np.testing.assert_allclose(carry.diag, initial + length * increment.diag)
+    steps = jnp.arange(1, length + 1)
+    if reverse:
+        steps = steps[::-1]
+    expected = (initial + steps[:, None] * increment.diag) * b + xs[:, None]
+    np.testing.assert_allclose(ys, expected)
+    assert not densifications
+
+
 @pytest.mark.xfail(reason="Stacking custom-array scan outputs is not yet supported")
 def test_interception_scan_stacks_custom_arrays(custom_array):
     @custom_array.custom_arrays

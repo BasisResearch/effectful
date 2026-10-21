@@ -179,8 +179,21 @@ class DefaultIntp(ObjectInterpretation):
             return tuple(out[:nk]), tuple(out[nk:])
 
         with core.set_current_trace(_parent_trace()):
+            sample_xs = jax.tree.map(
+                lambda x: jax.ShapeDtypeStruct(x.shape[1:], x.dtype), xs
+            )
+            initial = jax.eval_shape(_id, carry)
+            outputs, _ = jax.eval_shape(body, carry, sample_xs)
+            conversions = [upcast(a, b) for a, b in zip(initial, outputs, strict=True)]
+            carry = tuple(_apply_conversions(conversions, carry))
+
+            def converted(c, x):
+                new_carry, ys = body(c, x)
+                return tuple(_apply_conversions(conversions, new_carry)), ys
+
+            # As with while, scan validates the layout after one widening step.
             carry, ys = jax.lax.scan(
-                body,
+                converted,
                 carry,
                 xs,
                 length=params["length"],
@@ -283,9 +296,11 @@ def _eval_jaxpr(closed, *args):
             *(read(v) for v in eqn.invars), **eqn.params
         )
         results = result if eqn.primitive.multiple_results else [result]
+        # Handler arithmetic may return tracer shells. Subsequent equations
+        # must receive their values rather than capture those shells as constants.
         env.update(
             {
-                var: value
+                var: represented_value(value)
                 for var, value in zip(eqn.outvars, results, strict=True)
                 if not isinstance(var, core.DropVar)
             }
