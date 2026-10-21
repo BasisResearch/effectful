@@ -240,7 +240,8 @@ def test_interception_custom_vjp_call():
         np.testing.assert_allclose(gradient, 6)
 
 
-def test_interception_custom_jvp_call_outer_jvp():
+@pytest.mark.parametrize("jit", [False, True])
+def test_interception_custom_jvp_call_outer_jvp(jit):
     """Custom JVP rules remain interceptable when differentiation is outside."""
 
     @jax.custom_jvp
@@ -252,7 +253,7 @@ def test_interception_custom_jvp_call_outer_jvp():
         (x,), (t,) = primals, tangents
         return custom(x), (x + 1) * t
 
-    fn = intercept(custom)
+    fn = intercept(jax.jit(custom) if jit else custom)
     a, t = jnp.array(2.0), jnp.array(1.0)
     value, tangent = jax.jvp(fn, (a,), (t,))
     np.testing.assert_allclose(value, 4)

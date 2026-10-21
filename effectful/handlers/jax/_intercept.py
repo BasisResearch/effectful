@@ -24,6 +24,8 @@ from ._compat import (
     bind_primitive,
     check_version,
     core,
+    custom_bind_params,
+    custom_jvp_call_p,
     eval_program,
     lu,
     with_constants,
@@ -92,6 +94,11 @@ def primitive_op(primitive):
 
 
 class DefaultIntp(ObjectInterpretation):
+    @implements(_inner_primop(custom_jvp_call_p))
+    def _custom_jvp_call_default(self, *args, **params):
+        subfuns, keywords = custom_bind_params(custom_jvp_call_p, params)
+        return _bind_intercepted_custom(custom_jvp_call_p, args, subfuns, keywords)
+
     @implements(_inner_primop(jax._src.pjit.jit_p))
     def _jit_p_default(self, *args, **kwargs):
         if any(kwargs.get("donated_invars", ())):
@@ -244,14 +251,10 @@ class _InterceptTrace(core.Trace):
     def process_custom_jvp_call(
         self, primitive, fun, jvp, tracers, /, *, symbolic_zeros
     ):
-        with core.set_current_trace(_parent_trace()):
-            args = [self._unwrap(x) for x in tracers]
-            out = bind_custom(
-                primitive,
-                args,
-                tuple(_intercept_fun(f) for f in (fun, jvp)),
-                dict(symbolic_zeros=symbolic_zeros),
-            )
+        args = [self._unwrap(x) for x in tracers]
+        out = _bind_intercepted_custom(
+            primitive, args, (fun, jvp), dict(symbolic_zeros=symbolic_zeros)
+        )
         return [self._wrap(v) for v in out]
 
     def process_custom_vjp_call(
@@ -266,6 +269,20 @@ class _InterceptTrace(core.Trace):
                 dict(out_trees=out_trees, symbolic_zeros=symbolic_zeros),
             )
         return [self._wrap(v) for v in out]
+
+
+def _bind_intercepted_custom(primitive, args, subfuns, params):
+    """Bind a custom derivative call on the parent trace with intercepted bodies.
+
+    ``subfuns`` are JAX WrappedFuns for the primal and derivative rules. Wrapping
+    each one re-enters interception when the parent trace executes or stages it,
+    so operations inside derivative rules are handled too. Both live trace hooks
+    and defaults evaluating stored jaxprs can use this binding path.
+    """
+    with core.set_current_trace(_parent_trace()):
+        return bind_custom(
+            primitive, args, tuple(_intercept_fun(f) for f in subfuns), params
+        )
 
 
 def _intercept_fun(fun):

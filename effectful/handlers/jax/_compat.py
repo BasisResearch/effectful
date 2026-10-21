@@ -7,6 +7,7 @@ upgrading the interpreter independent of effectful's existing array handlers.
 import jax
 from jax._src import core
 from jax._src import linear_util as lu
+from jax._src.custom_derivatives import custom_jvp_call_p
 from jax._src.literals import TypedNdArray
 
 
@@ -26,6 +27,15 @@ def bind_primitive(primitive, *args, **kwargs):
     return primitive.bind(*args, **binding)
 
 
+def custom_bind_params(primitive, params):
+    """Return custom-call subfunctions and parameters uniformly across versions."""
+    binding = primitive.get_bind_params(params)
+    if isinstance(binding, tuple):  # 0.9.1: positional subfunctions
+        return binding
+    keywords = dict(binding)
+    return keywords.pop("subfuns"), keywords
+
+
 def bind_custom(primitive, args, subfuns, params):
     if jax.__version__ == "0.9.1":
         return primitive.bind(*subfuns, *args, **params)
@@ -35,9 +45,11 @@ def bind_custom(primitive, args, subfuns, params):
 __all__ = [
     "core",
     "lu",
+    "custom_jvp_call_p",
     "check_version",
     "bind_primitive",
     "bind_custom",
+    "custom_bind_params",
     "TypedNdArray",
     "with_constants",
     "eval_program",
