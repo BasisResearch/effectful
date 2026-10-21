@@ -454,7 +454,7 @@ class _DistributionTerm(Term[TorchDistribution], TorchDistribution):
     _kwargs: dict
 
     def __init__(
-        self, ty: type, op: Operation[Any, TorchDistribution], *args, **kwargs
+        self, ty: type, op: Operation[Any, TorchDistribution], /, *args, **kwargs
     ):
         self._op = op
         self._args = args

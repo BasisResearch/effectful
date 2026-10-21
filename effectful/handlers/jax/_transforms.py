@@ -7,8 +7,9 @@ from dataclasses import dataclass
 import jax
 
 from effectful.internals.runtime import _get_args, get_interpretation, interpreter
+from effectful.internals.weak import StrongIdRef
 from effectful.ops.semantics import fwd
-from effectful.ops.syntax import PureInterpretation, defop
+from effectful.ops.syntax import defop
 from effectful.ops.types import Term
 
 _POLICY = "_effectful_interpretation"
@@ -46,8 +47,8 @@ def jit(fun=None, **options):
     """Compile the original callable separately for each effective interpretation.
 
     The hidden static keyword does not shift public positional argument indices.
-    Keys use the runtime's identity-based PureInterpretation marker. Snapshots
-    exclude call-bound forwarding state, and are scoped to this compiled wrapper.
+    Keys use the runtime's identity-reference machinery. Snapshots exclude
+    call-bound forwarding state, and are scoped to this compiled wrapper.
     """
     if fun is None:
         return functools.partial(jit, **options)
@@ -65,7 +66,7 @@ def jit(fun=None, **options):
 
     @functools.wraps(fun)
     def staged(*args, _effectful_interpretation, **kwargs):
-        with interpreter(_effectful_interpretation):
+        with interpreter(_effectful_interpretation()):
             result = fun(*args, **kwargs)
             return jax.tree.map(
                 _pack_named, result, is_leaf=lambda x: isinstance(x, Term)
@@ -100,7 +101,7 @@ def jit(fun=None, **options):
         key = tuple(sorted((id(op), id(impl)) for op, impl in current.items()))
         if key not in policies:
             # Holding the snapshot also prevents identity reuse in this cache.
-            policies[key] = PureInterpretation(current)
+            policies[key] = StrongIdRef(current)
         return policies[key]
 
     @functools.wraps(fun)

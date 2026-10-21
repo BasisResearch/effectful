@@ -1,8 +1,9 @@
 import contextlib
 import dataclasses
-import functools
+import gc
 import itertools
 import logging
+import weakref
 from collections.abc import Callable, Mapping
 from typing import Annotated, Any, Literal, Union
 
@@ -19,13 +20,19 @@ from effectful.ops.semantics import (
 )
 from effectful.ops.syntax import (
     ObjectInterpretation,
-    PureInterpretation,
     Scoped,
+    defdata,
     deffn,
     defop,
     implements,
 )
-from effectful.ops.types import Interpretation, NotHandled, Operation, Term
+from effectful.ops.types import (
+    ApplyOperation,
+    Interpretation,
+    NotHandled,
+    Operation,
+    Term,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -321,6 +328,131 @@ def test_fwd_simple():
         assert plus_1(1) == 2
 
 
+def test_fwd_from_operation_handler_to_apply_handler():
+    @Operation.define
+    def f(x: int) -> int:
+        return x + 1
+
+    calls = []
+
+    def f_handler(x):
+        calls.append(("f", x))
+        return fwd()
+
+    def apply_handler(op, *args, **kwargs):
+        calls.append(("apply", op, args, kwargs))
+        return fwd()
+
+    with handler({apply: apply_handler}), handler({f: f_handler}):
+        assert f(1) == 2
+
+    assert calls == [("f", 1), ("apply", f, (1,), {})]
+
+
+def test_fwd_from_operation_handler_to_apply_handler_with_replacement_args():
+    @Operation.define
+    def f(x: int) -> int:
+        return x
+
+    apply_args = []
+
+    def apply_handler(op, *args, **kwargs):
+        apply_args.append((op, args, kwargs))
+        return fwd(op, *args, **kwargs)
+
+    with handler({apply: apply_handler}), handler({f: lambda x: fwd(x + 1)}):
+        assert f(1) == 2
+
+    assert apply_args == [(f, (2,), {})]
+
+
+def test_fwd_through_apply_handlers_is_associative():
+    calls = []
+
+    @Operation.define
+    def f() -> int:
+        calls.append("default")
+        return 1
+
+    def forwarding(name):
+        def impl(*args, **kwargs):
+            calls.append(name)
+            return fwd()
+
+        return impl
+
+    h0 = {apply: forwarding("left apply")}
+    h1 = {f: forwarding("exact")}
+    h2 = {apply: forwarding("right apply")}
+    expected = ["exact", "right apply", "left apply", "default"]
+
+    for intp in (
+        coproduct(coproduct(h0, h1), h2),
+        coproduct(h0, coproduct(h1, h2)),
+    ):
+        calls.clear()
+        with handler(intp):
+            assert f() == 1
+        assert calls == expected
+
+    calls.clear()
+    with handler(h0), handler(h1), handler(h2):
+        assert f() == 1
+    assert calls == expected
+
+
+def test_fwd_through_apply_operation_subtypes():
+    calls = []
+
+    class BaseOperation(Operation):
+        pass
+
+    class DerivedOperation(BaseOperation):
+        pass
+
+    @DerivedOperation.define
+    def f(x: int) -> int:
+        calls.append("default")
+        return x + 1
+
+    def forwarding(name):
+        def impl(*args, **kwargs):
+            calls.append(name)
+            return fwd()
+
+        return impl
+
+    assert isinstance(Operation.__apply__, ApplyOperation)
+    assert isinstance(BaseOperation.__apply__, ApplyOperation)
+    assert isinstance(DerivedOperation.__apply__, ApplyOperation)
+    assert not isinstance(f, ApplyOperation)
+
+    with handler(
+        {
+            Operation.__apply__: forwarding("apply"),
+            BaseOperation.__apply__: forwarding("base apply"),
+            DerivedOperation.__apply__: forwarding("derived apply"),
+            f: forwarding("exact"),
+        }
+    ):
+        assert f(1) == 2
+
+    assert calls == ["exact", "derived apply", "base apply", "apply", "default"]
+
+    # Unhandled intermediate apply operations proceed directly to their defaults,
+    # so the base apply handler sees the original operation exactly once.
+    calls.clear()
+    with handler(
+        {
+            Operation.__apply__: forwarding("apply"),
+            f: forwarding("exact"),
+        }
+    ):
+        assert f(1) == 2
+
+    assert calls == ["exact", "apply", "default"]
+
+
 @pytest.mark.parametrize("op,args", OPERATION_CASES)
 @pytest.mark.parametrize("n1", N_CASES)
 @pytest.mark.parametrize("n2", N_CASES)
@@ -473,7 +605,7 @@ def test_evaluate():
 
 
 def test_memoized_interpretation():
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import cache, interpreter
 
     @defop
     def node(x: object) -> object:
@@ -490,38 +622,40 @@ def test_memoized_interpretation():
             self.calls += 1
             return (op.__name__, args, kwargs)
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
+    intp = Intp()
     expected = ("node", (("node", (1,), {}),), {})
 
-    assert interpreter(intp)(evaluate)(term) == expected
-    assert intp_impl.calls == 2
+    # ``evaluate`` installs a cache for the duration of a call when none is
+    # active, so results are shared between separate calls only while a scope
+    # holds one open.
+    with cache():
+        assert interpreter(intp)(evaluate)(term) == expected
+        assert intp.calls == 2
 
-    # The root cache is checked before its children are traversed, including
-    # when evaluation is expressed directly through a handler.
-    with interpreter(intp):
-        assert evaluate(term) == expected
-    assert intp_impl.calls == 2
+        # The root cache is checked before its children are traversed, including
+        # when evaluation is expressed directly through a handler.
+        with interpreter(intp):
+            assert evaluate(term) == expected
+        assert intp.calls == 2
 
-    # Child results are cached independently and can be reused directly.
-    assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
-    assert intp_impl.calls == 2
+        # Child results are cached independently and can be reused directly.
+        assert interpreter(intp)(evaluate)(term.args[0]) == expected[1][0]
+        assert intp.calls == 2
 
-    # A composition has a distinct identity even when its added handler is not
-    # used while evaluating this term.
-    combined_intp = coproduct(intp, {plus_1: lambda x: x})
-    assert interpreter(combined_intp)(evaluate)(term) == expected
-    assert intp_impl.calls == 4
+        # A composition has a distinct identity even when its added handler is not
+        # used while evaluating this term.
+        combined_intp = coproduct(intp, {plus_1: lambda x: x})
+        assert interpreter(combined_intp)(evaluate)(term) == expected
+        assert intp.calls == 4
 
-    # A separate pure interpretation has its own cache namespace.
-    other_intp_impl = Intp()
-    other_intp = PureInterpretation(other_intp_impl)
-    assert interpreter(other_intp)(evaluate)(term) == expected
-    assert other_intp_impl.calls == 2
+        # A separate interpretation has its own cache namespace.
+        other_intp = Intp()
+        assert interpreter(other_intp)(evaluate)(term) == expected
+        assert other_intp.calls == 2
 
 
 def test_memoized_interpretation_does_not_cache_failures():
-    from effectful.internals.runtime import interpreter
+    from effectful.internals.runtime import cache, interpreter
 
     @defop
     def node() -> object:
@@ -540,15 +674,17 @@ def test_memoized_interpretation_does_not_cache_failures():
                 raise ValueError("failed analysis")
             return "success"
 
-    intp_impl = Intp()
-    intp = PureInterpretation(intp_impl)
-    with pytest.raises(ValueError, match="failed analysis"):
-        interpreter(intp)(evaluate)(term)
+    intp = Intp()
+    with cache():
+        with pytest.raises(ValueError, match="failed analysis"):
+            interpreter(intp)(evaluate)(term)
 
-    assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp_impl.calls == 2
-    assert interpreter(intp)(evaluate)(term) == "success"
-    assert intp_impl.calls == 2
+        # The failure left nothing behind, so the retry recomputes; the result of
+        # that retry is what gets cached and reused.
+        assert interpreter(intp)(evaluate)(term) == "success"
+        assert intp.calls == 2
+        assert interpreter(intp)(evaluate)(term) == "success"
+        assert intp.calls == 2
 
 
 @pytest.mark.parametrize(
@@ -773,6 +909,8 @@ def test_defdata_large(benchmark):
     """Test defdata with large nested operations that form a binary tree of arbitrary size."""
     import random
 
+    from effectful.internals.runtime import cache
+
     @defop
     def f[T, A, B](
         v: Annotated[Operation[[], int], Scoped[A]],
@@ -807,7 +945,14 @@ def test_defdata_large(benchmark):
         return f(defop(int), left, right)
 
     # Test a very large tree (depth 8 = 255 leaf nodes)
-    benchmark(functools.partial(build_tree, 7))
+    def run():
+        # A scope per iteration rather than one around ``benchmark``: each round
+        # builds fresh objects, so a shared cache would only accumulate entries
+        # that can never be hit.
+        with cache():
+            return build_tree(7)
+
+    benchmark(run)
 
 
 def test_evaluate_deep():
@@ -843,6 +988,30 @@ def test_fvsof_binder():
     actual = fvsof(term)
     assert not ({x, y} & actual)
     assert actual >= {z, Lam2, add}
+
+
+def test_fvsof_collection_binder():
+    a, b, c, d = (
+        defop(int, name="a"),
+        defop(int, name="b"),
+        defop(int, name="c"),
+        defop(int, name="d"),
+    )
+
+    @defop
+    def add(x: int, y: int) -> int:
+        raise NotHandled
+
+    @defop
+    def let_many[A, B](
+        body: Annotated[int, Scoped[A | B]],
+        bindings: Annotated[dict[Operation[[], int], int], Scoped[A]],
+    ) -> Annotated[int, Scoped[B]]:
+        raise NotHandled
+
+    term = let_many(add(a(), b()), {a: c(), c: d()})
+    actual = fvsof(term)
+    assert actual == {b, d, let_many, add}
 
 
 def test_fvsof_collection_does_not_include_apply():
@@ -899,8 +1068,16 @@ def test_typeof_literal():
         typeof(get_mixed())
 
 
+@pytest.mark.timeout(20)
 def test_evaluate_dag_no_exponential_blowup():
-    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n)."""
+    """A DAG of nested tuples sharing the same Term is O(n), not O(2^n).
+
+    Bounded by a timeout because the regression this guards against does not
+    fail, it hangs: losing memoization turns the depth-20 DAG below into 2**20
+    evaluations.
+    """
+    from effectful.internals.runtime import cache
+
     call_count = 0
 
     @defop
@@ -919,11 +1096,15 @@ def test_evaluate_dag_no_exponential_blowup():
     for _ in range(depth):
         node = (node, node)
 
-    call_count = 0
-    with handler({counted: counted_handler}):
-        result = evaluate(node)
+    # One cache scope spanning both the evaluation and the term construction
+    # below. Without it each would install its own, so nothing computed by the
+    # first would be available to the second.
+    with cache():
+        call_count = 0
+        with handler({counted: counted_handler}):
+            result = evaluate(node)
 
-    deffn(node, counted)(0)
+        deffn(node, counted)(0)
 
     # The handler should only be called once (the shared Term)
     assert call_count == 1
@@ -1100,3 +1281,50 @@ def test_fwd_in_definition_raises():
 
     with pytest.raises(RuntimeError):
         f()
+
+
+def test_handlers_release_their_closures_after_the_block():
+    """What a handler closes over is collectable once its block has ended."""
+
+    class Offset:
+        value = 0
+
+    op = defop(int)
+
+    def run_block() -> weakref.ref[Offset]:
+        payload = Offset()
+
+        def scale(x: int) -> int:
+            return payload.value + 2 * x
+
+        def override(x: int) -> int:
+            return fwd() + 1
+
+        with handler({op: scale}), handler({op: override}):
+            assert op(3) == 7
+        return weakref.ref(payload)
+
+    released = run_block()
+    gc.collect()
+    assert released() is None
+
+
+@pytest.mark.parametrize("name", ["self", "op", "app", "ty", "instance"])
+def test_keyword_arguments_named_like_internal_receivers(name):
+    namespace: dict[str, Any] = {}
+    exec(f"def f(*, {name}: int) -> int:\n    return {name} + 1", namespace)
+    f = Operation.define(namespace["f"])
+    kwargs = {name: 1}
+
+    assert f(**kwargs) == 2
+    with handler({f: lambda **kw: fwd(**kw) + 1}):
+        assert f(**kwargs) == 3
+    with handler({apply: lambda o, *a, **k: fwd(o, *a, **k)}):
+        assert f(**kwargs) == 2
+
+    with handler({apply: defdata}):
+        term = f(**kwargs)
+    assert term.kwargs == kwargs
+    assert typeof(term) is int
+    assert fvsof(term) == {f}
+    assert evaluate(term) == 2

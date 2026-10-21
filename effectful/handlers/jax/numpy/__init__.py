@@ -10,20 +10,14 @@ _no_overload = ["array", "asarray"]
 for name, op in jax.numpy.__dict__.items():
     if isinstance(op, types.ModuleType):
         continue
-
     # Dtype classes are static configuration, not numerical operations.
-    if isinstance(op, type):
+    elif isinstance(op, type):
         globals()[name] = op
-        continue
-
-    # copy constants
-    if isinstance(op, float | types.NoneType):
+    elif isinstance(op, float | types.NoneType):
         globals()[name] = op
-
-    if callable(op):
+    elif callable(op):
         if name == "__getattr__":
             continue
-
         register = (
             _register_jax_op_no_partial_eval
             if name in _no_overload

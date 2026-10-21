@@ -36,6 +36,32 @@ else:
     W = typing.TypeVar("W")
 
 
+# --- Type aliases ---
+#
+# An alias names a type; it does not make a new one, so every operation here must
+# see through it to the answer it gives for the type it names. A *self-referential*
+# alias has no finite expansion, so it is instead an opaque constant standing for
+# itself -- the alternative is not a better answer but a `RecursionError`.
+type _PairAlias = tuple[int, str]
+type _PairsAlias = list[_PairAlias]
+type _GenPairAlias[T] = tuple[T, T]
+type _RecursiveAlias = int | list[_RecursiveAlias]
+type _RecursiveGenAlias[T] = T | list[_RecursiveGenAlias[T]]
+
+# Mutually recursive: neither alias mentions itself directly, so expanding either
+# terminates only if the guard survives a trip through the other.
+type _MutualA = int | _MutualB
+type _MutualB = str | list[_MutualA]
+
+# The pre-PEP-695 spelling, which is not a `TypeAliasType` at all -- it is the
+# aliased type itself, bound to a name.
+_LegacyPairAlias: typing.TypeAlias = tuple[int, str]  # noqa: UP040
+
+
+class _Identity(TypeEvaluator):
+    """A `TypeEvaluator` that adds nothing, so it exercises the base traversal alone."""
+
+
 @dataclasses.dataclass
 class _Substitute(TypeEvaluator):
     """
@@ -135,6 +161,11 @@ class _FreeTypeVars(TypeEvaluator):
         (dict[K, collections.abc.Callable[[T], V]], {K, T, V}),
         # ParamSpec and TypeVarTuple (if needed later)
         # (collections.abc.Callable[typing.ParamSpec("P"), T], {T}),  # Would need to handle ParamSpec
+        # Type aliases, which must not hide the variables of what they name
+        (_PairAlias, set()),
+        (list[_PairAlias], set()),
+        (_GenPairAlias[T], {T}),
+        (_RecursiveGenAlias[T], {T}),
     ],
 )
 @pytest.mark.parametrize(
@@ -2062,3 +2093,160 @@ def test_operation_varargs_homogeneous_dicts_gh662():
     typ = typeof(term)
     assert issubclass(typ, collections.abc.MutableMapping)
     assert not typing.is_typeddict(typ)
+
+
+# ============================================================================
+# Type aliases (gh #766)
+#
+# A PEP 695 alias is transparent: it must be indistinguishable from the type it
+# names, everywhere -- `canonicalize`, the `TypeEvaluator` traversal, `unify` and
+# `nested_type` alike. The one case with no finite answer is a *self-referential*
+# alias, which each operation must reach a fixpoint on rather than recurse into
+# forever.
+# ============================================================================
+
+# (an alias, the type it names)
+_ALIAS_CASES = [
+    pytest.param(_PairAlias, tuple[int, str], id="tuple"),
+    pytest.param(_PairsAlias, list[tuple[int, str]], id="list-of-alias"),
+    pytest.param(_LegacyPairAlias, tuple[int, str], id="legacy"),
+    # The alias under a generic it did not itself introduce.
+    pytest.param(list[_PairAlias], list[tuple[int, str]], id="under-generic"),
+    pytest.param(
+        typing.Annotated[_PairAlias, "m"],
+        typing.Annotated[tuple[int, str], "m"],
+        id="annotated",
+    ),
+    # A generic alias, at the point it is applied. The alias loses its expansion
+    # by being *subscripted*, which is what the unsubscripted cases cannot catch.
+    pytest.param(_GenPairAlias[int], tuple[int, int], id="generic-subscripted"),
+]
+
+# Aliases with no finite expansion.
+_RECURSIVE_ALIAS_CASES = [
+    pytest.param(_RecursiveAlias, id="plain"),
+    pytest.param(_RecursiveGenAlias[int], id="generic"),
+    pytest.param(_MutualA, id="mutual"),
+]
+
+
+@pytest.mark.parametrize("alias,target", _ALIAS_CASES)
+def test_canonicalize_alias_is_transparent(alias, target):
+    assert canonicalize(alias) == canonicalize(target)
+
+
+@pytest.mark.parametrize("alias,target", _ALIAS_CASES)
+def test_type_evaluator_alias_is_transparent(alias, target):
+    """The base traversal expands an alias, including a subscripted generic one.
+
+    Left unexpanded, a downstream consumer dispatching on the result sees a
+    `TypeAliasType` where a type was promised, and any handling registered for
+    what the alias names is silently skipped.
+    """
+    assert _Identity().evaluate(alias) == _Identity().evaluate(target)
+
+
+@pytest.mark.parametrize("alias,target", _ALIAS_CASES)
+def test_nested_type_alias_matches_target(alias, target):
+    """An alias as a *value* reports what the type it names would report."""
+    assert nested_type(alias) == nested_type(target)
+
+
+@pytest.mark.parametrize("alias,target", _ALIAS_CASES)
+def test_unify_alias_is_transparent(alias, target):
+    assert unify(alias, target) == {}
+    assert unify(target, alias) == {}
+    assert unify(T, alias) == {T: canonicalize(target)}
+
+
+@pytest.mark.parametrize("alias", _RECURSIVE_ALIAS_CASES)
+def test_canonicalize_recursive_alias_terminates(alias):
+    """A self-referential alias canonicalizes to itself, and stays there.
+
+    Idempotency is the reason it collapses all the way back to the alias instead
+    of keeping one expanded layer: a layer per call is not a canonical form.
+    """
+    assert canonicalize(alias) == alias
+    assert canonicalize(canonicalize(alias)) == canonicalize(alias)
+
+
+def test_canonicalize_recursive_alias_under_a_generic():
+    """The alias is opaque; the type carrying it is canonicalized as usual."""
+    assert (
+        canonicalize(list[_RecursiveAlias])
+        == collections.abc.MutableSequence[_RecursiveAlias]
+    )
+
+
+@pytest.mark.parametrize(
+    "alias,expected",
+    [
+        pytest.param(_RecursiveAlias, int | list[_RecursiveAlias], id="plain"),
+        pytest.param(
+            _RecursiveGenAlias[int], int | list[_RecursiveGenAlias[int]], id="generic"
+        ),
+        # Expansion stops only where it comes back around to the alias it
+        # started from, so `_MutualB` -- reached on the way -- is expanded too.
+        pytest.param(_MutualA, int | str | list[_MutualA], id="mutual"),
+    ],
+)
+def test_type_evaluator_recursive_alias_terminates(alias, expected):
+    """The traversal expands the body and leaves the recursive occurrence alone.
+
+    Unlike `canonicalize`, the evaluator has no idempotency to preserve -- it
+    hands the result to a consumer (Pydantic, say) that resolves the remaining
+    alias itself -- so it keeps the expanded layer rather than collapsing back.
+    """
+    assert _Identity().evaluate(alias) == expected
+
+
+def test_unify_recursive_alias_is_opaque():
+    """A recursive alias unifies as a constant: with itself, or with a variable.
+
+    ``unify`` is not alias-aware; it canonicalizes its arguments first, so this
+    is what the canonicalization fixpoint buys it. Unifying the alias against
+    its own expansion is beyond that and fails -- but it *fails*, with the
+    ordinary error, rather than recursing until the stack runs out.
+    """
+    assert unify(_RecursiveAlias, _RecursiveAlias) == {}
+    assert unify(T, _RecursiveAlias) == {T: _RecursiveAlias}
+    with pytest.raises(TypeError):
+        unify(_RecursiveAlias, int | list[_RecursiveAlias])
+
+
+def test_nested_type_recursive_alias_terminates():
+    assert nested_type(_RecursiveAlias) == nested_type(int | list[_RecursiveAlias])
+
+
+def test_type_evaluator_alias_guard_does_not_leak():
+    """The in-progress alias is released once its expansion is done.
+
+    A guard that is set but never unset would leave every later alias
+    unexpanded -- and would do so only after a recursive one had been seen,
+    which no single-alias test would catch.
+    """
+    evaluator = _Identity()
+    first = evaluator.evaluate(_RecursiveAlias)
+    assert evaluator.evaluate(_RecursiveAlias) == first
+    assert evaluator.evaluate(_PairAlias) == tuple[int, str]
+    assert evaluator.evaluate(list[_RecursiveAlias]) == list[_RecursiveAlias.__value__]
+
+
+def test_canonicalize_alias_guard_does_not_leak():
+    first = canonicalize(_RecursiveAlias)
+    assert canonicalize(_RecursiveAlias) == first
+    assert canonicalize(dict[str, _PairAlias]) == canonicalize(
+        dict[str, tuple[int, str]]
+    )
+
+
+def test_substitute_alias_agrees_with_evaluator():
+    """The evaluator's alias expansion agrees with ground-truth substitution.
+
+    Only up to canonicalization: ``substitute`` reapplies the alias
+    (``_GenPairAlias[int]``) where the evaluator expands it (``tuple[int, int]``),
+    and canonicalizing is what makes those the same type expression.
+    """
+    assert canonicalize(
+        _Substitute.substitute(_GenPairAlias[T], {T: int})
+    ) == canonicalize(substitute(_GenPairAlias[T], {T: int}))

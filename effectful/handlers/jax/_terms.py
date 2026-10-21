@@ -7,14 +7,13 @@ import jax
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
-    IndexElement,
     _partial_eval,
     _register_jax_op,
     bind_dims,
     jax_getitem,
     unbind_dims,
 )
-from effectful.internals.tensor_utils import _desugar_tensor_index
+from effectful.internals.tensor_utils import IndexElement, _desugar_tensor_index
 from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
@@ -57,7 +56,7 @@ class _IndexUpdateRef:
 
 
 @defdata.register(jax.Array)
-def _embed_array(ty, op, *args, **kwargs):
+def _embed_array(ty, op, /, *args, **kwargs):
     if (
         op is jax_getitem
         and not isinstance(args[0], Term)
@@ -69,7 +68,7 @@ def _embed_array(ty, op, *args, **kwargs):
 
 
 class _ArrayTerm(Term[jax.Array]):
-    def __init__(self, op: Operation[..., jax.Array], *args: Expr, **kwargs: Expr):
+    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
         self._op = op
         self._args = args
         self._kwargs = kwargs
@@ -87,7 +86,8 @@ class _ArrayTerm(Term[jax.Array]):
         return self._kwargs
 
     def __getitem__(
-        self, key: Expr[IndexElement] | tuple[Expr[IndexElement], ...]
+        self,
+        key: Expr[IndexElement[jax.Array]] | tuple[Expr[IndexElement[jax.Array]], ...],
     ) -> Expr[jax.Array]:
         return jax_getitem(self, key if isinstance(key, tuple) else (key,))
 
@@ -488,14 +488,16 @@ def _bind_dims_array(t: jax.Array, *args: Operation[[], jax.Array]) -> jax.Array
         for i, o in enumerate(dims)
         if not isinstance(o, Term) or o.op not in order_set
     ]
-    dim_ops = [a.op if isinstance(a, Term) else None for a in dims]
+    dim_ops: list[Operation | None] = [
+        a.op if isinstance(a, Term) else None for a in dims
+    ]
     perm = (
         [dim_ops.index(o) for o in args]
         + reindex_dims
         + list(range(len(dims), len(array.shape)))
     )
     array = jnp.transpose(array, perm)
-    reindexed = jax_getitem(
+    reindexed = jax_getitem(  # type: ignore[call-arg]
         array, (slice(None),) * len(args) + tuple(dims[i] for i in reindex_dims)
     )
     return reindexed

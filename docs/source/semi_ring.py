@@ -168,8 +168,24 @@ def eager_let[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
 def vertical_fusion[S, T](e1: T, x: Operation[[], T], e2: S) -> S:
     match e1, e2:
         case (
-            Term(ops.Sum, (e_sum, k1, v1, Term(ops.Dict, (Term(k1a), e_lhs)))),
-            Term(ops.Sum, (Term(xa), k2, v2, Term(ops.Dict, (Term(k2a), e_rhs)))),
+            Term(
+                ops.Sum,
+                (
+                    e_sum,
+                    Operation() as k1,
+                    Operation() as v1,
+                    Term(ops.Dict, (Term(k1a), e_lhs)),
+                ),
+            ),
+            Term(
+                ops.Sum,
+                (
+                    Term(xa),
+                    Operation() as k2,
+                    Operation() as v2,
+                    Term(ops.Dict, (Term(k2a), e_rhs)),
+                ),
+            ),
         ) if x == xa and k1 == k1a and k2 == k2a:
             return evaluate(
                 Sum(

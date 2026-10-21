@@ -408,7 +408,7 @@ class SVI:
 
     # This method handles running the model and guide, constructing the loss
     # function, and taking a gradient step.
-    def step(self, *args, **kwargs):
+    def step(self, /, *args, **kwargs):
         # This wraps both the call to `model` and `guide` in a `trace` so that
         # we can record all the parameters that are encountered. Note that
         # further tracing occurs inside of `loss`.
@@ -434,7 +434,7 @@ class SVI:
 # This implementation has various limitations (for example it only supports
 # random variables with reparameterized samplers), but all the ELBO
 # implementations in Pyro share the same basic logic.
-def elbo(model, guide, *args, **kwargs):
+def elbo(model, guide, /, *args, **kwargs):
     # Run the guide with the arguments passed to SVI.step() and trace the execution,
     # i.e. record all the calls to Pyro primitives like sample() and param().
     with trace() as guide_trace:

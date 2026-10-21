@@ -143,7 +143,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
     for size in [2, 4]:
         add_case(
             "dist.CategoricalProbs(case.probs)",
-            (("probs", f"rand({batch_shape + (size,)})"),),
+            (("probs", f"rand_simplex({batch_shape + (size,)})"),),
             batch_shape,
         )
 
@@ -260,7 +260,7 @@ for batch_shape in [(5,), (2, 3, 4), ()]:
             "dist.MultinomialProbs(case.probs, case.total_count)",
             (
                 ("total_count", "5"),
-                ("probs", f"rand({batch_shape + event_shape})"),
+                ("probs", f"rand_simplex({batch_shape + event_shape})"),
             ),
             batch_shape,
         )
@@ -617,6 +617,11 @@ def add_dist_test_case(
     def randint(low, high, shape):
         return jax.random.randint(key, shape, low, high)
 
+    def rand_simplex(shape):
+        """Random probabilities normalized along the last axis."""
+        x = jax.random.uniform(key, shape=shape)
+        return x / jax.numpy.sum(x, axis=-1, keepdims=True)
+
     def random_scale_tril(batch_shape, n_event):
         data = jax.random.normal(key, batch_shape + ((n_event + 1) * n_event // 2,))
         result = numpyro.distributions.transforms.biject_to(
@@ -627,6 +632,7 @@ def add_dist_test_case(
     globals = {
         "rand": rand,
         "randint": randint,
+        "rand_simplex": rand_simplex,
         "exp": jax.numpy.exp,
         "random_scale_tril": random_scale_tril,
     }
