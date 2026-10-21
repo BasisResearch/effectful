@@ -9,6 +9,7 @@ import pytest
 
 from effectful.handlers.jax import _custom_array, primitive_op
 from effectful.handlers.jax._compat import core
+from effectful.handlers.jax._intercept import upcast
 from effectful.ops.semantics import fwd, handler
 
 
@@ -52,7 +53,7 @@ def custom_array(densifications):
             return jnp.diag(value.diag)
         return fwd()
 
-    def upcast(left, right):
+    def diagonal_upcast(left, right):
         if isinstance(left, Diagonal) and isinstance(right, Diagonal):
             if left.shape == right.shape and left.dtype == right.dtype:
                 return lambda x: x, lambda x: x
@@ -80,7 +81,7 @@ def custom_array(densifications):
             api.is_custom_array: is_custom_array,
             api.aval: aval,
             api.to_jax_array: to_jax_array,
-            api.upcast: upcast,
+            upcast: diagonal_upcast,
             primitive_op(jax.lax.add_p): add,
             primitive_op(jax.lax.dot_general_p): dot_general,
         }
@@ -261,6 +262,33 @@ def test_interception_cond_upcast(custom_array, densifications, pred):
     expected = jnp.diag(a.diag * 2) if pred else jnp.sin(jnp.diag(a.diag))
     np.testing.assert_allclose(result, expected)
     assert densifications
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_interception_switch_upcast(custom_array, index):
+    """Later branches can widen the conversions already selected for others."""
+
+    @custom_array.custom_arrays
+    def fn(a, index):
+        return jax.lax.switch(index, (lambda x: x, lambda x: x + x, jnp.sin), a)
+
+    a = Diagonal(jnp.array([2.0, 3.0]))
+    result = jax.jit(fn)(a, jnp.array(index))
+    expected = (jnp.diag(a.diag), jnp.diag(2 * a.diag), jnp.sin(jnp.diag(a.diag)))
+    assert isinstance(result, jax.Array)
+    np.testing.assert_allclose(result, expected[index])
+
+
+@pytest.mark.parametrize("pred", [False, True])
+def test_interception_grad_cond_upcast(custom_array, pred):
+    @custom_array.custom_arrays
+    def fn(a, pred):
+        return jax.lax.cond(pred, lambda x: x + x, jnp.sin, a)
+
+    data = jnp.array([2.0, 3.0])
+    grad = jax.jit(jax.grad(lambda d: fn(Diagonal(d), jnp.array(pred)).sum()))
+    expected = jnp.full_like(data, 2) if pred else jnp.cos(data)
+    np.testing.assert_allclose(grad(data), expected)
 
 
 def test_interception_while(custom_array, densifications):

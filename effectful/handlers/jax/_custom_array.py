@@ -1,7 +1,6 @@
 """Whole-pytree custom arrays with logical avals and dense baseline fallback."""
 
 from collections.abc import Callable
-from typing import Any
 
 import jax
 
@@ -32,13 +31,6 @@ def aval(value) -> core.AbstractValue:
 
 
 @defop
-def upcast[S, T](left: S, right: T) -> tuple[Callable[[S], Any], Callable[[T], Any]]:
-    if type(left) == type(right):
-        return (_id, _id)
-    return (to_jax_array, to_jax_array)
-
-
-@defop
 def to_jax_array(value):
     """Convert a custom array to its dense value; leave ordinary operands alone."""
     if is_custom_array(value):
@@ -46,10 +38,6 @@ def to_jax_array(value):
             f"No conversion from {type(value).__name__} to jax.Array available"
         )
     return value
-
-
-def _id(x):
-    return x
 
 
 class _CustomArrayTracer(_InterceptTracer):

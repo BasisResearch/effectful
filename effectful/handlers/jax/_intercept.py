@@ -30,6 +30,47 @@ from ._compat import (
 )
 
 
+def _id(x):
+    return x
+
+
+def _compose(outer, inner):
+    return lambda x: outer(inner(x))
+
+
+@defop
+def upcast[S, T](left: S, right: T) -> tuple[Callable[[S], Any], Callable[[T], Any]]:
+    """Choose value-preserving conversions using abstract representation witnesses.
+
+    Inputs are outputs of ``jax.eval_shape``; conversions must also accept real
+    or tracer-backed values and must not capture the other operand's buffers.
+    JAX validates the resulting physical layouts at the control-flow boundary.
+    """
+    if type(left) is type(right):
+        return _id, _id
+    raise NotImplementedError(
+        f"No upcast for {type(left).__name__} and {type(right).__name__}"
+    )
+
+
+def upcast_many(*values):
+    """Return one conversion per abstract value to a common representation."""
+    if not values:
+        return ()
+    common = values[0]
+    conversions = [_id]
+    for other in values[1:]:
+        widen, convert = upcast(common, other)
+        conversions = [_compose(widen, previous) for previous in conversions]
+        conversions.append(convert)
+        common = jax.eval_shape(lambda x: widen(x), common)
+    return tuple(conversions)
+
+
+def _apply_conversions(conversions, values):
+    return [convert(x) for convert, x in zip(conversions, values, strict=True)]
+
+
 @defop
 def _parent_trace() -> core.Trace:
     raise RuntimeError("BUG: _parent_trace is not set.")
@@ -148,9 +189,7 @@ class DefaultIntp(ObjectInterpretation):
         return [*carry, *ys]
 
     @implements(_inner_primop(jax.lax.cond_p))
-    def _cond_p_default(self, *args, **params):
-        index, *operands = args
-
+    def _cond_p_default(self, index, *operands, branches, **params):
         def branch(jaxpr):
             @intercept
             def run(*xs):
@@ -158,9 +197,23 @@ class DefaultIntp(ObjectInterpretation):
 
             return run
 
+        def converted(run, conversions):
+            return lambda *xs: _apply_conversions(conversions, run(*xs))
+
         with core.set_current_trace(_parent_trace()):
+            runs = tuple(branch(b) for b in branches)
+            outputs = [jax.eval_shape(run, *operands) for run in runs]
+            conversions = [[] for _ in runs]
+            for alternatives in zip(*outputs, strict=True):
+                for casts, convert in zip(
+                    conversions, upcast_many(*alternatives), strict=True
+                ):
+                    casts.append(convert)
+            # switch validates complete output pytrees and buffer avals.
             return jax.lax.switch(
-                index, tuple(branch(b) for b in params["branches"]), *operands
+                index,
+                tuple(converted(run, casts) for run, casts in zip(runs, conversions)),
+                *operands,
             )
 
     @implements(_inner_primop(jax.lax.while_p))
