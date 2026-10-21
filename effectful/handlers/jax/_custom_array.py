@@ -1,38 +1,22 @@
-"""Whole-pytree custom arrays with logical avals and dense baseline fallback."""
+"""Representation effects shared by high-level JAX APIs and custom arrays."""
 
 from collections.abc import Callable
+from typing import Any
 
 import jax
 
-from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import defop
-
-from ._compat import core
-from ._intercept import (
-    _InterceptTrace,
-    _InterceptTracer,
-    _JaxInnerPrimitiveOperation,
-    _new_trace,
-    _parent_trace,
-    intercept,
-)
 
 
 @defop
 def is_custom_array(value) -> bool:
-    """Whether a registered pytree represents one logical array operand."""
+    """Whether a pytree represents one logical array operand."""
     return False
 
 
 @defop
-def aval(value) -> core.AbstractValue:
-    """Return the logical aval, which may differ from the storage buffers' avals."""
-    return core.typeof(value)
-
-
-@defop
 def to_jax_array(value):
-    """Convert a custom array to its dense value; leave ordinary operands alone."""
+    """Convert a represented array to its dense value; leave other values alone."""
     if is_custom_array(value):
         raise NotImplementedError(
             f"No conversion from {type(value).__name__} to jax.Array available"
@@ -40,37 +24,42 @@ def to_jax_array(value):
     return value
 
 
-class _CustomArrayTracer(_InterceptTracer):
-    @property
-    def aval(self):
-        return aval(self.value)
+def _id(x):
+    return x
 
 
-class _CustomArrayTrace(_InterceptTrace):
-    def _wrap(self, value):
-        return _CustomArrayTracer(self, value)
-
-    def _wrap_inputs(self, args, kwargs):
-        def wrap(value):
-            if is_custom_array(value) or isinstance(value, (jax.Array, core.Tracer)):
-                return self._wrap(value)
-            return value
-
-        return jax.tree.map(wrap, (args, kwargs), is_leaf=is_custom_array)
+def _compose(outer, inner):
+    return lambda x: outer(inner(x))
 
 
-def _dense_apply(op, /, *args, **params):
-    # Only unhandled inner operations reach apply. Convert on the parent trace
-    # so densification itself does not recursively enter interception.
-    with core.set_current_trace(_parent_trace()):
-        return fwd(op, *(to_jax_array(x) for x in args), **params)
+@defop
+def upcast[S, T](left: S, right: T) -> Callable[[S | T], Any]:
+    """Select one value-preserving constructor for two abstract witnesses.
+
+    Witnesses come from eval_shape. The constructor must accept either source
+    representation, produce a shared physical layout, and capture no buffers.
+    """
+    if type(left) is type(right):
+        return _id
+    raise NotImplementedError(
+        f"No upcast for {type(left).__name__} and {type(right).__name__}"
+    )
 
 
-def custom_arrays[**P, T](fn: Callable[P, T]) -> Callable[P, T]:
-    """Intercept whole custom arrays, densifying only at baseline primitives."""
-    return handler(
-        {
-            _new_trace: _CustomArrayTrace,
-            _JaxInnerPrimitiveOperation.__apply__: _dense_apply,
-        }
-    )(intercept(fn))
+def upcast_many(*values):
+    """Return conversions from abstract alternatives to a common representation."""
+    if not values:
+        return ()
+    common = values[0]
+    conversions = [_id]
+    for other in values[1:]:
+        convert = upcast(common, other)
+        conversions = [_compose(convert, previous) for previous in conversions]
+        conversions.append(convert)
+        common = jax.eval_shape(lambda x: convert(x), common)
+    return tuple(conversions)
+
+
+def dense_arguments(args, kwargs):
+    """Densify whole custom operands only at a numerical baseline boundary."""
+    return jax.tree.map(to_jax_array, (args, kwargs), is_leaf=is_custom_array)
