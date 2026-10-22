@@ -44,6 +44,9 @@ def _unpack_named(value):
     return value
 
 
+_native_jit = jax.jit
+
+
 def _jit_with_static_keyword(fun, name, **options):
     """Add a hidden static keyword while preserving user static-argument options.
 
@@ -74,7 +77,7 @@ def _jit_with_static_keyword(fun, name, **options):
         )
     elif isinstance(static_names, str):
         static_names = (static_names,)
-    return jax.jit(
+    return _native_jit(
         wrap_callable(fun),
         **{**options, "static_argnames": (*static_names, name)},
     )
@@ -176,7 +179,10 @@ linear_transpose = _callable_api(jax.linear_transpose)
 eval_shape = _callable_api(jax.eval_shape)
 
 
-class custom_jvp(jax.custom_jvp):
+_native_custom_jvp = jax.custom_jvp
+
+
+class custom_jvp(_native_custom_jvp):
     """A native custom JVP whose rule can be selected by an interpretation.
 
     Handle ``custom_jvp.jvp`` to replace a decorated function's JVP.
@@ -195,7 +201,7 @@ class custom_jvp(jax.custom_jvp):
     def __call__(self, *args, **kwargs):
         # Bind callbacks for this invocation without mutating the shared
         # decorated instance or retaining another interpretation's traces.
-        call = jax.custom_jvp(
+        call = _native_custom_jvp(
             wrap_callable(self.fun), nondiff_argnums=self.nondiff_argnums
         )
         rule = self.jvp
@@ -204,7 +210,10 @@ class custom_jvp(jax.custom_jvp):
         return call(*args, **kwargs)
 
 
-class custom_vjp(jax.custom_vjp):
+_native_custom_vjp = jax.custom_vjp
+
+
+class custom_vjp(_native_custom_vjp):
     """A native custom VJP with interpretation-selected forward/backward rules.
 
     Handle ``custom_vjp.fwd`` and ``custom_vjp.bwd`` to replace the rules.
@@ -222,7 +231,7 @@ class custom_vjp(jax.custom_vjp):
     bwd = defop(property(lambda self: self._bwd, _set_bwd), name="bwd")
 
     def __call__(self, *args, **kwargs):
-        call = jax.custom_vjp(
+        call = _native_custom_vjp(
             wrap_callable(self.fun), nondiff_argnums=self.nondiff_argnums
         )
         forward, backward = self.fwd, self.bwd
