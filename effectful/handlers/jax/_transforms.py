@@ -44,37 +44,22 @@ def _unpack_named(value):
     return value
 
 
-@defop
-def jit(fun=None, **options):
-    """Compile the original callable separately for each effective interpretation.
+def _jit_with_static_keyword(fun, name, **options):
+    """Add a hidden static keyword while preserving user static-argument options.
 
-    The hidden static keyword does not shift public positional argument indices.
-    Keys use the runtime's identity-reference machinery. Snapshots exclude
-    call-bound forwarding state, and are scoped to this compiled wrapper.
+    ``fun`` is a wrapper whose exposed signature is that of the original
+    callable. The extra keyword must not shift its positional argument indices.
     """
-    if fun is None:
-        return functools.partial(jit, **options)
     signature = inspect.signature(fun)
-    if _POLICY in signature.parameters:
-        raise ValueError(f"{_POLICY!r} is reserved by effectful JIT")
+    if name in signature.parameters:
+        raise ValueError(f"{name!r} is reserved by effectful JIT")
     parameters = list(signature.parameters.values())
     offset = next(
         (i for i, p in enumerate(parameters) if p.kind == p.VAR_KEYWORD),
         len(parameters),
     )
-    parameters.insert(
-        offset, inspect.Parameter(_POLICY, inspect.Parameter.KEYWORD_ONLY)
-    )
-
-    @functools.wraps(fun)
-    def staged(*args, _effectful_interpretation, **kwargs):
-        with interpreter(_effectful_interpretation()):
-            result = fun(*args, **kwargs)
-            return jax.tree.map(
-                _pack_named, result, is_leaf=lambda x: isinstance(x, Term)
-            )
-
-    staged.__signature__ = signature.replace(parameters=parameters)
+    parameters.insert(offset, inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY))
+    fun.__signature__ = signature.replace(parameters=parameters)
     static_names = options.get("static_argnames")
     if static_names is None:
         positions = [
@@ -89,23 +74,49 @@ def jit(fun=None, **options):
         )
     elif isinstance(static_names, str):
         static_names = (static_names,)
-    compiled = jax.jit(
-        wrap_callable(staged),
-        **{**options, "static_argnames": (*static_names, _POLICY)},
+    return jax.jit(
+        wrap_callable(fun),
+        **{**options, "static_argnames": (*static_names, name)},
     )
-    policies = {}
 
-    def policy():
-        current = {
-            op: impl
-            for op, impl in get_interpretation().items()
-            if op is not fwd and op is not _get_args
-        }
-        key = tuple(sorted((id(op), id(impl)) for op, impl in current.items()))
-        if key not in policies:
-            # Holding the snapshot also prevents identity reuse in this cache.
-            policies[key] = StrongIdRef(current)
-        return policies[key]
+
+def _hashable_interpretation(policies):
+    """Intern an ambient interpretation snapshot in a per-JIT policy table.
+
+    Ignore transient forwarding state and compare operations/implementations
+    by identity. Retaining snapshots also prevents identity reuse in the table.
+    """
+    current = {
+        op: impl
+        for op, impl in get_interpretation().items()
+        if op is not fwd and op is not _get_args
+    }
+    key = tuple(sorted((id(op), id(impl)) for op, impl in current.items()))
+    if key not in policies:
+        policies[key] = StrongIdRef(current)
+    return policies[key]
+
+
+@defop
+def jit(fun=None, **options):
+    """Compile the original callable separately for each effective interpretation.
+
+    Keys use the runtime's identity-reference machinery. Snapshots exclude
+    call-bound forwarding state, and are scoped to this compiled wrapper.
+    """
+    if fun is None:
+        return functools.partial(jit, **options)
+
+    @functools.wraps(fun)
+    def staged(*args, _effectful_interpretation, **kwargs):
+        with interpreter(_effectful_interpretation()):
+            result = fun(*args, **kwargs)
+            return jax.tree.map(
+                _pack_named, result, is_leaf=lambda x: isinstance(x, Term)
+            )
+
+    compiled = _jit_with_static_keyword(staged, _POLICY, **options)
+    policy = functools.partial(_hashable_interpretation, {})
 
     @functools.wraps(fun)
     def wrapped(*args, **kwargs):
