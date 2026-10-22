@@ -2,9 +2,11 @@ import dataclasses
 import inspect
 import typing
 
-from effectful.ops.semantics import typeof
+import pytest
+
+from effectful.ops.semantics import evaluate, fwd, handler, typeof
 from effectful.ops.syntax import defop
-from effectful.ops.types import Interpretation, NotHandled
+from effectful.ops.types import Interpretation, NotHandled, Operation, Term
 
 
 def test_prettyprinter_traverses_dataclasses_and_raw_operations():
@@ -116,6 +118,89 @@ def test_instance_method_signature_excludes_self():
 
     # Binding should work with just the real args (no 'self')
     sig.bind(42)
+
+
+def test_defop_property():
+    class Box:
+        @defop
+        @property
+        def value(self) -> int:
+            """The stored value."""
+            return self._value
+
+        @value.setter
+        def value(self, value):
+            self._value = value
+
+        @value.deleter
+        def value(self):
+            del self._value
+
+    box = Box()
+    box.value = 3
+    assert isinstance(Box.value, Operation)
+    assert Box.value.__name__ == "value"
+    assert Box.value.__doc__ == "The stored value."
+    assert inspect.signature(Box.value).return_annotation is int
+    assert box.value == 3
+
+    def double(instance):
+        assert instance is box
+        return fwd() * 2
+
+    with handler({Box.value: double}):
+        assert box.value == 6
+        box.value = 4
+        assert box.value == 8
+    assert box.value == 4
+
+    class SubBox(Box):
+        pass
+
+    assert SubBox.value is Box.value
+    other = SubBox()
+    other.value = 5
+    assert other.value == 5
+    del box.value
+    assert not hasattr(box, "_value")
+
+
+def test_defop_property_getter_replacement():
+    class Box:
+        @defop
+        @property
+        def value(self):
+            return 1
+
+        @value.getter
+        def value(self):
+            return 2
+
+    assert isinstance(Box.value, Operation)
+    assert Box().value == 2
+    with handler({Box.value: lambda instance: 3}):
+        assert Box().value == 3
+
+
+def test_defop_property_free_rule():
+    class Box:
+        @defop
+        @property
+        def value(self) -> int:
+            raise NotHandled
+
+    box = Box()
+    term = box.value
+    assert isinstance(term, Term)
+    assert term.op is Box.value
+    assert term.args == (box,)
+    with handler({Box.value: lambda instance: 7}):
+        assert evaluate(term) == 7
+
+
+def test_defop_property_requires_getter():
+    with pytest.raises(TypeError, match="requires a getter"):
+        defop(property())
 
 
 def test_defop_generic_typeddict_type_inference():
