@@ -67,23 +67,14 @@ def _embed_array(ty, op, /, *args, **kwargs):
         return _ArrayTerm(op, *args, **kwargs)
 
 
-class _ArrayTerm(Term[jax.Array]):
-    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
-        self._op = op
-        self._args = args
-        self._kwargs = kwargs
+class ArrayMethods:
+    """Forward JAX array operators and methods to their effectful mirrors.
 
-    @property
-    def op(self) -> Operation[..., jax.Array]:
-        return self._op
-
-    @property
-    def args(self) -> tuple:
-        return self._args
-
-    @property
-    def kwargs(self) -> dict:
-        return self._kwargs
+    Custom array pytrees can inherit this mixin without becoming symbolic terms
+    or implementing ``__jax_array__``. Override shape properties when they can
+    be determined directly from the representation. Dataclasses should use
+    ``eq=False`` to preserve the elementwise equality methods.
+    """
 
     def __getitem__(
         self,
@@ -101,6 +92,10 @@ class _ArrayTerm(Term[jax.Array]):
 
     def __len__(self):
         return self.shape[0]
+
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
 
     @property
     def ndim(self) -> Expr[int]:
@@ -222,9 +217,6 @@ class _ArrayTerm(Term[jax.Array]):
     def at(self) -> _IndexUpdateHelper:
         """Return an IndexUpdateHelper for array updates."""
         return _IndexUpdateHelper(self)
-
-    def __iter__(self):
-        raise TypeError("A free array is not iterable.")
 
     def all(self, axis=None, keepdims=False, *, where=None):
         return jnp.all(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)
@@ -403,6 +395,28 @@ class _ArrayTerm(Term[jax.Array]):
         return jnp.var(
             cast(jax.Array, self), axis=axis, keepdims=keepdims, ddof=ddof, where=where
         )
+
+
+class _ArrayTerm(ArrayMethods, Term[jax.Array]):
+    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    @property
+    def op(self) -> Operation[..., jax.Array]:
+        return self._op
+
+    @property
+    def args(self) -> tuple:
+        return self._args
+
+    @property
+    def kwargs(self) -> dict:
+        return self._kwargs
+
+    def __iter__(self):
+        raise TypeError("A free array is not iterable.")
 
 
 class _EagerArrayTerm(_ArrayTerm):

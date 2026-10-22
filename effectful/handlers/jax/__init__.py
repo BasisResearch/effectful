@@ -20,6 +20,7 @@ from ._handlers import bind_dims as bind_dims
 from ._handlers import jax_getitem as jax_getitem
 from ._handlers import sizesof as sizesof
 from ._handlers import unbind_dims as unbind_dims
+from ._terms import ArrayMethods as ArrayMethods
 from ._transforms import checkpoint as checkpoint
 from ._transforms import custom_jvp as custom_jvp
 from ._transforms import custom_vjp as custom_vjp

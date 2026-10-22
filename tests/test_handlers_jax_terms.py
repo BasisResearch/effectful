@@ -1,13 +1,131 @@
-"""Symbolic array methods implemented by jax._terms."""
+"""Array methods shared by symbolic terms and custom pytrees in jax._terms."""
+
+import operator
+from dataclasses import dataclass
 
 import jax
+import numpy as np
 import pytest
 
 import effectful.handlers.jax.numpy as jnp
-from effectful.handlers.jax import jax_getitem
+from effectful.handlers import jax as ejax
+from effectful.handlers.jax import ArrayMethods, jax_getitem
 from effectful.ops.semantics import evaluate, handler
 from effectful.ops.syntax import defop
 from effectful.ops.types import Term
+
+
+@jax.tree_util.register_dataclass
+@dataclass(eq=False)
+class _CustomArray(ArrayMethods):
+    data: jax.Array
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize(
+    "op",
+    [
+        operator.add,
+        operator.sub,
+        operator.mul,
+        operator.truediv,
+        operator.floordiv,
+        operator.mod,
+        operator.pow,
+        operator.matmul,
+        operator.eq,
+        operator.ne,
+        operator.lt,
+        operator.le,
+        operator.gt,
+        operator.ge,
+        operator.and_,
+        operator.or_,
+        operator.xor,
+        operator.lshift,
+        operator.rshift,
+    ],
+)
+def test_custom_array_binary_methods(op, reverse):
+    data = jax.numpy.array([[1, 2], [3, 4]])
+    other = jax.numpy.array([[2, 3], [4, 5]])
+
+    def run(value):
+        return op(other, value) if reverse else op(value, other)
+
+    with handler(
+        {
+            ejax.is_custom_array: lambda x: isinstance(x, _CustomArray),
+            ejax.to_jax_array: lambda x: x.data if isinstance(x, _CustomArray) else x,
+        }
+    ):
+        expected = run(data)
+        np.testing.assert_array_equal(run(_CustomArray(data)), expected)
+        np.testing.assert_array_equal(ejax.jit(run)(_CustomArray(data)), expected)
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        pytest.param(operator.neg, id="neg"),
+        pytest.param(operator.pos, id="pos"),
+        pytest.param(operator.abs, id="abs"),
+        pytest.param(operator.invert, id="invert"),
+        pytest.param(lambda x: x.sum(axis=0, keepdims=True), id="sum"),
+        pytest.param(lambda x: x.reshape(4), id="reshape"),
+        pytest.param(lambda x: x.reshape((4,)), id="reshape_tuple"),
+        pytest.param(lambda x: x.transpose((1, 0)), id="transpose"),
+        pytest.param(lambda x: x.T, id="T"),
+        pytest.param(lambda x: x.astype(jax.numpy.float32), id="astype"),
+        pytest.param(lambda x: x.dot(jax.numpy.eye(2)), id="dot"),
+        pytest.param(lambda x: x.clip(min=2, max=3), id="clip"),
+        pytest.param(lambda x: x[0], id="getitem"),
+        pytest.param(lambda x: x.at[0, 1].set(10), id="at_set"),
+        pytest.param(lambda x: x.shape, id="shape"),
+        pytest.param(lambda x: x.size, id="size"),
+        pytest.param(lambda x: x.ndim, id="ndim"),
+        pytest.param(len, id="len"),
+        pytest.param(lambda x: tuple(x), id="iter"),
+    ],
+)
+def test_custom_array_methods(run):
+    data = jax.numpy.array([[1, 2], [3, 4]])
+    with handler(
+        {
+            ejax.is_custom_array: lambda x: isinstance(x, _CustomArray),
+            ejax.to_jax_array: lambda x: x.data if isinstance(x, _CustomArray) else x,
+        }
+    ):
+        expected = run(data)
+        np.testing.assert_array_equal(run(_CustomArray(data)), expected)
+        np.testing.assert_array_equal(ejax.jit(run)(_CustomArray(data)), expected)
+
+
+def test_custom_array_methods_preserve_whole_operands():
+    seen = []
+
+    def add(left, right):
+        assert isinstance(right, _CustomArray)
+        seen.append("add")
+        return _CustomArray(jax.numpy.add(left, right.data))
+
+    def sum_(value, **kwargs):
+        assert isinstance(value, _CustomArray)
+        seen.append("sum")
+        return jax.numpy.sum(value.data, **kwargs)
+
+    other = jax.numpy.ones((2, 2))
+    data = jax.numpy.ones((2, 2))
+
+    def run(data):
+        return (other + _CustomArray(data)).sum()
+
+    assert not hasattr(_CustomArray(data), "__jax_array__")
+    with handler({jnp.add: add, jnp.sum: sum_}):
+        assert run(data) == 8
+        assert ejax.jit(run)(data) == 8
+        np.testing.assert_array_equal(ejax.grad(run)(data), jax.numpy.ones((2, 2)))
+    assert seen == ["add", "sum"] * 3
 
 
 def test_jax_at_updates():
