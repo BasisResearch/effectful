@@ -189,6 +189,326 @@ def test_interception_custom_jvp_call():
         np.testing.assert_allclose(tangent, 6)
 
 
+@pytest.mark.parametrize("compile_mode", ["none", "primal", "gradient"])
+def test_custom_jvp_rule_selection(compile_mode):
+    @ejax.custom_jvp
+    def custom(x):
+        return x * x
+
+    @custom.defjvp
+    def original(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(x), 3 * t
+
+    def replacement(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom.fun(x), 7 * t
+
+    def select(instance):
+        if instance is custom:
+            assert fwd() is original
+            assert instance.fun is custom.__wrapped__
+            return replacement
+        return fwd()
+
+    assert isinstance(custom, jax.custom_jvp)
+    assert custom.jvp is original
+    primal = ejax.jit(custom) if compile_mode == "primal" else custom
+    derivative = ejax.grad(primal)
+    if compile_mode == "gradient":
+        derivative = ejax.jit(derivative)
+    x = jnp.array(2.0)
+    with cache():
+        np.testing.assert_allclose(derivative(x), 3)
+        with handler({ejax.custom_jvp.jvp: select}):
+            np.testing.assert_allclose(derivative(x), 7)
+            np.testing.assert_allclose(derivative(x), 7)
+        np.testing.assert_allclose(derivative(x), 3)
+    assert custom.jvp is original
+
+
+def test_custom_jvp_callbacks_follow_invocation_interpretation():
+    @ejax.custom_jvp
+    def custom(x):
+        return enp.add(x, 1)
+
+    @custom.defjvp
+    def original(primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(x), enp.multiply(t, 2)
+
+    compiled = ejax.jit(custom)
+    x, t = jnp.array(2.0), jnp.array(1.0)
+    with cache():
+        np.testing.assert_allclose(ejax.jvp(compiled, (x,), (t,)), (3, 2))
+        with handler(
+            {
+                enp.add: lambda *a, **k: fwd() * 2,
+                enp.multiply: lambda *a, **k: fwd() * 3,
+            }
+        ):
+            np.testing.assert_allclose(ejax.jvp(compiled, (x,), (t,)), (6, 6))
+        np.testing.assert_allclose(ejax.jvp(compiled, (x,), (t,)), (3, 2))
+
+
+@pytest.mark.parametrize("option", ["nondiff_argnums", "nondiff_argnames"])
+def test_custom_jvp_rule_selection_nondiff_args(option):
+    def fun(scale, x):
+        return scale * x
+
+    custom = ejax.custom_jvp(
+        fun, **{option: (0,) if option == "nondiff_argnums" else ("scale",)}
+    )
+
+    @custom.defjvp
+    def original(scale, primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom(scale, x), scale * t
+
+    def replacement(scale, primals, tangents):
+        (x,), (t,) = primals, tangents
+        return custom.fun(scale, x), 2 * scale * t
+
+    def select(instance):
+        assert instance is custom
+        assert instance.nondiff_argnums == (0,)
+        assert fwd() is original
+        return replacement
+
+    derivative = ejax.jit(ejax.grad(lambda x: custom(scale=3.0, x=x)))
+    with handler({ejax.custom_jvp.jvp: select}):
+        np.testing.assert_allclose(derivative(jnp.array(2.0)), 6)
+
+
+def test_custom_jvp_rule_selection_symbolic_zeros():
+    @ejax.custom_jvp
+    def custom(x, y):
+        return x + y
+
+    seen = []
+
+    def replacement(primals, tangents):
+        x, y = primals
+        tx, ty = tangents
+        seen.append(isinstance(ty, jax.custom_derivatives.SymbolicZero))
+        return custom.fun(x, y), 7 * tx
+
+    def original(primals, tangents):
+        raise AssertionError("The original rule should be replaced")
+
+    custom.defjvp(original, symbolic_zeros=True)
+
+    def select(instance):
+        assert instance is custom
+        assert fwd() is original
+        return replacement
+
+    with handler({ejax.custom_jvp.jvp: select}):
+        result = ejax.jit(ejax.grad(lambda x: custom(x, jnp.array(2.0))))(
+            jnp.array(3.0)
+        )
+    np.testing.assert_allclose(result, 7)
+    assert seen == [True]
+
+
+def test_custom_jvp_defjvps():
+    @ejax.custom_jvp
+    def custom(x, y):
+        return x * y
+
+    custom.defjvps(
+        lambda tx, out, x, y: tx * y,
+        lambda ty, out, x, y: ty * x,
+    )
+    np.testing.assert_allclose(ejax.grad(custom)(jnp.array(2.0), jnp.array(3.0)), 3)
+
+
+def test_custom_jvp_missing_rule():
+    custom = ejax.custom_jvp(lambda x: x * x)
+    assert custom.jvp is None
+    with pytest.raises(AttributeError, match="No JVP defined"):
+        custom(jnp.array(2.0))
+
+
+@pytest.mark.parametrize("compile_mode", ["none", "primal", "gradient"])
+@pytest.mark.parametrize("rules, expected", [("fwd", 7), ("bwd", 6), ("both", 14)])
+def test_custom_vjp_rule_selection(compile_mode, rules, expected):
+    @ejax.custom_vjp
+    def custom(x):
+        return x * x
+
+    def forward(x):
+        return custom(x), jnp.full_like(x, 3)
+
+    def backward(slope, cotangent):
+        return (slope * cotangent,)
+
+    custom.defvjp(forward, backward)
+
+    def replacement_forward(x):
+        return custom.fun(x), jnp.full_like(x, 7)
+
+    def replacement_backward(slope, cotangent):
+        return (2 * slope * cotangent,)
+
+    def select_forward(instance):
+        assert instance is custom
+        assert instance.fun is custom.__wrapped__
+        assert fwd() is forward
+        return replacement_forward
+
+    def select_backward(instance):
+        assert instance is custom
+        assert fwd() is backward
+        return replacement_backward
+
+    interpretation = {}
+    if rules in ("fwd", "both"):
+        interpretation[ejax.custom_vjp.fwd] = select_forward
+    if rules in ("bwd", "both"):
+        interpretation[ejax.custom_vjp.bwd] = select_backward
+
+    assert isinstance(custom, jax.custom_vjp)
+    assert custom.fwd is forward
+    assert custom.bwd is backward
+    primal = ejax.jit(custom) if compile_mode == "primal" else custom
+    derivative = ejax.grad(primal)
+    if compile_mode == "gradient":
+        derivative = ejax.jit(derivative)
+    x = jnp.array(2.0)
+    with cache():
+        np.testing.assert_allclose(derivative(x), 3)
+        with handler(interpretation):
+            np.testing.assert_allclose(derivative(x), expected)
+            np.testing.assert_allclose(derivative(x), expected)
+        np.testing.assert_allclose(derivative(x), 3)
+    assert custom.fwd is forward
+    assert custom.bwd is backward
+
+
+def test_custom_vjp_callbacks_follow_invocation_interpretation():
+    @ejax.custom_vjp
+    def custom(x):
+        return enp.add(x, 1)
+
+    def forward(x):
+        return custom(x), enp.add(x, 1)
+
+    def backward(residual, cotangent):
+        return (enp.multiply(residual, cotangent),)
+
+    custom.defvjp(forward, backward)
+    run = ejax.value_and_grad(ejax.jit(custom))
+    x = jnp.array(2.0)
+    with cache():
+        np.testing.assert_allclose(run(x), (3, 3))
+        with handler(
+            {
+                enp.add: lambda *a, **k: fwd() * 2,
+                enp.multiply: lambda *a, **k: fwd() * 3,
+            }
+        ):
+            np.testing.assert_allclose(run(x), (6, 18))
+        np.testing.assert_allclose(run(x), (3, 3))
+
+
+@pytest.mark.parametrize("option", ["nondiff_argnums", "nondiff_argnames"])
+def test_custom_vjp_rule_selection_nondiff_args(option):
+    custom = ejax.custom_vjp(
+        lambda scale, x: scale * x,
+        **{option: (0,) if option == "nondiff_argnums" else ("scale",)},
+    )
+
+    def forward(scale, x):
+        return custom(scale, x), None
+
+    def backward(scale, residual, cotangent):
+        return (scale * cotangent,)
+
+    custom.defvjp(forward, backward)
+
+    def replacement(scale, residual, cotangent):
+        return (2 * scale * cotangent,)
+
+    def select(instance):
+        assert instance is custom
+        assert instance.nondiff_argnums == (0,)
+        assert fwd() is backward
+        return replacement
+
+    derivative = ejax.jit(ejax.grad(lambda x: custom(scale=3.0, x=x)))
+    with handler({ejax.custom_vjp.bwd: select}):
+        np.testing.assert_allclose(derivative(jnp.array(2.0)), 6)
+
+
+def test_custom_vjp_rule_selection_symbolic_zeros():
+    @ejax.custom_vjp
+    def custom(x, y):
+        return x + y, y
+
+    def original_forward(*args):
+        raise AssertionError("The forward rule should be replaced")
+
+    def original_backward(*args):
+        raise AssertionError("The backward rule should be replaced")
+
+    custom.defvjp(original_forward, original_backward, symbolic_zeros=True)
+    seen = []
+
+    def forward(x, y):
+        assert isinstance(x, jax.custom_derivatives.CustomVJPPrimal)
+        seen.append((x.perturbed, y.perturbed))
+        return (x.value + y.value, y.value), None
+
+    def backward(residual, cotangents):
+        gx, gy = cotangents
+        seen.append(isinstance(gy, jax.custom_derivatives.SymbolicZero))
+        return 7 * gx, None
+
+    with handler(
+        {
+            ejax.custom_vjp.fwd: lambda instance: forward,
+            ejax.custom_vjp.bwd: lambda instance: backward,
+        }
+    ):
+        result = ejax.jit(ejax.grad(lambda x: custom(x, jnp.array(2.0))[0]))(
+            jnp.array(3.0)
+        )
+    np.testing.assert_allclose(result, 7)
+    assert seen == [(True, False), True]
+
+
+def test_custom_vjp_rule_selection_optimize_remat():
+    @ejax.custom_vjp
+    def custom(x):
+        return x * x
+
+    def forward(x):
+        return custom.fun(x), None
+
+    def backward(residual, cotangent):
+        return (3 * cotangent,)
+
+    custom.defvjp(forward, backward, optimize_remat=True)
+
+    def select(instance):
+        assert instance.optimize_remat
+        assert fwd() is backward
+        return lambda residual, cotangent: (7 * cotangent,)
+
+    with handler({ejax.custom_vjp.bwd: select}):
+        result = ejax.jit(ejax.grad(ejax.checkpoint(custom)))(jnp.array(2.0))
+    np.testing.assert_allclose(result, 7)
+
+
+def test_custom_vjp_missing_rules():
+    custom = ejax.custom_vjp(lambda x: x * x)
+    assert custom.fwd is None
+    assert custom.bwd is None
+    with pytest.raises(AttributeError, match="No VJP defined"):
+        custom(jnp.array(2.0))
+
+
 def test_interception_custom_vjp_call():
     """Operations in a custom VJP rule are interceptable."""
 

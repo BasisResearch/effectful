@@ -12,7 +12,7 @@ from effectful.handlers import jax as ejax
 from effectful.handlers.jax import _custom_array, lax, upcast
 from effectful.handlers.jax import numpy as enp
 from effectful.handlers.jax.scipy import linalg as scipy_linalg
-from effectful.ops.semantics import fwd, handler
+from effectful.ops.semantics import cache, fwd, handler
 
 
 @partial(
@@ -122,6 +122,112 @@ def custom_array(densifications):
         ),
     ):
         yield api
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_custom_jvp_rule_adapts_to_structured_primal(custom_array, densifications, jit):
+    @ejax.custom_jvp
+    def diagonal(x):
+        return enp.diag(x)
+
+    @diagonal.defjvp
+    def logical_rule(primals, tangents):
+        (x,), (t,) = primals, tangents
+        # A valid dense rule, but its tangent would not match a sparse primal.
+        return diagonal(x), enp.multiply(enp.eye(x.shape[0]), t)
+
+    def select(instance):
+        if instance is not diagonal:
+            return fwd()
+        assert fwd() is logical_rule
+
+        def structured_rule(primals, tangents):
+            return instance.fun(*primals), Diagonal(tangents[0])
+
+        return structured_rule
+
+    def diag(x, **kwargs):
+        if x.ndim == 1:
+            return Diagonal(x)
+        return fwd()
+
+    run = ejax.jit(diagonal) if jit else diagonal
+    data, tangent = jnp.array([2.0, 3.0]), jnp.ones(2)
+    with cache():
+        primal, pushed = ejax.jvp(run, (data,), (tangent,))
+        np.testing.assert_allclose(primal, jnp.diag(data))
+        np.testing.assert_allclose(pushed, jnp.eye(2))
+        with handler({enp.diag: diag, ejax.custom_jvp.jvp: select}):
+            primal, pushed = ejax.jvp(run, (data,), (tangent,))
+            assert isinstance(primal, Diagonal)
+            assert isinstance(pushed, Diagonal)
+            np.testing.assert_allclose(primal.diag, data)
+            np.testing.assert_allclose(pushed.diag, tangent)
+            weights = jnp.array([5.0, 7.0])
+            gradient = ejax.grad(lambda x: enp.sum(enp.matmul(run(x), weights)))(data)
+            np.testing.assert_allclose(gradient, weights)
+    assert densifications == []
+
+
+@pytest.mark.parametrize("jit", [False, True])
+def test_custom_vjp_rules_adapt_structured_inputs_and_outputs(
+    custom_array, densifications, jit
+):
+    @ejax.custom_vjp
+    def square(value):
+        return enp.multiply(value, value)
+
+    def logical_forward(value):
+        return square(value), value
+
+    def logical_backward(value, cotangent):
+        return (enp.multiply(enp.multiply(2, value), cotangent),)
+
+    square.defvjp(logical_forward, logical_backward)
+
+    def select_forward(instance):
+        if instance is not square:
+            return fwd()
+        assert fwd() is logical_forward
+
+        def forward(value):
+            return instance.fun(value), {"slope": Diagonal(2 * value.diag)}
+
+        return forward
+
+    def select_backward(instance):
+        if instance is not square:
+            return fwd()
+        assert fwd() is logical_backward
+
+        def backward(residual, cotangent):
+            assert isinstance(cotangent, Diagonal)
+            return (Diagonal(residual["slope"].diag * cotangent.diag),)
+
+        return backward
+
+    def multiply(a, b, **kwargs):
+        if isinstance(a, Diagonal) and isinstance(b, Diagonal):
+            return Diagonal(enp.multiply(a.diag, b.diag, **kwargs))
+        return fwd()
+
+    run = ejax.jit(square) if jit else square
+    data, weights = jnp.array([2.0, 3.0]), jnp.array([5.0, 7.0])
+    with handler(
+        {
+            enp.multiply: multiply,
+            ejax.custom_vjp.fwd: select_forward,
+            ejax.custom_vjp.bwd: select_backward,
+        }
+    ):
+        primal = run(Diagonal(data))
+        assert isinstance(primal, Diagonal)
+        np.testing.assert_allclose(primal.diag, data**2)
+        gradient = ejax.grad(lambda x: enp.sum(enp.matmul(run(Diagonal(x)), weights)))(
+            data
+        )
+        np.testing.assert_allclose(gradient, 2 * data * weights)
+    assert densifications == []
 
 
 def test_to_jax_array_ordinary_operands():

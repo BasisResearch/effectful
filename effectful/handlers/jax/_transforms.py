@@ -163,5 +163,60 @@ vjp = _callable_api(jax.vjp)
 linearize = _callable_api(jax.linearize)
 linear_transpose = _callable_api(jax.linear_transpose)
 eval_shape = _callable_api(jax.eval_shape)
-custom_jvp = _callable_api(jax.custom_jvp)
-custom_vjp = _callable_api(jax.custom_vjp)
+
+
+class custom_jvp(jax.custom_jvp):
+    """A native custom JVP whose rule can be selected by an interpretation.
+
+    Handle ``custom_jvp.jvp`` to replace a decorated function's JVP.
+    The handler receives the decorated instance, including its original
+    ``fun`` and ``nondiff_argnums``. Forwarding retrieves the registered rule.
+    Rule signatures, symbolic zeros, and pytree contracts remain JAX's.
+    """
+
+    _jvp = None
+
+    def _set_jvp(self, rule):
+        self._jvp = rule
+
+    jvp = defop(property(lambda self: self._jvp, _set_jvp), name="jvp")
+
+    def __call__(self, *args, **kwargs):
+        # Bind callbacks for this invocation without mutating the shared
+        # decorated instance or retaining another interpretation's traces.
+        call = jax.custom_jvp(
+            wrap_callable(self.fun), nondiff_argnums=self.nondiff_argnums
+        )
+        rule = self.jvp
+        call.jvp = None if rule is None else wrap_callable(rule)
+        call.symbolic_zeros = self.symbolic_zeros
+        return call(*args, **kwargs)
+
+
+class custom_vjp(jax.custom_vjp):
+    """A native custom VJP with interpretation-selected forward/backward rules.
+
+    Handle ``custom_vjp.fwd`` and ``custom_vjp.bwd`` to replace the rules.
+    Each handler receives the decorated instance; forwarding retrieves its
+    registered rule. Residuals and cotangents retain JAX's pytree contracts.
+    """
+
+    def _set_fwd(self, rule):
+        self._fwd = rule
+
+    def _set_bwd(self, rule):
+        self._bwd = rule
+
+    fwd = defop(property(lambda self: self._fwd, _set_fwd), name="fwd")
+    bwd = defop(property(lambda self: self._bwd, _set_bwd), name="bwd")
+
+    def __call__(self, *args, **kwargs):
+        call = jax.custom_vjp(
+            wrap_callable(self.fun), nondiff_argnums=self.nondiff_argnums
+        )
+        forward, backward = self.fwd, self.bwd
+        call.fwd = None if forward is None else wrap_callable(forward)
+        call.bwd = None if backward is None else wrap_callable(backward)
+        call.symbolic_zeros = self.symbolic_zeros
+        call.optimize_remat = self.optimize_remat
+        return call(*args, **kwargs)
