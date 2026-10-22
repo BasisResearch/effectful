@@ -23,6 +23,9 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
+class JaxOperation[**P, T](Operation[P, T]): ...
+
+
 def is_eager_array(x):
     return isinstance(x, jax.Array) or (
         isinstance(x, Term)
@@ -91,7 +94,7 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
-    @defop
+    @JaxOperation.define
     def _jax_op(*args, **kwargs) -> jax.Array:
         from ._custom_array import is_custom_array
 
