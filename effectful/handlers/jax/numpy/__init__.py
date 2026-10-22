@@ -5,6 +5,8 @@ import jax.numpy
 
 from .._handlers import _register_jax_op, _register_jax_op_no_partial_eval
 
+__array_api_version__ = jax.numpy.__array_api_version__
+
 _no_overload = ["array", "asarray"]
 
 for name, op in jax.numpy.__dict__.items():

@@ -1,5 +1,7 @@
 """Array methods shared by symbolic terms and custom pytrees in jax._terms."""
 
+import copy
+import inspect
 import operator
 from dataclasses import dataclass
 
@@ -9,10 +11,10 @@ import pytest
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers import jax as ejax
-from effectful.handlers.jax import ArrayMethods, jax_getitem
-from effectful.ops.semantics import evaluate, handler
+from effectful.handlers.jax import ArrayIndex, ArrayMethods, jax_getitem
+from effectful.ops.semantics import evaluate, fwd, handler
 from effectful.ops.syntax import defop
-from effectful.ops.types import Term
+from effectful.ops.types import Operation, Term
 
 
 @jax.tree_util.register_dataclass
@@ -44,6 +46,7 @@ class _CustomArray(ArrayMethods):
         operator.xor,
         operator.lshift,
         operator.rshift,
+        divmod,
     ],
 )
 def test_custom_array_binary_methods(op, reverse):
@@ -86,6 +89,96 @@ def test_custom_array_binary_methods(op, reverse):
         pytest.param(lambda x: x.ndim, id="ndim"),
         pytest.param(len, id="len"),
         pytest.param(lambda x: tuple(x), id="iter"),
+        pytest.param(lambda x: x.mT, id="mT"),
+        pytest.param(lambda x: x.real, id="real"),
+        pytest.param(lambda x: x.imag, id="imag"),
+        pytest.param(lambda x: x.itemsize, id="itemsize"),
+        pytest.param(lambda x: x.nbytes, id="nbytes"),
+        pytest.param(lambda x: x.flatten(order="F"), id="flatten"),
+        pytest.param(lambda x: x.view(dtype=jax.numpy.uint8), id="view"),
+        pytest.param(lambda x: x.to_device(jax.devices()[0]), id="to_device"),
+        pytest.param(copy.copy, id="copy"),
+        pytest.param(copy.deepcopy, id="deepcopy"),
+        pytest.param(round, id="round_integer"),
+        pytest.param(lambda x: round(x, 1), id="round_digits"),
+        pytest.param(lambda x: x.transpose(1, 0), id="transpose_variadic"),
+        pytest.param(lambda x: x.all(0, None, True), id="all_options"),
+        pytest.param(lambda x: x.any(0, None, True), id="any_options"),
+        pytest.param(lambda x: x.argmax(0, None, True), id="argmax_options"),
+        pytest.param(lambda x: x.argmin(0, None, True), id="argmin_options"),
+        pytest.param(
+            lambda x: x.astype(jax.numpy.float32, copy=True, device=jax.devices()[0]),
+            id="astype_options",
+        ),
+        pytest.param(
+            lambda x: x.choose(
+                [jax.numpy.ones((2, 2)), jax.numpy.zeros((2, 2))], mode="clip"
+            ),
+            id="choose_options",
+        ),
+        pytest.param(
+            lambda x: x.compress(
+                jax.numpy.array([True, False]), axis=0, size=2, fill_value=-1
+            ),
+            id="compress_options",
+        ),
+        pytest.param(
+            lambda x: x.cumsum(0, jax.numpy.float32, None), id="cumsum_options"
+        ),
+        pytest.param(
+            lambda x: x.cumprod(0, jax.numpy.float32, None), id="cumprod_options"
+        ),
+        pytest.param(
+            lambda x: x.dot(
+                jax.numpy.eye(2),
+                precision=jax.lax.Precision.HIGH,
+                preferred_element_type=jax.numpy.float32,
+            ),
+            id="dot_options",
+        ),
+        pytest.param(lambda x: x.max(0, None, True), id="max_options"),
+        pytest.param(lambda x: x.min(0, None, True), id="min_options"),
+        pytest.param(
+            lambda x: x.mean(0, jax.numpy.float32, None, True), id="mean_options"
+        ),
+        pytest.param(
+            lambda x: x.sum(0, jax.numpy.float32, None, True), id="sum_options"
+        ),
+        pytest.param(
+            lambda x: x.prod(0, jax.numpy.float32, None, True), id="prod_options"
+        ),
+        pytest.param(lambda x: x.ptp(0, None, True), id="ptp_options"),
+        pytest.param(
+            lambda x: x.std(axis=0, dtype=jax.numpy.float32, correction=1),
+            id="std_options",
+        ),
+        pytest.param(
+            lambda x: x.var(axis=0, dtype=jax.numpy.float32, correction=1),
+            id="var_options",
+        ),
+        pytest.param(
+            lambda x: x.take(jax.numpy.array([1, 0]), 0, None, "clip"),
+            id="take_options",
+        ),
+        pytest.param(
+            lambda x: x.trace(0, 0, 1, jax.numpy.float32, None), id="trace_options"
+        ),
+        pytest.param(
+            lambda x: x.argsort(kind=None, order=None, descending=True),
+            id="argsort_options",
+        ),
+        pytest.param(
+            lambda x: x.sort(kind=None, order=None, descending=True), id="sort_options"
+        ),
+        pytest.param(
+            lambda x: x.reshape((4,), out_sharding=None), id="reshape_options"
+        ),
+        pytest.param(lambda x: x.ravel(out_sharding=None), id="ravel_options"),
+        pytest.param(
+            lambda x: x.repeat(2, axis=0, total_repeat_length=4, out_sharding=None),
+            id="repeat_options",
+        ),
+        pytest.param(lambda x: x.round(1, None), id="round_options"),
     ],
 )
 def test_custom_array_methods(run):
@@ -99,6 +192,148 @@ def test_custom_array_methods(run):
         expected = run(data)
         np.testing.assert_array_equal(run(_CustomArray(data)), expected)
         np.testing.assert_array_equal(ejax.jit(run)(_CustomArray(data)), expected)
+
+
+def test_array_methods_cover_jax_surface():
+    from jax._src.numpy import array_methods
+
+    names = {
+        name
+        for name in array_methods._array_methods
+        if not name.startswith("_") or name == "__array_namespace__"
+    }
+    names.update(array_methods._array_properties)
+    names.update(f"__{name}__" for name in array_methods._array_operators)
+    assert names <= set(dir(ArrayMethods))
+
+    for name in names & array_methods._array_methods.keys():
+        expected = inspect.signature(array_methods._array_methods[name])
+        actual = inspect.signature(getattr(ArrayMethods, name))
+        for parameter in expected.parameters.values():
+            if parameter.kind == parameter.VAR_POSITIONAL:
+                assert any(
+                    p.kind == p.VAR_POSITIONAL for p in actual.parameters.values()
+                ), name
+            else:
+                assert parameter.name in actual.parameters, (name, parameter.name)
+
+
+@pytest.mark.parametrize(
+    "method",
+    [
+        "get",
+        "set",
+        "add",
+        "subtract",
+        "multiply",
+        "divide",
+        "power",
+        "min",
+        "max",
+        "apply",
+    ],
+)
+def test_custom_array_at_methods(method):
+    data = jax.numpy.array([[1.0, 2.0], [3.0, 4.0]])
+    indices = jax.numpy.array([-1, 0, 3])
+    operation = getattr(ArrayIndex, method)
+    assert isinstance(operation, Operation)
+    seen = []
+
+    def update(ref, *args, **kwargs):
+        assert isinstance(ref.array, _CustomArray)
+        seen.append(method)
+        return fwd()
+
+    def run(value):
+        ref = value.at[indices, 1]
+        kwargs = dict(
+            indices_are_sorted=False, unique_indices=True, wrap_negative_indices=False
+        )
+        if method == "get":
+            return ref.get(mode="fill", fill_value=-99, **kwargs)
+        argument = (lambda x: x * 2) if method == "apply" else 2.0
+        return getattr(ref, method)(argument, mode="drop", **kwargs)
+
+    with handler(
+        {
+            ejax.is_custom_array: lambda x: isinstance(x, _CustomArray),
+            ejax.to_jax_array: lambda x: x.data if isinstance(x, _CustomArray) else x,
+        }
+    ):
+        expected = run(data)
+        with handler({operation: update}):
+            np.testing.assert_array_equal(run(_CustomArray(data)), expected)
+            np.testing.assert_array_equal(ejax.jit(run)(_CustomArray(data)), expected)
+    assert seen == [method, method]
+
+
+def test_custom_array_at_effect_preserves_whole_operands():
+    seen = []
+
+    def update(ref, values, **kwargs):
+        assert isinstance(ref.array, _CustomArray)
+        seen.append("set")
+        return _CustomArray(ref.array.data.at[ref.key].set(values, **kwargs))
+
+    data = jax.numpy.ones((2, 2))
+
+    def run(value):
+        return value.at[0, 1].set(4, mode="drop")
+
+    with handler({ArrayIndex.set: update}):
+        for fn in (run, ejax.jit(run)):
+            result = fn(_CustomArray(data))
+            assert isinstance(result, _CustomArray)
+            np.testing.assert_array_equal(result.data, [[1, 4], [1, 1]])
+    assert seen == ["set", "set"]
+
+
+def test_custom_array_at_apply_callback_is_effectful():
+    data = jax.numpy.array([1.0, 2.0])
+
+    def run(value):
+        return value.at[0].apply(lambda x: jnp.add(x, 1))
+
+    with handler(
+        {
+            ejax.is_custom_array: lambda x: isinstance(x, _CustomArray),
+            ejax.to_jax_array: lambda x: x.data if isinstance(x, _CustomArray) else x,
+            jnp.add: lambda *args, **kwargs: fwd() * 2,
+        }
+    ):
+        np.testing.assert_array_equal(ejax.jit(run)(_CustomArray(data)), [4, 2])
+
+
+def test_custom_array_host_methods_and_namespace():
+    data = jax.numpy.array([1, 2])
+    value = _CustomArray(data)
+    with handler(
+        {
+            ejax.is_custom_array: lambda x: isinstance(x, _CustomArray),
+            ejax.to_jax_array: lambda x: x.data if isinstance(x, _CustomArray) else x,
+        }
+    ):
+        assert value.item(1) == data.item(1)
+        assert value.dtype == data.dtype
+        np.testing.assert_array_equal(
+            value.searchsorted(jax.numpy.array([2, 3]), method="compare_all"),
+            data.searchsorted(jax.numpy.array([2, 3]), method="compare_all"),
+        )
+    namespace = value.__array_namespace__()
+    assert namespace is jnp
+    assert namespace.__array_api_version__ == jax.numpy.__array_api_version__
+    assert (
+        value.__array_namespace__(api_version=namespace.__array_api_version__)
+        is namespace
+    )
+    with pytest.raises(ValueError, match="not available"):
+        value.__array_namespace__(api_version="invalid")
+    with pytest.raises(NotImplementedError, match="flat"):
+        _ = value.flat
+    with pytest.raises(TypeError, match="immutable"):
+        value[0] = 3
+    assert not hasattr(value, "__jax_array__")
 
 
 def test_custom_array_methods_preserve_whole_operands():
@@ -126,6 +361,20 @@ def test_custom_array_methods_preserve_whole_operands():
         assert ejax.jit(run)(data) == 8
         np.testing.assert_array_equal(ejax.grad(run)(data), jax.numpy.ones((2, 2)))
     assert seen == ["add", "sum"] * 3
+
+
+def test_symbolic_array_metadata():
+    index = defop(jax.Array, name="index")
+    data = jax.numpy.ones((2, 3), dtype=jax.numpy.float32)
+    value = jax_getitem(data, (index(),))
+    assert value.dtype == data.dtype
+    assert value.itemsize == data.itemsize
+    assert value.nbytes == 3 * data.itemsize
+
+    variable = defop(jax.Array, name="variable")
+    dtype = variable().dtype
+    with handler({variable: lambda: data}):
+        assert evaluate(dtype) == data.dtype
 
 
 def test_jax_at_updates():
