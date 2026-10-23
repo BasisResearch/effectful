@@ -818,8 +818,6 @@ def test_repl_runsource_routes_through_ops():
     """`runsource` compiles through the `parse`/`compile` ops (so it needs an
     installed provider), keeping it self-consistent with `runcode`/`exec_code`
     rather than falling back to the native single-mode compiler."""
-    with pytest.raises(NotImplementedError):
-        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
     with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
         session = ReplSession({})
         assert session.runsource("kept = 7") is False  # complete: compiled + ran

@@ -111,7 +111,7 @@ class PydanticSkillArgValidator(PromptInjectingInterpretation):
         )
         for name, param in annotated.items():
             encoding: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[param.annotation]  # type: ignore[name-defined]
+                Encodable[param.annotation]  # type: ignore[name-defined, arg-type, unused-ignore]
             )
             check = functools.partial(encoding.validate_python, context=env)
             value = bound_args.arguments[name]
