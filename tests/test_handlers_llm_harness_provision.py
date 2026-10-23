@@ -4,6 +4,7 @@ breaking down individual components like AnyLLMConfigurer,
 ProgramSynthesis, and sampling strategies.
 """
 
+import asyncio
 import contextlib
 import functools
 import inspect
@@ -3971,6 +3972,26 @@ def test_any_other_request_goes_to_chat_completions(monkeypatch, responses):
     monkeypatch.setattr(any_llm, "completion", lambda **kwargs: sent.append(kwargs))
     completion(model="openai:gpt-4o-mini", messages=[], tools=[_TOOL])
     assert sent and not responses.requests
+
+
+def test_a_request_made_on_an_event_loop_thread_is_sent(monkeypatch):
+    """The harness is synchronous, so a skill called from inside ``async def``
+    code -- the reduce step of `basics/map_reduce` -- blocks the loop rather
+    than being refused, as it was under litellm."""
+
+    async def answer(self, *args, **kwargs):
+        return make_text_response("ok")
+
+    monkeypatch.setattr(any_llm.AnyLLM, "acompletion", answer)
+    monkeypatch.setenv("OPENAI_API_KEY", "test")
+
+    async def on_the_loop():
+        return completion(
+            model="openai:gpt-4o-mini", messages=[{"role": "user", "content": "hi"}]
+        )
+
+    response = asyncio.run(on_the_loop())
+    assert response.choices[0].message.content == "ok"
 
 
 # ============================================================================
