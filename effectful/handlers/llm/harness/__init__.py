@@ -33,9 +33,7 @@ from effectful.handlers.llm.harness.observability.langfuse import LangfuseTracer
 from effectful.handlers.llm.harness.observability.rich import (
     RichTerminalRenderer,
 )
-from effectful.handlers.llm.harness.provision.litellm import (
-    LiteLLMConfigurer,
-)
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -76,7 +74,7 @@ def harness(
     context manager, decorator, or via the module CLI) installs the handlers and
     exiting removes them. The handlers, in installation order, are:
 
-    1. `AgentLoop`, the tool pipeline and `LiteLLMConfigurer` -- the agent
+    1. `AgentLoop`, the tool pipeline and `AnyLLMConfigurer` -- the agent
        loop, the tools it offers from a `Skill`'s lexical scope, and the model
        backend it drives. The pipeline is a lexical tool *extractor* chosen by
        ``tool_collection`` (`LexicalToolExtractor` for ``"explicit"``,
@@ -109,7 +107,7 @@ def harness(
         num_retries: Attempts for malformed/failing model output (via
             `TenacityRetryer`, which is left out of the stack altogether when
             this is ``0``) and, independently, for transport-level failures
-            (via litellm's own ``num_retries``, bound into the request).
+            (via the provider client's own ``max_retries``, where it has one).
         langfuse: Log LLM calls and metadata to Langfuse.
         render: Live-render the streaming message history in the terminal.
         dump_system_prompt: If set, dump the assembled system prompt to this
@@ -188,7 +186,7 @@ def harness(
     elif tool_collection == "auto":
         h = coproduct(h, ImplicitToolExtractor(json_only=json_only))
 
-    h = coproduct(h, LiteLLMConfigurer(num_retries=num_retries, **provider_config))
+    h = coproduct(h, AnyLLMConfigurer(num_retries=num_retries, **provider_config))
     h = coproduct(h, FrameworkDocumenter())
     if max_tool_output_chars is not None:
         h = coproduct(h, ToolOutputTruncator(max_tool_output_chars))

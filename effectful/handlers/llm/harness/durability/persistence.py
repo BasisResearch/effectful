@@ -1,11 +1,11 @@
 """Checkpointing of `Agent` history and state to a SQLite database.
 
-Install `SQLitePersister` alongside `AgentLoop`, `LiteLLMConfigurer` and
+Install `SQLitePersister` alongside `AgentLoop`, `AnyLLMConfigurer` and
 `HistoryBuilder`::
 
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer()),
+        handler(AnyLLMConfigurer()),
         handler(HistoryBuilder()),
         handler(SQLitePersister(Path("./state/checkpoints.db"))),
     ):
@@ -20,7 +20,7 @@ It composes with `~effectful.handlers.llm.harness.durability.retrying.TenacityRe
 
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer()),
+        handler(AnyLLMConfigurer()),
         handler(HistoryBuilder()),
         handler(TenacityRetryer()),
         handler(SQLitePersister(Path("./state/checkpoints.db"))),

@@ -12,7 +12,7 @@ from types import CodeType
 
 import pydantic
 import pytest
-from litellm import ModelResponse
+from any_llm.types.completion import ChatCompletion
 
 from effectful.handlers.llm import Agent, Encodable, Skill, Tool
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
@@ -32,7 +32,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     _vars_section,
 )
 from effectful.handlers.llm.harness.observability.dump import _message_text
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     DecodedToolCall,
@@ -49,7 +49,7 @@ from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
-from tests.conftest import offered_tools, skill_tools
+from tests.conftest import chat_completion, offered_tools, skill_tools
 
 
 class SkillStringIntp(ObjectInterpretation):
@@ -169,8 +169,8 @@ def _define_scoped_skills():
 # ---------------------------------------------------------------------------
 
 
-def make_text_response(content: str) -> ModelResponse:
-    return ModelResponse(
+def make_text_response(content: str) -> ChatCompletion:
+    return chat_completion(
         id="test",
         choices=[
             {
@@ -185,8 +185,8 @@ def make_text_response(content: str) -> ModelResponse:
 
 def make_tool_call_response(
     tool_name: str, tool_args: str, tool_call_id: str = "call_1"
-) -> ModelResponse:
-    return ModelResponse(
+) -> ChatCompletion:
+    return chat_completion(
         id="test",
         choices=[
             {
@@ -212,7 +212,7 @@ def make_tool_call_response(
 class MockCompletionHandler(ObjectInterpretation):
     """Returns pre-configured responses and captures messages sent to the LLM."""
 
-    def __init__(self, responses: list[ModelResponse]):
+    def __init__(self, responses: list[ChatCompletion]):
         self.responses = responses
         self.call_count = 0
         self.received_messages: list[list] = []
@@ -362,7 +362,7 @@ class TestAgentHistoryAccumulation:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -392,7 +392,7 @@ class TestAgentHistoryAccumulation:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -421,7 +421,7 @@ class TestAgentIsolation:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -452,7 +452,7 @@ class TestAgentIsolation:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -478,7 +478,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -498,7 +498,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -521,7 +521,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -551,7 +551,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
@@ -578,7 +578,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -598,7 +598,7 @@ class TestSystemPromptInvariant:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -943,7 +943,7 @@ class TestAgentWithToolCalls:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -986,7 +986,7 @@ class TestAgentWithRetryHandler:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(TenacityRetryer()),
             handler(mock),
@@ -1026,7 +1026,7 @@ class TestNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1048,7 +1048,7 @@ class TestNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1078,7 +1078,7 @@ class TestNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1108,7 +1108,7 @@ class TestNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1142,7 +1142,7 @@ class TestNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1212,7 +1212,7 @@ class TestCrossAgentNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1241,7 +1241,7 @@ class TestCrossAgentNestedSkillCalling:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1588,7 +1588,7 @@ class TestStaticAndClassMethodSkills:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -1654,7 +1654,7 @@ class TestStaticAndClassMethodSkills:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer()),
+            handler(AnyLLMConfigurer()),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -2282,7 +2282,7 @@ def test_primes_decode_int():
     with (
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
-        handler(LiteLLMConfigurer()),
+        handler(AnyLLMConfigurer()),
         handler(HistoryBuilder()),
         handler(mock),
     ):
@@ -2571,7 +2571,7 @@ class TestAutoAgentify:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(mock),
         ):

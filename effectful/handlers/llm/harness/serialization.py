@@ -17,20 +17,17 @@ import string
 import textwrap
 import typing
 
-import litellm
 import pydantic
 import typing_extensions
-from litellm import (
-    ChatCompletionImageObject,
-    ChatCompletionMessageToolCall,
-    ChatCompletionTextObject,
-    ChatCompletionToolParam,
-    OpenAIMessageContentListBlock,
-)
-from openai.lib._pydantic import _ensure_strict_json_schema
+from openai.lib._pydantic import _ensure_strict_json_schema, to_strict_json_schema
 from openai.types.chat import (
-    ChatCompletionMessageToolCall as OpenAIChatCompletionMessageToolCall,
+    ChatCompletionContentPartImageParam,
+    ChatCompletionContentPartInputAudioParam,
+    ChatCompletionContentPartTextParam,
+    ChatCompletionFunctionToolParam,
+    ChatCompletionMessageToolCall,
 )
+from openai.types.chat.chat_completion_content_part_param import File
 from PIL import Image
 
 from effectful.handlers.llm.types import Encodable, Tool
@@ -51,9 +48,28 @@ _IS_FINAL_KEY: typing.Literal["$IS_FINAL"] = "$IS_FINAL"
 _TYPE_CHECK_ANCHOR_KEY: typing.Literal["$TYPE_CHECK_ANCHOR"] = "$TYPE_CHECK_ANCHOR"
 
 
+class CacheControl(typing_extensions.TypedDict):
+    """A prompt-caching breakpoint, in the Chat Completions convention."""
+
+    type: typing.Literal["ephemeral"]
+
+
+class TextBlock(ChatCompletionContentPartTextParam, total=False):
+    """A text content part, which may carry a prompt-caching breakpoint."""
+
+    cache_control: CacheControl
+
+
+type ContentBlock = (
+    TextBlock
+    | ChatCompletionContentPartImageParam
+    | ChatCompletionContentPartInputAudioParam
+    | File
+)
+
 CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
     literal
-    for member in typing.get_args(OpenAIMessageContentListBlock)
+    for member in typing.get_args(ContentBlock.__value__)
     for literal in typing.get_args(typing.get_type_hints(member).get("type", str))
     if isinstance(literal, str)
 )
@@ -62,7 +78,7 @@ CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
 @pydantic.validate_call(validate_return=True)
 def to_content_blocks(
     value: typing.Any,
-) -> collections.abc.Sequence[OpenAIMessageContentListBlock]:
+) -> collections.abc.Sequence[ContentBlock]:
     """Convert an encoded JSON-compatible value into a flat list of content blocks.
 
     Walks the value tree, extracting content-block-shaped dicts (identified by
@@ -74,20 +90,20 @@ def to_content_blocks(
     ``linearize(to_content_blocks(v)) == json.dumps(v)``.
     """
     if isinstance(value, str):
-        return [ChatCompletionTextObject(type="text", text=value)]
+        return [TextBlock(type="text", text=value)]
 
     buf: list[str] = []
-    blocks: list[OpenAIMessageContentListBlock] = []
+    blocks: list[ContentBlock] = []
 
     def flush() -> None:
         if buf:
-            blocks.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            blocks.append(TextBlock(type="text", text="".join(buf)))
             buf.clear()
 
     def walk(v: typing.Any) -> None:
         if isinstance(v, dict) and v.get("type") in CONTENT_BLOCK_TYPES:
             flush()
-            blocks.append(typing.cast(OpenAIMessageContentListBlock, v))
+            blocks.append(typing.cast(ContentBlock, v))
         elif isinstance(v, dict):
             buf.append("{")
             for i, (k, val) in enumerate(v.items()):
@@ -114,20 +130,20 @@ def to_content_blocks(
 def format_as_content_blocks(
     template: str,
     env: collections.abc.Mapping[str, typing.Any],
-) -> list[OpenAIMessageContentListBlock]:
+) -> list[ContentBlock]:
     """
     Format a template applied to arguments into a list of content blocks.
     This is similar to str.format() but produces a list of content blocks
     instead of a single string, so that non-text content is preserved.
     """
     formatter = string.Formatter()
-    parts: list[OpenAIMessageContentListBlock] = []
+    parts: list[ContentBlock] = []
 
     buf: list[str] = []
 
     def flush_text() -> None:
         if buf:
-            parts.append(ChatCompletionTextObject(type="text", text="".join(buf)))
+            parts.append(TextBlock(type="text", text="".join(buf)))
             buf.clear()
 
     for literal, field_name, format_spec, conversion in formatter.parse(
@@ -141,7 +157,7 @@ def format_as_content_blocks(
 
         obj, _ = formatter.get_field(field_name, (), env)
         encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[nested_type(obj).value]  # type: ignore[misc]
+            Encodable[nested_type(obj).value]  # type: ignore[misc, arg-type, unused-ignore]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
@@ -164,9 +180,7 @@ def format_as_content_blocks(
 class PromptSection(typing.TypedDict):
     type: typing.Literal["prompt_section"]
     title: str
-    content: collections.abc.Sequence[
-        typing.Union[OpenAIMessageContentListBlock, "PromptSection"]
-    ]
+    content: collections.abc.Sequence[typing.Union[ContentBlock, "PromptSection"]]
 
 
 # Matches an ATX heading's leading ``#``s (1-6, followed by whitespace) at the
@@ -227,9 +241,7 @@ def _rebase_headings(md: str, top: int) -> str:
     return _shift_headings(md, top - min(levels))
 
 
-def _render_prompt_section(
-    prompt: PromptSection, level: int = 0
-) -> list[OpenAIMessageContentListBlock]:
+def _render_prompt_section(prompt: PromptSection, level: int = 0) -> list[ContentBlock]:
     """Flatten an assembled prompt into content blocks.
 
     Top-level sections are rendered as ``#`` headings and nest from there, with
@@ -246,9 +258,9 @@ def _render_prompt_section(
     document for a `SystemPromptDumper` or a trace and is not rendered, so the
     arguments themselves are the document's ``#`` headings.
     """
-    blocks: list[OpenAIMessageContentListBlock] = []
+    blocks: list[ContentBlock] = []
 
-    def emit(block: OpenAIMessageContentListBlock) -> None:
+    def emit(block: ContentBlock) -> None:
         """Add `block`, running text into the text block before it, if any."""
         if block["type"] == "text" and blocks and blocks[-1]["type"] == "text":
             joined = f"{blocks[-1]['text']}\n\n{block['text']}"
@@ -267,9 +279,9 @@ def _render_prompt_section(
                 typing.cast(str, item.get("text") or ""), level + 1
             ).strip()
             if text:
-                emit(ChatCompletionTextObject(type="text", text=text))
+                emit(TextBlock(type="text", text=text))
         else:
-            emit(typing.cast(OpenAIMessageContentListBlock, item))
+            emit(typing.cast(ContentBlock, item))
 
     if not level:
         return blocks
@@ -279,7 +291,7 @@ def _render_prompt_section(
     if blocks[0]["type"] == "text":
         joined = f"{heading}\n\n{blocks[0]['text']}"
         return [{**blocks[0], "text": joined}, *blocks[1:]]
-    return [ChatCompletionTextObject(type="text", text=heading), *blocks]
+    return [TextBlock(type="text", text=heading), *blocks]
 
 
 def _inline_refs(schema: dict) -> dict:
@@ -341,7 +353,7 @@ class _NameAndTool(typing.NamedTuple):
     one with its tool here, immediately before encoding; nothing else constructs
     or consumes a `_NameAndTool`.
 
-    This exists so that the `ChatCompletionToolParam` encoding below can hang off
+    This exists so that the `ChatCompletionFunctionToolParam` encoding below can hang off
     a type that actually *is* a tool advertisement, leaving `Tool` itself free to
     encode as what it is -- a callable.
     """
@@ -623,30 +635,33 @@ def _pydantic_type_operation(ty: type[Operation]):
     )
 
 
-def _validate_image(value: ChatCompletionImageObject | Image.Image) -> Image.Image:
+def _validate_image(
+    value: ChatCompletionContentPartImageParam | Image.Image,
+) -> Image.Image:
     if isinstance(value, Image.Image):
         return value
-    value = pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(value)
-    image_url: litellm.ChatCompletionImageUrlObject | str = value["image_url"]
-    url: str = image_url["url"] if isinstance(image_url, dict) else image_url
+    value = pydantic.TypeAdapter(ChatCompletionContentPartImageParam).validate_python(
+        value
+    )
+    url = value["image_url"]["url"]
     prefix, data = url.split(",")
     if not prefix.startswith("data:image/"):
         raise ValueError(f"expected base64 encoded image as data uri, received {url}")
     return Image.open(fp=io.BytesIO(base64.b64decode(data)))
 
 
-def _serialize_image(value: Image.Image) -> ChatCompletionImageObject:
+def _serialize_image(value: Image.Image) -> ChatCompletionContentPartImageParam:
     buf = io.BytesIO()
     value.save(buf, format="PNG")
     url = f"data:image/png;base64,{base64.b64encode(buf.getvalue()).decode('utf-8')}"
-    return pydantic.TypeAdapter(ChatCompletionImageObject).validate_python(
+    return pydantic.TypeAdapter(ChatCompletionContentPartImageParam).validate_python(
         {"type": "image_url", "image_url": {"detail": "auto", "url": url}}
     )
 
 
 @TypeToPydanticType.register(Image.Image)
 def _pydantic_type_image(ty: type[Image.Image]):
-    adapter = pydantic.TypeAdapter(ChatCompletionImageObject)
+    adapter = pydantic.TypeAdapter(ChatCompletionContentPartImageParam)
     return typing.Annotated[
         ty,
         pydantic.InstanceOf,
@@ -742,7 +757,7 @@ def _validate_name_and_tool(
     assert isinstance(info.context, collections.abc.Mapping), (
         "Tool decoding requires context"
     )
-    value = pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(value)
+    value = pydantic.TypeAdapter(ChatCompletionFunctionToolParam).validate_python(value)
     name = value["function"]["name"]
     try:
         return _NameAndTool(name, info.context[_NAME2TOOL_KEY][name])
@@ -779,7 +794,7 @@ def _tool_description(tool: Tool, *, param_schemas: bool = False) -> str:
     return description
 
 
-def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
+def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionFunctionToolParam:
     name, tool = value
     fields: dict[str, typing.Any] = {
         param_name: TypeToPydanticType().evaluate(param.annotation)
@@ -790,10 +805,8 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
         __config__={"extra": "forbid"},
         **fields,
     )
-    response_format = litellm.utils.type_to_response_format_param(sig_model)
-    assert response_format is not None
     description = _tool_description(tool)
-    return pydantic.TypeAdapter(ChatCompletionToolParam).validate_python(
+    return pydantic.TypeAdapter(ChatCompletionFunctionToolParam).validate_python(
         {
             "type": "function",
             # Advertise under the assigned name, which is the name decoding
@@ -801,7 +814,7 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
             "function": {
                 "name": name,
                 "description": description,
-                "parameters": response_format["json_schema"]["schema"],
+                "parameters": to_strict_json_schema(sig_model),
                 "strict": True,
             },
         }
@@ -810,14 +823,14 @@ def _serialize_name_and_tool(value: _NameAndTool) -> ChatCompletionToolParam:
 
 @TypeToPydanticType.register(_NameAndTool)
 def _pydantic_type_name_and_tool(ty: type[_NameAndTool]):
-    """Encode a named tool as the `ChatCompletionToolParam` advertising it.
+    """Encode a named tool as the `ChatCompletionFunctionToolParam` advertising it.
 
     Registered on the exact `_NameAndTool` class, which singledispatch prefers
     over any base: a `NamedTuple` has `tuple` in its MRO, so without this it
     would route to `_pydantic_type_tuple`'s NamedTuple branch, which would try
     to build a `TypeAdapter` for the `Tool` field and fail.
     """
-    schema = pydantic.TypeAdapter(ChatCompletionToolParam).json_schema()
+    schema = pydantic.TypeAdapter(ChatCompletionFunctionToolParam).json_schema()
     schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,
@@ -835,7 +848,7 @@ def _validate_tool_call(
     if isinstance(value, DecodedToolCall):
         return value
     call = (
-        OpenAIChatCompletionMessageToolCall.model_validate(value)
+        ChatCompletionMessageToolCall.model_validate(value)
         if isinstance(value, dict)
         else value
     )
@@ -851,7 +864,7 @@ def _validate_tool_call(
         )
         param = sig.parameters[name]
         arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[param.annotation]  # type: ignore[name-defined]
+            Encodable[param.annotation]  # type: ignore[name-defined, arg-type, unused-ignore]
         )
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
@@ -876,10 +889,10 @@ def _serialize_tool_call(
     else:
         for k, v in value.bound_args.arguments.items():
             v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[nested_type(v).value]  # type: ignore[misc]
+                Encodable[nested_type(v).value]  # type: ignore[misc, arg-type, unused-ignore]
             )
             encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
-    return OpenAIChatCompletionMessageToolCall.model_validate(
+    return ChatCompletionMessageToolCall.model_validate(
         {
             "type": "function",
             "id": value.id,
@@ -896,9 +909,7 @@ def _serialize_tool_call(
 
 @TypeToPydanticType.register(DecodedToolCall)
 def _pydantic_type_tool_call(ty: type[DecodedToolCall]):
-    # Use OpenAI's ChatCompletionMessageToolCall (has actual fields: id, function,
-    # type) rather than litellm's (empty dict with extra="allow").
-    schema = OpenAIChatCompletionMessageToolCall.model_json_schema()
+    schema = ChatCompletionMessageToolCall.model_json_schema()
     schema = _ensure_strict_json_schema(_inline_refs(schema), path=(), root={})
     return typing.Annotated[
         ty,

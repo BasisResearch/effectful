@@ -618,7 +618,7 @@ class Operation[**Q, V]:
         )
         return _restore_args(rule)
 
-    def __call__(self, /, *args: Q.args, **kwargs: Q.kwargs) -> V:
+    def __call__(self: "Operation[Q, V]", /, *args: Q.args, **kwargs: Q.kwargs) -> V:
         from effectful.internals.runtime import get_interpretation
         from effectful.ops.semantics import fwd, handler
 

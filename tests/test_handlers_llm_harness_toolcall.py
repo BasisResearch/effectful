@@ -37,7 +37,7 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     ImplicitToolExtractor,
     LexicalToolExtractor,
 )
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     _NameAndTool,
@@ -258,7 +258,7 @@ def _run_scripted(
         # json_only=False because a caller is present: unadvertisable tools
         # must survive discovery to be expression-wrapped.
         handler(extractor(json_only=False)),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(TYPE_CHECKER()),
         handler(BuiltinExecutor()),
@@ -653,7 +653,7 @@ def test_json_mode_skips_unadvertisable_tool(poly_mod, caplog):
     with (
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(mock),
         handler(_SpecCapture()),
@@ -905,7 +905,7 @@ def _run_generic(mod, skill_call, responses, *extra_handlers):
     mock = MockCompletionHandler(responses)
     stack = [
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         *(handler(h) for h in extra_handlers),
         handler(TYPE_CHECKER()),
@@ -1061,11 +1061,10 @@ def test_unbound_type_param_response_schema_is_strict_legal(generic_mod):
     # type-less schema node: OpenAI-style strict structured outputs reject
     # those with a `BadRequestError` no retry loop can fix. The fallback asks
     # for the value as a JSON-encoded string instead.
-    import litellm
-
     from effectful.handlers.llm.harness.hooks import (
         _BoxedResponse,
         _instantiate_return_type,
+        response_format_param,
     )
 
     box = generic_mod.Box(value=[generic_mod.Item(text="x")])
@@ -1075,7 +1074,7 @@ def test_unbound_type_param_response_schema_is_strict_legal(generic_mod):
     rf = pydantic.create_model(
         "BoxedResponse", value=Encodable[response_type], __base__=_BoxedResponse
     )
-    schema = litellm.utils.type_to_response_format_param(rf)["json_schema"]["schema"]
+    schema = response_format_param(rf)["json_schema"]["schema"]
 
     def no_typeless(node):
         # The failure shapes strict mode rejects: `{}` (e.g. JsonValue's $def)
@@ -1208,7 +1207,7 @@ def test_live_polymorphic_tool_call(live_poly_mod, caller):
         handler(AgentLoop()),
         handler(caller()),
         handler(LexicalToolExtractor(json_only=False)),
-        handler(LiteLLMConfigurer(model=EFFECTFUL_LLM_MODEL)),
+        handler(AnyLLMConfigurer(model=EFFECTFUL_LLM_MODEL)),
         handler(HistoryBuilder()),
         handler(TYPE_CHECKER()),
         handler(BuiltinExecutor()),
@@ -1504,7 +1503,7 @@ def test_caller_without_extractor_offers_no_lexical_tools(poly_mod):
         handler(_Capture()),
         handler(AgentLoop()),
         handler(MixedToolCaller()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(mock),
     ):

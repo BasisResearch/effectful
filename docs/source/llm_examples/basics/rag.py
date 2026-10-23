@@ -11,10 +11,11 @@ Demonstrates:
 import argparse
 import dataclasses
 
-import litellm
+import any_llm
 import numpy as np
 
 from effectful.handlers.llm import Skill, Tool
+from effectful.handlers.llm.harness.provision.any_llm import any_llm_model
 
 # ---------------------------------------------------------------------------
 # Vector index
@@ -30,9 +31,9 @@ class VectorIndex:
     embeddings: list[np.ndarray] = dataclasses.field(default_factory=list)
 
     def get_embedding(self, text: str) -> np.ndarray:
-        """Get an embedding vector for the given text using litellm."""
-        response = litellm.embedding(model=self.model, input=text)
-        return np.array(response.data[0]["embedding"], dtype=np.float32)
+        """Get an embedding vector for the given text."""
+        response = any_llm.embedding(model=any_llm_model(self.model), inputs=text)
+        return np.array(response.data[0].embedding, dtype=np.float32)
 
     def add(self, text: str) -> None:
         """Add a text chunk to the index."""
