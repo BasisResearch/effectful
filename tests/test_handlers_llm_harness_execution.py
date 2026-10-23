@@ -46,7 +46,7 @@ from effectful.handlers.llm.harness.validation.hooks import run_doctests, type_c
 from effectful.handlers.llm.harness.validation.mypy import MypyTypeChecker
 from effectful.handlers.llm.harness.validation.ty import TyTypeChecker
 from effectful.handlers.llm.types import Agent, Encodable, Skill
-from effectful.ops.semantics import handler
+from effectful.ops.semantics import fwd, handler
 
 from .conftest import (
     MockCompletionHandler,
@@ -818,12 +818,29 @@ def test_repl_runsource_routes_through_ops():
     """`runsource` compiles through the `parse`/`compile` ops (so it needs an
     installed provider), keeping it self-consistent with `runcode`/`exec_code`
     rather than falling back to the native single-mode compiler."""
+    # Check the compiler directly: Python 3.14.9+ runsource catches all
+    # compilation Exceptions and prints them, rather than propagating them.
     with pytest.raises(NotImplementedError):
-        ReplSession({}).runsource("x = 1")  # no provider -> the parse op raises
-    with handler(TYPE_CHECKER()), handler(BuiltinExecutor()):
+        ReplSession({}).compile("x = 1")  # no provider -> the parse op raises
+
+    calls = []
+
+    def record(op):
+        def impl(*args, **kwargs):
+            calls.append(op)
+            return fwd()
+
+        return impl
+
+    with (
+        handler(TYPE_CHECKER()),
+        handler(BuiltinExecutor()),
+        handler({op: record(op) for op in (parse_op, compile_op, exec_op)}),
+    ):
         session = ReplSession({})
         assert session.runsource("kept = 7") is False  # complete: compiled + ran
         assert session.locals["kept"] == 7
+        assert calls == [parse_op, compile_op, exec_op]
 
 
 # ----------------------------------------------------------------------------

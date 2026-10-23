@@ -171,8 +171,9 @@ def test_tracer_traces_skill_completion_and_tool(langfuse_client):
     (tool,) = grouped["tool"]
     assert tool.name == add_numbers.__name__
     assert json.loads(attr(tool, "input")) == {"a": 1, "b": 2}
-    assert attr(tool, "metadata.tool_call_id") == "call_1"
-    assert attr(tool, "metadata.is_final") is False
+    # v4 stores primitive metadata directly; v5 JSON-encodes every value.
+    assert attr(tool, "metadata.tool_call_id") in ("call_1", json.dumps("call_1"))
+    assert attr(tool, "metadata.is_final") in (False, json.dumps(False))
 
     first, second = grouped["generation"]
     assert [g.name for g in (first, second)] == ["completion", "completion"]

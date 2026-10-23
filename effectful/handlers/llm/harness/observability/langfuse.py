@@ -119,7 +119,7 @@ class LangfuseTracer(ObjectInterpretation):
         bound.apply_defaults()
         agent_input = {
             name: pydantic.TypeAdapter(
-                Encodable[nested_type(value).value]  # type: ignore[misc]
+                Encodable[nested_type(value).value]  # type: ignore[misc, arg-type]
             ).dump_python(value, mode="json", context={})
             for name, value in bound.arguments.items()
         }
@@ -129,7 +129,7 @@ class LangfuseTracer(ObjectInterpretation):
             result = fwd()
             obs.update(
                 output=pydantic.TypeAdapter(
-                    Encodable[nested_type(result).value]  # type: ignore[misc]
+                    Encodable[nested_type(result).value]  # type: ignore[misc, arg-type]
                 ).dump_python(result, mode="json", context={})
             )
             return result
