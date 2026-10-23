@@ -23,6 +23,9 @@ from effectful.ops.syntax import (
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
+class JaxOperation[**P, T](Operation[P, T]): ...
+
+
 def is_eager_array(x):
     return isinstance(x, jax.Array) or (
         isinstance(x, Term)
@@ -77,13 +80,29 @@ def _partial_eval(t: Expr[jax.Array]) -> Expr[jax.Array]:
     return result
 
 
+def _call_jax(jax_fn, /, *args, **kwargs):
+    from ._callables import wrap_arguments
+    from ._custom_array import dense_arguments
+
+    args, kwargs = dense_arguments(args, kwargs)
+    args, kwargs = wrap_arguments(args, kwargs)
+    return jax_fn(*args, **kwargs)
+
+
 @functools.cache
 def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
     if getattr(jax_fn, "__name__", None) == "__getitem__":
         return jax_getitem
 
-    @defop
+    @JaxOperation.define
     def _jax_op(*args, **kwargs) -> jax.Array:
+        from ._custom_array import is_custom_array
+
+        if any(
+            is_custom_array(x)
+            for x in jax.tree.leaves((args, kwargs), is_leaf=is_custom_array)
+        ):
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         tm = defdata(_jax_op, *args, **kwargs)
         sized_fvs = sizesof(tm)
 
@@ -101,11 +120,12 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             # which partial_eval handles.
             return typing.cast(jax.Array, _partial_eval(tm))
         elif not any(
-            jax.tree.flatten(
-                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
-            )[0]
+            isinstance(x, Term)
+            for x in jax.tree.leaves(
+                (args, kwargs), is_leaf=lambda x: isinstance(x, Term)
+            )
         ):
-            return typing.cast(jax.Array, jax_fn(*args, **kwargs))
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:
             raise NotHandled
 
@@ -120,11 +140,12 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
     @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
         if not any(
-            jax.tree.flatten(
-                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
-            )[0]
+            isinstance(x, Term)
+            for x in jax.tree.leaves(
+                (args, kwargs), is_leaf=lambda x: isinstance(x, Term)
+            )
         ):
-            return typing.cast(jax.Array, jax_fn(*args, **kwargs))
+            return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:
             raise NotHandled
 
@@ -209,50 +230,6 @@ def unbind_dims[T, A, B](
     if jax.tree_util.treedef_is_leaf(jax.tree.structure(value)):
         return __dispatch(typeof(value))(value, *names)
     return jax.tree.map(lambda v: unbind_dims(v, *names), value)
-
-
-def jit(f, *args, **kwargs):
-    f_noindex, f_reindex = _indexed_func_wrapper(f, jax_getitem, sizesof)
-    f_noindex_jitted = jax.jit(f_noindex, *args, **kwargs)
-    return lambda *args, **kwargs: f_reindex(f_noindex_jitted(*args, **kwargs))
-
-
-def _indexed_func_wrapper[**P, S, T](
-    func: Callable[P, T], getitem, sizesof
-) -> tuple[Callable[P, S], Callable[[S], T]]:
-    # index expressions for the result of the function
-    indexes = None
-
-    # hide index lists from jax.tree.mapping
-    class Indexes:
-        def __init__(self, sizes):
-            self.sizes = sizes
-            self.indexes = list(sizes.keys())
-
-    # strip named indexes from the result of the function and store them
-    def deindexed(*args, **kwargs):
-        nonlocal indexes
-
-        def deindex_tensor(t, i):
-            t_ = bind_dims(t, *i.sizes.keys())
-            assert all(t_.shape[j] == i.sizes[v] for j, v in enumerate(i.sizes))
-            return t_
-
-        ret = func(*args, **kwargs)
-        indexes = jax.tree.map(lambda t: Indexes(sizesof(t)), ret)
-        tensors = jax.tree.map(lambda t, i: deindex_tensor(t, i), ret, indexes)
-        return tensors
-
-    # reapply the stored indexes to a result
-    def reindex(ret, starting_dim=0):
-        def index_expr(i):
-            return (slice(None),) * (starting_dim) + tuple(x() for x in i.indexes)
-
-        indexed_ret = jax.tree.map(lambda t, i: getitem(t, index_expr(i)), ret, indexes)
-
-        return indexed_ret
-
-    return deindexed, reindex
 
 
 @syntactic_eq.register
