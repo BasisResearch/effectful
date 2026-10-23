@@ -120,9 +120,10 @@ def _register_jax_op[**P, T](jax_fn: Callable[P, T]):
             # which partial_eval handles.
             return typing.cast(jax.Array, _partial_eval(tm))
         elif not any(
-            jax.tree.flatten(
-                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
-            )[0]
+            isinstance(x, Term)
+            for x in jax.tree.leaves(
+                (args, kwargs), is_leaf=lambda x: isinstance(x, Term)
+            )
         ):
             return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:
@@ -139,9 +140,10 @@ def _register_jax_op_no_partial_eval[**P, T](jax_fn: Callable[P, T]):
     @defop
     def _jax_op(*args, **kwargs) -> jax.Array:
         if not any(
-            jax.tree.flatten(
-                jax.tree.map(lambda x: isinstance(x, Term), (args, kwargs))
-            )[0]
+            isinstance(x, Term)
+            for x in jax.tree.leaves(
+                (args, kwargs), is_leaf=lambda x: isinstance(x, Term)
+            )
         ):
             return typing.cast(jax.Array, _call_jax(jax_fn, *args, **kwargs))
         else:

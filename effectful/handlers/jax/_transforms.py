@@ -27,8 +27,11 @@ class _NamedResult:
 
 
 def _pack_named(value):
+    from ._custom_array import is_custom_array
     from ._handlers import bind_dims, sizesof
 
+    if is_custom_array(value):
+        return value
     if isinstance(value, Term):
         names = tuple(sizesof(value))
         if names:

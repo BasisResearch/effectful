@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import jax
+import numpy as np
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
@@ -617,7 +618,14 @@ class ArrayMethods:
         return _array_view(self, dtype=dtype, type=type)
 
 
+@jax.tree_util.register_pytree_node_class
 class _ArrayTerm(ArrayMethods, Term[jax.Array]):
+    """Array expression with dynamic buffers and static operation/layout metadata.
+
+    Numerical integer operands should be arrays; Python integers can describe
+    static dimensions/axes. Floating operands remain dynamic.
+    """
+
     def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
         self._op = op
         self._args = args
@@ -634,6 +642,37 @@ class _ArrayTerm(ArrayMethods, Term[jax.Array]):
     @property
     def kwargs(self) -> dict:
         return self._kwargs
+
+    def tree_flatten(self):
+        leaves, tree = jax.tree_util.tree_flatten((self.args, self.kwargs))
+        dynamic = tuple(
+            isinstance(
+                x,
+                (
+                    jax.Array,
+                    jax._src.core.Tracer,
+                    jax.ShapeDtypeStruct,
+                    np.ndarray,
+                    float,
+                    complex,
+                    np.inexact,
+                ),
+            )
+            for x in leaves
+        )
+        buffers = tuple(x for x, flag in zip(leaves, dynamic, strict=True) if flag)
+        constants = tuple(
+            x for x, flag in zip(leaves, dynamic, strict=True) if not flag
+        )
+        return buffers, (self.op, tree, dynamic, constants)
+
+    @classmethod
+    def tree_unflatten(cls, metadata, buffers):
+        op, tree, dynamic, constants = metadata
+        buffers, constants = iter(buffers), iter(constants)
+        leaves = [next(buffers) if flag else next(constants) for flag in dynamic]
+        args, kwargs = jax.tree_util.tree_unflatten(tree, leaves)
+        return cls(op, *args, **kwargs)
 
     def __iter__(self):
         raise TypeError("A free array is not iterable.")

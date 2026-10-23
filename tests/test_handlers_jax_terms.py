@@ -13,8 +13,31 @@ import effectful.handlers.jax.numpy as jnp
 from effectful.handlers import jax as ejax
 from effectful.handlers.jax import ArrayIndex, ArrayMethods, jax_getitem
 from effectful.ops.semantics import evaluate, fwd, handler
-from effectful.ops.syntax import defop
+from effectful.ops.syntax import defdata, defop
 from effectful.ops.types import Operation, Term
+
+
+def test_array_term_pytree_keeps_operands_dynamic_and_layout_static():
+    def expression(data, scale):
+        return defdata(
+            jnp.add,
+            defdata(jnp.multiply, data, scale),
+            defdata(jnp.identity, 2, dtype=np.dtype("float32")),
+        )
+
+    first = expression(jax.numpy.ones((2, 2)), jax.numpy.array(2.0))
+    second = expression(jax.numpy.ones((2, 2)) * 3, jax.numpy.array(4.0))
+    leaves, tree = jax.tree_util.tree_flatten(first)
+    assert len(leaves) == 2
+    assert tree == jax.tree_util.tree_structure(second)
+    rebuilt = jax.tree_util.tree_unflatten(tree, leaves)
+    assert isinstance(rebuilt, Term) and rebuilt.op is jnp.add
+    assert rebuilt.args[1].op is jnp.identity
+    assert rebuilt.args[1].args == (2,)
+    run = jax.jit(lambda value: value.args[0].args[0] * value.args[0].args[1])
+    np.testing.assert_array_equal(run(first), np.ones((2, 2)) * 2)
+    np.testing.assert_array_equal(run(second), np.ones((2, 2)) * 12)
+    assert run._cache_size() == 1
 
 
 @jax.tree_util.register_dataclass
