@@ -185,13 +185,21 @@ _native_custom_jvp = jax.custom_jvp
 class custom_jvp(_native_custom_jvp):
     """A native custom JVP whose rule can be selected by an interpretation.
 
-    Handle ``custom_jvp.jvp`` to replace a decorated function's JVP.
+    Handle ``custom_jvp.fun`` to select its primal callable and
+    ``custom_jvp.jvp`` to replace its JVP. Selected primal and rule outputs must
+    have compatible pytrees, including under warmed JIT.
     The handler receives the decorated instance, including its original
     ``fun`` and ``nondiff_argnums``. Forwarding retrieves the registered rule.
     Rule signatures, symbolic zeros, and pytree contracts remain JAX's.
     """
 
+    _fun = None
     _jvp = None
+
+    def _set_fun(self, fun):
+        self._fun = fun
+
+    fun = defop(property(lambda self: self._fun, _set_fun), name="fun")
 
     def _set_jvp(self, rule):
         self._jvp = rule
@@ -214,12 +222,21 @@ _native_custom_vjp = jax.custom_vjp
 
 
 class custom_vjp(_native_custom_vjp):
-    """A native custom VJP with interpretation-selected forward/backward rules.
+    """A native custom VJP with interpretation-selected primal/derivative rules.
 
-    Handle ``custom_vjp.fwd`` and ``custom_vjp.bwd`` to replace the rules.
+    Handle ``custom_vjp.fun`` to select its primal callable and
+    ``custom_vjp.fwd``/``custom_vjp.bwd`` to replace the rules. Selected primal
+    and forward-rule outputs must have compatible pytrees under warmed JIT.
     Each handler receives the decorated instance; forwarding retrieves its
     registered rule. Residuals and cotangents retain JAX's pytree contracts.
     """
+
+    _fun = None
+
+    def _set_fun(self, fun):
+        self._fun = fun
+
+    fun = defop(property(lambda self: self._fun, _set_fun), name="fun")
 
     def _set_fwd(self, rule):
         self._fwd = rule

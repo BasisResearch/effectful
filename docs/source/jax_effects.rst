@@ -123,6 +123,13 @@ Handler implementations can define representation-aware ``custom_jvp`` or
 ``custom_vjp`` rules on registered pytrees. Compatible sparse primal/tangent
 outputs remain sparse. Custom derivative boundaries are not blanket-densified.
 
+``custom_jvp.fun`` and ``custom_vjp.fun`` select the primal callable;
+``custom_jvp.jvp`` and ``custom_vjp.fwd``/``bwd`` select registered rules.
+Handlers receive the decorated instance, and ``fwd()`` retrieves its stored
+callable. Selection occurs at invocation without mutating that instance. When
+changing layouts, select compatible primal and derivative output pytrees as well:
+JAX checks their agreement when differentiating a warmed JIT.
+
 Arbitrary logical derivative rules are not adapted to sparse storage. A rule
 that returns an incompatible tangent/cotangent layout fails JAX's normal
 validation. Consumers must supply representation-aware rules or deliberately

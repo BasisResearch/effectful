@@ -597,6 +597,59 @@ def test_interception_custom_vjp_call_outer_grad(jit):
         np.testing.assert_allclose(gradient, 6)
 
 
+@pytest.mark.parametrize("kind", ["jvp", "vjp"])
+def test_custom_derivative_primal_selection_matches_warmed_rule_layout(kind):
+    constructor = ejax.custom_jvp if kind == "jvp" else ejax.custom_vjp
+    custom = constructor(lambda x: enp.multiply(x, x))
+    if kind == "jvp":
+        custom.defjvp(lambda ps, ts: (enp.multiply(ps[0], ps[0]), 7 * ps[0] * ts[0]))
+    else:
+        custom.defvjp(lambda x: (enp.multiply(x, x), x), lambda x, g: (7 * x * g,))
+    run = ejax.jit(custom)
+    np.testing.assert_allclose(run(jnp.array(2.0)), 4)
+
+    def duplicate(value):
+        return enp.stack((value, value))
+
+    def primal(instance):
+        original = fwd()
+        return lambda *args: duplicate(original(*args))
+
+    def jvp_rule(instance):
+        original = fwd()
+
+        def adapted(*args):
+            p, t = original(*args)
+            return duplicate(p), duplicate(t)
+
+        return adapted
+
+    def forward_rule(instance):
+        original = fwd()
+
+        def adapted(*args):
+            p, residual = original(*args)
+            return duplicate(p), residual
+
+        return adapted
+
+    def backward_rule(instance):
+        original = fwd()
+        return lambda residual, g: original(residual, enp.sum(g))
+
+    rules = {constructor.fun: primal}
+    if kind == "jvp":
+        rules[constructor.jvp] = jvp_rule
+    else:
+        rules.update({constructor.fwd: forward_rule, constructor.bwd: backward_rule})
+    with handler(rules):
+        np.testing.assert_allclose(run(jnp.array(2.0)), [4, 4])
+        np.testing.assert_allclose(
+            ejax.grad(lambda x: enp.sum(run(x)))(jnp.array(2.0)), 28
+        )
+    np.testing.assert_allclose(run(jnp.array(2.0)), 4)
+
+
 def test_jax_jit_1():
     @jit
     def f(x, y):
