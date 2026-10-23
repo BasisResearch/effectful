@@ -38,7 +38,7 @@ step that never finished. (Agent *history* is a separate matter -- give an
 
 `effectful`'s handler stack is synchronous, top to bottom: `call_agent`,
 `fwd`, and everything in `effectful.handlers.llm.harness` down to
-`litellm.completion` are blocking calls. Two consequences shape this module.
+`any_llm.completion` are blocking calls. Two consequences shape this module.
 
 *A handler's body must run synchronously -- but it may return an awaitable.*
 `coproduct` wraps every handler in a synchronous continuation (see

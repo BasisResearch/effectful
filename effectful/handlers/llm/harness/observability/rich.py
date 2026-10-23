@@ -8,7 +8,7 @@ import threading
 import time
 import typing
 
-import litellm
+import any_llm
 import pydantic_core
 import rich.console
 import rich.live
@@ -19,9 +19,13 @@ import rich.spinner
 import rich.styled
 import rich.syntax
 import rich.text
+import tiktoken
+from any_llm.types.completion import ChatCompletion, ChatCompletionChunk, ChoiceDelta
+from any_llm.utils.streaming import accumulate_chunks
 
 from effectful.handlers.llm.harness.hooks import (
     Message,
+    assistant_message,
     completion,
 )
 from effectful.handlers.llm.harness.observability.dump import _message_text
@@ -49,9 +53,7 @@ class _PartialAssistant(typing.TypedDict):
     tool_calls: dict[int, _PartialToolCall]
 
 
-def _accumulate(
-    partial: _PartialAssistant, delta: litellm.types.utils.Delta | None
-) -> None:
+def _accumulate(partial: _PartialAssistant, delta: ChoiceDelta | None) -> None:
     """Fold one streaming ``delta`` into the in-progress assistant ``partial``.
 
     Concatenates ``content`` and ``reasoning_content``, and accumulates each
@@ -61,8 +63,8 @@ def _accumulate(
     if delta is None:
         return
     partial["content"] += delta.content or ""
-    # `reasoning_content` is absent (not just None) on deltas that carry none.
-    partial["reasoning_content"] += getattr(delta, "reasoning_content", None) or ""
+    if delta.reasoning is not None:
+        partial["reasoning_content"] += delta.reasoning.content
     for tc in delta.tool_calls or []:
         function = getattr(tc, "function", None)
         slot = partial["tool_calls"].setdefault(tc.index, {"name": "", "args": ""})
@@ -527,7 +529,7 @@ def _partial_panel(
 class _PrefillStatus:
     """Live "prefilling…" line shown until the first streamed chunk arrives.
 
-    litellm/provider APIs report no prompt-processing progress, so there is no
+    Provider APIs report no prompt-processing progress, so there is no
     true prefill percentage. Instead this shows the (locally counted) prompt
     size and a ticking elapsed timer, which is what a large prompt's
     time-to-first-token latency actually reflects.
@@ -555,20 +557,40 @@ class _PrefillStatus:
         return self._spinner
 
 
-# Transport failures a streamed read can hit that an unstreamed one would not:
-# the connection is held open across chunks, so it is exposed to anything that
-# disturbs the pool meanwhile. Deliberately narrow -- a refused request, a bad
-# model name or a rejected schema fails identically without streaming, and
-# re-issuing it would only pay for the same error twice.
-#
-# Each is listed on its own: litellm's exceptions inherit from *openai's*
-# hierarchy rather than from each other, so `litellm.Timeout` is not a
-# `litellm.APIConnectionError` and naming one does not cover the other.
-_STREAM_TRANSPORT_ERRORS = (
-    litellm.exceptions.MidStreamFallbackError,
-    litellm.exceptions.APIConnectionError,
-    litellm.exceptions.Timeout,
-)
+def _is_stream_transport_error(error: Exception) -> bool:
+    """Whether `error` is a transport failure a streamed read can hit that an
+    unstreamed one would not.
+
+    The connection is held open across chunks, so it is exposed to anything that
+    disturbs the pool meanwhile. Deliberately narrow -- a refused request, a bad
+    model name or a rejected schema fails identically without streaming, and
+    re-issuing it would only pay for the same error twice. any_llm reports a
+    failure that never got an HTTP status (a timeout, a dropped connection) as a
+    `ProviderError` with no ``status_code``.
+    """
+    return isinstance(error, any_llm.ProviderError) and error.status_code is None
+
+
+def _prompt_tokens(
+    model: str,
+    messages: collections.abc.Sequence[Message],
+    tools: collections.abc.Sequence[typing.Any] | None,
+) -> int:
+    """An estimate of the prompt's size in tokens, counting its text only.
+
+    Uses tiktoken's encoding for `model` where it knows one, and ``o200k_base``
+    otherwise -- the model is usually not yet in the request this handler sees.
+    """
+    try:
+        encoding = tiktoken.encoding_for_model(model.rsplit(":", 1)[-1])
+    except KeyError:
+        encoding = tiktoken.get_encoding("o200k_base")
+    texts = [json.dumps(tools)] if tools else []
+    for message in messages:
+        texts.append(_message_text(message.get("content")))
+        if message["role"] == "assistant":
+            texts += [c["function"]["arguments"] for c in message.get("tool_calls", [])]
+    return sum(len(encoding.encode(t, disallowed_special=())) for t in texts)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -577,7 +599,7 @@ class RichTerminalRenderer(ObjectInterpretation):
 
     Opt-in debugging handler: forces streaming so that reasoning, generation and
     tool-call arguments appear as they are produced, then reassembles a normal
-    ``ModelResponse`` via :func:`litellm.stream_chunk_builder` so the rest of the
+    ``ChatCompletion`` via any_llm's ``accumulate_chunks`` so the rest of the
     pipeline is unchanged.
 
     Each message is printed **once**, as a panel, in the order the conversation
@@ -646,7 +668,9 @@ class RichTerminalRenderer(ObjectInterpretation):
         if self._live_lock.acquire(blocking=False):
             try:
                 return self._completion_live(*args, **kwargs)
-            except _STREAM_TRANSPORT_ERRORS as e:
+            except Exception as e:
+                if not _is_stream_transport_error(e):
+                    raise
                 self.console.print(
                     rich.text.Text(
                         f"stream failed ({type(e).__name__}); retrying unstreamed",
@@ -662,14 +686,8 @@ class RichTerminalRenderer(ObjectInterpretation):
         unchanged -- so it is *not* forced onto the streaming path -- and print the
         finished turn as one panel once it lands."""
         response = fwd(*args, **kwargs)
-        if isinstance(response, litellm.types.utils.ModelResponse):
-            choice = response.choices[0]
-            if isinstance(choice, litellm.types.utils.Choices):
-                self.console.print(
-                    _message_panel(
-                        typing.cast(Message, choice.message.model_dump(mode="json"))
-                    )
-                )
+        if isinstance(response, ChatCompletion):
+            self.console.print(_message_panel(assistant_message(response)))
         return response
 
     def _completion_live(self, *args, **kwargs) -> typing.Any:
@@ -678,26 +696,23 @@ class RichTerminalRenderer(ObjectInterpretation):
             "stream": True,
             "stream_options": {"include_usage": True},
         }
-        stream: litellm.CustomStreamWrapper = fwd(*args, **kwargs)
+        stream: collections.abc.Iterator[ChatCompletionChunk] = fwd(*args, **kwargs)
 
         # The request already carries the full message history as `messages`.
         history: list[Message] = list(kwargs.get("messages") or [])
 
-        chunks: list[litellm.types.utils.ModelResponseStream] = []
+        chunks: list[ChatCompletionChunk] = []
         partial: _PartialAssistant = {
             "content": "",
             "reasoning_content": "",
             "tool_calls": {},
         }
 
-        # Count prompt tokens locally to size the prefill wait. `model` is injected
-        # downstream by LiteLLMConfigurer, so it may be absent here -- token_counter
-        # falls back to a default tokenizer, giving an approximate count.
+        # Count prompt tokens locally to size the prefill wait. tiktoken fetches
+        # its encodings on first use, so a count can fail offline.
         try:
-            prompt_tokens: int | None = litellm.token_counter(
-                model=kwargs.get("model", ""),
-                messages=history,
-                tools=kwargs.get("tools"),
+            prompt_tokens: int | None = _prompt_tokens(
+                kwargs.get("model", ""), history, kwargs.get("tools")
             )
         except Exception:
             prompt_tokens = None
@@ -743,7 +758,7 @@ class RichTerminalRenderer(ObjectInterpretation):
                     else _partial_panel(partial, ttft=ttft, height=height)
                 )
 
-        response = litellm.stream_chunk_builder(chunks, messages=kwargs.get("messages"))
+        response = accumulate_chunks(chunks)
         self._print_settled(response, partial, ttft)
         return response
 
@@ -785,10 +800,8 @@ class RichTerminalRenderer(ObjectInterpretation):
         unexpected, which is still worth showing.
         """
         message: Message | None = None
-        if isinstance(response, litellm.types.utils.ModelResponse):
-            choice = response.choices[0]
-            if isinstance(choice, litellm.types.utils.Choices):
-                message = typing.cast(Message, choice.message.model_dump(mode="json"))
+        if isinstance(response, ChatCompletion) and response.choices:
+            message = assistant_message(response)
         if message is None:
             self.console.print(_partial_panel(partial, ttft=ttft, streaming=False))
             return

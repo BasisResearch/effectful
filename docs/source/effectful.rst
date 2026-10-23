@@ -89,7 +89,7 @@ Provision
    :members:
    :undoc-members:
 
-.. automodule:: effectful.handlers.llm.harness.provision.litellm
+.. automodule:: effectful.handlers.llm.harness.provision.any_llm
    :members:
    :undoc-members:
 

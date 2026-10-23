@@ -26,7 +26,7 @@ back to the model as a tool message and the loop continues so it can revise::
 
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="gpt-5-mini")),
+        handler(AnyLLMConfigurer(model="gpt-5-mini")),
         handler(HistoryBuilder()),
         handler(FinalBodySynthesizer()),
         handler(TenacityRetryer()),

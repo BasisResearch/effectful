@@ -14,13 +14,22 @@ import json
 import traceback
 import typing
 
-import litellm
+import any_llm
 import pydantic
+import typing_extensions
+from any_llm.types.completion import (
+    ChatCompletion,
+    ChatCompletionMessageFunctionToolCall,
+)
+from openai.lib._pydantic import to_strict_json_schema
+from openai.types.chat import ChatCompletionMessageToolCallParam
+from openai.types.shared_params import ResponseFormatJSONSchema
 
 from effectful.handlers.llm.harness.serialization import (
     _IS_FINAL_KEY,
     _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
+    ContentBlock,
     DecodedToolCall,
     PromptSection,
     _advertised_names,
@@ -46,12 +55,64 @@ from effectful.ops.semantics import fwd
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import Operation
 
-Message = (
-    litellm.ChatCompletionAssistantMessage
-    | litellm.ChatCompletionToolMessage
-    | litellm.ChatCompletionSystemMessage
-    | litellm.ChatCompletionUserMessage
-)
+
+class SystemMessage(typing_extensions.TypedDict):
+    role: typing.Literal["system"]
+    content: str | list[ContentBlock]
+
+
+class UserMessage(typing_extensions.TypedDict):
+    role: typing.Literal["user"]
+    content: str | list[ContentBlock]
+
+
+class ToolMessage(typing_extensions.TypedDict):
+    role: typing.Literal["tool"]
+    content: str | list[ContentBlock]
+    tool_call_id: str
+
+
+class AssistantMessage(typing_extensions.TypedDict, total=False):
+    """A model reply as kept in the history.
+
+    ``extra_content`` holds provider side-channel data any_llm needs replayed,
+    such as Anthropic thinking signatures.
+    """
+
+    role: typing_extensions.Required[typing.Literal["assistant"]]
+    content: str | None
+    tool_calls: list[ChatCompletionMessageToolCallParam]
+    reasoning_content: str
+    extra_content: dict[str, typing.Any]
+
+
+Message = AssistantMessage | ToolMessage | SystemMessage | UserMessage
+
+
+def assistant_message(response: ChatCompletion) -> AssistantMessage:
+    """The first choice of `response` as it is kept in the history."""
+    choice = response.choices[0].message
+    data = choice.model_dump(mode="json", exclude_none=True)
+    message = AssistantMessage(role="assistant", content=data.get("content"))
+    if tool_calls := data.get("tool_calls"):
+        message["tool_calls"] = tool_calls
+    if choice.reasoning is not None and choice.reasoning.content:
+        message["reasoning_content"] = choice.reasoning.content
+    if extra_content := data.get("extra_content"):
+        message["extra_content"] = extra_content
+    return message
+
+
+def response_format_param(model: type[pydantic.BaseModel]) -> ResponseFormatJSONSchema:
+    """The strict ``json_schema`` response format constraining a reply to `model`."""
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": model.__name__,
+            "schema": to_strict_json_schema(model),
+            "strict": True,
+        },
+    }
 
 
 class DecodingError[E: Exception](abc.ABC, Exception):
@@ -71,14 +132,12 @@ class ToolCallDecodingError[E: Exception](DecodingError[E]):
 
     original_error: E
     raw_message: Message
-    raw_tool_call: litellm.ChatCompletionMessageToolCall
+    raw_tool_call: ChatCompletionMessageFunctionToolCall
 
     def __str__(self) -> str:
         return f"Error decoding tool call '{self.raw_tool_call.function.name}': {self.original_error}. Please provide a valid response and try again."
 
-    def to_feedback_message(
-        self, *, include_traceback: bool = True
-    ) -> litellm.ChatCompletionToolMessage:
+    def to_feedback_message(self, *, include_traceback: bool = True) -> ToolMessage:
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
@@ -100,9 +159,7 @@ class ResultDecodingError[E: Exception](DecodingError[E]):
     def __str__(self) -> str:
         return f"Error decoding response: {self.original_error}. Please provide a valid response and try again."
 
-    def to_feedback_message(
-        self, *, include_traceback: bool = True
-    ) -> litellm.ChatCompletionUserMessage:
+    def to_feedback_message(self, *, include_traceback: bool = True) -> UserMessage:
         """Report the failure as a user message."""
         error_message = f"{self}"
         if include_traceback:
@@ -127,9 +184,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     def __str__(self) -> str:
         return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
-    def to_feedback_message(
-        self, *, include_traceback: bool = True
-    ) -> litellm.ChatCompletionToolMessage:
+    def to_feedback_message(self, *, include_traceback: bool = True) -> ToolMessage:
         error_message = f"{self}"
         if include_traceback:
             tb = traceback.format_exc()
@@ -142,19 +197,29 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
 
 
 @Operation.define
-@functools.wraps(litellm.completion, assigned=(), updated=())
+@functools.wraps(any_llm.completion, assigned=(), updated=())
 def completion(*args, **kwargs) -> typing.Any:
     """Low-level LLM request. Handlers may log/modify requests and delegate via fwd().
 
     This effect is emitted for model request/response rounds so handlers can
     observe/log requests.
 
+    A request OpenAI refuses on Chat Completions is sent to its Responses API
+    instead (see `needs_responses_api`).
     """
-    return litellm.completion(*args, **kwargs)
+    # Imported here: the provider module imports this one.
+    from effectful.handlers.llm.harness.provision.any_llm import (
+        completion_via_responses,
+        needs_responses_api,
+    )
+
+    if needs_responses_api(*args, **kwargs):
+        return completion_via_responses(*args, **kwargs)
+    return any_llm.completion(*args, **kwargs)
 
 
 type AssistantResult[T] = tuple[
-    litellm.ChatCompletionAssistantMessage,
+    AssistantMessage,
     typing.Sequence[DecodedToolCall],
     T | None,
 ]
@@ -227,34 +292,33 @@ def call_assistant[T](
 
     # The OpenAI API requires a wrapper object for non-object structured output types,
     # so we create one on the fly here. Using a Pydantic model offloads JSON schema
-    # generation and validation logic to litellm, and offers better error messages.
+    # generation and validation logic to pydantic, and offers better error messages.
     response_format: type[_BoxedResponse[T]] = pydantic.create_model(
         "BoxedResponse",
         value=Encodable[response_type],  # type: ignore[valid-type]
         __base__=_BoxedResponse,
     )
 
-    response: litellm.types.utils.ModelResponse = completion(
+    response: ChatCompletion = completion(
         messages=list(messages),
-        response_format=None if _answered_as_text(response_type) else response_format,
+        response_format=(
+            None
+            if _answered_as_text(response_type)
+            else response_format_param(response_format)
+        ),
         tools=tool_specs,
     )
-    choice = response.choices[0]
-    assert isinstance(choice, litellm.types.utils.Choices)
+    message = response.choices[0].message
+    raw_message = assistant_message(response)
 
-    message: litellm.Message = choice.message
-
-    raw_message = typing.cast(
-        litellm.ChatCompletionAssistantMessage, message.model_dump(mode="json")
-    )
-    assert raw_message["role"] == "assistant"
-
-    raw_tool_calls = message.get("tool_calls") or []
+    raw_tool_calls = message.tool_calls or []
     tool_calls: list[DecodedToolCall] = []
     encoding: pydantic.TypeAdapter[DecodedToolCall] = pydantic.TypeAdapter(
         Encodable[DecodedToolCall]
     )
     for raw_tool_call in raw_tool_calls:
+        # Only function tools are advertised, so only function calls come back.
+        assert isinstance(raw_tool_call, ChatCompletionMessageFunctionToolCall)
         try:
             tool_calls += [encoding.validate_python(raw_tool_call, context=env)]
         except Exception as e:
@@ -266,7 +330,7 @@ def call_assistant[T](
 
     result = None
     if not tool_calls:
-        serialized_result = message.get("content") or message.get("reasoning_content")
+        serialized_result = message.content or raw_message.get("reasoning_content")
         assert isinstance(serialized_result, str)
         try:
             # A text answer is the model's own prose, and anything else is JSON
@@ -286,9 +350,7 @@ def call_assistant[T](
     return (raw_message, tool_calls, result)
 
 
-type ToolResult[T] = tuple[
-    litellm.ChatCompletionToolMessage, T | ToolCallExecutionError, bool
-]
+type ToolResult[T] = tuple[ToolMessage, T | ToolCallExecutionError, bool]
 
 
 @Operation.define
@@ -324,16 +386,16 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
     )
-    message = litellm.ChatCompletionToolMessage(
+    message = ToolMessage(
         role="tool",
-        content=encoded_result,  # type: ignore
+        content=list(encoded_result),
         tool_call_id=tool_call.id,
     )
     return (message, result, False)
 
 
 @Operation.define
-def call_user(user_prompt: PromptSection) -> litellm.ChatCompletionUserMessage:
+def call_user(user_prompt: PromptSection) -> UserMessage:
     """
     Format a `Skill`'s prompt applied to arguments into a user message.
 
@@ -348,15 +410,13 @@ def call_user(user_prompt: PromptSection) -> litellm.ChatCompletionUserMessage:
         title=f"User Prompt: {user_prompt['title']}",
         content=[user_prompt],
     )
-    return litellm.ChatCompletionUserMessage(
-        role="user", content=list(_render_prompt_section(document))
-    )
+    return UserMessage(role="user", content=list(_render_prompt_section(document)))
 
 
 @Operation.define
 def call_system(
     harness_prompt: PromptSection, agent_prompt: PromptSection
-) -> litellm.ChatCompletionSystemMessage:
+) -> SystemMessage:
     """Assemble the system message from the two halves of the system prompt.
 
     `agent_prompt` describes the task: the caller (`AgentLoop.call_agent`)
@@ -378,9 +438,7 @@ def call_system(
         title=f"System Prompt: {agent_prompt['title']}",
         content=[harness_prompt, agent_prompt],
     )
-    return litellm.ChatCompletionSystemMessage(
-        role="system", content=list(_render_prompt_section(document))
-    )
+    return SystemMessage(role="system", content=list(_render_prompt_section(document)))
 
 
 def _instantiate_return_type(

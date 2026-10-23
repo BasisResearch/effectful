@@ -2,30 +2,35 @@ import ast
 import functools
 import os
 import pathlib
+import typing
 from collections.abc import Sequence
 
-import litellm
 import pytest
-from litellm.files.main import ModelResponse
+from any_llm import AnyLLM
+from any_llm.types.completion import ChatCompletion
 
 from effectful.handlers.llm.harness.hooks import Tool, completion
 from effectful.handlers.llm.harness.legibility.lexical import _tools_in_scope
+from effectful.handlers.llm.harness.provision.any_llm import any_llm_model
 from effectful.ops.syntax import ObjectInterpretation, implements
 
 EFFECTFUL_LLM_MODEL = os.environ.get("EFFECTFUL_LLM_MODEL", "gpt-4.1-mini")
 
-_HAS_LLM_API_KEY = litellm.validate_environment(model=EFFECTFUL_LLM_MODEL)[
-    "keys_in_environment"
-]
+_PROVIDER_METADATA = AnyLLM.get_provider_class(
+    AnyLLM.split_model_provider(any_llm_model(EFFECTFUL_LLM_MODEL))[0]
+).get_provider_metadata()
+
+_HAS_LLM_API_KEY = bool(os.environ.get(_PROVIDER_METADATA.env_key))
 
 requires_llm = pytest.mark.skipif(
     not _HAS_LLM_API_KEY,
     reason=f"No API key configured for model {EFFECTFUL_LLM_MODEL}",
 )
 
+# Provider-level: a provider that takes images may still serve a model that does not.
 requires_vision = pytest.mark.skipif(
-    not litellm.supports_vision(model=EFFECTFUL_LLM_MODEL),
-    reason=f"Model {EFFECTFUL_LLM_MODEL} does not support vision",
+    not _PROVIDER_METADATA.image,
+    reason=f"The provider of {EFFECTFUL_LLM_MODEL} does not support vision",
 )
 
 # ============================================================================
@@ -186,7 +191,7 @@ def skill_tools(skill, *handlers):
 class MockCompletionHandler(ObjectInterpretation):
     """Mock handler that returns pre-configured completion responses."""
 
-    def __init__(self, responses: list[ModelResponse]):
+    def __init__(self, responses: list[ChatCompletion]):
         self.responses = responses
         self.call_count = 0
         self.received_messages: list = []
@@ -199,12 +204,40 @@ class MockCompletionHandler(ObjectInterpretation):
         return response
 
 
+def chat_completion(
+    choices: Sequence[dict[str, typing.Any]],
+    id: str = "test",
+    model: str = "test-model",
+    usage: dict[str, int] | None = None,
+    **fields: typing.Any,
+) -> ChatCompletion:
+    """A `ChatCompletion` with the fields the tests never vary filled in.
+
+    Each choice's ``index`` and ``finish_reason`` default to its position and
+    ``"stop"``.
+    """
+    return ChatCompletion.model_validate(
+        {
+            "id": id,
+            "object": "chat.completion",
+            "created": 0,
+            "model": model,
+            "choices": [
+                {"index": i, "finish_reason": "stop", **choice}
+                for i, choice in enumerate(choices)
+            ],
+            "usage": usage,
+            **fields,
+        }
+    )
+
+
 def make_tool_call_response(
     tool_name: str | Sequence[tuple[str, str]],
     tool_args: str | None = None,
     tool_call_id: str = "call_1",
-) -> ModelResponse:
-    """Create a ModelResponse with one tool call, or several.
+) -> ChatCompletion:
+    """Create a ChatCompletion with one tool call, or several.
 
     The common case is one call: pass its name and JSON arguments. A turn that
     requests *several* is a shape the harness has rules about -- a finalizing
@@ -219,8 +252,7 @@ def make_tool_call_response(
         calls = [
             (f"call_{i}", name, args) for i, (name, args) in enumerate(tool_name, 1)
         ]
-    return ModelResponse(
-        id="test",
+    return chat_completion(
         choices=[
             {
                 "index": 0,
@@ -239,22 +271,20 @@ def make_tool_call_response(
                 "finish_reason": "tool_calls",
             }
         ],
-        model="test-model",
     )
 
 
 def make_text_response(
     content: str, usage: dict[str, int] | None = None
-) -> ModelResponse:
-    """Create a ModelResponse with text content.
+) -> ChatCompletion:
+    """Create a ChatCompletion with text content.
 
     ``usage`` populates the response's token counts. Real responses carry them
     and some handlers read them (`LangfuseTracer` reports them as
-    ``usage_details``), but litellm synthesizes a zero-filled ``usage`` when it
-    is omitted, so a test that asserts on them has to ask for them explicitly.
+    ``usage_details``), so a test that asserts on them has to ask for them
+    explicitly.
     """
-    return ModelResponse(
-        id="test",
+    return chat_completion(
         choices=[
             {
                 "index": 0,
@@ -262,8 +292,7 @@ def make_text_response(
                 "finish_reason": "stop",
             }
         ],
-        model="test-model",
-        **({"usage": usage} if usage is not None else {}),
+        usage=usage,
     )
 
 

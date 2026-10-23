@@ -149,11 +149,13 @@ def reachable_model() -> str:
     which look identical in the summary, because an example that reports its own
     per-item failures and carries on exits zero anyway, having reached nothing.
     """
-    import litellm
+    import any_llm
+
+    from effectful.handlers.llm.harness.provision.any_llm import any_llm_model
 
     try:
-        litellm.completion(
-            model=EFFECTFUL_LLM_MODEL,
+        any_llm.completion(
+            model=any_llm_model(EFFECTFUL_LLM_MODEL),
             messages=[{"role": "user", "content": "ping"}],
             max_tokens=1,
         )

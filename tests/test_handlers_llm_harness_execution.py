@@ -29,7 +29,7 @@ from effectful.handlers.llm.harness.execution.hooks import exec as exec_op
 from effectful.handlers.llm.harness.execution.hooks import parse as parse_op
 from effectful.handlers.llm.harness.execution.restricted import RestrictedPythonExecutor
 from effectful.handlers.llm.harness.hooks import AgentLoop
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.serialization import _TYPE_CHECK_ANCHOR_KEY
 from effectful.handlers.llm.harness.synthesis.function import (
     SynthesizedFunction,
@@ -1832,7 +1832,7 @@ def _compaction_stack(mock, *, retryer_last: bool = True):
     *as a value* instead (the other shape it must handle)."""
     stack = contextlib.ExitStack()
     stack.enter_context(handler(AgentLoop()))
-    stack.enter_context(handler(LiteLLMConfigurer(model="test")))
+    stack.enter_context(handler(AnyLLMConfigurer(model="test")))
     stack.enter_context(handler(HistoryBuilder()))
     stack.enter_context(handler(mock))
     stack.enter_context(handler(BuiltinExecutor()))

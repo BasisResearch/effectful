@@ -18,12 +18,13 @@ import json
 import re
 import threading
 
+import any_llm
 import langfuse
-import litellm
 import pydantic
 import pytest
 import rich.console
 import rich.text
+from any_llm.types.completion import ChatCompletionChunk
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -47,7 +48,7 @@ from effectful.handlers.llm.harness.observability.rich import (
     _render_content,
     _render_tool_call,
 )
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.snippet import (
     StatefulReplSynthesizer,
 )
@@ -146,7 +147,7 @@ def test_tracer_traces_skill_completion_and_tool(langfuse_client):
         handler(MockCompletionHandler(responses)),
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(LangfuseTracer(client=client)),
     ):
@@ -221,29 +222,35 @@ def test_tracer_records_response_format_metadata(langfuse_client):
 # ============================================================================
 
 
-def _delta_chunk(**delta):
-    """One streamed chunk carrying an assistant `Delta`."""
-    return litellm.types.utils.ModelResponseStream(
-        id="test",
-        model="test-model",
-        choices=[
-            litellm.types.utils.StreamingChoices(
-                index=0,
-                delta=litellm.types.utils.Delta(role="assistant", **delta),
-            )
-        ],
+def _delta_chunk(finish_reason=None, **delta):
+    """One streamed chunk carrying an assistant delta; the last chunk of a stream
+    carries its `finish_reason`."""
+    return ChatCompletionChunk.model_validate(
+        {
+            "id": "test",
+            "created": 0,
+            "model": "test-model",
+            "object": "chat.completion.chunk",
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"role": "assistant", **delta},
+                    "finish_reason": finish_reason,
+                }
+            ],
+        }
     )
 
 
 def _tool_call_delta(name, arguments):
     """One streamed tool-call fragment for the tool call at index 0."""
     return [
-        litellm.types.utils.ChatCompletionDeltaToolCall(
-            index=0,
-            id="call_1",
-            type="function",
-            function=litellm.types.utils.Function(name=name, arguments=arguments),
-        )
+        {
+            "index": 0,
+            "id": "call_1",
+            "type": "function",
+            "function": {"name": name, "arguments": arguments},
+        }
     ]
 
 
@@ -266,10 +273,13 @@ class _StreamingCodeHandler(ObjectInterpretation):
         assert kwargs.get("stream"), "expected the renderer to force streaming"
         return iter(
             [
-                _delta_chunk(reasoning_content="thinking about it"),
+                _delta_chunk(reasoning={"content": "thinking about it"}),
                 _delta_chunk(content="here goes"),
                 _delta_chunk(tool_calls=_tool_call_delta("exec_code", _ARGS[:12])),
-                _delta_chunk(tool_calls=_tool_call_delta(None, _ARGS[12:])),
+                _delta_chunk(
+                    tool_calls=_tool_call_delta(None, _ARGS[12:]),
+                    finish_reason="tool_calls",
+                ),
             ]
         )
 
@@ -454,7 +464,14 @@ def test_renderer_keeps_the_live_region_within_the_screen():
     class _WideTurn(ObjectInterpretation):
         @implements(completion)
         def _completion(self, *args_, **kwargs):
-            return iter([_delta_chunk(tool_calls=_tool_call_delta("note_it", args))])
+            return iter(
+                [
+                    _delta_chunk(
+                        tool_calls=_tool_call_delta("note_it", args),
+                        finish_reason="tool_calls",
+                    )
+                ]
+            )
 
     with handler(_WideTurn()), handler(RichTerminalRenderer(console=console)):
         completion(messages=[{"role": "user", "content": "q"}], model="test-model")
@@ -545,7 +562,7 @@ class _ConcurrentProbe(ObjectInterpretation):
             self.streamed.append(bool(kwargs.get("stream")))
         self.barrier.wait()
         if kwargs.get("stream"):
-            return iter([_delta_chunk(content="streamed")])
+            return iter([_delta_chunk(content="streamed", finish_reason="stop")])
         return make_text_response("settled")
 
 
@@ -603,13 +620,10 @@ class _BrokenStream(ObjectInterpretation):
 @pytest.mark.parametrize(
     "error",
     [
-        litellm.exceptions.MidStreamFallbackError(
-            message="boom", model="m", llm_provider="openai"
-        ),
-        litellm.APIConnectionError(message="boom", model="m", llm_provider="openai"),
-        litellm.Timeout(message="boom", model="m", llm_provider="openai"),
+        any_llm.ProviderError("connection reset", provider_name="openai"),
+        any_llm.ProviderError("Request timed out.", provider_name="openai"),
     ],
-    ids=["mid-stream", "connection", "timeout"],
+    ids=["connection", "timeout"],
 )
 def test_renderer_retries_a_broken_stream_without_streaming(error):
     """A transport failure on the streamed read is retried unstreamed.
@@ -637,13 +651,13 @@ def test_renderer_does_not_retry_a_rejected_request():
     """A request the provider refuses fails identically unstreamed, so re-issuing
     it would only pay for the same error twice."""
     provider = _BrokenStream(
-        litellm.BadRequestError(message="nope", model="m", llm_provider="openai")
+        any_llm.InvalidRequestError("nope", provider_name="openai", status_code=400)
     )
     renderer = RichTerminalRenderer(
         console=rich.console.Console(file=io.StringIO(), force_terminal=True)
     )
     with handler(provider), handler(renderer):
-        with pytest.raises(litellm.BadRequestError):
+        with pytest.raises(any_llm.InvalidRequestError):
             completion(messages=[{"role": "user", "content": "q"}], model="test-model")
 
     assert provider.settled_attempts == 0
@@ -690,7 +704,7 @@ def test_renderer_shows_the_repl_session_section():
     mock = MockCompletionHandler([make_text_response("press B")])
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(StatefulReplSynthesizer()),
         handler(mock),
