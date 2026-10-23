@@ -228,7 +228,7 @@ def call_assistant[T](
     # The OpenAI API requires a wrapper object for non-object structured output types,
     # so we create one on the fly here. Using a Pydantic model offloads JSON schema
     # generation and validation logic to litellm, and offers better error messages.
-    response_format: type[_BoxedResponse[T]] = pydantic.create_model(
+    response_format: type[_BoxedResponse[T]] = pydantic.create_model(  # type: ignore[call-overload]
         "BoxedResponse",
         value=Encodable[response_type],  # type: ignore[valid-type]
         __base__=_BoxedResponse,
@@ -319,7 +319,7 @@ def call_tool[T](tool_call: DecodedToolCall[T]) -> ToolResult[T]:
         raise ToolCallExecutionError(raw_tool_call=tool_call, original_error=e) from e
 
     return_type: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-        Encodable[nested_type(result).value]  # type: ignore[misc]
+        Encodable[nested_type(result).value]  # type: ignore[misc, arg-type]
     )
     encoded_result = to_content_blocks(
         return_type.dump_python(result, mode="json", context={})
