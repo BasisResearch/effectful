@@ -1,6 +1,6 @@
 """Tests for LLM handlers and providers.
 This module tests the functionality from build/main.py and build/llm.py,
-breaking down individual components like LiteLLMConfigurer,
+breaking down individual components like AnyLLMConfigurer,
 ProgramSynthesis, and sampling strategies.
 """
 
@@ -15,20 +15,22 @@ from enum import StrEnum
 from pathlib import Path
 from types import CodeType
 
+import any_llm
 import jax.numpy as jnp
-import litellm
 import numpy as np
 import pydantic
 import pytest
 import tenacity
-from litellm import ChatCompletionMessageToolCall
-from litellm.caching.caching import Cache
-from litellm.files.main import ModelResponse
+from any_llm.types.completion import ChatCompletion, ChatCompletionChunk
+from any_llm.utils.streaming import accumulate_chunks
+from openai.types.chat import ChatCompletionMessageToolCall
+from openai.types.responses import Response, ResponseStreamEvent
 from PIL import Image
 from pydantic import BaseModel, Field
 from pydantic.dataclasses import dataclass
 
 from effectful.handlers.llm import Agent, Skill
+from effectful.handlers.llm.harness import harness
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import (
     CompactionScope,
@@ -52,7 +54,11 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     _tools_in_scope,
 )
 from effectful.handlers.llm.harness.observability.rich import RichTerminalRenderer
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import (
+    AnyLLMConfigurer,
+    completion_via_responses,
+    needs_responses_api,
+)
 from effectful.handlers.llm.harness.synthesis.body import (
     FinalBodySynthesizer,
 )
@@ -66,6 +72,7 @@ from tests.conftest import (
     EFFECTFUL_LLM_MODEL,
     MockCompletionHandler,
     add_numbers,
+    chat_completion,
     make_text_response,
     make_tool_call_response,
     requires_llm,
@@ -99,7 +106,7 @@ def retry_on_error(error: type[Exception], n: int):
     return decorator
 
 
-class ReplayLiteLLMProvider(LiteLLMConfigurer, AgentLoop):
+class ReplayProvider(AnyLLMConfigurer, AgentLoop):
     test_id: str
     call_count = 0
 
@@ -120,7 +127,7 @@ class ReplayLiteLLMProvider(LiteLLMConfigurer, AgentLoop):
             if not path.exists():
                 raise RuntimeError(f"Missing replay fixture: {path}")
             with path.open() as f:
-                result = ModelResponse.model_validate(json.load(f))
+                result = ChatCompletion.model_validate(json.load(f))
                 return result
         result = fwd(*args, **kwargs)
         path.parent.mkdir(exist_ok=True, parents=True)
@@ -206,13 +213,13 @@ class _ToolNameAgent(Agent):
         raise NotHandled
 
 
-class TestLiteLLMProvider:
-    """Tests for the LiteLLM-backed agent loop's basic functionality."""
+class TestAnyLLMProvider:
+    """Tests for the any_llm-backed agent loop's basic functionality."""
 
     def test_simple_prompt(self, request):
-        """Test that a LiteLLM-backed skill call returns a non-empty string."""
+        """Test that an any_llm-backed skill call returns a non-empty string."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -221,11 +228,11 @@ class TestLiteLLMProvider:
             assert len(result) > 0
 
     def test_structured_output(self, request):
-        """Test a LiteLLM-backed skill call with structured Pydantic output."""
+        """Test an any_llm-backed skill call with structured Pydantic output."""
         plot = "A rogue cop must stop a evil group from taking over a skyscraper."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -238,9 +245,9 @@ class TestLiteLLMProvider:
             assert len(classification.explanation) > 0
 
     def test_integer_return_type(self, request):
-        """Test a LiteLLM-backed skill call with integer return type."""
+        """Test an any_llm-backed skill call with integer return type."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -250,13 +257,11 @@ class TestLiteLLMProvider:
             assert 1 <= result <= 100
 
     def test_with_config_params(self, request):
-        """Test LiteLLMConfigurer accepts and uses additional configuration parameters."""
+        """Test AnyLLMConfigurer accepts and uses additional configuration parameters."""
         # Test with temperature parameter
         with (
             handler(
-                ReplayLiteLLMProvider(
-                    request, model=EFFECTFUL_LLM_MODEL, temperature=0.1
-                )
+                ReplayProvider(request, model=EFFECTFUL_LLM_MODEL, temperature=0.1)
             ),
             handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
@@ -283,7 +288,7 @@ def test_agent_tool_names_are_valid_integration():
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
         handler(
-            LiteLLMConfigurer(
+            AnyLLMConfigurer(
                 model=EFFECTFUL_LLM_MODEL, tool_choice="none", max_tokens=64
             )
         ),
@@ -325,7 +330,7 @@ def categorise_image(image: Image.Image) -> str:
 @requires_vision
 def test_image_input(request):
     with (
-        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(LexicalToolExtractor()),
         handler(LimitLLMCallsHandler(max_calls=3)),
     ):
@@ -363,7 +368,7 @@ def test_list_image_input(request):
     img_blue = Image.new("RGB", (64, 64), (0, 0, 255))
 
     with (
-        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+        handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
         handler(LexicalToolExtractor()),
         handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
         handler(LimitLLMCallsHandler(max_calls=3)),
@@ -396,7 +401,7 @@ class TestPydanticBaseModelReturn:
         plot = "A young wizard discovers he has magical powers and goes to a school for wizards."
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(LimitLLMCallsHandler(max_calls=1)),
         ):
@@ -409,54 +414,6 @@ class TestPydanticBaseModelReturn:
             assert 1 <= review.rating <= 5
             assert isinstance(review.summary, str)
             assert len(review.summary) > 0
-
-
-def test_litellm_caching_integration(request):
-    litellm.cache = Cache()
-    with (
-        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-        handler(LexicalToolExtractor()),
-    ):
-        p1 = simple_prompt("apples")
-        p2 = simple_prompt("apples")
-        p3 = simple_prompt("oranges")
-        assert p1 == p2, (
-            "when caching is enabled, LLM requests with the same parameters will produce the same outputs"
-        )
-        assert p3 != p2, "different inputs should still produce different outputs"
-
-
-def test_litellm_caching_integration_disabled(request):
-    litellm.cache = Cache()
-    with (
-        handler(
-            ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL, caching=False)
-        ),
-        handler(LexicalToolExtractor()),
-    ):
-        p1 = simple_prompt("apples")
-        p2 = simple_prompt("apples")
-        assert p1 != p2, "if caching is not enabled, inputs produce different outputs"
-
-
-def test_litellm_caching_selective(request):
-    with (
-        handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
-        handler(LexicalToolExtractor()),
-    ):
-        p1 = simple_prompt("apples")
-        p2 = simple_prompt("apples")
-        assert p1 != p2, "when caching is not enabled, llm outputs should be different"
-        litellm.enable_cache()
-        p1 = simple_prompt("apples")
-        p2 = simple_prompt("apples")
-        assert p1 == p2, (
-            "when caching is enabled, LLM requests with the same parameters will produce the same outputs"
-        )
-        litellm.disable_cache()
-        p1 = simple_prompt("apples")
-        p2 = simple_prompt("apples")
-        assert p1 != p2, "when caching is not enabled, llm outputs should be different"
 
 
 # ============================================================================
@@ -472,7 +429,7 @@ def message_sequence_provider():
 
 @pytest.fixture
 def mock_completion_handler_factory():
-    def _factory(responses: list[ModelResponse]) -> MockCompletionHandler:
+    def _factory(responses: list[ChatCompletion]) -> MockCompletionHandler:
         return MockCompletionHandler(responses)
 
     return _factory
@@ -704,7 +661,7 @@ class TestTenacityRetryer:
         recoverable decode error into a `BadRequestError` -- which is not in this
         retryer's retry set, and so kills the call instead of informing it.
         """
-        two_calls = ModelResponse(
+        two_calls = chat_completion(
             id="test",
             choices=[
                 {
@@ -811,7 +768,7 @@ class TestTenacityRetryer:
 
         with (
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3))),
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1157,8 +1114,8 @@ class _StreamingMockCompletionHandler(ObjectInterpretation):
     """Streams a fixed text answer back, one character per chunk.
 
     `RichTerminalRenderer` forces ``stream=True`` and reassembles the chunks with
-    ``litellm.stream_chunk_builder``, so exercising it needs a mock that answers
-    in deltas rather than with a finished `ModelResponse`.
+    any_llm's ``accumulate_chunks``, so exercising it needs a mock that answers
+    in deltas rather than with a finished `ChatCompletion`.
     """
 
     def __init__(self, content: str):
@@ -1169,19 +1126,24 @@ class _StreamingMockCompletionHandler(ObjectInterpretation):
         assert kwargs.get("stream"), "expected the renderer to force streaming"
         return iter(
             [
-                litellm.types.utils.ModelResponseStream(
-                    id="test",
-                    model="test-model",
-                    choices=[
-                        litellm.types.utils.StreamingChoices(
-                            index=0,
-                            delta=litellm.types.utils.Delta(
-                                role="assistant", content=char
-                            ),
-                        )
-                    ],
+                ChatCompletionChunk.model_validate(
+                    {
+                        "id": "test",
+                        "created": 0,
+                        "model": "test-model",
+                        "object": "chat.completion.chunk",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"role": "assistant", "content": char},
+                                "finish_reason": (
+                                    "stop" if i == len(self.content) - 1 else None
+                                ),
+                            }
+                        ],
+                    }
                 )
-                for char in self.content
+                for i, char in enumerate(self.content)
             ]
         )
 
@@ -1197,7 +1159,7 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
             call_assistant([], response_type=str, env={"add_numbers": add_numbers})
@@ -1208,7 +1170,7 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([response])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="required")),
         ):
             _, tool_calls, _ = call_assistant(
                 [],
@@ -1224,7 +1186,7 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([response])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="none")),
             pytest.raises(ResultDecodingError, match="YOU MUST ANSWER DIRECTLY"),
         ):
             call_assistant(
@@ -1239,7 +1201,7 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="none")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="none")),
         ):
             _, tool_calls, result = call_assistant(
                 [], response_type=str, env={"add_numbers": add_numbers}
@@ -1248,9 +1210,9 @@ class TestForcedToolChoice:
         assert result == "just prose"
 
     def test_enclosed_tool_choice_wins(self):
-        """Only the `tool_choice` litellm is actually sent is enforced.
+        """Only the `tool_choice` any_llm is actually sent is enforced.
 
-        `LiteLLMConfigurer.completion` merges as ``{**self.config, **kwargs}``, so the enclosed
+        `AnyLLMConfigurer.completion` merges as ``{**self.config, **kwargs}``, so the enclosed
         provider's ``auto`` is what leaves for the model -- and an enclosing
         ``required`` that never made it into the request must not be held
         against the response.
@@ -1259,10 +1221,10 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="required")),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="auto")),
         ):
             _, _, result = call_assistant([], response_type=str, env={})
         assert result == "just prose"
@@ -1274,10 +1236,10 @@ class TestForcedToolChoice:
             handler(MockCompletionHandler([make_text_response("just prose")])),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="auto")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="auto")),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="required")),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
             call_assistant([], response_type=str, env={"add_numbers": add_numbers})
@@ -1291,7 +1253,7 @@ class TestForcedToolChoice:
             handler(_StreamingMockCompletionHandler("just prose")),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model", tool_choice="required")),
+            handler(AnyLLMConfigurer(model="test-model", tool_choice="required")),
             handler(RichTerminalRenderer()),
             pytest.raises(ResultDecodingError, match="YOU MUST GENERATE A TOOL CALL"),
         ):
@@ -1311,7 +1273,7 @@ class TestErrorClasses:
         original = ValueError("invalid value")
         raw_tool_call = ChatCompletionMessageToolCall.model_validate(
             {
-                "type": "tool_call",
+                "type": "function",
                 "id": "call_abc",
                 "function": {"name": "my_function", "arguments": "{}"},
             }
@@ -1341,7 +1303,7 @@ class TestErrorClasses:
         mock_message = {"role": "assistant", "content": "test"}
         raw_tool_call = ChatCompletionMessageToolCall.model_validate(
             {
-                "type": "tool_call",
+                "type": "function",
                 "id": "id",
                 "function": {"name": "fn", "arguments": "{}"},
             }
@@ -1362,7 +1324,7 @@ class TestErrorClasses:
         mock_message = {"role": "assistant", "content": "test"}
         raw_tool_call = ChatCompletionMessageToolCall.model_validate(
             {
-                "type": "tool_call",
+                "type": "function",
                 "id": "id",
                 "function": {"name": "fn", "arguments": "{}"},
             }
@@ -1378,7 +1340,7 @@ class TestErrorClasses:
         """`include_traceback=False` yields feedback with no traceback block."""
         raw_tool_call = ChatCompletionMessageToolCall.model_validate(
             {
-                "type": "tool_call",
+                "type": "function",
                 "id": "call_abc",
                 "function": {"name": "my_function", "arguments": "{}"},
             }
@@ -1466,7 +1428,7 @@ class TestCallableSynthesis:
     def test_synthesize_adder_function(self, request):
         """Test that LLM can synthesize a simple addition function with correct signature."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1485,7 +1447,7 @@ class TestCallableSynthesis:
         bound-method `__default__` anchor through the real splice type-check
         (TenacityRetryer lets the model recover from a malformed first draft)."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TenacityRetryer(stop=tenacity.stop_after_attempt(4))),
             handler(TyTypeChecker()),
@@ -1502,7 +1464,7 @@ class TestCallableSynthesis:
     def test_synthesize_string_processor(self, request):
         """Test that LLM can synthesize a string processing function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1519,7 +1481,7 @@ class TestCallableSynthesis:
     def test_synthesize_counter_with_parameter(self, request):
         """Test that LLM can synthesize a parameterized counting function."""
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1537,7 +1499,7 @@ class TestCallableSynthesis:
         """Test that a synthesized function can be encoded and decoded."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1562,7 +1524,7 @@ class TestCallableSynthesis:
         """Test that LLM respects bool return type in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1585,7 +1547,7 @@ class TestCallableSynthesis:
         """Test that LLM respects the exact number of parameters in signature."""
 
         with (
-            handler(ReplayLiteLLMProvider(request, model=EFFECTFUL_LLM_MODEL)),
+            handler(ReplayProvider(request, model=EFFECTFUL_LLM_MODEL)),
             handler(LexicalToolExtractor()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1608,7 +1570,7 @@ def make_write_and_run_body_response(
     code: str,
     tool_call_id: str = "call_1",
     compact: CompactionScope = CompactionScope.NONE,
-) -> ModelResponse:
+) -> ChatCompletion:
     """A tool-call response in which the model finalizes by calling the
     synthesis ``write_and_run_body`` tool with a function it wrote."""
     return make_tool_call_response(
@@ -1650,7 +1612,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1688,7 +1650,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -1714,7 +1676,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -1765,7 +1727,7 @@ class TestSynthesizeAndCall:
         stack = (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -1804,7 +1766,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1834,7 +1796,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1860,7 +1822,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1876,7 +1838,7 @@ class TestSynthesizeAndCall:
         """A finalizing call must be the only call in its turn: which call in a
         mixed turn is the answer is ambiguous, so the completion loop asserts
         rather than letting the trailing call overwrite the answer."""
-        mixed = ModelResponse(
+        mixed = chat_completion(
             id="test",
             choices=[
                 {
@@ -1917,7 +1879,7 @@ class TestSynthesizeAndCall:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
             handler(BuiltinExecutor()),
@@ -1976,7 +1938,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -2011,7 +1973,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -2035,7 +1997,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -2084,7 +2046,7 @@ class TestSynthesizeAndCallDoctests:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test-model")),
+            handler(AnyLLMConfigurer(model="test-model")),
             handler(HistoryBuilder()),
             handler(FinalBodySynthesizer()),
             handler(TyTypeChecker()),
@@ -2199,7 +2161,7 @@ class TestMessageSequence:
                     "role": "assistant",
                     "content": json.dumps({"value": "result"}),
                 }
-                return ModelResponse(
+                return chat_completion(
                     choices=[{"role": "assistant", "message": response}]
                 )
 
@@ -2237,7 +2199,7 @@ class TestMessageSequence:
                     "role": "assistant",
                     "content": json.dumps({"value": "result"}),
                 }
-                return ModelResponse(
+                return chat_completion(
                     choices=[{"role": "assistant", "message": response}]
                 )
 
@@ -2485,7 +2447,7 @@ class TestRetryHandlerCatchToolErrorsFiltering:
             call_tool(tc)
 
 
-class TestLiteLLMProviderMessagePruning:
+class TestProviderMessagePruning:
     """`AgentLoop` should prune messages added during a failed skill call."""
 
     def test_messages_pruned_on_tool_execution_error(self):
@@ -2507,7 +2469,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(AgentLoop()),
                 handler(LexicalToolExtractor()),
-                handler(LiteLLMConfigurer(model="test")),
+                handler(AnyLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2534,7 +2496,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(AgentLoop()),
                 handler(LexicalToolExtractor()),
-                handler(LiteLLMConfigurer(model="test")),
+                handler(AnyLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2560,7 +2522,7 @@ class TestLiteLLMProviderMessagePruning:
             with (
                 handler(AgentLoop()),
                 handler(LexicalToolExtractor()),
-                handler(LiteLLMConfigurer(model="test")),
+                handler(AnyLLMConfigurer(model="test")),
                 handler(mock_handler),
                 handler({HistoryBuilder.get_history: lambda: message_sequence}),
             ):
@@ -2591,7 +2553,7 @@ class TestLiteLLMProviderMessagePruning:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock_handler),
         ):
@@ -2658,7 +2620,7 @@ class TestAgentCrossSkillRecovery:
             with (
                 handler(AgentLoop()),
                 handler(LexicalToolExtractor()),
-                handler(LiteLLMConfigurer(model="test")),
+                handler(AnyLLMConfigurer(model="test")),
                 handler(HistoryBuilder()),
             ):
                 # First call should fail with tool execution error
@@ -2717,7 +2679,7 @@ class TestAgentCrossSkillRecovery:
             with (
                 handler(AgentLoop()),
                 handler(LexicalToolExtractor()),
-                handler(LiteLLMConfigurer(model="test")),
+                handler(AnyLLMConfigurer(model="test")),
                 handler(HistoryBuilder()),
                 handler(mock),
             ):
@@ -2749,7 +2711,7 @@ class TestAgentCrossSkillRecovery:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
         ):
@@ -2789,7 +2751,7 @@ class TestAgentCrossSkillRecovery:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiResponseHandler()),
         ):
@@ -2843,7 +2805,7 @@ class TestAgentCrossSkillRecovery:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(PhaseHandler()),
         ):
@@ -2900,7 +2862,7 @@ class TestAgentSystemMessageDeduplication:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(CountingHandler()),
         ):
@@ -2939,7 +2901,7 @@ class TestAgentSystemMessageDeduplication:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MultiHandler()),
         ):
@@ -2987,7 +2949,7 @@ class TestAgentSystemMessageDeduplication:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(MemoryHandler()),
         ):
@@ -3029,7 +2991,7 @@ class TestAgentSystemMessageDeduplication:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(OrderHandler()),
         ):
@@ -3049,14 +3011,8 @@ class TestAgentSystemMessageDeduplication:
 
 
 def _has_cache_control(msg: dict) -> bool:
-    """Check if a message is marked for prompt caching.
-
-    Either form litellm accepts counts: a `cache_control` key on a content block,
-    or one on the message itself -- which is how a message whose content is a
-    plain string (the assembled Markdown system prompt) carries it. See
-    `test_anthropic_receives_cache_control_from_message_level_key` for the
-    litellm transformation that consumes the message-level form.
-    """
+    """Check if a message is marked for prompt caching, in either form the Chat
+    Completions convention allows: on a content block, or on the message itself."""
     content = msg.get("content")
     if isinstance(content, list):
         return any(isinstance(b, dict) and "cache_control" in b for b in content)
@@ -3066,9 +3022,8 @@ def _has_cache_control(msg: dict) -> bool:
 def _has_block_cache_control(msg: dict) -> bool:
     """Check for a breakpoint on a *content block* specifically.
 
-    `LiteLLMConfigurer._add_cache_control` only ever produces this form, so it
-    distinguishes what the provider added from the message-level key
-    `call_system` puts on the system prompt.
+    `AnyLLMConfigurer._add_cache_control` only ever produces this form: some
+    providers (Anthropic) drop a message-level key.
     """
     content = msg.get("content")
     return isinstance(content, list) and any(
@@ -3086,15 +3041,15 @@ class CachingAgent(Agent):
 
 
 class TestPromptCaching:
-    """Tests that cache_control is present in messages sent to litellm."""
+    """Tests that cache_control is present in messages sent to any_llm."""
 
     def test_system_message_has_cache_control(self):
         """System message should include cache_control for prompt caching."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3115,11 +3070,11 @@ class TestPromptCaching:
     def test_agent_user_message_has_cache_control(self):
         """Agent calls should add cache_control to the last user message."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3144,10 +3099,10 @@ class TestPromptCaching:
         concern applied to every request, so a plain Skill's tool-use rounds
         get the same cached prefix an Agent's turns do."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3176,11 +3131,11 @@ class TestPromptCaching:
                 make_text_response("42"),
             ]
         )
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3204,11 +3159,11 @@ class TestPromptCaching:
         capture = MockCompletionHandler(
             [make_text_response("first"), make_text_response("second")]
         )
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3232,11 +3187,11 @@ class TestPromptCaching:
         """The annotation is added to the outgoing request, not the transcript,
         so it never reaches `__history__` (or an Agent's checkpoint)."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
         agent = CachingAgent()
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3261,10 +3216,10 @@ class TestPromptCaching:
     def test_cache_control_format_is_ephemeral(self):
         """cache_control should use the ephemeral type."""
         capture = MockCompletionHandler([make_text_response("42")])
-        provider = LiteLLMConfigurer(model="test")
+        provider = AnyLLMConfigurer(model="test")
 
         # `capture` is terminal (it never forwards), so it goes *below* the
-        # provider: LiteLLMConfigurer.completion has to run and forward into
+        # provider: AnyLLMConfigurer.completion has to run and forward into
         # it, or the request never gets the provider's config or breakpoint.
         with (
             handler(capture),
@@ -3284,77 +3239,61 @@ class TestPromptCaching:
                     if isinstance(block, dict) and "cache_control" in block:
                         assert block["cache_control"] == {"type": "ephemeral"}
 
-    def test_anthropic_receives_cache_control_from_last_system_block(self):
-        """The system message's breakpoint sits on its last content block, since
-        `call_system` renders the assembled prompt as a list of blocks rather than one
-        Markdown string. Verify litellm forwards it to Anthropic as a cached system
-        block -- for list content the block-level form is the *only* one it reads, so
-        a message-level key would silently stop caching the system prompt."""
-        from litellm.llms.anthropic.chat.transformation import AnthropicConfig
-
-        msgs = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Hi.",
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            },
-            {"role": "user", "content": [{"type": "text", "text": "Hi"}]},
+    def test_a_string_message_is_marked_on_a_text_block(self):
+        """String content is wrapped in a text block to carry its breakpoint, the
+        one form every provider any_llm converts for reads."""
+        marked = AnyLLMConfigurer._mark({"role": "user", "content": "Hi"})
+        assert "cache_control" not in marked
+        assert marked["content"] == [
+            {"type": "text", "text": "Hi", "cache_control": {"type": "ephemeral"}}
         ]
-        transformed = AnthropicConfig().transform_request(
-            model="claude-sonnet-4-5",
-            messages=msgs,
-            optional_params={},
-            litellm_params={},
-            headers={},
+
+    def test_anthropic_receives_the_breakpoints(self):
+        """any_llm forwards block-level breakpoints to Anthropic: on the system
+        prompt, which it sends as Anthropic's ``system`` blocks, and on the last
+        input message."""
+        from any_llm.providers.anthropic.utils import (
+            _convert_messages_for_anthropic,
         )
-        assert transformed["system"] == [
-            {"type": "text", "text": "Hi.", "cache_control": {"type": "ephemeral"}}
-        ]
 
-    def test_litellm_strips_cache_control_for_openai(self):
-        """Verify litellm strips cache_control when transforming for OpenAI."""
-        from litellm.llms.openai.chat.gpt_transformation import OpenAIGPTConfig
-
-        msgs = [
-            {
-                "role": "system",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Hi.",
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            },
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "Hi",
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-            },
-        ]
-        config = OpenAIGPTConfig()
-        transformed = config.transform_request(
-            model="gpt-4o",
-            messages=msgs,
-            optional_params={},
-            litellm_params={},
-            headers={},
+        provider = AnyLLMConfigurer(model="test")
+        msgs = provider._add_cache_control(
+            [
+                {"role": "system", "content": [{"type": "text", "text": "Sys."}]},
+                {"role": "user", "content": "Hi"},
+            ]
         )
-        for msg in transformed["messages"]:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    assert "cache_control" not in block
+        system, messages = _convert_messages_for_anthropic(msgs)
+        assert system == [
+            {"type": "text", "text": "Sys.", "cache_control": {"type": "ephemeral"}}
+        ]
+        assert messages[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+    @pytest.mark.skipif(
+        not os.environ.get("OPENAI_API_KEY"), reason="No OpenAI API key configured"
+    )
+    def test_openai_accepts_cache_control(self):
+        """OpenAI ignores a ``cache_control`` key on a content block rather than
+        rejecting the request, so the breakpoints need no stripping for it."""
+        import any_llm
+
+        response = any_llm.completion(
+            model="openai:gpt-4o-mini",
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Reply with ok.",
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ],
+                }
+            ],
+            max_tokens=5,
+        )
+        assert isinstance(response, ChatCompletion)
 
 
 # ============================================================================
@@ -3396,7 +3335,7 @@ def test_skill_repl_can_read_captured_array(values):
 
 
 class TestScopedModelOverride:
-    """A nested `LiteLLMConfigurer` re-points one call at another model.
+    """A nested `AnyLLMConfigurer` re-points one call at another model.
 
     This is the shape the optimization examples use to score an artifact against
     a cheap "worker" model while a stronger model drives the search. It is worth
@@ -3412,7 +3351,7 @@ class TestScopedModelOverride:
             handler(mock),
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="outer-model")),
+            handler(AnyLLMConfigurer(model="outer-model")),
             handler(HistoryBuilder()),
         )
 
@@ -3427,7 +3366,7 @@ class TestScopedModelOverride:
             for h in self._stack(mock):
                 stack.enter_context(h)
             greet("world")
-            with handler(LiteLLMConfigurer(model="worker-model")):
+            with handler(AnyLLMConfigurer(model="worker-model")):
                 greet("world")
 
         outer, inner = mock.received_messages
@@ -3455,7 +3394,7 @@ class TestScopedModelOverride:
             stack.enter_context(
                 handler(TenacityRetryer(stop=tenacity.stop_after_attempt(3)))
             )
-            with handler(LiteLLMConfigurer(model="worker-model")):
+            with handler(AnyLLMConfigurer(model="worker-model")):
                 assert count() == 7
 
         assert mock.call_count == 2
@@ -3488,7 +3427,10 @@ def _offered_tool_names(**harness_kwargs) -> set[str]:
         """Answer {q}."""
 
     capture = _CaptureTools()
-    with handler(harness(model="test", **harness_kwargs)), handler(capture):
+    with (
+        handler(harness(model="test", **harness_kwargs)),
+        handler(capture),
+    ):
         assert ask("hi") == "ok"
     return {t["function"]["name"] for t in capture.tools}
 
@@ -3528,7 +3470,11 @@ def test_code_tool_calling_without_an_executor_is_rejected(tool_calling):
     from effectful.handlers.llm.harness import harness
 
     with pytest.raises(ValueError, match="needs an eval provider"):
-        harness(model="test", tool_calling=tool_calling, eval_provider="none")
+        harness(
+            model="test",
+            tool_calling=tool_calling,
+            eval_provider="none",
+        )
 
 
 @pytest.mark.parametrize(
@@ -3544,7 +3490,11 @@ def test_supported_tool_calling_and_executor_pairs_build(tool_calling, eval_prov
     """The guard rejects one combination, not the neighbouring ones."""
     from effectful.handlers.llm.harness import harness
 
-    assert harness(model="test", tool_calling=tool_calling, eval_provider=eval_provider)
+    assert harness(
+        model="test",
+        tool_calling=tool_calling,
+        eval_provider=eval_provider,
+    )
 
 
 @pytest.mark.parametrize(
@@ -3580,7 +3530,12 @@ def test_tool_collection_selects_the_lexical_extractor(
 
     capture = _CaptureTools()
     with (
-        handler(harness(model="test", tool_collection=tool_collection)),
+        handler(
+            harness(
+                model="test",
+                tool_collection=tool_collection,
+            )
+        ),
         handler(capture),
     ):
         assert ask("hi") == "ok"
@@ -3590,3 +3545,466 @@ def test_tool_collection_selects_the_lexical_extractor(
     assert ("implicit_helper" in offered) == implicit
     # The harness's own tools are offered regardless of collection.
     assert {"exec_code", "write_and_run_body"} <= offered
+
+
+# ============================================================================
+# Serving requests through OpenAI's Responses API
+#
+# `any_llm.completion` and `any_llm.responses` are replaced by doubles, so the
+# routing and the translation are checked without a model. One live test runs a
+# tool loop against a model that needs the Responses API.
+# ============================================================================
+
+
+_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "add",
+        "description": "Add two integers.",
+        "parameters": {"type": "object", "properties": {}},
+        "strict": True,
+    },
+}
+
+_REASONING = {
+    "type": "reasoning",
+    "id": "rs_1",
+    "summary": [{"type": "summary_text", "text": "Adding."}],
+    "encrypted_content": "enc",
+}
+
+_CALL = {
+    "type": "function_call",
+    "id": "fc_1",
+    "call_id": "call_1",
+    "name": "add",
+    "arguments": '{"a": 1, "b": 2}',
+}
+
+
+def _response(**fields) -> Response:
+    return Response.model_validate(
+        {
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1.0,
+            "model": "gpt-6-sol",
+            "status": "completed",
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [],
+            "output": [],
+            **fields,
+        }
+    )
+
+
+_RESPONSE = _response(
+    output=[
+        _REASONING,
+        {
+            "type": "message",
+            "id": "msg_1",
+            "role": "assistant",
+            "status": "completed",
+            "content": [
+                {"type": "output_text", "text": "Calling add.", "annotations": []}
+            ],
+        },
+        _CALL,
+    ],
+    usage={
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "input_tokens_details": {"cached_tokens": 4, "cache_write_tokens": 2},
+        "output_tokens_details": {"reasoning_tokens": 3},
+    },
+)
+
+_EVENT: pydantic.TypeAdapter[ResponseStreamEvent] = pydantic.TypeAdapter(
+    ResponseStreamEvent
+)
+
+
+def _event(type: str, **fields) -> ResponseStreamEvent:
+    return _EVENT.validate_python(
+        {"type": type, "sequence_number": 0, "output_index": 0, **fields}
+    )
+
+
+class _Responses:
+    """A stand-in for `any_llm.responses` that records what it is sent."""
+
+    def __init__(self, reply):
+        self.reply = reply
+        self.requests: list[dict] = []
+
+    def __call__(self, **kwargs):
+        self.requests.append(kwargs)
+        return self.reply
+
+
+@pytest.fixture
+def responses(monkeypatch):
+    double = _Responses(_RESPONSE)
+    monkeypatch.setattr(any_llm, "responses", double)
+    return double
+
+
+# ============================================================================
+# Which requests need the Responses API
+# ============================================================================
+
+
+@pytest.mark.parametrize(
+    "model,effort",
+    [
+        ("openai:gpt-5.4-mini", None),
+        ("openai:gpt-5.6-terra", "auto"),
+        ("openai:gpt-6-sol", "high"),
+        ("openai:gpt-6.1-sol", None),
+        ("azureopenai:gpt-6-luna", None),
+    ],
+)
+def test_newer_models_with_tools_and_reasoning_need_responses(model, effort):
+    assert needs_responses_api(model, [], tools=[_TOOL], reasoning_effort=effort)
+
+
+@pytest.mark.parametrize(
+    "model,tools,effort",
+    [
+        ("openai:gpt-5.2", [_TOOL], None),
+        ("openai:gpt-5.3-chat-latest", [_TOOL], None),
+        ("openai:gpt-4o-mini", [_TOOL], None),
+        ("openai:gpt-5-search-api", [_TOOL], None),
+        ("openai:gpt-6-sol", [], None),
+        ("openai:gpt-6-sol", [_TOOL], "none"),
+        ("openrouter:openai/gpt-6-sol", [_TOOL], None),
+        ("gpt-6-sol", [_TOOL], None),
+    ],
+    ids=[
+        "older-model",
+        "chat-model",
+        "non-reasoning-model",
+        "search-model",
+        "no-tools",
+        "reasoning-off",
+        "gateway",
+        "no-provider",
+    ],
+)
+def test_other_requests_stay_on_chat_completions(model, tools, effort):
+    assert not needs_responses_api(model, [], tools=tools, reasoning_effort=effort)
+
+
+def test_another_server_needs_responses_only_when_reasoning_is_asked_for(
+    monkeypatch,
+):
+    """An OpenAI-compatible server may serve these models' tools without
+    reasoning, and may have no Responses API at all."""
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8000/v1")
+    assert not needs_responses_api("openai:gpt-6-sol", [], tools=[_TOOL])
+    assert needs_responses_api(
+        "openai:gpt-6-sol", [], tools=[_TOOL], reasoning_effort="low"
+    )
+    assert needs_responses_api(
+        "openai:gpt-6-sol", [], tools=[_TOOL], api_base="https://api.openai.com/v1"
+    )
+
+
+# ============================================================================
+# The request
+# ============================================================================
+
+
+def test_the_request_is_translated(responses):
+    completion_via_responses(
+        "openai:gpt-6-sol",
+        [
+            {
+                "role": "system",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Be brief.",
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Look:"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,AA"},
+                    },
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Calling add.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "add", "arguments": "{}"},
+                    }
+                ],
+                "extra_content": {
+                    "openai_responses": {
+                        "reasoning": [
+                            {"type": "reasoning", "id": "rs_1", "summary": []}
+                        ]
+                    }
+                },
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "3"},
+        ],
+        tools=[_TOOL],
+        tool_choice={"type": "function", "function": {"name": "add"}},
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "Box",
+                "schema": {"type": "object"},
+                "strict": True,
+            },
+        },
+        reasoning_effort="low",
+        max_tokens=64,
+    )
+    (request,) = responses.requests
+    assert request["input_data"] == [
+        {
+            "type": "message",
+            "role": "system",
+            "content": [{"type": "input_text", "text": "Be brief."}],
+        },
+        {
+            "type": "message",
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Look:"},
+                {
+                    "type": "input_image",
+                    "image_url": "data:image/png;base64,AA",
+                    "detail": "auto",
+                },
+            ],
+        },
+        {"type": "reasoning", "id": "rs_1", "summary": []},
+        {"type": "message", "role": "assistant", "content": "Calling add."},
+        {
+            "type": "function_call",
+            "call_id": "call_1",
+            "name": "add",
+            "arguments": "{}",
+        },
+        {"type": "function_call_output", "call_id": "call_1", "output": "3"},
+    ]
+    assert request["tools"] == [
+        {
+            "type": "function",
+            "name": "add",
+            "description": "Add two integers.",
+            "parameters": {"type": "object", "properties": {}},
+            "strict": True,
+        }
+    ]
+    assert request["tool_choice"] == {"type": "function", "name": "add"}
+    assert request["text"] == {
+        "format": {
+            "type": "json_schema",
+            "name": "Box",
+            "schema": {"type": "object"},
+            "strict": True,
+        }
+    }
+    assert request["reasoning"] == {"effort": "low"}
+    assert request["max_output_tokens"] == 64
+
+
+@pytest.mark.parametrize("effort", [None, "auto"])
+def test_an_unset_effort_is_left_to_the_model(responses, effort):
+    completion_via_responses(
+        "openai:gpt-6-sol", [{"role": "user", "content": "hi"}], reasoning_effort=effort
+    )
+    assert "reasoning" not in responses.requests[0]
+
+
+# ============================================================================
+# The reply
+# ============================================================================
+
+
+def test_the_reply_is_translated(responses):
+    response = completion_via_responses(
+        "openai:gpt-6-sol", [{"role": "user", "content": "hi"}]
+    )
+    assert isinstance(response, ChatCompletion)
+    (choice,) = response.choices
+    assert choice.finish_reason == "tool_calls"
+    assert choice.message.content == "Calling add."
+    assert choice.message.reasoning is not None
+    assert choice.message.reasoning.content == "Adding."
+    (call,) = choice.message.tool_calls or []
+    assert call.id == "call_1"
+    assert call.function.arguments == '{"a": 1, "b": 2}'
+    assert choice.message.extra_content == {
+        "openai_responses": {
+            "reasoning": [
+                {
+                    "type": "reasoning",
+                    "id": "rs_1",
+                    "summary": [{"type": "summary_text", "text": "Adding."}],
+                    "encrypted_content": "enc",
+                }
+            ]
+        }
+    }
+    assert response.usage is not None
+    assert (response.usage.prompt_tokens, response.usage.completion_tokens) == (10, 5)
+    details = response.usage.prompt_tokens_details
+    assert details is not None
+    assert (details.cached_tokens, details.cache_write_tokens) == (4, 2)
+
+
+def test_a_truncated_reply_finishes_for_length(responses):
+    responses.reply = _response(
+        status="incomplete", incomplete_details={"reason": "max_output_tokens"}
+    )
+    response = completion_via_responses(
+        "openai:gpt-6-sol", [{"role": "user", "content": "hi"}]
+    )
+    assert isinstance(response, ChatCompletion)
+    assert response.choices[0].finish_reason == "length"
+
+
+def _events():
+    yield _event("response.created", response=_response(status="in_progress"))
+    yield _event(
+        "response.reasoning_summary_text.delta",
+        item_id="rs_1",
+        summary_index=0,
+        delta="Adding.",
+    )
+    yield _event("response.output_item.done", item=_REASONING)
+    for delta in ("Calling ", "add."):
+        yield _event(
+            "response.output_text.delta",
+            item_id="msg_1",
+            content_index=0,
+            logprobs=[],
+            delta=delta,
+        )
+    yield _event("response.output_item.added", item={**_CALL, "arguments": ""})
+    for delta in ('{"a": 1, ', '"b": 2}'):
+        yield _event(
+            "response.function_call_arguments.delta", item_id="fc_1", delta=delta
+        )
+    yield _event("response.completed", response=_RESPONSE)
+
+
+def test_a_streamed_reply_reassembles_to_the_unstreamed_one(responses):
+    """The chunks a stream is translated into reassemble -- with any_llm's own
+    accumulator, as the renderer does -- into the reply unstreamed would give."""
+    whole = completion_via_responses(
+        "openai:gpt-6-sol", [{"role": "user", "content": "hi"}]
+    )
+    responses.reply = _events()
+    stream = completion_via_responses(
+        "openai:gpt-6-sol", [{"role": "user", "content": "hi"}], stream=True
+    )
+    assert isinstance(whole, ChatCompletion)
+    assembled = accumulate_chunks(stream)
+    assert assembled.choices[0].message == whole.choices[0].message
+    assert assembled.choices[0].finish_reason == "tool_calls"
+    assert assembled.usage == whole.usage
+
+
+def test_a_failed_stream_raises():
+    failed = _response(
+        status="failed", error={"code": "server_error", "message": "boom"}
+    )
+    responses = _Responses(iter([_event("response.failed", response=failed)]))
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(any_llm, "responses", responses)
+        stream = completion_via_responses(
+            "openai:gpt-6-sol", [{"role": "user", "content": "hi"}], stream=True
+        )
+        with pytest.raises(any_llm.ProviderError, match="boom"):
+            list(stream)
+
+
+# ============================================================================
+# Routing in `completion`
+# ============================================================================
+
+
+def _chat_completions_unused(*args, **kwargs):
+    raise AssertionError("sent to Chat Completions")
+
+
+@pytest.mark.parametrize("stream", [False, True], ids=["unstreamed", "streamed"])
+def test_a_request_that_needs_responses_never_reaches_chat_completions(
+    monkeypatch, responses, stream
+):
+    monkeypatch.setattr(any_llm, "completion", _chat_completions_unused)
+    if stream:
+        responses.reply = _events()
+    response = completion(
+        model="openai:gpt-6-sol",
+        messages=[{"role": "user", "content": "hi"}],
+        tools=[_TOOL],
+        stream=stream,
+    )
+    if stream:
+        response = accumulate_chunks(response)
+    assert isinstance(response, ChatCompletion)
+    assert response.id == "resp_1"
+
+
+def test_any_other_request_goes_to_chat_completions(monkeypatch, responses):
+    sent = []
+    monkeypatch.setattr(any_llm, "completion", lambda **kwargs: sent.append(kwargs))
+    completion(model="openai:gpt-4o-mini", messages=[], tools=[_TOOL])
+    assert sent and not responses.requests
+
+
+# ============================================================================
+# Live
+# ============================================================================
+
+
+@Tool.define
+def add(a: int, b: int) -> int:
+    """Add two integers."""
+    return a + b
+
+
+@Skill.define
+def total(x: int, y: int, z: int) -> int:
+    """Use the `add` tool twice, one call at a time, to add {x}, {y} and {z}, and
+    return the sum."""
+    raise NotImplementedError
+
+
+@pytest.mark.skipif(
+    not os.environ.get("OPENAI_API_KEY"), reason="No OpenAI API key configured"
+)
+@pytest.mark.parametrize("render", [False, True], ids=["unstreamed", "streamed"])
+def test_a_model_that_needs_responses_runs_a_tool_loop(render):
+    """OpenAI refuses function tools with reasoning on Chat Completions for this
+    model, so every round of the loop goes to the Responses API."""
+    with handler(
+        harness(
+            model="openai:gpt-5.4-mini",
+            reasoning_effort="low",
+            render=render,
+            tool_calling="json",
+            eval_provider="none",
+        )
+    ):
+        assert total(17, 25, 8) == 50

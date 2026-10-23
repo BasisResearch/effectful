@@ -23,7 +23,7 @@ to a terminal, this one to a JSON-RPC pipe.
 
 ## Threads
 
-The harness is synchronous -- `litellm.completion` blocks, and the completion loop is
+The harness is synchronous -- `any_llm.completion` blocks, and the completion loop is
 a `while` -- while ACP is asyncio. So a prompt runs in a worker thread
 (`asyncio.to_thread`), and `ACPSession` is the only thing that crosses back:
 
@@ -76,9 +76,11 @@ import uuid
 import acp
 import acp.interfaces
 import acp.schema
-import litellm
+import any_llm
 import pydantic
 import pydantic_core
+from any_llm.types.completion import ChatCompletion
+from any_llm.utils.streaming import accumulate_chunks
 from PIL import Image
 
 from effectful.handlers.llm import Agent, Encodable, Tool
@@ -86,10 +88,12 @@ from effectful.handlers.llm.harness.durability.persistence import SQLitePersiste
 from effectful.handlers.llm.harness.hooks import (
     PromptInjectingInterpretation,
     ToolCallExecutionError,
+    assistant_message,
     call_system,
     call_tool,
     completion,
 )
+from effectful.handlers.llm.harness.provision.any_llm import any_llm_model
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     PromptSection,
@@ -336,7 +340,7 @@ INHERIT_MODEL = ""
 """The `model` option's value meaning "whatever the process was configured with".
 
 An empty string rather than the model's name, because this agent does not know that
-name: the model is bound into `LiteLLMConfigurer` by whoever assembled the stack, and
+name: the model is bound into `AnyLLMConfigurer` by whoever assembled the stack, and
 nothing in the protocol layer can see it. Saying "as configured" is honest; naming a
 model here would be a guess printed in the user's editor.
 """
@@ -1012,19 +1016,19 @@ class ACPToolRuntime(PromptInjectingInterpretation):
 class ACPSessionConfig(ObjectInterpretation):
     """Apply the session's user-chosen settings to the requests it makes.
 
-    Just the model, for now, and it is one line: `LiteLLMConfigurer` merges its own
+    Just the model, for now, and it is one line: `AnyLLMConfigurer` merges its own
     configuration *under* whatever the request already carries -- "the merge below
     lets a value already in `kwargs` stand" -- so a handler installed above it names
     the model by naming it. That is what turns the picker in the editor's UI from a
     label into a setting.
 
-    A second `LiteLLMConfigurer` in `ACPSession.intp` would be the obvious way to do
+    A second `AnyLLMConfigurer` in `ACPSession.intp` would be the obvious way to do
     that, and cannot be. It binds its configuration at construction, where `intp` is
     built once per session and `model` changes whenever the user touches the picker,
     so the choice would freeze at whatever it was when the stack was first built.
     Reading `session.model` per request is the whole point, and it is also why
-    `INHERIT_MODEL` can be honoured at all: `LiteLLMConfigurer` has no way to say
-    "no opinion" -- its `model` defaults to ``gpt-4o``, which would silently overrule
+    `INHERIT_MODEL` can be honoured at all: `AnyLLMConfigurer` has no way to say
+    "no opinion" -- its `model` defaults to ``openai:gpt-4o``, which would silently overrule
     the model the launcher was configured with.
 
     Separate from `ACPSessionReporter`, which also handles `completion`, because these
@@ -1068,32 +1072,47 @@ _TOOL_KINDS: dict[str, acp.schema.ToolKind] = {
 
 
 ASSUMED_CONTEXT_SIZE = 128_000
-"""What to assume a model's context window is when litellm has no entry for it.
+"""What to assume a model's context window is when its provider does not list it.
 
 A guess, and the gauge it feeds is only as good as it. The alternative is no gauge at
-all for any model litellm has not catalogued -- which is most new ones, and anything
-behind a gateway -- and a roughly-right gauge is worth more to someone watching their
-context fill than an empty space where one should be.
+all for any model whose provider lists only names -- which is most direct providers --
+and a roughly-right gauge is worth more to someone watching their context fill than
+an empty space where one should be.
 """
+
+
+@functools.cache
+def _listing(model: str) -> dict[str, typing.Any]:
+    """What `model`'s provider lists about it, or nothing if it lists nothing.
+
+    Gateways such as OpenRouter list a model's context length and prices; most direct
+    providers list only its name, and a model string with no provider in it cannot be
+    looked up at all.
+
+    Cached because it is consulted after every completion and the answer never moves.
+    """
+    try:
+        provider, name = any_llm.AnyLLM.split_model_provider(any_llm_model(model))
+        for listed in any_llm.list_models(provider):
+            if listed.id == name:
+                return listed.model_dump()
+    except Exception:
+        pass
+    return {}
 
 
 @functools.cache
 def _context_size(model: str) -> int:
     """How many tokens of context `model` has.
 
-    litellm's table is the only source this can consult, and it does not cover every
-    model. `ASSUMED_CONTEXT_SIZE` covers the rest, and the guess is said out loud
-    once, since a gauge drawn against the wrong denominator is worth knowing about.
-
-    Cached because it is consulted after every completion and the answer never moves.
+    `ASSUMED_CONTEXT_SIZE` covers a model its provider does not describe, and the
+    guess is said out loud once, since a gauge drawn against the wrong denominator is
+    worth knowing about.
     """
-    try:
-        if size := int(litellm.get_model_info(model).get("max_input_tokens") or 0):
-            return size
-    except Exception:
-        pass
+    if size := int(_listing(model).get("context_length") or 0):
+        return size
     print(
-        f"note: litellm does not know the context size of {model!r}; the usage gauge "
+        f"note: the context size of {model!r} is not listed by its provider; the usage gauge "
         f"assumes {ASSUMED_CONTEXT_SIZE:,} tokens",
         file=sys.stderr,
     )
@@ -1296,12 +1315,12 @@ class ACPSessionReporter(ObjectInterpretation):
             total_tokens=self.tokens["total_tokens"],
         )
 
-    def _account(self, response: typing.Any) -> None:
+    def _account(self, response: typing.Any, model: str | None) -> None:
         """Record what one completion cost and why it stopped.
 
         Read off the value handed back rather than the request, so the streamed and
-        unstreamed paths are accounted identically: `litellm.stream_chunk_builder`
-        rebuilds both fields onto the response it assembles from the chunks.
+        unstreamed paths are accounted identically: `accumulate_chunks` rebuilds both
+        fields onto the response it assembles from the chunks.
         """
         choices = getattr(response, "choices", None) or []
         if choices:
@@ -1309,9 +1328,9 @@ class ACPSessionReporter(ObjectInterpretation):
         if usage := getattr(response, "usage", None):
             for field in ("prompt_tokens", "completion_tokens", "total_tokens"):
                 self.tokens[field] += getattr(usage, field, 0) or 0
-        self._report_context(response)
+        self._report_context(response, model)
 
-    def _report_context(self, response: typing.Any) -> None:
+    def _report_context(self, response: typing.Any, model: str | None) -> None:
         """Say how full the model's context is, after each request.
 
         Not the same number as `usage`, which is what the whole turn *cost* and is
@@ -1321,19 +1340,24 @@ class ACPSessionReporter(ObjectInterpretation):
 
         Everything here is skipped rather than guessed when it cannot be known.
         `size` is required by the protocol, and a denominator nobody measured makes a
-        gauge that lies; litellm does not know every model, and the response is the
-        only place the model's real name can be read once a picker has changed it.
+        gauge that lies; not every provider lists its models' sizes. The request names
+        the model with its provider when a picker has set it; otherwise the response is
+        the only place the model's name can be read.
         """
         usage = getattr(response, "usage", None)
         used = getattr(usage, "prompt_tokens", 0) or 0
-        model = getattr(response, "model", None)
+        model = model or getattr(response, "model", None)
         if not used or not model:
             return
         size = _context_size(model)
         cost = None
         with contextlib.suppress(Exception):
-            if amount := litellm.completion_cost(completion_response=response):
-                cost = acp.schema.Cost(amount=float(amount), currency="USD")
+            pricing = _listing(model)["pricing"]
+            output = getattr(usage, "completion_tokens", 0) or 0
+            amount = used * float(pricing["prompt"]) + output * float(
+                pricing["completion"]
+            )
+            cost = acp.schema.Cost(amount=amount, currency="USD")
         self.session.notify(
             acp.schema.UsageUpdate(
                 session_update="usage_update", used=used, size=int(size), cost=cost
@@ -1358,16 +1382,15 @@ class ACPSessionReporter(ObjectInterpretation):
 
         try:
             response = self._streamed(*args, **kwargs)
-        except (
-            litellm.exceptions.MidStreamFallbackError,
-            litellm.exceptions.APIConnectionError,
-            litellm.exceptions.Timeout,
-        ):
-            # Deliberately narrow: a refused request, a bad model name or a rejected
-            # response schema fails identically unstreamed, and re-issuing it would
-            # only pay for the same error twice.
+        except any_llm.ProviderError as e:
+            # Deliberately narrow: only a failure that never got an HTTP status (a
+            # timeout, a dropped connection). A refused request, a bad model name or a
+            # rejected response schema fails identically unstreamed, and re-issuing it
+            # would only pay for the same error twice.
+            if e.status_code is not None:
+                raise
             response = fwd(*args, **kwargs)
-        self._account(response)
+        self._account(response, kwargs.get("model"))
         return response
 
     def _streamed(self, *args, **kwargs) -> typing.Any:
@@ -1377,13 +1400,9 @@ class ACPSessionReporter(ObjectInterpretation):
         # being typed out; the decoded value is reported once, by the server.
         is_prose = kwargs.get("response_format") is None
         # `include_usage` is what makes the gauge report the provider's own numbers.
-        # Without it a stream carries no usage block at all, and the counts come from
-        # `stream_chunk_builder` tokenizing the request locally -- an estimate that
-        # cannot see cache reads or a provider's own accounting. Asking costs one extra
-        # chunk, whose `choices` are empty; the loop below appends before it skips
-        # those, so it still reaches the builder. A provider that does not understand
-        # the option has it dropped rather than refused, since the launcher sets
-        # `litellm.drop_params`.
+        # Without it a stream carries no usage block at all, and the gauge has nothing
+        # to show. Asking costs one extra chunk, whose `choices` are empty; the loop
+        # below appends before it skips those, so it still reaches the accumulator.
         stream = fwd(
             *args,
             **{
@@ -1397,7 +1416,7 @@ class ACPSessionReporter(ObjectInterpretation):
         # answer from a cache or a fixture and hand back a settled response, ignoring
         # the flag this handler added. Report that in one go rather than trying to
         # iterate a response object.
-        if isinstance(stream, litellm.types.utils.ModelResponse):
+        if isinstance(stream, ChatCompletion):
             return self._settled(stream, is_prose=is_prose)
 
         chunks: list[typing.Any] = []
@@ -1414,8 +1433,10 @@ class ACPSessionReporter(ObjectInterpretation):
 
             if delta.content and is_prose:
                 self.session.notify(acp.update_agent_message_text(delta.content))
-            if reasoning := getattr(delta, "reasoning_content", None):
-                self.session.notify(acp.update_agent_thought_text(reasoning))
+            if delta.reasoning is not None and delta.reasoning.content:
+                self.session.notify(
+                    acp.update_agent_thought_text(delta.reasoning.content)
+                )
 
             for fragment in delta.tool_calls or []:
                 slot = calls.setdefault(
@@ -1438,21 +1459,17 @@ class ACPSessionReporter(ObjectInterpretation):
                     acp.update_tool_call(slot["id"], raw_input=raw_input)
                 )
 
-        return litellm.stream_chunk_builder(chunks, messages=kwargs.get("messages"))
+        return accumulate_chunks(chunks)
 
-    def _settled(
-        self, response: litellm.types.utils.ModelResponse, *, is_prose: bool
-    ) -> typing.Any:
+    def _settled(self, response: ChatCompletion, *, is_prose: bool) -> typing.Any:
         """Report a response that arrived whole, and hand it back unchanged."""
-        choice = response.choices[0]
-        if not isinstance(choice, litellm.types.utils.Choices):
-            return response
-        if (content := choice.message.get("content")) and is_prose:
+        message = assistant_message(response)
+        if (content := message.get("content")) and is_prose:
             self.session.notify(acp.update_agent_message_text(content))
-        if reasoning := choice.message.get("reasoning_content"):
+        if reasoning := message.get("reasoning_content"):
             self.session.notify(acp.update_agent_thought_text(reasoning))
-        for raw in choice.message.get("tool_calls") or []:
-            self._start(str(raw.id), raw.function.name or "?", status="pending")
+        for raw in message.get("tool_calls", []):
+            self._start(raw["id"], raw["function"]["name"] or "?", status="pending")
         return response
 
     @implements(call_tool)

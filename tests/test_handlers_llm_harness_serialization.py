@@ -23,20 +23,24 @@ from typing import (
     Union,
 )
 
-import litellm
+import any_llm
 import pydantic
 import pytest
-from litellm import ChatCompletionMessageToolCall, OpenAIMessageContentListBlock
+from any_llm.types.completion import ChatCompletion
+from openai.types.chat import ChatCompletionMessageToolCall
 from PIL import Image
 
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.execution.restricted import (
     RestrictedPythonExecutor,
 )
+from effectful.handlers.llm.harness.hooks import response_format_param
+from effectful.handlers.llm.harness.provision.any_llm import any_llm_model
 from effectful.handlers.llm.harness.serialization import (
     _NAME2TOOL_KEY,
     _TYPE_CHECK_ANCHOR_KEY,
     CONTENT_BLOCK_TYPES,
+    ContentBlock,
     DecodedToolCall,
     _NameAndTool,
     to_content_blocks,
@@ -738,7 +742,7 @@ def test_define_raises_for_invalid_types(ty):
 # ============================================================================
 
 
-def _linearize(blocks: list[OpenAIMessageContentListBlock]) -> str:
+def _linearize(blocks: list[ContentBlock]) -> str:
     """Concatenate content blocks back into a JSON string."""
     return "".join(b["text"] if b["type"] == "text" else json.dumps(b) for b in blocks)
 
@@ -1217,7 +1221,7 @@ TOOL_CALL_ERROR_CASES = [
 def test_toolcall_decode_rejects_invalid(tool_name, args_json, ctx, exc_type):
     tool_call = ChatCompletionMessageToolCall.model_validate(
         {
-            "type": "tool_call",
+            "type": "function",
             "id": "call_err",
             "function": {"name": tool_name, "arguments": args_json},
         }
@@ -1405,7 +1409,7 @@ def test_callable_encode_no_source_no_docstring():
 # ---------------------------------------------------------------------------
 
 _provider_response_format_xfail = pytest.mark.xfail(
-    reason="Known OpenAI/LiteLLM response_format limitation for this type."
+    reason="Known OpenAI response_format limitation for this type."
 )
 
 
@@ -1456,15 +1460,14 @@ TOOL_PARAM_CASES = _apply_xfails(
 
 @requires_llm
 @pytest.mark.parametrize("ty,_value,ctx", RESPONSE_MODEL_CASES)
-def test_litellm_completion_accepts_encodable_response_model_for_supported_types(
+def test_provider_accepts_encodable_response_model_for_supported_types(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     enc: pydantic.TypeAdapter[Any] = pydantic.TypeAdapter(Encodable[ty])
-    # Use pydantic.create_model so litellm handles strictification
     response_model: type[pydantic.BaseModel] = pydantic.create_model(
         "Response", value=(Encodable[ty], ...)
     )
-    response_format = litellm.utils.type_to_response_format_param(response_model)
+    response_format = dict(response_format_param(response_model))
     name = getattr(ty, "__name__", repr(ty))
     # What's under test is that the type survives as a response_model -- the schema is
     # accepted and what comes back decodes. A model that answers with nothing says
@@ -1472,17 +1475,14 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
     # as a failure of the type. (Seen occasionally on degenerate schemas, e.g. the
     # empty tuple, whose schema admits exactly one instance: `{"value": {}}`.)
     for _attempt in range(3):
-        response = litellm.completion(
-            model=EFFECTFUL_LLM_MODEL,
+        response = any_llm.completion(
+            model=any_llm_model(EFFECTFUL_LLM_MODEL),
             response_format=response_format,
             messages=[{"role": "user", "content": f"Return an instance of {name}."}],
             max_tokens=400,
         )
-        assert isinstance(response, litellm.ModelResponse)
-
-        choice = response.choices[0]
-        assert isinstance(choice, litellm.Choices)
-        content = choice.message.content
+        assert isinstance(response, ChatCompletion)
+        content = response.choices[0].message.content
         if content:
             break
     assert content, f"Expected content in response for {name}"
@@ -1494,7 +1494,7 @@ def test_litellm_completion_accepts_encodable_response_model_for_supported_types
 
 @requires_llm
 @pytest.mark.parametrize("ty,_value,ctx", TOOL_PARAM_CASES)
-def test_litellm_completion_accepts_tool_with_type_as_param(
+def test_provider_accepts_tool_with_type_as_param(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
@@ -1511,19 +1511,19 @@ def test_litellm_completion_accepts_tool_with_type_as_param(
     tool_spec = enc.dump_python(
         _NameAndTool(tool.__name__, tool), mode="json", context=ctx or {}
     )
-    response = litellm.completion(
-        model=EFFECTFUL_LLM_MODEL,
+    response = any_llm.completion(
+        model=any_llm_model(EFFECTFUL_LLM_MODEL),
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[tool_spec],
         tool_choice="none",
         max_tokens=400,
     )
-    assert isinstance(response, litellm.ModelResponse)
+    assert isinstance(response, ChatCompletion)
 
 
 @requires_llm
 @pytest.mark.parametrize("ty,_value,ctx", ROUNDTRIP_CASES)
-def test_litellm_completion_accepts_tool_with_type_as_return(
+def test_provider_accepts_tool_with_type_as_return(
     ty: Any, _value: Any, ctx: Mapping[str, Any] | None
 ) -> None:
     name = re.sub(r"[^0-9a-zA-Z_]+", "_", getattr(ty, "__name__", repr(ty)))
@@ -1540,14 +1540,14 @@ def test_litellm_completion_accepts_tool_with_type_as_return(
     tool_spec = enc.dump_python(
         _NameAndTool(tool.__name__, tool), mode="json", context=ctx or {}
     )
-    response = litellm.completion(
-        model=EFFECTFUL_LLM_MODEL,
+    response = any_llm.completion(
+        model=any_llm_model(EFFECTFUL_LLM_MODEL),
         messages=[{"role": "user", "content": "Return hello, do NOT call any tools."}],
         tools=[tool_spec],
         tool_choice="none",
         max_tokens=400,
     )
-    assert isinstance(response, litellm.ModelResponse)
+    assert isinstance(response, ChatCompletion)
 
 
 # ============================================================================

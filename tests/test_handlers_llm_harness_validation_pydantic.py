@@ -31,7 +31,7 @@ import typing
 import annotated_types
 import pydantic
 import pytest
-from litellm.files.main import ModelResponse
+from any_llm.types.completion import ChatCompletion
 
 from effectful.handlers.llm import Skill, Tool
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
@@ -39,7 +39,7 @@ from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.execution.builtin import BuiltinExecutor
 from effectful.handlers.llm.harness.hooks import AgentLoop, call_assistant, completion
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.handlers.llm.harness.synthesis.body import FinalBodySynthesizer
 from effectful.handlers.llm.harness.synthesis.toolcall import (
     ExpressionToolCaller,
@@ -285,7 +285,7 @@ def _run(call, responses, *extra_handlers, caller=MixedToolCaller):
             if issubclass(caller, ExpressionToolCaller)
             else []
         ),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         *(handler(h) for h in extra_handlers),
         # Last of the `call_agent` handlers, so it intercepts first -- the order
@@ -301,7 +301,7 @@ def _run(call, responses, *extra_handlers, caller=MixedToolCaller):
         return call(), model
 
 
-def _value(payload) -> ModelResponse:
+def _value(payload) -> ChatCompletion:
     """A structured answer, as the model would send it."""
     return make_text_response(json.dumps({"value": payload}))
 
@@ -366,7 +366,7 @@ def test_no_model_call_is_made_when_a_precondition_fails(mod):
     model = ScriptedModel([_value(6)])
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(PydanticSkillArgValidator()),
         handler(model),
@@ -383,7 +383,7 @@ def test_without_the_checker_a_direct_call_is_unvalidated(mod):
     model = ScriptedModel([_value(6)])
     with (
         handler(AgentLoop()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(model),
     ):
@@ -763,7 +763,7 @@ def _unconstrained():
 def _answer_schema(skill, value):
     """The schema of the response format `skill` is asked to answer in."""
     _, model = _run(lambda: skill(value), [_value(value)])
-    return model.response_formats[0].model_json_schema()["properties"]["value"]
+    return model.response_formats[0]["json_schema"]["schema"]["properties"]["value"]
 
 
 def _validated(metadata, value):

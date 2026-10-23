@@ -85,7 +85,7 @@ import typing
 
 import pydantic.dataclasses
 
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.ops.semantics import handler
 
 WORKER_MODEL = "openai/gpt-4.1-mini"
@@ -94,7 +94,7 @@ WORKER_MODEL = "openai/gpt-4.1-mini"
 @contextlib.contextmanager
 def worker(model: str):
     """Scope a call to the cheap model the artifact is being optimized *for*."""
-    with handler(LiteLLMConfigurer(model=model)):
+    with handler(AnyLLMConfigurer(model=model)):
         yield
 
 

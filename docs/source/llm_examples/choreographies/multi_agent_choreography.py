@@ -81,7 +81,7 @@ class ModuleSpec(TypedDict):
 
 
 class PlanResult(TypedDict):
-    """Wrapper for list output — LiteLLM requires a root object, not bare array."""
+    """Wrapper for list output — structured output requires a root object, not bare array."""
 
     modules: list[ModuleSpec]
 

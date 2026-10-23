@@ -37,9 +37,13 @@ import threading
 import time
 import typing
 
-import litellm
 import pydantic
 import pytest
+from any_llm.types.completion import (
+    ChatCompletion,
+    ChatCompletionChunk,
+    CompletionUsage,
+)
 from PIL import Image
 
 from effectful.handlers.llm import Agent, Encodable, Skill, Tool
@@ -49,7 +53,10 @@ from effectful.handlers.llm.harness.legibility.lexical import (
     _tool_paths,
     _tools_in_scope,
 )
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import (
+    AnyLLMConfigurer,
+    any_llm_model,
+)
 from effectful.handlers.llm.harness.serialization import (
     DecodedToolCall,
     _NameAndTool,
@@ -109,6 +116,12 @@ def _no_inherited_model_offers(monkeypatch):
     session a model picker and quietly fail the tests that assert there is none.
     """
     monkeypatch.delenv(library.OFFER_MODELS_ENV, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_model_listings(monkeypatch):
+    """Keep the context gauge from asking a real provider what it lists."""
+    monkeypatch.setattr(library, "_listing", lambda model: {})
 
 
 # ============================================================================
@@ -354,16 +367,22 @@ class _StreamingModel(ObjectInterpretation):
         self,
         *pieces: str,
         model: str = "openrouter/z-ai/glm-5.3-flash",
-        reports: litellm.types.utils.Usage | None = None,
+        reports: CompletionUsage | None = None,
     ):
         self.pieces = pieces or ("ok",)
         self.model = model
         self.reports = reports
         self.requests: list[dict] = []
 
-    def _chunk(self, **kwargs) -> litellm.types.utils.ModelResponseStream:
-        return litellm.types.utils.ModelResponseStream(
-            id="chunked", model=self.model, object="chat.completion.chunk", **kwargs
+    def _chunk(self, **kwargs) -> ChatCompletionChunk:
+        return ChatCompletionChunk.model_validate(
+            {
+                "id": "chunked",
+                "created": 0,
+                "model": self.model,
+                "object": "chat.completion.chunk",
+                **kwargs,
+            }
         )
 
     @implements(completion)
@@ -375,11 +394,11 @@ class _StreamingModel(ObjectInterpretation):
             for piece in (*self.pieces, None):
                 yield self._chunk(
                     choices=[
-                        litellm.types.utils.StreamingChoices(
-                            index=0,
-                            delta=litellm.types.utils.Delta(content=piece),
-                            finish_reason=None if piece else "stop",
-                        )
+                        {
+                            "index": 0,
+                            "delta": {"content": piece},
+                            "finish_reason": None if piece else "stop",
+                        }
                     ]
                 )
             # A provider asked for `include_usage` sends its counts in a final chunk
@@ -595,7 +614,7 @@ def test_a_settled_response_is_handed_back_unchanged():
     with _session(_FakeClient()) as session:
         reporter = library.ACPSessionReporter(session)
         assert reporter._settled(response, is_prose=True) is response
-    assert isinstance(response, litellm.types.utils.ModelResponse)
+    assert isinstance(response, ChatCompletion)
 
 
 def test_an_editor_tool_gets_the_icon_its_kind_deserves():
@@ -1601,15 +1620,38 @@ def test_the_context_gauge_is_pushed_as_the_context_fills():
         "ok",
         usage={"prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010},
     )
-    response.model = "gpt-4o-mini"  # one litellm knows the context size of
 
     with _session(client) as session:
         session.reporter.begin_turn()
-        session.reporter._account(response)
+        session.reporter._account(response, None)
 
     (update,) = [u for u in client.updates if u.session_update == "usage_update"]
     assert update.used == 1000
-    assert update.size > 1000, "the denominator is the model's real context window"
+    assert update.size > 1000
+
+
+def test_the_gauge_reads_the_providers_listing(monkeypatch):
+    """A gateway such as OpenRouter lists a model's context window and prices, and
+    the gauge is drawn against those rather than against a guess."""
+    listing = {
+        "context_length": 50_000,
+        "pricing": {"prompt": "0.000001", "completion": "0.00001"},
+    }
+    monkeypatch.setattr(library, "_listing", lambda model: listing)
+    client = _FakeClient()
+    response = make_text_response(
+        "ok",
+        usage={"prompt_tokens": 1000, "completion_tokens": 10, "total_tokens": 1010},
+    )
+
+    with _session(client) as session:
+        session.reporter.begin_turn()
+        session.reporter._account(response, "openrouter:some/model")
+
+    (update,) = [u for u in client.updates if u.session_update == "usage_update"]
+    assert update.size == 50_000
+    assert update.cost is not None
+    assert update.cost.amount == pytest.approx(1000 * 1e-6 + 10 * 1e-5)
 
 
 def test_the_gauge_survives_the_streaming_path_every_real_turn_takes():
@@ -1617,15 +1659,16 @@ def test_the_gauge_survives_the_streaming_path_every_real_turn_takes():
 
     `ACPSessionReporter.completion` adds ``stream=True`` to every request, so what
     `_report_context` reads is not a provider's response but whatever
-    `litellm.stream_chunk_builder` reassembles from the chunks. Both the fields it
-    needs come from there -- including a `usage` the chunks do not carry, which the
-    builder counts locally off `messages` -- and a gauge that worked on a settled
-    response but not on that one would be a gauge nobody ever sees.
+    `accumulate_chunks` reassembles from the chunks -- including the `usage` the
+    final chunk carries -- and a gauge that worked on a settled response but not on
+    that one would be a gauge nobody ever sees.
     """
     client = _FakeClient()
+    reported = CompletionUsage(prompt_tokens=42, completion_tokens=2, total_tokens=44)
+    model = _StreamingModel("Hello", " world", reports=reported)
     with _session(client) as session:
         session.reporter.begin_turn()
-        with handler(coproduct(_StreamingModel("Hello", " world"), session.reporter)):
+        with handler(coproduct(model, session.reporter)):
             completion(messages=[{"role": "user", "content": "how far along am i"}])
 
     assert [
@@ -1634,16 +1677,15 @@ def test_the_gauge_survives_the_streaming_path_every_real_turn_takes():
         if u.session_update.endswith("message_chunk")
     ] == ["Hello", " world"], "the deltas should have been reported as they arrived"
     (gauge,) = [u for u in client.updates if u.session_update == "usage_update"]
-    assert gauge.used > 0, "counted off the request, since no chunk carried a usage"
+    assert gauge.used == 42
     assert gauge.size > 10_000
 
 
 def test_the_stream_asks_the_provider_to_report_its_own_usage():
     """Streams carry no usage block unless asked, and the gauge is made of one.
 
-    Unasked, `stream_chunk_builder` falls back to tokenizing the request locally --
-    close enough to draw, but blind to cache reads and to the provider's own
-    accounting. This is the request that turns the estimate into a measurement.
+    Unasked, the reassembled response has no usage at all, and the gauge nothing to
+    draw.
     """
     provider = _StreamingModel("hi")
     with _session(_FakeClient()) as session:
@@ -1654,12 +1696,10 @@ def test_the_stream_asks_the_provider_to_report_its_own_usage():
     assert provider.requests[-1]["stream_options"] == {"include_usage": True}
 
 
-def test_a_provider_that_reports_its_usage_is_believed_over_the_estimate():
-    """The counted-locally number is a fallback, and one the user should not be shown
-    when the provider has said what it actually charged for.
-    """
+def test_a_provider_that_reports_its_usage_is_believed():
+    """The gauge shows what the provider said it charged for."""
     client = _FakeClient()
-    reported = litellm.types.utils.Usage(
+    reported = CompletionUsage(
         prompt_tokens=4321, completion_tokens=7, total_tokens=4328
     )
     with _session(client) as session:
@@ -1669,7 +1709,7 @@ def test_a_provider_that_reports_its_usage_is_believed_over_the_estimate():
             completion(messages=[{"role": "user", "content": "hello"}])
 
     (gauge,) = [u for u in client.updates if u.session_update == "usage_update"]
-    assert gauge.used == 4321, "a locally counted estimate would be far smaller"
+    assert gauge.used == 4321
 
 
 def test_a_turns_token_usage_is_reported():
@@ -2545,7 +2585,7 @@ def test_choosing_a_model_answers_with_every_option_again():
 #
 # Storing the choice is half of it; `ACPSessionConfig` is the other half, and
 # these say why it is four lines of its own rather than a second
-# `LiteLLMConfigurer` installed in `ACPSession.intp`.
+# `AnyLLMConfigurer` installed in `ACPSession.intp`.
 # ============================================================================
 
 
@@ -2562,7 +2602,7 @@ def test_the_chosen_model_names_itself_in_the_request():
 def test_inheriting_the_configured_model_names_no_model_at_all():
     """`INHERIT_MODEL` must leave the request alone rather than substitute a guess.
 
-    `LiteLLMConfigurer` defaults to ``model="gpt-4o"`` and merges its config *under*
+    `AnyLLMConfigurer` defaults to ``model="gpt-4o"`` and merges its config *under*
     the request, so one installed here to say nothing would say that instead --
     quietly overruling whatever model the launcher was configured with, in the one
     case the user asked for it to be left alone.
@@ -2579,7 +2619,7 @@ def test_switching_models_mid_session_needs_no_new_handler_stack():
     """`ACPSession.intp` is built once and cached; `session.model` changes whenever.
 
     So the model has to be read per request, from the session, which is what this
-    handler does and what a `LiteLLMConfigurer` cannot: that binds its config at
+    handler does and what a `AnyLLMConfigurer` cannot: that binds its config at
     construction, so the picker would stop working after the stack was first built.
     The same interpretation object serves both requests below, as `intp` would.
     """
@@ -2594,7 +2634,7 @@ def test_switching_models_mid_session_needs_no_new_handler_stack():
 
 
 def test_the_sessions_model_outranks_the_one_the_launcher_configured():
-    """Naming the model above `LiteLLMConfigurer` is what makes it the one sent.
+    """Naming the model above `AnyLLMConfigurer` is what makes it the one sent.
 
     That merge lets a value already on the request stand, which is the property the
     whole arrangement rests on -- and the reason this handler needs to do nothing but
@@ -2603,10 +2643,10 @@ def test_the_sessions_model_outranks_the_one_the_launcher_configured():
     provider = _RecordingModel()
     with _session(_FakeClient()) as session:
         session.model = _MODELS[1]
-        launcher = coproduct(provider, LiteLLMConfigurer(model="configured/at-launch"))
+        launcher = coproduct(provider, AnyLLMConfigurer(model="configured/at-launch"))
         with handler(coproduct(launcher, library.ACPSessionConfig(session))):
             completion(messages=[])
-    assert provider.requests[-1]["model"] == _MODELS[1]
+    assert provider.requests[-1]["model"] == any_llm_model(_MODELS[1])
 
 
 def test_the_mode_can_be_set_through_the_config_option_too():
