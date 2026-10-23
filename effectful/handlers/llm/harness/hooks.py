@@ -213,6 +213,9 @@ def completion(*args, **kwargs) -> typing.Any:
         needs_responses_api,
     )
 
+    # The harness is synchronous throughout, so a call made on a thread that is
+    # running an event loop blocks it, as any other call here would.
+    kwargs = {"allow_running_loop": True, **kwargs}
     if needs_responses_api(*args, **kwargs):
         return completion_via_responses(*args, **kwargs)
     return any_llm.completion(*args, **kwargs)

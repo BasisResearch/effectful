@@ -99,6 +99,21 @@ def attr(span, suffix):
     return span.attributes[f"langfuse.observation.{suffix}"]
 
 
+def metadata(span, key):
+    """Read one observation metadata value off an exported span, decoded.
+
+    langfuse 5 JSON-encodes every metadata value; earlier versions leave strings
+    and booleans as they are.
+    """
+    value = attr(span, f"metadata.{key}")
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
+
+
 def by_type(spans):
     """Group exported spans by their Langfuse observation type.
 
@@ -172,8 +187,8 @@ def test_tracer_traces_skill_completion_and_tool(langfuse_client):
     (tool,) = grouped["tool"]
     assert tool.name == add_numbers.__name__
     assert json.loads(attr(tool, "input")) == {"a": 1, "b": 2}
-    assert attr(tool, "metadata.tool_call_id") == "call_1"
-    assert attr(tool, "metadata.is_final") is False
+    assert metadata(tool, "tool_call_id") == "call_1"
+    assert metadata(tool, "is_final") is False
 
     first, second = grouped["generation"]
     assert [g.name for g in (first, second)] == ["completion", "completion"]
@@ -212,9 +227,7 @@ def test_tracer_records_response_format_metadata(langfuse_client):
 
     client.flush()
     (span,) = exporter.get_finished_spans()
-    assert json.loads(attr(span, "metadata.response_format")) == (
-        Answer.model_json_schema()
-    )
+    assert metadata(span, "response_format") == (Answer.model_json_schema())
 
 
 # ============================================================================
