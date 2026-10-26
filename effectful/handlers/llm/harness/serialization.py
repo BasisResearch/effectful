@@ -619,6 +619,49 @@ def _pydantic_type_tuple(ty):
     ]
 
 
+class _KeyValuePair[K, V](pydantic.BaseModel):
+    """One entry of a mapping, in a form strict schemas can describe."""
+
+    model_config = pydantic.ConfigDict(extra="forbid")
+
+    key: K
+    value: V
+
+
+@TypeToPydanticType.register(collections.abc.Mapping)
+def _pydantic_type_mapping(ty):
+    """Encode mappings as lists of key-value pairs, or as JSON objects if keyed by strings.
+
+    OpenAI's strict mode rejects objects with arbitrary keys, so what the model
+    writes is described as a list of `_KeyValuePair`. Mappings not parameterized
+    by a key and value type, such as TypedDicts, keep Pydantic's own encoding.
+    """
+    args = typing.get_args(ty)
+    if typing_extensions.is_typeddict(typing.get_origin(ty) or ty) or len(args) != 2:
+        return _pydantic_type_base(ty)
+    pair = _KeyValuePair[args]
+
+    def _decode(value, info: pydantic.ValidationInfo):
+        """Collect the key-value pairs the model writes into the mapping Pydantic validates."""
+        if isinstance(value, list):
+            entries = pydantic.TypeAdapter(list[pair]).validate_python(
+                value, context=info.context
+            )
+            return {entry.key: entry.value for entry in entries}
+        return value
+
+    def _serialize(value):
+        return [pair.model_construct(key=k, value=v) for k, v in value.items()]
+
+    validator = pydantic.BeforeValidator(_decode, json_schema_input_type=list[pair])
+    key = args[0]
+    if isinstance(key, type) and issubclass(key, str):
+        return typing.Annotated[ty, validator]
+    return typing.Annotated[
+        ty, validator, pydantic.PlainSerializer(_serialize, return_type=list[pair])
+    ]
+
+
 @TypeToPydanticType.register(Term)
 def _pydantic_type_term(ty: type[Term]):
     raise pydantic.errors.PydanticSchemaGenerationError(
