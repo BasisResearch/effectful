@@ -35,6 +35,10 @@ if typing.TYPE_CHECKING:
             name: str | None = None,
         ) -> "Operation[Concatenate[Any, ...], T]": ...
         @overload
+        def __call__(
+            self, default: property, *, name: str | None = None
+        ) -> "_PropertyOperationDescriptor": ...
+        @overload
         def __call__[**P, T](
             self, default: Callable[P, T], *, name: str | None = None
         ) -> "Operation[P, T]": ...
@@ -129,6 +133,18 @@ class _ClassMethodOpDescriptor[S, **P, T, O: "Operation[..., Any]"](
             bound_op = self._define(super().__get__(instance, owner))
             setattr(owner, self._name_on_owner, bound_op)
             return bound_op
+
+
+class _PropertyOperationDescriptor(property):
+    """Expose a property's getter operation on the class and its value on instances."""
+
+    def __get__(self, instance, owner=None):
+        if instance is None:
+            return self.fget
+        return super().__get__(instance, owner)
+
+    def getter(self, fget):
+        return type(self)(Operation.define(fget), self.fset, self.fdel, self.__doc__)
 
 
 INSTANCE_OP_PREFIX = "__instanceop"
@@ -263,6 +279,23 @@ class Operation[**Q, V]:
           This feature can be used to conveniently define the syntax of a
           domain-specific language.
 
+        * Defining effectful properties:
+
+          Put ``define`` outside ``property``. Class access exposes the getter
+          operation for handling; instance access evaluates it. Setters and
+          deleters retain their ordinary property behavior.
+
+          >>> class Box:
+          ...     @Operation.define
+          ...     @property
+          ...     def value(self) -> int:
+          ...         return 1
+          >>> Box().value
+          1
+          >>> with handler({Box.value: lambda instance: 2}):
+          ...     print(Box().value)
+          2
+
         * Defining free variables:
 
           Passing :func:`Operation.define` a type creates a free variable.
@@ -395,6 +428,18 @@ class Operation[**Q, V]:
     @classmethod
     def _define_classmethod(cls, default, **kwargs):
         return _ClassMethodOpDescriptor(cls.define, default.__func__)
+
+    @define.register(property)
+    @classmethod
+    def _define_property(cls, default: property, **kwargs):
+        if default.fget is None:
+            raise TypeError("An operation property requires a getter")
+        return _PropertyOperationDescriptor(
+            cls.define(default.fget, **kwargs),
+            default.fset,
+            default.fdel,
+            default.__doc__,
+        )
 
     @define.register(functools.singledispatchmethod)
     @classmethod
