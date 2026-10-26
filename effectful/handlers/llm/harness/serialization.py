@@ -141,7 +141,7 @@ def format_as_content_blocks(
 
         obj, _ = formatter.get_field(field_name, (), env)
         encoder: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[nested_type(obj).value]  # type: ignore[misc]
+            Encodable[nested_type(obj).value]  # type: ignore[misc, arg-type]
         )
         encoded_obj = encoder.dump_python(obj, mode="json", context=env)
         for part in to_content_blocks(encoded_obj):
@@ -851,7 +851,7 @@ def _validate_tool_call(
         )
         param = sig.parameters[name]
         arg_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-            Encodable[param.annotation]  # type: ignore[name-defined]
+            Encodable[param.annotation]  # type: ignore[name-defined, arg-type]
         )
         decoded_args[name] = arg_enc.validate_python(raw_arg, context=ctx)
     return DecodedToolCall(
@@ -876,7 +876,7 @@ def _serialize_tool_call(
     else:
         for k, v in value.bound_args.arguments.items():
             v_enc: pydantic.TypeAdapter[typing.Any] = pydantic.TypeAdapter(
-                Encodable[nested_type(v).value]  # type: ignore[misc]
+                Encodable[nested_type(v).value]  # type: ignore[misc, arg-type]
             )
             encoded_args[k] = v_enc.dump_python(v, mode="json", context=ctx)
     return OpenAIChatCompletionMessageToolCall.model_validate(
