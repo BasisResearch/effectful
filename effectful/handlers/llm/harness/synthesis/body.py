@@ -48,11 +48,11 @@ import pydantic
 
 import effectful.handlers.llm.harness.execution.hooks
 import effectful.handlers.llm.harness.validation.hooks
-from effectful.handlers.llm.harness.durability.transaction import (
+from effectful.handlers.llm.harness.durability.compaction import (
     CompactionScope,
-    HistoryBuilder,
     compact_,
 )
+from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.hooks import (
     PromptInjectingInterpretation,
     ToolCallExecutionError,

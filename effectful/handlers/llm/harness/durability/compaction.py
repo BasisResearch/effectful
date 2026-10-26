@@ -1,15 +1,89 @@
-"""Threshold-driven, lossy compaction of the middle of an agent transcript."""
+"""Threshold-driven compaction of an agent transcript: lossy, by the harness, or
+forced on the model."""
 
 import collections.abc
+import dataclasses
+import enum
 import json
 import typing
 from collections.abc import Sequence
 
+import litellm
+
 from effectful.handlers.llm.harness.durability.transaction import HistoryBuilder
 from effectful.handlers.llm.harness.durability.truncation import _truncate_content
-from effectful.handlers.llm.harness.hooks import Message, call_assistant, completion
-from effectful.ops.semantics import fwd
+from effectful.handlers.llm.harness.hooks import (
+    AssistantResult,
+    Message,
+    PromptInjectingInterpretation,
+    ResultDecodingError,
+    ToolCallDecodingError,
+    call_assistant,
+    completion,
+)
+from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.serialization import ToolCallID
+from effectful.handlers.llm.types import Tool
+from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
+
+
+class CompactionScope(enum.StrEnum):
+    """How much of the conversation a compacting tool call drops.
+
+    ``"none"`` compacts nothing. ``"turn"`` drops the current call's earlier rounds,
+    keeping every previous call. ``"conversation"`` additionally drops those previous
+    calls, leaving the system message, the request and the asking round.
+    """
+
+    NONE = "none"
+    TURN = "turn"
+    CONVERSATION = "conversation"
+
+
+def compact_(
+    history: collections.abc.MutableSequence[Message],
+    tool_call_id: ToolCallID,
+    scope: CompactionScope,
+) -> None:
+    """Compact a history in-place, keeping the request and the asking round.
+
+    `tool_call_id` identifies the call that asked, and so the round to keep: the
+    assistant message advertising it, and everything after (which is exactly the
+    tool messages answering it and its siblings, whether they were appended
+    before this one or are still to come -- truncation only ever removes messages
+    *ahead* of that assistant message, so no tool message is ever orphaned from
+    the call it answers).
+
+    The request kept is the last user message before that round -- the one this
+    call opened -- carried over untouched.
+
+    A no-op for ``scope="none"``, and whenever the shape this reads off the
+    history is not the one it expects: no assistant message advertising
+    `tool_call_id`, or no user message ahead of it. Declining is the right
+    failure here; a compaction is a courtesy, and a wrong guess about the shape
+    would corrupt the history the call still has to finish over. A conversation
+    that opens with something other than a system message simply has no head to
+    keep, which is not a failure.
+    """
+    asking, request = None, None
+    for i, message in reversed(list(enumerate(history))):
+        if message["role"] == "assistant" and any(
+            call["id"] == tool_call_id for call in message.get("tool_calls") or []
+        ):
+            for j in reversed(range(i)):
+                if history[j]["role"] == "user":
+                    asking, request = i, j
+                    break
+            break
+
+    if scope == CompactionScope.NONE or asking is None or request is None:
+        return
+    elif scope == CompactionScope.CONVERSATION:
+        history[:] = [history[0], history[request], *history[asking:]]
+    elif scope == CompactionScope.TURN:
+        history[:] = [*history[:request], history[request], *history[asking:]]
+
 
 _SUMMARY_PREFIX = "[Earlier conversation summary]\n"
 
@@ -154,3 +228,104 @@ class MiddleCompactor(ObjectInterpretation):
         history.clear()
         history.extend(compact_history)
         return fwd(list(compact_history), response_type, env, tools)
+
+
+@dataclasses.dataclass
+class ReplCompactor(PromptInjectingInterpretation):
+    """
+    This conversation has a token budget. When a request would exceed it, you
+    are told so at the end of that request and must call `exec_code` with the
+    `compact` scope you are given; any other reply is rejected and you are asked
+    again. Use the snippet to promote anything you still need onto `self`;
+    your message with the call, the snippet and its output survive the compaction.
+    """
+
+    hard_tokens: int
+    scope: CompactionScope = CompactionScope.CONVERSATION
+
+    def _over_budget(self, messages: Sequence[Message]) -> bool:
+        """Whether `messages` is over budget with at least two rounds to drop.
+
+        One round is what a previous forced compaction kept, so requiring a second
+        keeps a floor above ``hard_tokens`` from forcing every round. The count uses
+        litellm's default tokenizer and leaves out tool schemas, so it is approximate
+        and low.
+        """
+        dropped = messages
+        if self.scope is CompactionScope.TURN:
+            request = max(
+                (i for i, m in enumerate(messages) if m["role"] == "user"), default=-1
+            )
+            dropped = messages[request + 1 :]
+        return (
+            sum(m["role"] == "assistant" for m in dropped) >= 2
+            and litellm.token_counter(messages=list(messages)) >= self.hard_tokens
+        )
+
+    @implements(call_assistant)
+    def call_assistant[T](
+        self,
+        messages: Sequence[Message],
+        response_type: type[T],
+        env: collections.abc.Mapping[str, typing.Any],
+        tools: collections.abc.Set[Tool] = frozenset(),
+    ) -> AssistantResult[T]:
+        """Nudge an over-budget request to compact through `exec_code`, force the
+        call, and reject any other reply.
+
+        The tools are left as they are and the nudge is appended after the history,
+        outside the stored transcript, so the request reuses the cached prefix.
+        Installed inside `HistoryBuilder`, so a rejected reply is recorded with its
+        feedback before the retry.
+        """
+        from effectful.handlers.llm.harness.synthesis.snippet import (
+            StatefulReplSynthesizer,
+        )
+
+        exec_code = StatefulReplSynthesizer.exec_code
+        if exec_code not in tools or not self._over_budget(messages):
+            return fwd()
+        name = exec_code.__name__
+        nudge: Message = {
+            "role": "user",
+            "content": (
+                f"This conversation is over its token budget. Call `{name}` with "
+                f'`compact="{self.scope.value}"` now, saving anything you still '
+                "need onto `self` first. ANY OTHER ACTION WILL BE REJECTED."
+            ),
+        }
+        forced = LiteLLMConfigurer(
+            model=None,
+            tool_choice={"type": "function", "function": {"name": name}},
+            # Lets litellm downgrade the choice to "auto" for models that reject
+            # forced tool use; the check below still holds.
+            drop_params=True,
+        )
+        with handler(forced):
+            message, tool_calls, result = fwd(
+                [*messages, nudge], response_type, env, tools
+            )
+        if not tool_calls:
+            raise ResultDecodingError(
+                ValueError(
+                    "the conversation is over its token budget, so this round must "
+                    f'call `{name}` with `compact="{self.scope.value}"`, not answer'
+                ),
+                raw_message=message,
+            )
+        raw_calls = {raw["id"]: raw for raw in message.get("tool_calls") or []}
+        for call in tool_calls:
+            compact = call.bound_args.arguments.get("compact")
+            if call.tool is not exec_code or compact != self.scope:
+                raise ToolCallDecodingError(
+                    original_error=ValueError(
+                        "the conversation is over its token budget, so this round "
+                        f'must call `{name}` with `compact="{self.scope.value}"`, '
+                        f"not `{call.name}` with `compact={compact!r}`"
+                    ),
+                    raw_message=message,
+                    raw_tool_call=litellm.types.utils.ChatCompletionMessageToolCall(
+                        **raw_calls[call.id]
+                    ),
+                )
+        return message, tool_calls, result

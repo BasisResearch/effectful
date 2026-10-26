@@ -21,9 +21,10 @@ class LiteLLMConfigurer(ObjectInterpretation):
 
     config: collections.abc.Mapping[str, typing.Any]
 
-    def __init__(self, model="gpt-4o", **config):
+    def __init__(self, model: str | None = "gpt-4o", **config):
+        """``model=None`` adds no model, so an enclosing configurer's applies."""
         self.config = {
-            "model": model,
+            **({"model": model} if model is not None else {}),
             **inspect.signature(litellm.completion).bind_partial(**config).kwargs,
         }
 

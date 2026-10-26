@@ -17,9 +17,9 @@ import pytest
 import tenacity
 from RestrictedPython import RestrictingNodeTransformer
 
+from effectful.handlers.llm.harness.durability.compaction import CompactionScope
 from effectful.handlers.llm.harness.durability.retrying import TenacityRetryer
 from effectful.handlers.llm.harness.durability.transaction import (
-    CompactionScope,
     HistoryBuilder,
     transaction,
 )

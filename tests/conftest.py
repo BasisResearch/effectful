@@ -190,10 +190,12 @@ class MockCompletionHandler(ObjectInterpretation):
         self.responses = responses
         self.call_count = 0
         self.received_messages: list = []
+        self.received_kwargs: list[dict] = []
 
     @implements(completion)
     def _completion(self, messages=None, **kwargs):
         self.received_messages.append(list(messages) if messages else [])
+        self.received_kwargs.append(kwargs)
         response = self.responses[min(self.call_count, len(self.responses) - 1)]
         self.call_count += 1
         return response
