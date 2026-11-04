@@ -150,6 +150,12 @@ class Tool[**P, T](effectful.ops.types.Operation[P, T]):
 
     @typing.overload
     @classmethod
+    def define(
+        cls, default: property, *args, **kwargs
+    ) -> "effectful.ops.types._PropertyOperationDescriptor": ...
+
+    @typing.overload
+    @classmethod
     def define[**Q, V](
         cls, default: collections.abc.Callable[Q, V], *args, **kwargs
     ) -> "Tool[Q, V]": ...
@@ -410,7 +416,7 @@ class Skill[**P, T](Tool[P, T]):
             result.__self__ = instance  # type: ignore[attr-defined]
         return result
 
-    # Skills reject type and singledispatchmethod defaults, unlike Tool.define.
+    # Skills reject type, singledispatchmethod and property defaults, unlike Tool.define.
     @typing.overload
     @classmethod
     def define(cls, default: type, *args, **kwargs) -> typing.NoReturn: ...
@@ -426,6 +432,10 @@ class Skill[**P, T](Tool[P, T]):
     def define(
         cls, default: functools.singledispatchmethod, *args, **kwargs
     ) -> typing.NoReturn: ...
+
+    @typing.overload
+    @classmethod
+    def define(cls, default: property, *args, **kwargs) -> typing.NoReturn: ...
 
     @typing.overload
     @classmethod
