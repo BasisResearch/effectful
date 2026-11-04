@@ -25,6 +25,12 @@ INTERPRETATION: contextvars.ContextVar[Interpretation] = contextvars.ContextVar(
 )
 
 
+RECONSTRUCTING: contextvars.ContextVar[typing.Any] = contextvars.ContextVar(
+    "RECONSTRUCTING", default=None
+)
+"""The term :func:`effectful.ops.semantics.evaluate` is currently rebuilding, if any."""
+
+
 get_interpretation = INTERPRETATION.get
 
 
