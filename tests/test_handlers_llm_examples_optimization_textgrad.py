@@ -36,7 +36,7 @@ from effectful.handlers.llm.harness.hooks import (
     call_agent,
 )
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.ops.semantics import handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from tests.conftest import MockCompletionHandler, make_text_response
@@ -342,7 +342,7 @@ def full_stack(mock):
         handler(mock),
         handler(AgentLoop()),
         handler(LexicalToolExtractor()),
-        handler(LiteLLMConfigurer(model="test-model")),
+        handler(AnyLLMConfigurer(model="test-model")),
         handler(HistoryBuilder()),
         handler(TenacityRetryer()),
     )

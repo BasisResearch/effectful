@@ -16,7 +16,7 @@ import threading
 from pathlib import Path
 
 import pytest
-from litellm import ModelResponse
+from any_llm.types.completion import ChatCompletion
 
 from effectful.handlers.llm import Agent, Skill
 from effectful.handlers.llm.harness.durability.persistence import SQLitePersister
@@ -28,10 +28,11 @@ from effectful.handlers.llm.harness.hooks import (
     completion,
 )
 from effectful.handlers.llm.harness.legibility.lexical import LexicalToolExtractor
-from effectful.handlers.llm.harness.provision.litellm import LiteLLMConfigurer
+from effectful.handlers.llm.harness.provision.any_llm import AnyLLMConfigurer
 from effectful.ops.semantics import fwd, handler
 from effectful.ops.syntax import ObjectInterpretation, implements
 from effectful.ops.types import NotHandled
+from tests.conftest import chat_completion
 
 # ---------------------------------------------------------------------------
 # Shared test doubles and fixtures
@@ -158,7 +159,7 @@ class _FakeAgentCalls(ObjectInterpretation):
 class MockCompletionHandler(ObjectInterpretation):
     """Mock handler that returns pre-configured completion responses."""
 
-    def __init__(self, responses: list[ModelResponse]):
+    def __init__(self, responses: list[ChatCompletion]):
         self.responses = responses
         self.call_count = 0
         self.received_messages: list[list[dict]] = []
@@ -171,8 +172,8 @@ class MockCompletionHandler(ObjectInterpretation):
         return response
 
 
-def make_text_response(content: str) -> ModelResponse:
-    return ModelResponse(
+def make_text_response(content: str) -> ChatCompletion:
+    return chat_completion(
         id="test",
         choices=[
             {
@@ -187,8 +188,8 @@ def make_text_response(content: str) -> ModelResponse:
 
 def make_tool_call_response(
     tool_name: str, tool_args: str, tool_call_id: str = "call_1"
-) -> ModelResponse:
-    return ModelResponse(
+) -> ChatCompletion:
+    return chat_completion(
         id="test",
         choices=[
             {
@@ -635,7 +636,7 @@ class TestHandlerComposition:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
             handler(TenacityRetryer()),
@@ -662,7 +663,7 @@ class TestHandlerComposition:
         with (
             handler(AgentLoop()),
             handler(LexicalToolExtractor()),
-            handler(LiteLLMConfigurer(model="test")),
+            handler(AnyLLMConfigurer(model="test")),
             handler(HistoryBuilder()),
             handler(mock),
         ):
