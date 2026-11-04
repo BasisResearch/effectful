@@ -23,6 +23,7 @@ Table of Contents
    :caption: Documentation
 
    effectful
+   jax_effects
 
 Indices and Tables
 ==================

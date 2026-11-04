@@ -5,7 +5,7 @@ import jax.numpy.linalg
 from effectful.handlers.jax._handlers import _register_jax_op
 
 for name, op in jax.numpy.linalg.__dict__.items():
-    if callable(op):
+    if callable(op) and not isinstance(op, type):
         globals()[name] = _register_jax_op(op)
 
 # Tell mypy about our wrapped functions.

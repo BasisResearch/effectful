@@ -1,9 +1,11 @@
 import functools
 import operator
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any, cast
 
 import jax
+import numpy as np
 
 import effectful.handlers.jax.numpy as jnp
 from effectful.handlers.jax._handlers import (
@@ -18,41 +20,88 @@ from effectful.ops.syntax import defdata
 from effectful.ops.types import Expr, NotHandled, Operation, Term
 
 
+@_register_jax_op
+def _array_item(array, *args):
+    return array.item(*args)
+
+
+@_register_jax_op
+def _array_view(array, dtype=None, type=None):
+    return array.view(dtype=dtype, type=type)
+
+
+@_register_jax_op
+def _array_to_device(array, device, *, stream=None):
+    return array.to_device(device, stream=stream)
+
+
+@_register_jax_op
+def _array_itemsize(array):
+    return array.itemsize
+
+
 class _IndexUpdateHelper:
-    """Helper class to implement array-style .at[index].set() updates for effectful arrays."""
+    """Array-style ``.at[index]`` access for effectful arrays."""
 
     def __init__(self, array):
         self.array = array
 
-    def __getitem__(self, key):
-        return _IndexUpdateRef(self.array, key)
+    def __getitem__(self, key) -> "ArrayIndex":
+        return ArrayIndex(self.array, key)
 
 
-class _IndexUpdateRef:
-    """Reference to an array position for updates via .at[index]."""
+@jax.tree_util.register_dataclass
+@dataclass(eq=False)
+class ArrayIndex:
+    """An indexed selection returned by ``array.at[key]``.
 
-    def __init__(self, array, key):
-        self.array = array
-        self.key = key
+    Handle operations such as ``ArrayIndex.get`` or ``ArrayIndex.set`` to
+    implement indexed reads and updates. The first handler argument is this
+    selection, exposing the whole logical ``array`` and its ``key``.
+    """
 
-    def set(self, value):
-        """Set values at the indexed positions."""
+    array: Any
+    key: Any
 
-        # Create a JAX at operation that properly handles the indexing
-        @_register_jax_op
-        def jax_at_set(arr, index_key, val):
-            # JAX's at expects the index to be unpacked correctly
-            if isinstance(index_key, tuple) and len(index_key) == 1:
-                # Single index case
-                return arr.at[index_key[0]].set(val)
-            elif isinstance(index_key, tuple):
-                # Multiple indices case
-                return arr.at[index_key].set(val)
-            else:
-                # Direct index case
-                return arr.at[index_key].set(val)
+    @_register_jax_op
+    def get(self, **kwargs):
+        return self.array.at[self.key].get(**kwargs)
 
-        return jax_at_set(self.array, self.key, value)
+    @_register_jax_op
+    def set(self, values, **kwargs):
+        return self.array.at[self.key].set(values, **kwargs)
+
+    @_register_jax_op
+    def add(self, values, **kwargs):
+        return self.array.at[self.key].add(values, **kwargs)
+
+    @_register_jax_op
+    def subtract(self, values, **kwargs):
+        return self.array.at[self.key].subtract(values, **kwargs)
+
+    @_register_jax_op
+    def multiply(self, values, **kwargs):
+        return self.array.at[self.key].multiply(values, **kwargs)
+
+    @_register_jax_op
+    def divide(self, values, **kwargs):
+        return self.array.at[self.key].divide(values, **kwargs)
+
+    @_register_jax_op
+    def power(self, values, **kwargs):
+        return self.array.at[self.key].power(values, **kwargs)
+
+    @_register_jax_op
+    def min(self, values, **kwargs):
+        return self.array.at[self.key].min(values, **kwargs)
+
+    @_register_jax_op
+    def max(self, values, **kwargs):
+        return self.array.at[self.key].max(values, **kwargs)
+
+    @_register_jax_op
+    def apply(self, func, **kwargs):
+        return self.array.at[self.key].apply(func, **kwargs)
 
 
 @defdata.register(jax.Array)
@@ -67,23 +116,14 @@ def _embed_array(ty, op, /, *args, **kwargs):
         return _ArrayTerm(op, *args, **kwargs)
 
 
-class _ArrayTerm(Term[jax.Array]):
-    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
-        self._op = op
-        self._args = args
-        self._kwargs = kwargs
+class ArrayMethods:
+    """Forward JAX array operators and methods to their effectful mirrors.
 
-    @property
-    def op(self) -> Operation[..., jax.Array]:
-        return self._op
-
-    @property
-    def args(self) -> tuple:
-        return self._args
-
-    @property
-    def kwargs(self) -> dict:
-        return self._kwargs
+    Custom array pytrees can inherit this mixin without becoming symbolic terms
+    or implementing ``__jax_array__``. Override shape properties when they can
+    be determined directly from the representation. Dataclasses should use
+    ``eq=False`` to preserve the elementwise equality methods.
+    """
 
     def __getitem__(
         self,
@@ -102,13 +142,68 @@ class _ArrayTerm(Term[jax.Array]):
     def __len__(self):
         return self.shape[0]
 
+    def __iter__(self):
+        for i in range(len(self)):
+            yield self[i]
+
     @property
     def ndim(self) -> Expr[int]:
         return jnp.ndim(cast(jax.Array, self))
 
     @property
+    def dtype(self):
+        return jnp.result_type(cast(jax.Array, self))
+
+    @property
+    def itemsize(self):
+        return _array_itemsize(self)
+
+    @property
+    def nbytes(self):
+        return self.size * self.itemsize
+
+    @property
     def T(self) -> jax.Array:
         return jnp.transpose(cast(jax.Array, self))
+
+    @property
+    def mT(self) -> jax.Array:
+        return jnp.matrix_transpose(cast(jax.Array, self))
+
+    @property
+    def real(self) -> jax.Array:
+        return jnp.real(cast(jax.Array, self))
+
+    @property
+    def imag(self) -> jax.Array:
+        return jnp.imag(cast(jax.Array, self))
+
+    @property
+    def flat(self):
+        raise NotImplementedError(
+            "JAX arrays do not implement the arr.flat property; use arr.flatten() instead."
+        )
+
+    def __array_namespace__(self, *, api_version=None):
+        version = jax.numpy.__array_api_version__
+        if api_version is not None and api_version != version:
+            raise ValueError(
+                f"{api_version=!r} is not available; available versions are: {[version]}"
+            )
+        return jnp
+
+    def __setitem__(self, key, value):
+        raise TypeError("JAX arrays are immutable; use arr.at[key].set(value) instead.")
+
+    def __copy__(self):
+        return self.copy()
+
+    def __deepcopy__(self, memo):
+        return self.copy()
+
+    def __round__(self, ndigits=None):
+        result = self.round(decimals=ndigits or 0)
+        return result.astype(int) if ndigits is None else result
 
     def __add__(self, other: jax.Array) -> jax.Array:
         return jnp.add(cast(jax.Array, self), other)
@@ -167,6 +262,12 @@ class _ArrayTerm(Term[jax.Array]):
     def __rmod__(self, other: jax.Array) -> jax.Array:
         return jnp.mod(other, cast(jax.Array, self))
 
+    def __divmod__(self, other):
+        return jnp.divmod(cast(jax.Array, self), other)
+
+    def __rdivmod__(self, other):
+        return jnp.divmod(other, cast(jax.Array, self))
+
     def __lt__(self, other: jax.Array) -> jax.Array:
         return jnp.less(cast(jax.Array, self), other)
 
@@ -223,40 +324,53 @@ class _ArrayTerm(Term[jax.Array]):
         """Return an IndexUpdateHelper for array updates."""
         return _IndexUpdateHelper(self)
 
-    def __iter__(self):
-        raise TypeError("A free array is not iterable.")
+    def all(self, axis=None, out=None, keepdims=False, *, where=None):
+        return jnp.all(
+            cast(jax.Array, self), axis=axis, out=out, keepdims=keepdims, where=where
+        )
 
-    def all(self, axis=None, keepdims=False, *, where=None):
-        return jnp.all(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)
+    def any(self, axis=None, out=None, keepdims=False, *, where=None):
+        return jnp.any(
+            cast(jax.Array, self), axis=axis, out=out, keepdims=keepdims, where=where
+        )
 
-    def any(self, axis=None, keepdims=False, *, where=None):
-        return jnp.any(cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where)
+    def argmax(self, axis=None, out=None, keepdims=None):
+        return jnp.argmax(cast(jax.Array, self), axis=axis, out=out, keepdims=keepdims)
 
-    def argmax(self, axis=None, keepdims=False):
-        return jnp.argmax(cast(jax.Array, self), axis=axis, keepdims=keepdims)
-
-    def argmin(self, axis=None, keepdims=False):
-        return jnp.argmin(cast(jax.Array, self), axis=axis, keepdims=keepdims)
+    def argmin(self, axis=None, out=None, keepdims=None):
+        return jnp.argmin(cast(jax.Array, self), axis=axis, out=out, keepdims=keepdims)
 
     def argpartition(self, kth, axis=-1):
         return jnp.argpartition(cast(jax.Array, self), kth, axis=axis)
 
-    def argsort(self, axis=-1, descending=False, stable=True):
+    def argsort(self, axis=-1, *, kind=None, order=None, stable=True, descending=False):
         return jnp.argsort(
-            cast(jax.Array, self), axis=axis, descending=descending, stable=stable
+            cast(jax.Array, self),
+            axis=axis,
+            kind=kind,
+            order=order,
+            stable=stable,
+            descending=descending,
         )
 
-    def astype(self, dtype):
-        return jnp.astype(cast(jax.Array, self), dtype)
+    def astype(self, dtype, copy=False, device=None):
+        return jnp.astype(cast(jax.Array, self), dtype, copy=copy, device=device)
 
-    def choose(self, choices, mode="raise"):
-        return jnp.choose(cast(jax.Array, self), choices, mode=mode)
+    def choose(self, choices, out=None, mode="raise"):
+        return jnp.choose(cast(jax.Array, self), choices, out=out, mode=mode)
 
     def clip(self, min=None, max=None):
         return jnp.clip(cast(jax.Array, self), min=min, max=max)
 
-    def compress(self, condition, axis=None):
-        return jnp.compress(condition, cast(jax.Array, self), axis=axis)
+    def compress(self, condition, axis=None, *, out=None, size=None, fill_value=0):
+        return jnp.compress(
+            condition,
+            cast(jax.Array, self),
+            axis=axis,
+            out=out,
+            size=size,
+            fill_value=fill_value,
+        )
 
     def conj(self):
         return jnp.conj(cast(jax.Array, self))
@@ -267,38 +381,56 @@ class _ArrayTerm(Term[jax.Array]):
     def copy(self):
         return jnp.copy(cast(jax.Array, self))
 
-    def cumprod(self, axis=None, dtype=None):
-        return jnp.cumprod(cast(jax.Array, self), axis=axis, dtype=dtype)
+    def cumprod(self, axis=None, dtype=None, out=None):
+        return jnp.cumprod(cast(jax.Array, self), axis=axis, dtype=dtype, out=out)
 
-    def cumsum(self, axis=None, dtype=None):
-        return jnp.cumsum(cast(jax.Array, self), axis=axis, dtype=dtype)
+    def cumsum(self, axis=None, dtype=None, out=None):
+        return jnp.cumsum(cast(jax.Array, self), axis=axis, dtype=dtype, out=out)
 
     def diagonal(self, offset=0, axis1=0, axis2=1):
         return jnp.diagonal(
             cast(jax.Array, self), offset=offset, axis1=axis1, axis2=axis2
         )
 
-    def dot(self, b):
-        return jnp.dot(cast(jax.Array, self), b)
+    def dot(self, b, *, precision=None, preferred_element_type=None):
+        return jnp.dot(
+            cast(jax.Array, self),
+            b,
+            precision=precision,
+            preferred_element_type=preferred_element_type,
+        )
 
-    def max(self, axis=None, keepdims=False, initial=None, where=None):
+    def flatten(self, order="C", *, out_sharding=None):
+        return jnp.ravel(cast(jax.Array, self), order=order, out_sharding=out_sharding)
+
+    def item(self, *args):
+        return _array_item(self, *args)
+
+    def max(self, axis=None, out=None, keepdims=False, initial=None, where=None):
         return jnp.max(
             cast(jax.Array, self),
             axis=axis,
+            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
         )
 
-    def mean(self, axis=None, keepdims=False, *, where=None):
+    def mean(self, axis=None, dtype=None, out=None, keepdims=False, *, where=None):
         return jnp.mean(
-            cast(jax.Array, self), axis=axis, keepdims=keepdims, where=where
+            cast(jax.Array, self),
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            keepdims=keepdims,
+            where=where,
         )
 
-    def min(self, axis=None, keepdims=False, initial=None, where=None):
+    def min(self, axis=None, out=None, keepdims=False, initial=None, where=None):
         return jnp.min(
             cast(jax.Array, self),
             axis=axis,
+            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
@@ -308,61 +440,108 @@ class _ArrayTerm(Term[jax.Array]):
         return jnp.nonzero(cast(jax.Array, self), size=size, fill_value=fill_value)
 
     def prod(
-        self, axis=None, keepdims=False, initial=None, where=None, promote_integers=True
+        self,
+        axis=None,
+        dtype=None,
+        out=None,
+        keepdims=False,
+        initial=None,
+        where=None,
+        promote_integers=True,
     ):
         return jnp.prod(
             cast(jax.Array, self),
             axis=axis,
+            dtype=dtype,
+            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
             promote_integers=promote_integers,
         )
 
-    def ptp(self, axis=None, keepdims=False):
-        return jnp.ptp(cast(jax.Array, self), axis=axis, keepdims=keepdims)
+    def ptp(self, axis=None, out=None, keepdims=False):
+        return jnp.ptp(cast(jax.Array, self), axis=axis, out=out, keepdims=keepdims)
 
-    def ravel(self, order="C"):
-        return jnp.ravel(cast(jax.Array, self), order=order)
+    def ravel(self, order="C", *, out_sharding=None):
+        return jnp.ravel(cast(jax.Array, self), order=order, out_sharding=out_sharding)
 
-    def repeat(self, repeats, axis=None, *, total_repeat_length=None):
+    def repeat(
+        self, repeats, axis=None, *, total_repeat_length=None, out_sharding=None
+    ):
         return jnp.repeat(
             cast(jax.Array, self),
             repeats,
             axis=axis,
             total_repeat_length=total_repeat_length,
+            out_sharding=out_sharding,
         )
 
-    def reshape(self, *shape, order="C"):
+    def reshape(self, *shape, order="C", out_sharding=None):
         if len(shape) == 1 and isinstance(shape[0], tuple | list):
             shape = shape[0]
-        return jnp.reshape(cast(jax.Array, self), shape, order=order)
+        return jnp.reshape(
+            cast(jax.Array, self), shape, order=order, out_sharding=out_sharding
+        )
 
-    def round(self, decimals=0):
-        return jnp.round(cast(jax.Array, self), decimals=decimals)
+    def round(self, decimals=0, out=None):
+        return jnp.round(cast(jax.Array, self), decimals=decimals, out=out)
 
-    def searchsorted(self, v, side="left", sorter=None):
-        return jnp.searchsorted(cast(jax.Array, self), v, side=side, sorter=sorter)
+    def searchsorted(self, v, side="left", sorter=None, *, method="scan"):
+        return jnp.searchsorted(
+            cast(jax.Array, self), v, side=side, sorter=sorter, method=method
+        )
 
-    def sort(self, axis=-1, descending=False, stable=True):
+    def sort(self, axis=-1, *, kind=None, order=None, stable=True, descending=False):
         return jnp.sort(
-            cast(jax.Array, self), axis=axis, descending=descending, stable=stable
+            cast(jax.Array, self),
+            axis=axis,
+            kind=kind,
+            order=order,
+            stable=stable,
+            descending=descending,
         )
 
     def squeeze(self, axis=None):
         return jnp.squeeze(cast(jax.Array, self), axis=axis)
 
-    def std(self, axis=None, keepdims=False, ddof=0, *, where=None):
+    def std(
+        self,
+        axis=None,
+        dtype=None,
+        out=None,
+        ddof=0,
+        keepdims=False,
+        *,
+        where=None,
+        correction=None,
+    ):
         return jnp.std(
-            cast(jax.Array, self), axis=axis, keepdims=keepdims, ddof=ddof, where=where
+            cast(jax.Array, self),
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            ddof=ddof,
+            keepdims=keepdims,
+            where=where,
+            correction=correction,
         )
 
     def sum(
-        self, axis=None, keepdims=False, initial=None, where=None, promote_integers=True
+        self,
+        axis=None,
+        dtype=None,
+        out=None,
+        keepdims=False,
+        initial=None,
+        where=None,
+        promote_integers=True,
     ):
         return jnp.sum(
             cast(jax.Array, self),
             axis=axis,
+            dtype=dtype,
+            out=out,
             keepdims=keepdims,
             initial=initial,
             where=where,
@@ -376,6 +555,7 @@ class _ArrayTerm(Term[jax.Array]):
         self,
         indices,
         axis=None,
+        out=None,
         mode=None,
         unique_indices=False,
         indices_are_sorted=False,
@@ -385,24 +565,117 @@ class _ArrayTerm(Term[jax.Array]):
             cast(jax.Array, self),
             indices,
             axis=axis,
+            out=out,
             mode=mode,
             unique_indices=unique_indices,
             indices_are_sorted=indices_are_sorted,
             fill_value=fill_value,
         )
 
-    def trace(self, offset=0, axis1=0, axis2=1, dtype=None):
+    def to_device(self, device, *, stream=None):
+        return _array_to_device(self, device, stream=stream)
+
+    def trace(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
         return jnp.trace(
-            cast(jax.Array, self), offset=offset, axis1=axis1, axis2=axis2, dtype=dtype
+            cast(jax.Array, self),
+            offset=offset,
+            axis1=axis1,
+            axis2=axis2,
+            dtype=dtype,
+            out=out,
         )
 
-    def transpose(self, axes=None):
+    def transpose(self, *args, axes=None):
+        if args:
+            if axes is not None:
+                raise TypeError("Cannot pass both axes and positional arguments")
+            axes = args[0] if len(args) == 1 else args
         return jnp.transpose(cast(jax.Array, self), axes=axes)
 
-    def var(self, axis=None, keepdims=False, ddof=0, *, where=None):
+    def var(
+        self,
+        axis=None,
+        dtype=None,
+        out=None,
+        ddof=0,
+        keepdims=False,
+        *,
+        where=None,
+        correction=None,
+    ):
         return jnp.var(
-            cast(jax.Array, self), axis=axis, keepdims=keepdims, ddof=ddof, where=where
+            cast(jax.Array, self),
+            axis=axis,
+            dtype=dtype,
+            out=out,
+            ddof=ddof,
+            keepdims=keepdims,
+            where=where,
+            correction=correction,
         )
+
+    def view(self, dtype=None, type=None):
+        return _array_view(self, dtype=dtype, type=type)
+
+
+@jax.tree_util.register_pytree_node_class
+class _ArrayTerm(ArrayMethods, Term[jax.Array]):
+    """Array expression with dynamic buffers and static operation/layout metadata.
+
+    Numerical integer operands should be arrays; Python integers can describe
+    static dimensions/axes. Floating operands remain dynamic.
+    """
+
+    def __init__(self, op: Operation[..., jax.Array], /, *args: Expr, **kwargs: Expr):
+        self._op = op
+        self._args = args
+        self._kwargs = kwargs
+
+    @property
+    def op(self) -> Operation[..., jax.Array]:
+        return self._op
+
+    @property
+    def args(self) -> tuple:
+        return self._args
+
+    @property
+    def kwargs(self) -> dict:
+        return self._kwargs
+
+    def tree_flatten(self):
+        leaves, tree = jax.tree_util.tree_flatten((self.args, self.kwargs))
+        dynamic = tuple(
+            isinstance(
+                x,
+                (
+                    jax.Array,
+                    jax._src.core.Tracer,
+                    jax.ShapeDtypeStruct,
+                    np.ndarray,
+                    float,
+                    complex,
+                    np.inexact,
+                ),
+            )
+            for x in leaves
+        )
+        buffers = tuple(x for x, flag in zip(leaves, dynamic, strict=True) if flag)
+        constants = tuple(
+            x for x, flag in zip(leaves, dynamic, strict=True) if not flag
+        )
+        return buffers, (self.op, tree, dynamic, constants)
+
+    @classmethod
+    def tree_unflatten(cls, metadata, buffers):
+        op, tree, dynamic, constants = metadata
+        buffers, constants = iter(buffers), iter(constants)
+        leaves = [next(buffers) if flag else next(constants) for flag in dynamic]
+        args, kwargs = jax.tree_util.tree_unflatten(tree, leaves)
+        return cls(op, *args, **kwargs)
+
+    def __iter__(self):
+        raise TypeError("A free array is not iterable.")
 
 
 class _EagerArrayTerm(_ArrayTerm):
@@ -421,6 +694,14 @@ class _EagerArrayTerm(_ArrayTerm):
             for s, k in zip(self.args[0].shape, self.args[1])
             if not isinstance(k, Term)
         )
+
+    @property
+    def dtype(self):
+        return self.args[0].dtype
+
+    @property
+    def itemsize(self):
+        return self.dtype.itemsize
 
     @property
     def size(self) -> int:
