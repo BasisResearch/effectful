@@ -127,6 +127,7 @@ class ToolCallExecutionError[E: Exception, T](DecodingError[E]):
     def __str__(self) -> str:
         return f"Tool execution failed: Error executing tool '{self.raw_tool_call.name}': {self.original_error}"
 
+    @Operation.define
     def to_feedback_message(
         self, *, include_traceback: bool = True
     ) -> litellm.ChatCompletionToolMessage:
