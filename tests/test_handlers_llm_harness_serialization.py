@@ -407,6 +407,19 @@ ROUNDTRIP_CASES = [
     pytest.param(list[int], [1, 2, 3, 4, 5], None, id="list-int"),
     pytest.param(list[str], ["hello", "world"], None, id="list-str"),
     pytest.param(list[int], [], None, id="list-empty"),
+    # --- mapping ---
+    pytest.param(dict[str, int], {"user-id": 3, "class": 5}, None, id="dict-str-int"),
+    pytest.param(Mapping[str, complex], {"z": 1 + 2j}, None, id="mapping-str-complex"),
+    pytest.param(dict[int, str], {1: "a", 2: "b"}, None, id="dict-int-str"),
+    pytest.param(
+        dict[tuple[int, int], str],
+        {(0, 1): "a", (2, 3): "b"},
+        None,
+        id="dict-tuple-key",
+    ),
+    pytest.param(dict[complex, str], {1 + 2j: "a"}, None, id="dict-complex-key"),
+    pytest.param(dict[str, dict[str, int]], {"a": {"b": 1}}, None, id="dict-nested"),
+    pytest.param(dict[str, int], {}, None, id="dict-empty"),
     # --- Image ---
     pytest.param(
         Image.Image, _make_png_image("RGB", (10, 10), "red"), None, id="img-red"
